@@ -44,6 +44,7 @@ CREATE TABLE attachments (
 ) STRICT;
 
 CREATE TABLE messages (
+  -- Canonical hyphenated UUID; enforced by the domain type before persistence.
   id                    TEXT PRIMARY KEY,
   parent_message_id     TEXT,
   role                  TEXT NOT NULL CHECK (role IN ('user', 'system', 'assistant')),
@@ -90,7 +91,7 @@ CREATE TABLE sessions (
   title              TEXT,
   current_message_id TEXT NOT NULL,
   active_run_id      TEXT,
-  default_agent_id   TEXT,
+  agent_id           TEXT NOT NULL,
   status             TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
   version            INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
   created_at_ms      INTEGER NOT NULL,
@@ -304,7 +305,7 @@ WHEN new.follow_session_id IS NOT NULL BEGIN
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM sessions s WHERE s.id = new.follow_session_id
       AND s.current_message_id = new.base_message_id AND s.active_run_id IS NULL
-      AND s.status = 'active'
+      AND s.status = 'active' AND s.agent_id = new.agent_id
   ) THEN RAISE(ABORT, 'SESSION_BUSY_OR_POINTER_CONFLICT') END;
 END;
 CREATE TRIGGER runs_claim_session AFTER INSERT ON runs

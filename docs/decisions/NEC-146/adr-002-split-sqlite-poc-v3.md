@@ -93,7 +93,7 @@ Project 数据库位置：
 | `attachments` | 本 Project 附件 BLOB |
 | `messages` | append-only Message forest，内容直接存 `content_json` |
 | `message_attachments` | FileRef → in-DB attachment 约束投影 |
-| `sessions` | 可移动 Message ref + version CAS |
+| `sessions` | 固定 Agent 的最小运行单元 + 可移动 Message ref + version CAS |
 | `runs` | base/last Message、Agent snapshot、状态、预算、queue version |
 | `run_attempts` | initial/retry/recovery 记录 |
 | `run_queue_items` | Run 内追加工作与 dedupe |

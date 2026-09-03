@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
-    InstructionSourceSnapshot, InstructionSourceSummary, MessageId, Project, ProjectId, SessionId,
-    SessionRoot,
+    AgentId, DomainMetadata, InstructionSourceSnapshot, InstructionSourceSummary, MessageId,
+    Project, ProjectId, ProjectStatus, SessionId, SessionRoot, TimestampMs,
 };
 use ait_ports::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
@@ -161,10 +161,16 @@ impl ProjectService {
         let project = Project {
             id: registration.id,
             name: registration.name,
+            description: String::new(),
             workdir: root,
             git_initialized_by_manager,
+            default_agent_id: None,
             instruction_revision: 1,
             instruction_digest: instructions.content_digest.clone(),
+            metadata: DomainMetadata::default(),
+            status: ProjectStatus::Active,
+            created_at: TimestampMs(0),
+            updated_at: TimestampMs(0),
         };
         self.store
             .register_project(project, instructions)
@@ -185,6 +191,7 @@ impl ProjectService {
     pub fn create_session(
         &self,
         project_id: ProjectId,
+        agent_id: AgentId,
         session_id: SessionId,
         root_message_id: MessageId,
     ) -> Result<SessionRoot, ProjectError> {
@@ -193,6 +200,7 @@ impl ProjectService {
         self.store
             .create_session_root(CreateSessionRoot {
                 project_id,
+                agent_id,
                 session_id,
                 root_message_id,
                 instructions,

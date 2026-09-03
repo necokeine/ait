@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ait_domain::{
-    InstructionSourceSnapshot, MessageId, Project, ProjectId, SessionId, SessionRoot,
+    AgentId, InstructionSourceSnapshot, MessageId, Project, ProjectId, SessionId, SessionRoot,
 };
 
 /// Captured Project-instruction component before a store assigns its revision.
@@ -18,6 +18,8 @@ pub struct DiscoveredInstructions {
 pub struct CreateSessionRoot {
     /// Project that owns the tree.
     pub project_id: ProjectId,
+    /// Agent fixed for the lifetime of the new Session.
+    pub agent_id: AgentId,
     /// Externally assigned session identity.
     pub session_id: SessionId,
     /// Externally assigned root message identity.

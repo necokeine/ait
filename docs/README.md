@@ -3,6 +3,7 @@
 ## 当前基线
 
 - `decisions/NEC-150/adr-001-core-domain-model-v4.md`：核心领域模型，Accepted，是术语与聚合边界的权威版本。
+- `decisions/NEC-161/adr-003-session-agent-binding-and-identities.md`：实现评审修订；Message 使用 UUID，Project description 默认空字符串，Session 固定绑定 Agent 并成为最小运行单元。
 - `glossary.md`：从 ADR-001 v4 提炼的快速术语表。
 
 ## 配套设计

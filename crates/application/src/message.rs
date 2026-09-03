@@ -1,8 +1,8 @@
 use std::{collections::HashSet, sync::Arc};
 
 use ait_domain::{
-    Message, MessageId, MessageKind, MessageRole, MessageValidationError, ProjectId,
-    ProjectedMessage, Session, SessionId,
+    AgentId, Message, MessageId, MessageKind, MessageRole, MessageValidationError, ProjectId,
+    ProjectedMessage, Session, SessionId, TimestampMs,
 };
 use ait_ports::{MessageStore, MessageStoreError, SessionAdvance};
 use thiserror::Error;
@@ -38,7 +38,7 @@ pub enum MessageServiceError {
         actual: ProjectId,
     },
     /// Imported or corrupted storage contains a parent cycle.
-    #[error("message parent cycle detected at {message_id}", message_id = .0.as_str())]
+    #[error("message parent cycle detected at {0}")]
     CycleDetected(MessageId),
     /// A path terminated at a non-System root.
     #[error("message path terminated at an invalid root")]
@@ -55,11 +55,11 @@ pub enum MessageServiceError {
     /// The append committed but the Session compare-and-swap lost a race.
     #[error(
         "session pointer conflict; message {preserved_message_id} was preserved",
-        preserved_message_id = .preserved_message_id.as_str()
+        preserved_message_id = .preserved_message_id
     )]
     PointerConflict {
         /// Current Session state observed by persistence.
-        observed: Session,
+        observed: Box<Session>,
         /// Newly appended Message retained as a sibling branch.
         preserved_message_id: MessageId,
     },
@@ -73,6 +73,7 @@ impl MessageServiceError {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
+            Self::Validation(MessageValidationError::InvalidMessageId) => "INVALID_MESSAGE_ID",
             Self::Validation(MessageValidationError::InvalidRootMessage) | Self::InvalidRoot => {
                 "INVALID_ROOT_MESSAGE"
             }
@@ -84,6 +85,12 @@ impl MessageServiceError {
             }
             Self::Validation(MessageValidationError::InvalidRunProvenance) => {
                 "INVALID_MESSAGE_RUN_PROVENANCE"
+            }
+            Self::Validation(MessageValidationError::InvalidSubMessage) => {
+                "INVALID_SUBMESSAGE_KIND"
+            }
+            Self::Validation(MessageValidationError::ToolResultRequiresUser) => {
+                "TOOL_RESULT_REQUIRES_USER"
             }
             Self::ParentRequired | Self::NotDirectChild => "MESSAGE_PARENT_INVALID",
             Self::ProjectMismatch { .. }
@@ -162,16 +169,20 @@ impl MessageService {
         session_id: SessionId,
         project_id: ProjectId,
         at_message_id: MessageId,
+        agent_id: AgentId,
     ) -> Result<Session, MessageServiceError> {
         let target = self.store.get_message(&at_message_id)?;
         require_project(&project_id, &target.message.project_id)?;
+        let name = session_id.as_str().to_owned();
         self.store
-            .create_session(Session {
-                id: session_id,
+            .create_session(Session::new(
+                session_id,
                 project_id,
-                current_message_id: at_message_id,
-                version: 1,
-            })
+                name,
+                at_message_id,
+                agent_id,
+                TimestampMs(0),
+            ))
             .map_err(Into::into)
     }
 
@@ -194,11 +205,11 @@ impl MessageService {
         let project_id = current.message.project_id.clone();
 
         loop {
-            if !seen.insert(current.message.id.clone()) {
+            if !seen.insert(current.message.id) {
                 return Err(MessageServiceError::CycleDetected(current.message.id));
             }
             require_project(&project_id, &current.message.project_id)?;
-            let parent = current.message.parent_message_id.clone();
+            let parent = current.message.parent_message_id;
             path.push(ProjectedMessage::from(current));
             let Some(parent_id) = parent else { break };
             current = self.store.get_message(&parent_id)?;
@@ -275,7 +286,7 @@ impl MessageService {
                 observed,
                 preserved_message_id,
             } => Err(MessageServiceError::PointerConflict {
-                observed,
+                observed: Box::new(observed),
                 preserved_message_id,
             }),
         }
