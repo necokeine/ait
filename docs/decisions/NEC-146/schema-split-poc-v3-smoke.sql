@@ -30,8 +30,14 @@ INSERT INTO project_agent_defaults(project_id, agent_id) VALUES ('p1', 'a1');
 INSERT INTO project_identity(singleton, project_id, created_at_ms, format_version)
 VALUES (1, 'p1', 1, 1);
 INSERT INTO project_instruction_revisions(
-  revision, source_manifest_json, rendered_prompt, content_digest, created_at_ms
-) VALUES (1, '[]', 'You are a local agent.', lower(hex(zeroblob(32))), 1);
+  revision, source_manifest_json, component_json, content_digest, created_at_ms
+) VALUES (
+  1,
+  '[{"name":"project","locator":"AGENTS.md","priority":100,"content_digest":"e2dfb1f8d36be60f741d8cc19877dc5cd43c704c3d31da416eced952a952064d","byte_len":22}]',
+  '{"revision":1,"sources":[{"summary":{"name":"project","locator":"AGENTS.md","priority":100,"content_digest":"e2dfb1f8d36be60f741d8cc19877dc5cd43c704c3d31da416eced952a952064d","byte_len":22},"content":"You are a local agent."}]}',
+  lower(hex(zeroblob(32))),
+  1
+);
 INSERT INTO attachments(
   id, filename, media_type, byte_length, sha256, data, created_at_ms
 ) VALUES ('att1', 'note.txt', 'text/plain', 4, lower(hex(randomblob(32))), x'6e6f7465', 2);
@@ -41,7 +47,8 @@ INSERT INTO messages(
   content_json, content_digest, created_at_ms
 ) VALUES (
   'm0', NULL, 'system', 'standard', 'project',
-  '[{"type":"text","text":"You are a local agent."}]', lower(hex(randomblob(32))), 2
+  '[{"type":"structured_data","media_type":"application/vnd.ait.project-instructions+json","value":{"revision":1,"sources":[{"summary":{"name":"project","locator":"AGENTS.md","priority":100,"content_digest":"e2dfb1f8d36be60f741d8cc19877dc5cd43c704c3d31da416eced952a952064d","byte_len":22},"content":"You are a local agent."}]}}]',
+  lower(hex(randomblob(32))), 2
 );
 INSERT INTO sessions(id, name, current_message_id, version, created_at_ms, updated_at_ms)
 VALUES ('s1', 'main', 'm0', 1, 3, 3);

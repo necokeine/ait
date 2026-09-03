@@ -17,6 +17,7 @@ cargo test --workspace
 - `crates/domain`：纯领域模型与不变量。
 - `crates/contracts`、`crates/ports`：进程无关契约与端口。
 - `crates/application`：用例编排。
+- `crates/project-local`：Project 路径边界、指令文件读取与本地 Git 适配器。
 - `crates/runtime`、`crates/scheduler`：Run 与调度生命周期。
 - `crates/storage-sqlite`：SQLite 持久化适配器。
 - `crates/providers`：统一 Provider 契约、契约测试工具、Mock 与 OpenAI-compatible Adapter。
