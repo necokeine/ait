@@ -5,7 +5,12 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+ait-contracts = { path = "../../crates/contracts" }
 ait-ipc = { path = "../../crates/ipc" }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

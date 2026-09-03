@@ -6,9 +6,13 @@ publish.workspace = true
 
 [dependencies]
 ait-application = { path = "../../crates/application" }
+ait-api-http = { path = "../../crates/api-http" }
 ait-ipc = { path = "../../crates/ipc" }
 ait-observability = { path = "../../crates/observability" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 
 [lints]
 workspace = true
