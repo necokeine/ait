@@ -11,19 +11,27 @@ use ait_domain::{
     AgentId, DomainMetadata, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
     ProjectId, ProjectedMessage, Session, SessionId, StoredMessage, SubMessage, TimestampMs,
 };
-use ait_ports::{MessageStore, MessageStoreError, SessionAdvance};
+use ait_ports::{MessageStore, MessageStoreError, SessionAdvance, SessionStore, SessionStoreError};
 
 #[derive(Default)]
-struct MemoryState {
+struct MemoryMessageState {
     messages: HashMap<MessageId, Message>,
-    sessions: HashMap<SessionId, Session>,
     redacted: HashSet<MessageId>,
 }
 
-#[derive(Default)]
-struct MemoryMessageStore(Mutex<MemoryState>);
+struct MemoryMessageStore(Mutex<MemoryMessageState>);
 
 impl MemoryMessageStore {
+    fn new(root: Message) -> Self {
+        root.validate().unwrap();
+        assert_eq!(root.role, MessageRole::System);
+        assert!(root.parent_message_id.is_none());
+        let id = root.id;
+        let store = Self(Mutex::new(MemoryMessageState::default()));
+        store.0.lock().unwrap().messages.insert(id, root);
+        store
+    }
+
     fn redact(&self, id: &MessageId) {
         self.0.lock().unwrap().redacted.insert(*id);
     }
@@ -45,12 +53,6 @@ impl MemoryMessageStore {
 }
 
 impl MessageStore for MemoryMessageStore {
-    fn insert_root(&self, root: Message) -> Result<Message, MessageStoreError> {
-        let mut state = self.0.lock().unwrap();
-        insert_unique(&mut state, root.clone())?;
-        Ok(root)
-    }
-
     fn append_message(&self, message: Message) -> Result<Message, MessageStoreError> {
         let mut state = self.0.lock().unwrap();
         verify_parent(&state, &message)?;
@@ -70,75 +72,75 @@ impl MessageStore for MemoryMessageStore {
             message,
         })
     }
+}
 
-    fn create_session(&self, session: Session) -> Result<Session, MessageStoreError> {
+#[derive(Default)]
+struct MemorySessionState {
+    sessions: HashMap<SessionId, Session>,
+    fail_next_advance: bool,
+}
+
+#[derive(Default)]
+struct MemorySessionStore(Mutex<MemorySessionState>);
+
+impl MemorySessionStore {
+    fn fail_next_advance(&self) {
+        self.0.lock().unwrap().fail_next_advance = true;
+    }
+}
+
+impl SessionStore for MemorySessionStore {
+    fn create_session(&self, session: Session) -> Result<Session, SessionStoreError> {
         let mut state = self.0.lock().unwrap();
         if state.sessions.contains_key(&session.id) {
-            return Err(MessageStoreError::IdentityConflict(
-                session.id.as_str().to_owned(),
-            ));
-        }
-        let target = state.messages.get(&session.current_message_id).ok_or(
-            MessageStoreError::MessageNotFound(session.current_message_id),
-        )?;
-        if target.project_id != session.project_id {
-            return Err(MessageStoreError::MessageProjectMismatch {
-                expected: session.project_id,
-                actual: target.project_id.clone(),
-            });
+            return Err(SessionStoreError::IdentityConflict(session.id));
         }
         state.sessions.insert(session.id.clone(), session.clone());
         Ok(session)
     }
 
-    fn get_session(&self, id: &SessionId) -> Result<Session, MessageStoreError> {
+    fn get_session(&self, id: &SessionId) -> Result<Session, SessionStoreError> {
         self.0
             .lock()
             .unwrap()
             .sessions
             .get(id)
             .cloned()
-            .ok_or_else(|| MessageStoreError::SessionNotFound(id.clone()))
+            .ok_or_else(|| SessionStoreError::SessionNotFound(id.clone()))
     }
 
-    fn append_and_advance(
+    fn advance_head(
         &self,
         session_id: &SessionId,
         expected_head: &MessageId,
         expected_version: u64,
-        message: Message,
-    ) -> Result<SessionAdvance, MessageStoreError> {
+        new_head: &MessageId,
+    ) -> Result<SessionAdvance, SessionStoreError> {
         let mut state = self.0.lock().unwrap();
-        verify_parent(&state, &message)?;
+        if state.fail_next_advance {
+            state.fail_next_advance = false;
+            return Err(SessionStoreError::Other("injected update failure".into()));
+        }
         let observed = state
             .sessions
             .get(session_id)
             .cloned()
-            .ok_or_else(|| MessageStoreError::SessionNotFound(session_id.clone()))?;
-        if observed.project_id != message.project_id {
-            return Err(MessageStoreError::MessageProjectMismatch {
-                expected: observed.project_id,
-                actual: message.project_id,
-            });
-        }
-
-        let preserved_message_id = message.id;
-        insert_unique(&mut state, message)?;
+            .ok_or_else(|| SessionStoreError::SessionNotFound(session_id.clone()))?;
         if observed.current_message_id != *expected_head || observed.version != expected_version {
-            return Ok(SessionAdvance::Conflict {
-                observed,
-                preserved_message_id,
-            });
+            return Ok(SessionAdvance::Conflict { observed });
         }
 
         let session = state.sessions.get_mut(session_id).unwrap();
-        session.current_message_id = preserved_message_id;
+        session.current_message_id = *new_head;
         session.version += 1;
         Ok(SessionAdvance::Advanced(session.clone()))
     }
 }
 
-fn insert_unique(state: &mut MemoryState, message: Message) -> Result<(), MessageStoreError> {
+fn insert_unique(
+    state: &mut MemoryMessageState,
+    message: Message,
+) -> Result<(), MessageStoreError> {
     if state.messages.contains_key(&message.id) {
         return Err(MessageStoreError::IdentityConflict(message.id.to_string()));
     }
@@ -146,7 +148,7 @@ fn insert_unique(state: &mut MemoryState, message: Message) -> Result<(), Messag
     Ok(())
 }
 
-fn verify_parent(state: &MemoryState, message: &Message) -> Result<(), MessageStoreError> {
+fn verify_parent(state: &MemoryMessageState, message: &Message) -> Result<(), MessageStoreError> {
     let parent_id = message
         .parent_message_id
         .as_ref()
@@ -227,10 +229,15 @@ fn child(
     }
 }
 
-fn fixture() -> (Arc<MemoryMessageStore>, Arc<MessageService>) {
-    let store = Arc::new(MemoryMessageStore::default());
-    let service = Arc::new(MessageService::new(store.clone()));
-    (store, service)
+fn fixture() -> (
+    Arc<MemoryMessageStore>,
+    Arc<MemorySessionStore>,
+    Arc<MessageService>,
+) {
+    let messages = Arc::new(MemoryMessageStore::new(root("m0", "p1")));
+    let sessions = Arc::new(MemorySessionStore::default());
+    let service = Arc::new(MessageService::new(messages.clone(), sessions.clone()));
+    (messages, sessions, service)
 }
 
 fn visible_id(message: &ProjectedMessage) -> MessageId {
@@ -241,9 +248,8 @@ fn visible_id(message: &ProjectedMessage) -> MessageId {
 }
 
 #[test]
-fn creates_a_root_and_projects_an_ordered_path_from_any_head() {
-    let (_store, service) = fixture();
-    service.create_root(root("m0", "p1")).unwrap();
+fn initialized_store_projects_an_ordered_path_from_any_head() {
+    let (_messages, _sessions, service) = fixture();
     service
         .append(child("m1", "p1", "m0", MessageRole::User, None))
         .unwrap();
@@ -261,8 +267,7 @@ fn creates_a_root_and_projects_an_ordered_path_from_any_head() {
 
 #[test]
 fn a_session_can_continue_a_message_created_by_another_session() {
-    let (_store, service) = fixture();
-    service.create_root(root("m0", "p1")).unwrap();
+    let (_messages, _sessions, service) = fixture();
     service
         .open_session(
             SessionId::new("s1"),
@@ -306,8 +311,7 @@ fn a_session_can_continue_a_message_created_by_another_session() {
 
 #[test]
 fn opening_a_head_in_another_project_is_rejected() {
-    let (_store, service) = fixture();
-    service.create_root(root("m0", "p1")).unwrap();
+    let (_messages, _sessions, service) = fixture();
 
     let result = service.open_session(
         SessionId::new("s1"),
@@ -324,9 +328,9 @@ fn opening_a_head_in_another_project_is_rejected() {
 
 #[test]
 fn corrupted_parent_cycles_are_detected_instead_of_looping() {
-    let (store, service) = fixture();
-    store.insert_unchecked(child("m1", "p1", "m2", MessageRole::Assistant, None));
-    store.insert_unchecked(child("m2", "p1", "m1", MessageRole::User, None));
+    let (messages, _sessions, service) = fixture();
+    messages.insert_unchecked(child("m1", "p1", "m2", MessageRole::Assistant, None));
+    messages.insert_unchecked(child("m2", "p1", "m1", MessageRole::User, None));
 
     let result = service.message_path(&message_id("m2"));
 
@@ -338,8 +342,7 @@ fn corrupted_parent_cycles_are_detected_instead_of_looping() {
 
 #[test]
 fn concurrent_cas_keeps_the_losing_message_as_a_sibling_branch() {
-    let (store, service) = fixture();
-    service.create_root(root("m0", "p1")).unwrap();
+    let (messages, _sessions, service) = fixture();
     service
         .open_session(
             SessionId::new("s1"),
@@ -377,16 +380,48 @@ fn concurrent_cas_keeps_the_losing_message_as_a_sibling_branch() {
             _ => None,
         })
         .expect("one writer must lose the compare-and-swap");
-    assert!(store.get_message(conflict).is_ok());
-    let mut children = store.children_of(&message_id("m0"));
+    assert!(messages.get_message(conflict).is_ok());
+    let mut children = messages.children_of(&message_id("m0"));
     children.sort();
     assert_eq!(children, vec![message_id("m1"), message_id("m2")]);
 }
 
 #[test]
+fn session_update_failure_reports_the_message_that_was_already_preserved() {
+    let (messages, sessions, service) = fixture();
+    service
+        .open_session(
+            SessionId::new("s1"),
+            project("p1"),
+            message_id("m0"),
+            agent("a1"),
+        )
+        .unwrap();
+    sessions.fail_next_advance();
+
+    let result = service.append_to_session(
+        &SessionId::new("s1"),
+        &message_id("m0"),
+        1,
+        child("m1", "p1", "m0", MessageRole::User, Some("s1")),
+    );
+
+    assert!(matches!(
+        result,
+        Err(MessageServiceError::SessionUpdateFailed {
+            preserved_message_id,
+            ..
+        }) if preserved_message_id == message_id("m1")
+    ));
+    assert!(messages.get_message(&message_id("m1")).is_ok());
+    let unchanged = sessions.get_session(&SessionId::new("s1")).unwrap();
+    assert_eq!(unchanged.current_message_id, message_id("m0"));
+    assert_eq!(unchanged.version, 1);
+}
+
+#[test]
 fn editing_and_regeneration_append_siblings_without_mutating_history() {
-    let (store, service) = fixture();
-    service.create_root(root("m0", "p1")).unwrap();
+    let (messages, _sessions, service) = fixture();
     let original_user = child("u1", "p1", "m0", MessageRole::User, Some("s1"));
     let original_assistant = child("a1", "p1", "u1", MessageRole::Assistant, Some("s1"));
     service.append(original_user.clone()).unwrap();
@@ -402,31 +437,33 @@ fn editing_and_regeneration_append_siblings_without_mutating_history() {
         .unwrap();
 
     assert_eq!(
-        store.get_message(&original_user.id).unwrap().message,
+        messages.get_message(&original_user.id).unwrap().message,
         original_user
     );
     assert_eq!(
-        store.get_message(&original_assistant.id).unwrap().message,
+        messages
+            .get_message(&original_assistant.id)
+            .unwrap()
+            .message,
         original_assistant
     );
-    assert_eq!(store.get_message(&edited.id).unwrap().message, edited);
+    assert_eq!(messages.get_message(&edited.id).unwrap().message, edited);
     assert_eq!(
-        store.get_message(&regenerated.id).unwrap().message,
+        messages.get_message(&regenerated.id).unwrap().message,
         regenerated
     );
 }
 
 #[test]
 fn redacted_nodes_keep_their_place_without_exposing_content() {
-    let (store, service) = fixture();
-    service.create_root(root("m0", "p1")).unwrap();
+    let (messages, _sessions, service) = fixture();
     service
         .append(child("m1", "p1", "m0", MessageRole::User, None))
         .unwrap();
     service
         .append(child("m2", "p1", "m1", MessageRole::Assistant, None))
         .unwrap();
-    store.redact(&message_id("m1"));
+    messages.redact(&message_id("m1"));
     service
         .open_session(
             SessionId::new("s1"),

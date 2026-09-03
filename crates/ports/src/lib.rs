@@ -4,8 +4,9 @@ mod message;
 mod project;
 mod run;
 mod scheduler;
+mod session;
 
-pub use message::{MessageStore, MessageStoreError, SessionAdvance};
+pub use message::{MessageStore, MessageStoreError};
 pub use project::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
     StoreError,
@@ -19,3 +20,4 @@ pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,
     RunStarter, StartRunRequest,
 };
+pub use session::{SessionAdvance, SessionStore, SessionStoreError};
