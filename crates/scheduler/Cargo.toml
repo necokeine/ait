@@ -1,0 +1,12 @@
+[package]
+name = "ait-scheduler"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ait-domain = { path = "../domain" }
+ait-ports = { path = "../ports" }
+
+[lints]
+workspace = true

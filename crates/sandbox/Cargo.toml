@@ -1,0 +1,11 @@
+[package]
+name = "ait-sandbox"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ait-ports = { path = "../ports" }
+
+[lints]
+workspace = true

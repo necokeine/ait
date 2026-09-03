@@ -1,0 +1,11 @@
+[package]
+name = "ait-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ait-ipc = { path = "../../crates/ipc" }
+
+[lints]
+workspace = true

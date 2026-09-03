@@ -1,0 +1,16 @@
+[package]
+name = "ait-worker"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ait-agent-adapters = { path = "../../crates/agent-adapters" }
+ait-ipc = { path = "../../crates/ipc" }
+ait-providers = { path = "../../crates/providers" }
+ait-runtime = { path = "../../crates/runtime" }
+ait-sandbox = { path = "../../crates/sandbox" }
+ait-tools = { path = "../../crates/tools" }
+
+[lints]
+workspace = true

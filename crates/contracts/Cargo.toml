@@ -1,0 +1,11 @@
+[package]
+name = "ait-contracts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ait-domain = { path = "../domain" }
+
+[lints]
+workspace = true

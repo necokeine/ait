@@ -1,0 +1,12 @@
+[package]
+name = "ait-ipc"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ait-application = { path = "../application" }
+ait-contracts = { path = "../contracts" }
+
+[lints]
+workspace = true
