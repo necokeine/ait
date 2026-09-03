@@ -1,6 +1,6 @@
 ## ADR-003：Agent Adapter crate 与首个 Codex 集成
 
-- 状态：Proposed，协议原型已验证
+- 状态：Proposed，协议原型已纳入 workspace 并验证
 - 依赖：ADR-001 v4、ADR-002
 - 官方协议基线：Codex app-server，`codex-cli 0.151.0` 生成 schema
 - 来源：NEC-151
@@ -22,6 +22,6 @@
 
 ## 后续
 
-- workspace 建立后把 `agent-adapters` 纳入 Cargo members，并由 application/runtime crate 注入 ApprovalHandler。
+- 由 application/runtime crate 注入 ApprovalHandler，并把 Adapter task 生命周期纳入 Run supervisor 所有权树。
 - 增加 Codex 长连接池、thread checkpoint repository 与 schema 兼容矩阵。
 - 真实 Codex smoke test 设为显式 opt-in，默认 CI 使用零网络、零费用的内存 JSONL 测试。

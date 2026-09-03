@@ -1,6 +1,6 @@
 ## ADR-002：Agent 配置与 Provider Adapter 契约
 
-- 状态：Proposed，原型已验证
+- 状态：Proposed，原型已纳入 workspace 并验证
 - 依赖：ADR-001 v4
 - 范围：单次 provider 调用边界；不拥有 Session、Message 持久化或 Run 终止屏障
 - 来源：NEC-151
@@ -25,11 +25,11 @@
 
 ## 集成边界
 
-`provider-contract` 不写 Message、不推进 Session、不决定 Run completed。上层 Run supervisor 将流重组成 ProposedMessage，先持久化再进入工具/下一轮，并最终通过 ADR-001 的终止屏障。这样 Provider 更换不会绕过 Message 不可变、Session CAS、工具审计与恢复语义。
+`ait-providers` 不写 Message、不推进 Session、不决定 Run completed。上层 Run supervisor 将流重组成 ProposedMessage，先持久化再进入工具/下一轮，并最终通过 ADR-001 的终止屏障。这样 Provider 更换不会绕过 Message 不可变、Session CAS、工具审计与恢复语义。
 
 ## 已知后续项
 
-- 接入 Rust workspace ADR 最终确定的 crate 名称与错误/遥测基础类型。
+- 随 domain/ports 实现推进，把当前原型中的 Agent catalog 与 Provider port 进一步下沉到稳定领域/端口边界。
 - Agent revision 改由 SQLite repository 持久化，并在 Run 创建事务内 pin。
 - CredentialResolver 接入 macOS Keychain / Windows Credential Manager / Linux Secret Service。
 - 为目标远程供应商增加录制回放和真实凭证 opt-in smoke test；默认 CI 仍只运行无网络 contract tests。
