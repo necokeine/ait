@@ -19,7 +19,9 @@ cargo test --workspace
 - `crates/application`：用例编排。
 - `crates/runtime`、`crates/scheduler`：Run 与调度生命周期。
 - `crates/storage-sqlite`：SQLite 持久化适配器。
-- `crates/providers`、`crates/agent-adapters`、`crates/tools`、`crates/sandbox`：外部执行适配器。
+- `crates/providers`：统一 Provider 契约、契约测试工具、Mock 与 OpenAI-compatible Adapter。
+- `crates/agent-adapters`：完整 Agent harness 适配器；首个实现为 Codex app-server。
+- `crates/tools`、`crates/sandbox`：工具与进程隔离适配器。
 - `crates/ipc`、`crates/api-http`：传输层。
 - `bins/daemon`、`bins/worker`、`bins/cli`：可执行入口。
 
