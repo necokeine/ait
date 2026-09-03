@@ -1,17 +1,16 @@
 [package]
-name = "ait-application"
+name = "ait-project-local"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-ait-contracts = { path = "../contracts" }
 ait-domain = { path = "../domain" }
 ait-ports = { path = "../ports" }
-ait-runtime = { path = "../runtime" }
-ait-scheduler = { path = "../scheduler" }
-sha2 = "0.10"
-thiserror = "2"
+
+[dev-dependencies]
+ait-application = { path = "../application" }
+tempfile = "3"
 
 [lints]
 workspace = true
