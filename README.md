@@ -10,6 +10,10 @@ AIT 是一个本地优先的多 Agent 管理器，目标是统一在线协作平
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+
+cd apps/desktop
+npm install
+npm run dev
 ```
 
 ## 本地 API 与 CLI
@@ -41,5 +45,6 @@ Project 的无凭证 JSON 归档使用 `ait-cli export` / `ait-cli import`；结
 - `crates/tools`、`crates/sandbox`：工具与进程隔离适配器。
 - `crates/ipc`、`crates/api-http`：传输层。
 - `bins/daemon`、`bins/worker`、`bins/cli`：可执行入口。
+- `apps/desktop`：Electron 桌面工作台；main process 只通过 daemon 的本地 API 读写，renderer 只消费受限投影。
 
 更完整的依赖方向见 `docs/decisions/NEC-154/adr-002-rust-workspace-runtime-architecture.md`。

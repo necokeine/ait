@@ -102,9 +102,9 @@ async fn send(
     endpoint: &str,
     command: &Command,
 ) -> Result<Response, reqwest::Error> {
-    if matches!(command, Command::Snapshot) {
+    if matches!(command, Command::Snapshot | Command::GetSettings) {
         return client
-            .get(format!("{endpoint}/v1/workspace/snapshot"))
+            .get(format!("{endpoint}{}", operation_path(command)))
             .send()
             .await?
             .error_for_status()?
@@ -132,6 +132,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::RegisterAgent { .. } => "/v1/agent/register",
         Command::CreateSession { .. } => "/v1/session/create",
         Command::SendMessage { .. } => "/v1/session/send-message",
+        Command::ForkSession { .. } => "/v1/session/fork",
         Command::GetRun { .. } => "/v1/run/get",
         Command::CancelRun { .. } => "/v1/run/cancel",
         Command::CreateCron { .. } => "/v1/cron/create",
@@ -139,6 +140,9 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::TriggerCron { .. } => "/v1/cron/trigger",
         Command::ExportProject { .. } => "/v1/project/export",
         Command::ImportProject { .. } => "/v1/project/import",
+        Command::GetSettings => "/v1/settings",
+        Command::SaveSettings { .. } => "/v1/settings/save",
+        Command::ResetSettings => "/v1/settings/reset",
         Command::Snapshot => "/v1/workspace/snapshot",
     }
 }

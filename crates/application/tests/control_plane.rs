@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentMode, Command, CommandResult};
+use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
 use ait_domain::ErrorCode;
 use ait_storage_sqlite::SqliteControlStore;
 use tempfile::TempDir;
@@ -385,4 +385,83 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     assert_eq!(workspace.messages, archive.messages);
     assert!(workspace.runs.is_empty());
     assert!(workspace.crons.is_empty());
+}
+
+#[tokio::test]
+async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
+    let temporary = TempDir::new().unwrap();
+    let database = temporary.path().join("desktop.sqlite3");
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "desktop-project".into(),
+            name: "Desktop".into(),
+            workdir: project_dir.display().to_string(),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "desktop-agent".into(),
+            name: "Desktop agent".into(),
+            model: "echo".into(),
+            mode: AgentMode::Echo,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::ForkSession {
+            id: "desktop-branch".into(),
+            project_id: project.id,
+            agent_id: "desktop-agent".into(),
+            at_message_id: project.root_message_id,
+            text: "first branch message".into(),
+        },
+    )
+    .await;
+
+    let mut values = default_settings();
+    values
+        .0
+        .insert("interface.theme".into(), serde_json::json!("dark"));
+    let saved = match run(
+        &service,
+        Command::SaveSettings {
+            expected_revision: 1,
+            values,
+        },
+    )
+    .await
+    {
+        CommandResult::Settings(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(saved.revision, 2);
+    drop(service);
+
+    let recovered =
+        LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let workspace = match run(&recovered, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(workspace.sessions.len(), 1);
+    assert_eq!(workspace.messages.len(), 3);
+    let settings = match run(&recovered, Command::GetSettings).await {
+        CommandResult::Settings(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(
+        settings.values.0["interface.theme"],
+        serde_json::json!("dark")
+    );
 }

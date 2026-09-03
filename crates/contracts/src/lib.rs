@@ -51,6 +51,13 @@ pub enum Command {
         #[serde(default)]
         expected_version: Option<u64>,
     },
+    ForkSession {
+        id: String,
+        project_id: String,
+        agent_id: String,
+        at_message_id: String,
+        text: String,
+    },
     GetRun {
         run_id: String,
     },
@@ -81,6 +88,12 @@ pub enum Command {
         archive: ProjectExport,
         workdir: String,
     },
+    GetSettings,
+    SaveSettings {
+        expected_revision: u64,
+        values: desktop::SettingsDocument,
+    },
+    ResetSettings,
     Snapshot,
 }
 
@@ -205,6 +218,7 @@ pub enum CommandResult {
     Run(RunView),
     Cron(CronView),
     ProjectExport(ProjectExport),
+    Settings(desktop::SettingsView),
     Workspace(WorkspaceView),
 }
 
@@ -250,3 +264,13 @@ pub struct Event {
     pub body: Value,
     pub created_at: i64,
 }
+
+/// Versioned desktop workspace, settings, and branch-operation DTOs.
+pub mod desktop;
+
+pub use desktop::{
+    AgentSummary, DESKTOP_PROTOCOL_VERSION, DesktopMessage, DesktopMessagePart, DesktopProject,
+    DesktopSession, DesktopSnapshot, ForkFromMessageRequest, SaveSettingsRequest, SettingCategory,
+    SettingDefinition, SettingKind, SettingsDocument, SettingsSchema, SettingsView,
+    default_settings, settings_schema,
+};
