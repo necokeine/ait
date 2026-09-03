@@ -9,7 +9,7 @@ use std::{
 use ait_application::{InstructionLayer, ProjectRegistration, ProjectService};
 use ait_domain::{
     InstructionSnapshot, MessageId, Project, ProjectId, Session, SessionId, SessionRoot,
-    SystemMessage, SystemMessageComponent,
+    SystemMessage, SystemMessageComponent, TimestampMs,
 };
 use ait_ports::{
     CreateSessionRoot, DiscoveredInstructions, ProjectEnvironment, ProjectStore, StoreError,
@@ -121,12 +121,14 @@ impl ProjectStore for MemoryProjectStore {
             project_id: command.project_id.clone(),
             components: vec![SystemMessageComponent::ProjectInstructions(snapshot)],
         };
-        let session = Session {
-            id: command.session_id,
-            project_id: command.project_id,
-            current_message_id: root_message.id.clone(),
-            version: 1,
-        };
+        let session_name = command.session_id.as_str().to_owned();
+        let session = Session::new(
+            command.session_id,
+            command.project_id,
+            session_name,
+            root_message.id.clone(),
+            TimestampMs(0),
+        );
         state
             .messages
             .insert(root_message.id.clone(), root_message.clone());

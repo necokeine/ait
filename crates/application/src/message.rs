@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use ait_domain::{
     Message, MessageId, MessageKind, MessageRole, MessageValidationError, ProjectId,
-    ProjectedMessage, Session, SessionId,
+    ProjectedMessage, Session, SessionId, TimestampMs,
 };
 use ait_ports::{MessageStore, MessageStoreError, SessionAdvance};
 use thiserror::Error;
@@ -59,7 +59,7 @@ pub enum MessageServiceError {
     )]
     PointerConflict {
         /// Current Session state observed by persistence.
-        observed: Session,
+        observed: Box<Session>,
         /// Newly appended Message retained as a sibling branch.
         preserved_message_id: MessageId,
     },
@@ -84,6 +84,12 @@ impl MessageServiceError {
             }
             Self::Validation(MessageValidationError::InvalidRunProvenance) => {
                 "INVALID_MESSAGE_RUN_PROVENANCE"
+            }
+            Self::Validation(MessageValidationError::InvalidSubMessage) => {
+                "INVALID_SUBMESSAGE_KIND"
+            }
+            Self::Validation(MessageValidationError::ToolResultRequiresUser) => {
+                "TOOL_RESULT_REQUIRES_USER"
             }
             Self::ParentRequired | Self::NotDirectChild => "MESSAGE_PARENT_INVALID",
             Self::ProjectMismatch { .. }
@@ -165,13 +171,15 @@ impl MessageService {
     ) -> Result<Session, MessageServiceError> {
         let target = self.store.get_message(&at_message_id)?;
         require_project(&project_id, &target.message.project_id)?;
+        let name = session_id.as_str().to_owned();
         self.store
-            .create_session(Session {
-                id: session_id,
+            .create_session(Session::new(
+                session_id,
                 project_id,
-                current_message_id: at_message_id,
-                version: 1,
-            })
+                name,
+                at_message_id,
+                TimestampMs(0),
+            ))
             .map_err(Into::into)
     }
 
@@ -275,7 +283,7 @@ impl MessageService {
                 observed,
                 preserved_message_id,
             } => Err(MessageServiceError::PointerConflict {
-                observed,
+                observed: Box::new(observed),
                 preserved_message_id,
             }),
         }

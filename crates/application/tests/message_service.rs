@@ -8,8 +8,8 @@ use std::{
 
 use ait_application::{MessageService, MessageServiceError};
 use ait_domain::{
-    Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId, ProjectedMessage,
-    Session, SessionId, StoredMessage, SubMessage,
+    DomainMetadata, Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId,
+    ProjectedMessage, Session, SessionId, StoredMessage, SubMessage, TimestampMs,
 };
 use ait_ports::{MessageStore, MessageStoreError, SessionAdvance};
 
@@ -185,11 +185,15 @@ fn root(id: &str, project_id: &str) -> Message {
         role: MessageRole::System,
         kind: MessageKind::Standard,
         origin: MessageOrigin::Project,
-        sub_messages: vec![SubMessage::Text("system".into())],
+        sub_messages: vec![SubMessage::Text {
+            text: "system".into(),
+        }],
         created_by_session_id: None,
         run_id: None,
         run_seq: None,
         tool_result: None,
+        metadata: DomainMetadata::default(),
+        created_at: TimestampMs(0),
     }
 }
 
@@ -211,11 +215,13 @@ fn child(
             MessageRole::System => MessageOrigin::System,
             MessageRole::Assistant => MessageOrigin::Agent,
         },
-        sub_messages: vec![SubMessage::Text(id.into())],
+        sub_messages: vec![SubMessage::Text { text: id.into() }],
         created_by_session_id: session_id.map(SessionId::new),
         run_id: None,
         run_seq: None,
         tool_result: None,
+        metadata: DomainMetadata::default(),
+        created_at: TimestampMs(0),
     }
 }
 
