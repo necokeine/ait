@@ -28,7 +28,7 @@ CREATE TABLE project_identity (
 CREATE TABLE project_instruction_revisions (
   revision             INTEGER PRIMARY KEY CHECK (revision >= 1),
   source_manifest_json TEXT NOT NULL CHECK (json_valid(source_manifest_json)),
-  rendered_prompt      TEXT NOT NULL,
+  component_json       TEXT NOT NULL CHECK (json_valid(component_json)),
   content_digest       TEXT NOT NULL CHECK (length(content_digest) = 64),
   created_at_ms        INTEGER NOT NULL
 ) STRICT;

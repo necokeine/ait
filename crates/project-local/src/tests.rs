@@ -9,7 +9,7 @@ use std::{
 use ait_application::{InstructionLayer, ProjectRegistration, ProjectService};
 use ait_domain::{
     InstructionSnapshot, MessageId, Project, ProjectId, Session, SessionId, SessionRoot,
-    SystemMessage,
+    SystemMessage, SystemMessageComponent,
 };
 use ait_ports::{
     CreateSessionRoot, DiscoveredInstructions, ProjectEnvironment, ProjectStore, StoreError,
@@ -59,7 +59,6 @@ impl ProjectStore for MemoryProjectStore {
             vec![InstructionSnapshot {
                 revision: 1,
                 sources: instructions.sources,
-                rendered_prompt: instructions.rendered_prompt,
                 content_digest: instructions.content_digest,
             }],
         );
@@ -102,7 +101,6 @@ impl ProjectStore for MemoryProjectStore {
             let snapshot = InstructionSnapshot {
                 revision,
                 sources: command.instructions.sources,
-                rendered_prompt: command.instructions.rendered_prompt,
                 content_digest: command.instructions.content_digest,
             };
             state
@@ -121,10 +119,7 @@ impl ProjectStore for MemoryProjectStore {
         let root_message = SystemMessage {
             id: command.root_message_id,
             project_id: command.project_id.clone(),
-            instruction_revision: snapshot.revision,
-            rendered_prompt: snapshot.rendered_prompt,
-            instruction_digest: snapshot.content_digest,
-            instruction_sources: snapshot.sources,
+            components: vec![SystemMessageComponent::ProjectInstructions(snapshot)],
         };
         let session = Session {
             id: command.session_id,
@@ -205,7 +200,7 @@ fn canonical_aliases_cannot_be_registered_twice() {
 }
 
 #[test]
-fn missing_sources_are_skipped_and_higher_priority_renders_last() {
+fn missing_sources_are_skipped_and_conflicts_remain_priority_ordered() {
     let temp = TempDir::new().unwrap();
     fs::write(temp.path().join("override.md"), "policy = high").unwrap();
     let store = Arc::new(MemoryProjectStore::default());
@@ -241,13 +236,12 @@ fn missing_sources_are_skipped_and_higher_priority_renders_last() {
         )
         .unwrap();
 
-    assert_eq!(created.root_message.instruction_sources.len(), 2);
-    assert_eq!(created.root_message.instruction_sources[0].name, "base");
-    assert_eq!(created.root_message.instruction_sources[1].name, "override");
-    assert!(
-        created.root_message.rendered_prompt.find("policy = low")
-            < created.root_message.rendered_prompt.find("policy = high")
-    );
+    let SystemMessageComponent::ProjectInstructions(snapshot) = &created.root_message.components[0];
+    assert_eq!(snapshot.sources.len(), 2);
+    assert_eq!(snapshot.sources[0].summary.name, "base");
+    assert_eq!(snapshot.sources[0].content, "policy = low");
+    assert_eq!(snapshot.sources[1].summary.name, "override");
+    assert_eq!(snapshot.sources[1].content, "policy = high");
 }
 
 #[cfg(unix)]
@@ -290,7 +284,7 @@ fn missing_external_file_outside_the_authorized_root_is_still_rejected() {
 }
 
 #[test]
-fn prompt_updates_append_a_revision_without_mutating_old_session_roots() {
+fn instruction_updates_append_a_revision_without_mutating_old_session_roots() {
     let temp = TempDir::new().unwrap();
     let instructions = temp.path().join("AGENTS.md");
     fs::write(&instructions, "version one").unwrap();
@@ -330,11 +324,17 @@ fn prompt_updates_append_a_revision_without_mutating_old_session_roots() {
         )
         .unwrap();
 
-    assert_eq!(first.root_message.instruction_revision, 1);
-    assert!(first.root_message.rendered_prompt.contains("version one"));
-    assert_eq!(second.root_message.instruction_revision, 2);
-    assert!(second.root_message.rendered_prompt.contains("version two"));
-    assert_eq!(unchanged.root_message.instruction_revision, 2);
+    let SystemMessageComponent::ProjectInstructions(first_snapshot) =
+        &first.root_message.components[0];
+    let SystemMessageComponent::ProjectInstructions(second_snapshot) =
+        &second.root_message.components[0];
+    let SystemMessageComponent::ProjectInstructions(unchanged_snapshot) =
+        &unchanged.root_message.components[0];
+    assert_eq!(first_snapshot.revision, 1);
+    assert_eq!(first_snapshot.sources[0].content, "version one");
+    assert_eq!(second_snapshot.revision, 2);
+    assert_eq!(second_snapshot.sources[0].content, "version two");
+    assert_eq!(unchanged_snapshot.revision, 2);
     assert_eq!(store.message(&MessageId::new("m1")), first.root_message);
 }
 

@@ -67,12 +67,12 @@ pub struct Project {
     pub git_initialized_by_manager: bool,
     /// Current append-only instruction revision.
     pub instruction_revision: u64,
-    /// Digest of the current rendered instruction snapshot.
+    /// Digest of the current structured instruction component.
     pub instruction_digest: String,
 }
 
-/// Audit summary for one instruction input. The content is intentionally not
-/// duplicated in the manifest; the rendered prompt is the durable snapshot.
+/// Audit summary for one instruction input. Exact content lives beside this
+/// summary in the structured component snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstructionSourceSummary {
     /// Stable, displayable source name.
@@ -87,17 +87,31 @@ pub struct InstructionSourceSummary {
     pub byte_len: u64,
 }
 
-/// Immutable, reproducible rendering of all instructions for a project.
+/// Immutable content and provenance of one discovered instruction source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstructionSourceSnapshot {
+    /// Source provenance and precedence.
+    pub summary: InstructionSourceSummary,
+    /// Exact UTF-8 source content captured for this revision.
+    pub content: String,
+}
+
+/// Immutable, reproducible Project-instruction component.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstructionSnapshot {
     /// Monotonic project-local revision, beginning at one.
     pub revision: u64,
-    /// Sources in strictly increasing priority order.
-    pub sources: Vec<InstructionSourceSummary>,
-    /// Exact prompt persisted in the root system message.
-    pub rendered_prompt: String,
-    /// SHA-256 of `rendered_prompt`.
+    /// Source snapshots in strictly increasing priority order.
+    pub sources: Vec<InstructionSourceSnapshot>,
+    /// SHA-256 of the canonical component content and provenance.
     pub content_digest: String,
+}
+
+/// A typed component stored in an immutable System Message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemMessageComponent {
+    /// Project instruction sources captured at a particular revision.
+    ProjectInstructions(InstructionSnapshot),
 }
 
 /// Immutable root system message for a new message tree.
@@ -107,14 +121,8 @@ pub struct SystemMessage {
     pub id: MessageId,
     /// Owning project.
     pub project_id: ProjectId,
-    /// Exact instruction revision used to render this message.
-    pub instruction_revision: u64,
-    /// Exact rendered prompt.
-    pub rendered_prompt: String,
-    /// Snapshot digest, useful for integrity and deduplication checks.
-    pub instruction_digest: String,
-    /// Ordered source provenance.
-    pub instruction_sources: Vec<InstructionSourceSummary>,
+    /// Structured snapshots used later to assemble a provider prompt.
+    pub components: Vec<SystemMessageComponent>,
 }
 
 /// A movable reference into a project's immutable message forest.

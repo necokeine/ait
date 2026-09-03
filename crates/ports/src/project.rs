@@ -1,15 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use ait_domain::{InstructionSourceSummary, MessageId, Project, ProjectId, SessionId, SessionRoot};
+use ait_domain::{
+    InstructionSourceSnapshot, MessageId, Project, ProjectId, SessionId, SessionRoot,
+};
 
-/// Fully rendered instruction material before a store assigns its revision.
+/// Captured Project-instruction component before a store assigns its revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveredInstructions {
-    /// Ordered source provenance.
-    pub sources: Vec<InstructionSourceSummary>,
-    /// Exact system prompt.
-    pub rendered_prompt: String,
-    /// SHA-256 of the exact system prompt.
+    /// Ordered source content and provenance.
+    pub sources: Vec<InstructionSourceSnapshot>,
+    /// SHA-256 of the canonical component content and provenance.
     pub content_digest: String,
 }
 
@@ -22,7 +22,7 @@ pub struct CreateSessionRoot {
     pub session_id: SessionId,
     /// Externally assigned root message identity.
     pub root_message_id: MessageId,
-    /// Current instruction material discovered immediately before the write.
+    /// Current instruction component discovered immediately before the write.
     pub instructions: DiscoveredInstructions,
 }
 
@@ -181,9 +181,9 @@ pub trait ProjectStore: Send + Sync {
     /// another [`StoreError`] when the store cannot be read.
     fn get_project(&self, project_id: &ProjectId) -> Result<Project, StoreError>;
 
-    /// Atomically appends an instruction revision when the digest changed, creates
-    /// an immutable root System message containing the selected snapshot, and
-    /// creates a Session pointing at that root.
+    /// Atomically appends an instruction revision when the digest changed,
+    /// creates an immutable root System message containing the selected
+    /// structured component, and creates a Session pointing at that root.
     ///
     /// # Errors
     ///

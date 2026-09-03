@@ -3,6 +3,6 @@
 mod project;
 
 pub use project::{
-    InstructionSnapshot, InstructionSourceSummary, MessageId, Project, ProjectId, Session,
-    SessionId, SessionRoot, SystemMessage,
+    InstructionSnapshot, InstructionSourceSnapshot, InstructionSourceSummary, MessageId, Project,
+    ProjectId, Session, SessionId, SessionRoot, SystemMessage, SystemMessageComponent,
 };

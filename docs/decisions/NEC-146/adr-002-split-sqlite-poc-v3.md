@@ -89,7 +89,7 @@ Project 数据库位置：
 |---|---|
 | `schema_migrations` | Project schema version/checksum |
 | `project_identity` | 单行 Project ID 与本地格式版本 |
-| `project_instruction_revisions` | Project 指令来源与 render snapshot |
+| `project_instruction_revisions` | Project 指令来源与结构化组件 snapshot；最终 prompt 在 LLM 调用时组装 |
 | `attachments` | 本 Project 附件 BLOB |
 | `messages` | append-only Message forest，内容直接存 `content_json` |
 | `message_attachments` | FileRef → in-DB attachment 约束投影 |

@@ -1,6 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
-use ait_domain::{InstructionSourceSummary, MessageId, Project, ProjectId, SessionId, SessionRoot};
+use ait_domain::{
+    InstructionSourceSnapshot, InstructionSourceSummary, MessageId, Project, ProjectId, SessionId,
+    SessionRoot,
+};
 use ait_ports::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
     StoreError,
@@ -8,10 +11,8 @@ use ait_ports::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const SOURCE_SEPARATOR: &str = "\n\n";
-
 /// One deterministic instruction layer. Larger priorities render later and win
-/// when instructions conflict.
+/// when an invocation-time prompt assembler handles conflicts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstructionLayer {
     /// Always-present text supplied by the application.
@@ -127,7 +128,7 @@ impl ProjectService {
         })
     }
 
-    /// Registers a canonical Git root and persists its first prompt revision.
+    /// Registers a canonical Git root and persists its first instruction revision.
     ///
     /// # Errors
     ///
@@ -172,9 +173,10 @@ impl ProjectService {
 
     /// Creates a new Message tree and a Session pointing at its immutable root.
     ///
-    /// Discovery happens before the store transaction. The store reuses the
-    /// current revision when the digest matches or appends exactly one revision
-    /// before atomically writing the root message and Session.
+    /// The root stores a structured Project-instruction component, not a final
+    /// provider prompt. Prompt assembly remains an invocation-time concern. The
+    /// store reuses the current revision when the component digest matches or
+    /// appends exactly one revision before atomically writing the root and Session.
     ///
     /// # Errors
     ///
@@ -223,8 +225,8 @@ impl ProjectService {
             let Some(bytes) = bytes else { continue };
             let content = String::from_utf8(bytes.clone())
                 .map_err(|_| ProjectError::InvalidInstructionEncoding(layer.name().to_owned()))?;
-            found.push((
-                InstructionSourceSummary {
+            found.push(InstructionSourceSnapshot {
+                summary: InstructionSourceSummary {
                     name: layer.name().to_owned(),
                     locator,
                     priority: layer.priority(),
@@ -232,34 +234,34 @@ impl ProjectService {
                     byte_len: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
                 },
                 content,
-            ));
-        }
-
-        let mut rendered_prompt = String::new();
-        for (index, (summary, content)) in found.iter().enumerate() {
-            if index > 0 {
-                rendered_prompt.push_str(SOURCE_SEPARATOR);
-            }
-            rendered_prompt.push_str("<instruction-source name=\"");
-            rendered_prompt.push_str(&summary.name);
-            rendered_prompt.push_str("\" priority=\"");
-            rendered_prompt.push_str(&summary.priority.to_string());
-            rendered_prompt.push_str("\">\n");
-            rendered_prompt.push_str(content);
-            if !content.ends_with('\n') {
-                rendered_prompt.push('\n');
-            }
-            rendered_prompt.push_str("</instruction-source>");
+            });
         }
 
         Ok(DiscoveredInstructions {
-            content_digest: sha256_hex(rendered_prompt.as_bytes()),
-            sources: found.into_iter().map(|(summary, _)| summary).collect(),
-            rendered_prompt,
+            content_digest: instruction_component_digest(&found),
+            sources: found,
         })
     }
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn instruction_component_digest(sources: &[InstructionSourceSnapshot]) -> String {
+    let mut digest = Sha256::new();
+    for source in sources {
+        update_length_prefixed(&mut digest, source.summary.name.as_bytes());
+        update_length_prefixed(&mut digest, source.summary.locator.as_bytes());
+        digest.update(source.summary.priority.to_be_bytes());
+        update_length_prefixed(&mut digest, source.summary.content_digest.as_bytes());
+        digest.update(source.summary.byte_len.to_be_bytes());
+        update_length_prefixed(&mut digest, source.content.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn update_length_prefixed(digest: &mut Sha256, value: &[u8]) {
+    digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+    digest.update(value);
 }
