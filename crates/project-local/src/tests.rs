@@ -8,7 +8,7 @@ use std::{
 
 use ait_application::{InstructionLayer, ProjectRegistration, ProjectService};
 use ait_domain::{
-    InstructionSnapshot, MessageId, Project, ProjectId, Session, SessionId, SessionRoot,
+    AgentId, InstructionSnapshot, MessageId, Project, ProjectId, Session, SessionId, SessionRoot,
     SystemMessage, SystemMessageComponent, TimestampMs,
 };
 use ait_ports::{
@@ -17,6 +17,10 @@ use ait_ports::{
 use tempfile::TempDir;
 
 use super::{LocalProjectEnvironment, ProjectPathGuard};
+
+fn message_id(value: u128) -> MessageId {
+    MessageId::from_u128(value)
+}
 
 #[derive(Default)]
 struct MemoryState {
@@ -80,7 +84,7 @@ impl ProjectStore for MemoryProjectStore {
         let mut state = self.0.lock().unwrap();
         if state.messages.contains_key(&command.root_message_id) {
             return Err(StoreError::IdentityConflict(
-                command.root_message_id.as_str().to_owned(),
+                command.root_message_id.to_string(),
             ));
         }
         if state.sessions.contains_key(&command.session_id) {
@@ -126,12 +130,11 @@ impl ProjectStore for MemoryProjectStore {
             command.session_id,
             command.project_id,
             session_name,
-            root_message.id.clone(),
+            root_message.id,
+            command.agent_id,
             TimestampMs(0),
         );
-        state
-            .messages
-            .insert(root_message.id.clone(), root_message.clone());
+        state.messages.insert(root_message.id, root_message.clone());
         state.sessions.insert(session.id.clone(), session.clone());
         Ok(SessionRoot {
             session,
@@ -233,8 +236,9 @@ fn missing_sources_are_skipped_and_conflicts_remain_priority_ordered() {
     let created = service
         .create_session(
             ProjectId::new("p1"),
+            AgentId::new("a1"),
             SessionId::new("s1"),
-            MessageId::new("m1"),
+            message_id(1),
         )
         .unwrap();
 
@@ -305,8 +309,9 @@ fn instruction_updates_append_a_revision_without_mutating_old_session_roots() {
     let first = service
         .create_session(
             ProjectId::new("p1"),
+            AgentId::new("a1"),
             SessionId::new("s1"),
-            MessageId::new("m1"),
+            message_id(1),
         )
         .unwrap();
 
@@ -314,15 +319,17 @@ fn instruction_updates_append_a_revision_without_mutating_old_session_roots() {
     let second = service
         .create_session(
             ProjectId::new("p1"),
+            AgentId::new("a1"),
             SessionId::new("s2"),
-            MessageId::new("m2"),
+            message_id(2),
         )
         .unwrap();
     let unchanged = service
         .create_session(
             ProjectId::new("p1"),
+            AgentId::new("a1"),
             SessionId::new("s3"),
-            MessageId::new("m3"),
+            message_id(3),
         )
         .unwrap();
 
@@ -337,7 +344,7 @@ fn instruction_updates_append_a_revision_without_mutating_old_session_roots() {
     assert_eq!(second_snapshot.revision, 2);
     assert_eq!(second_snapshot.sources[0].content, "version two");
     assert_eq!(unchanged_snapshot.revision, 2);
-    assert_eq!(store.message(&MessageId::new("m1")), first.root_message);
+    assert_eq!(store.message(&message_id(1)), first.root_message);
 }
 
 #[test]

@@ -143,7 +143,7 @@ impl ToolExecution {
         if self.id.as_str().is_empty()
             || self.run_id.as_str().is_empty()
             || self.call_id.is_empty()
-            || self.assistant_message_id.as_str().is_empty()
+            || self.assistant_message_id.as_uuid().is_nil()
             || self.tool_name.is_empty()
             || self.attempt == 0
             || !(pending_shape || running_shape || terminal_shape)
@@ -230,7 +230,7 @@ mod tests {
             id: ToolExecutionId::new("tool-1"),
             run_id: RunId::new("run-1"),
             call_id: "call-1".into(),
-            assistant_message_id: MessageId::new("message-1"),
+            assistant_message_id: MessageId::from_u128(1),
             tool_use_index: 0,
             tool_result_message_id: None,
             tool_name: "read_file".into(),
@@ -276,9 +276,9 @@ mod tests {
         execution.ended_at = Some(TimestampMs(12));
         execution.validate().unwrap();
         let mut message = Message {
-            id: MessageId::new("result-1"),
+            id: MessageId::from_u128(2),
             project_id: ProjectId::new("project-1"),
-            parent_message_id: Some(MessageId::new("message-1")),
+            parent_message_id: Some(MessageId::from_u128(1)),
             role: MessageRole::User,
             kind: MessageKind::ToolResult,
             origin: MessageOrigin::Tool,

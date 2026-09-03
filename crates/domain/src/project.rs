@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{AgentId, DomainError, DomainMetadata, ErrorCode, RunId, TimestampMs};
 
@@ -43,21 +44,48 @@ impl SessionId {
 }
 
 /// Stable identity of an immutable message.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct MessageId(String);
+pub struct MessageId(Uuid);
 
 impl MessageId {
-    /// Creates an externally assigned message identity.
+    /// Creates an identity from an externally assigned UUID.
     #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub const fn new(value: Uuid) -> Self {
+        Self(value)
     }
 
-    /// Returns the string representation.
+    /// Creates an identity from its raw UUID value.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub const fn from_u128(value: u128) -> Self {
+        Self(Uuid::from_u128(value))
+    }
+
+    /// Parses a UUID string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`uuid::Error`] when the input is not a UUID.
+    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
+    }
+
+    /// Returns the underlying UUID.
+    #[must_use]
+    pub const fn as_uuid(&self) -> &Uuid {
         &self.0
+    }
+}
+
+impl From<Uuid> for MessageId {
+    fn from(value: Uuid) -> Self {
+        Self::new(value)
+    }
+}
+
+impl std::fmt::Display for MessageId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
     }
 }
 
@@ -82,14 +110,14 @@ pub struct Project {
     pub id: ProjectId,
     /// Human-readable name.
     pub name: String,
-    /// Optional human-readable description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
+    /// Human-readable description; empty when none was supplied.
+    #[serde(default)]
+    pub description: String,
     /// Canonical absolute Git root.
     pub workdir: PathBuf,
     /// Whether the manager initialized Git while registering the project.
     pub git_initialized_by_manager: bool,
-    /// Default Agent selected for new interactive Runs.
+    /// Default Agent suggested when creating a new Session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_id: Option<AgentId>,
     /// Current append-only instruction revision.
@@ -251,9 +279,8 @@ pub struct Session {
     /// The sole non-terminal Run currently following this Session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_id: Option<RunId>,
-    /// Agent selected when a caller does not provide one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_agent_id: Option<AgentId>,
+    /// Agent fixed for every interactive Run in this Session.
+    pub agent_id: AgentId,
     /// Session availability state.
     pub status: SessionStatus,
     /// Compare-and-swap version.
@@ -272,6 +299,7 @@ impl Session {
         project_id: ProjectId,
         name: impl Into<String>,
         current_message_id: MessageId,
+        agent_id: AgentId,
         now: TimestampMs,
     ) -> Self {
         Self {
@@ -281,7 +309,7 @@ impl Session {
             title: None,
             current_message_id,
             active_run_id: None,
-            default_agent_id: None,
+            agent_id,
             status: SessionStatus::Active,
             version: 1,
             created_at: now,
@@ -300,7 +328,8 @@ impl Session {
         if self.id.as_str().is_empty()
             || self.project_id.as_str().is_empty()
             || self.name.trim().is_empty()
-            || self.current_message_id.as_str().is_empty()
+            || self.current_message_id.as_uuid().is_nil()
+            || self.agent_id.as_str().is_empty()
             || self.version == 0
             || (self.status == SessionStatus::Archived && self.active_run_id.is_some())
             || self.updated_at < self.created_at
@@ -332,6 +361,8 @@ fn is_sha256(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn instruction_source(priority: u32) -> InstructionSourceSnapshot {
@@ -353,7 +384,8 @@ mod tests {
             SessionId::new("session-1"),
             ProjectId::new("project-1"),
             "main",
-            MessageId::new("message-1"),
+            MessageId::from_u128(1),
+            AgentId::new("agent-1"),
             TimestampMs(1),
         );
         session.status = SessionStatus::Archived;
@@ -370,12 +402,22 @@ mod tests {
             SessionId::new("session-1"),
             ProjectId::new("project-1"),
             "main",
-            MessageId::new("message-1"),
+            MessageId::from_u128(1),
+            AgentId::new("agent-1"),
             TimestampMs(1),
         );
         let encoded = serde_json::to_string(&session).unwrap();
         assert!(encoded.contains("\"status\":\"active\""));
+        assert!(encoded.contains("\"agent_id\":\"agent-1\""));
+        assert!(!encoded.contains("default_agent_id"));
         assert_eq!(serde_json::from_str::<Session>(&encoded).unwrap(), session);
+
+        let mut missing_agent = session;
+        missing_agent.agent_id = AgentId::new("");
+        assert_eq!(
+            missing_agent.validate().unwrap_err().code,
+            ErrorCode::InvalidSession
+        );
     }
 
     #[test]
@@ -391,6 +433,48 @@ mod tests {
         assert_eq!(
             snapshot.validate().unwrap_err().code,
             ErrorCode::InvalidProject
+        );
+    }
+
+    #[test]
+    fn message_id_is_a_uuid_with_stable_serde() {
+        let id = MessageId::from_u128(1);
+        let encoded = serde_json::to_string(&id).unwrap();
+        assert_eq!(encoded, "\"00000000-0000-0000-0000-000000000001\"");
+        assert_eq!(serde_json::from_str::<MessageId>(&encoded).unwrap(), id);
+        assert!(MessageId::parse("message-1").is_err());
+    }
+
+    #[test]
+    fn empty_project_description_is_serialized_and_the_deserialization_default() {
+        let project = Project {
+            id: ProjectId::new("project-1"),
+            name: "Project".into(),
+            description: String::new(),
+            workdir: PathBuf::from("/project"),
+            git_initialized_by_manager: false,
+            default_agent_id: None,
+            instruction_revision: 1,
+            instruction_digest: "a".repeat(64),
+            metadata: DomainMetadata::default(),
+            status: ProjectStatus::Active,
+            created_at: TimestampMs(1),
+            updated_at: TimestampMs(1),
+        };
+        let encoded = serde_json::to_string(&project).unwrap();
+        assert!(encoded.contains("\"description\":\"\""));
+        assert_eq!(serde_json::from_str::<Project>(&encoded).unwrap(), project);
+
+        let mut without_description = serde_json::to_value(&project).unwrap();
+        without_description
+            .as_object_mut()
+            .unwrap()
+            .remove("description");
+        assert_eq!(
+            serde_json::from_value::<Project>(without_description)
+                .unwrap()
+                .description,
+            ""
         );
     }
 }

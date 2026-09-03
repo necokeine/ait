@@ -284,6 +284,9 @@ impl Message {
     /// Returns a stable [`MessageValidationError`] for an invalid root, role,
     /// sub-message kind, Run provenance, or `ToolResult` envelope.
     pub fn validate(&self) -> Result<(), MessageValidationError> {
+        if self.id.as_uuid().is_nil() {
+            return Err(MessageValidationError::InvalidMessageId);
+        }
         if self.parent_message_id.is_none()
             && (self.role != MessageRole::System
                 || self.kind != MessageKind::Standard
@@ -361,6 +364,8 @@ impl Message {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageValidationError {
+    /// A nil UUID was supplied as a Message identity.
+    InvalidMessageId,
     /// A root was not a System Message.
     InvalidRootMessage,
     /// A `ToolUse` appeared outside an assistant Message.
@@ -378,6 +383,7 @@ pub enum MessageValidationError {
 impl std::fmt::Display for MessageValidationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidMessageId => "INVALID_MESSAGE_ID",
             Self::InvalidRootMessage => "INVALID_ROOT_MESSAGE",
             Self::ToolUseRequiresAssistant => "TOOL_USE_REQUIRES_ASSISTANT",
             Self::InvalidRunProvenance => "INVALID_MESSAGE_RUN_PROVENANCE",
@@ -393,6 +399,7 @@ impl std::error::Error for MessageValidationError {}
 impl From<MessageValidationError> for DomainError {
     fn from(error: MessageValidationError) -> Self {
         let code = match error {
+            MessageValidationError::InvalidMessageId => ErrorCode::InvalidMessageId,
             MessageValidationError::InvalidRootMessage => ErrorCode::InvalidRootMessage,
             MessageValidationError::ToolUseRequiresAssistant => ErrorCode::ToolUseRequiresAssistant,
             MessageValidationError::InvalidRunProvenance => ErrorCode::InvalidMessageRunProvenance,
@@ -454,9 +461,9 @@ mod tests {
 
     fn message(role: MessageRole) -> Message {
         Message {
-            id: MessageId::new("message-1"),
+            id: MessageId::from_u128(1),
             project_id: ProjectId::new("project-1"),
-            parent_message_id: Some(MessageId::new("parent-1")),
+            parent_message_id: Some(MessageId::from_u128(2)),
             role,
             kind: MessageKind::Standard,
             origin: match role {

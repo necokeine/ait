@@ -1,7 +1,7 @@
 ## ADR-001：本地多 Agent 管理器核心领域模型
 
 - 状态：Accepted，待实现验证
-- 修订：v4
+- 修订：v4；经 NEC-161 ADR-003 修订 Message ID、Project description 与 Session-Agent 绑定
 - 日期：2026-09-02
 - 替代：NEC-150 v3 附件
 - 基线：NEC-144 的 `core-domain-model.md` 与 NEC-150 产品确认
@@ -11,7 +11,7 @@
 
 1. 一个 Project 对应一个工作目录。创建 Project 时，如果指定目录本身不是 Git 仓库根，就在该目录执行 `git init`；因此注册完成后，工作目录必定同时是 Git root。
 2. Project 持有 append-only 的 Message 树/森林；Message 是不可变节点，类似 Git commit。
-3. Session 不是 Message 树的容器，而是指向某个 Message 的可移动引用，类似 Git branch。
+3. Session 不是 Message 树的容器，而是固定绑定一个 Agent、指向某个 Message 的可移动引用，类似带执行者的 Git branch；它是交互式 Agent 的最小运行单元。
 4. Message 的 `role` 只允许 `user | system | assistant`。
 5. Message 内部包含有序的 sub-message 节点。ToolUse 是 assistant Message 内的一种 sub-message；ToolResult 是一种特殊的 user Message，不是独立的树节点，也不是新的 role。
 6. Agent 是“可运行的 Message 生成 API 及其版本化配置”。给定一个基准 Message，它持续产生一串后代 Message，其中可经历 ToolUse 与 ToolResult，直到本次 Run 终止。
@@ -28,10 +28,10 @@ Project 是本地工作上下文、安全边界与默认配置的容器。
 
 ```text
 Project {
-  id, name, description,
+  id, name, description,          // 未提供时为空字符串
   workdir,                       // 规范化后的绝对路径
   git_initialized_by_manager,
-  default_agent_id?,
+  default_agent_id?,              // 创建 Session 时的默认建议，可覆盖
   instruction_revision,
   metadata,                      // 可扩展、非敏感、可序列化元数据
   created_at, updated_at
@@ -82,14 +82,14 @@ Agent {
 
 ### Session
 
-Session 是指向 Project 某个 Message 的可移动命名引用。它本身不拥有历史；历史由当前 Message 沿 `parent_message_id` 回溯得到。其语义等同于 Git branch ref，而不是 repository 或 commit 集合。
+Session 是固定绑定一个 Agent、指向 Project 某个 Message 的可移动命名引用，也是交互式 Agent 的最小运行单元。它本身不拥有历史；历史由当前 Message 沿 `parent_message_id` 回溯得到。其引用语义等同于 Git branch ref，而不是 repository 或 commit 集合。
 
 ```text
 Session {
   id, project_id, name, title?,
   current_message_id,
   active_run_id?,
-  default_agent_id?,
+  agent_id,
   status: active | archived,
   version,
   created_at, updated_at
@@ -98,11 +98,11 @@ Session {
 
 `SessionView(session_id)` 是从 `current_message_id` 沿 parent 回溯到根、再反向排列得到的 Message 路径。多个 Session 可以指向同一个 Message，也可以沿不同子节点形成分支。
 
-点击任意 Message 并“打开 Session”时，创建一个新 Session，其 `current_message_id` 指向该 Message；不复制 Message，也不移动其他 Session。常规交互流程为：
+点击任意 Message 并“打开 Session”时，必须选择 Agent 并创建一个新 Session；其 `current_message_id` 指向该 Message、`agent_id` 固定该 Session 的执行者，不复制 Message，也不移动其他 Session。若要换 Agent，需从目标 Message 打开另一个 Session。常规交互流程为：
 
 1. Session 当前指向 `M0`。
 2. 用户提交内容，系统创建 `U1(parent=M0, role=user)`，并以 Session `version` 做 compare-and-swap，将指针从 `M0` 推进到 `U1`。
-3. 系统以 `U1 + Agent` 创建 Run，并把该 Session 绑定为 `follow_session_id`。
+3. 系统以 `U1 + Session.agent_id` 创建 Run，解析并固定 Agent revision，并把该 Session 绑定为 `follow_session_id`。
 4. Run 每持久化一个新 Message，就把 Session 指针从上一个 Message CAS 推进到新 Message；Session 因而随着生成过程逐步向下移动。
 5. Run 通过终止屏障后清除 `active_run_id`，Session 留在本次 Run 的最后一个 Message。
 
@@ -114,7 +114,7 @@ Message 是 Project Message 树中的不可变节点，类似 Git commit。Proje
 
 ```text
 Message {
-  id, project_id, parent_message_id?,
+  id: UUID, project_id, parent_message_id?,
   role: user | system | assistant,
   message_kind: standard | tool_result,
   sub_messages: SubMessage[],
@@ -178,7 +178,7 @@ Run {
 }
 ```
 
-每个 Run 从创建起固定 `base_message_id`、`agent_id` 和 `agent_revision`，其生成的 Message 通过 `run_id` 获得完整来源。Agent 属于 Run，而不属于 Message 树或 Session 历史；一个 Session 的不同 Run 可以选择不同 Agent。
+每个 Run 从创建起固定 `base_message_id`、`agent_id` 和 `agent_revision`，其生成的 Message 通过 `run_id` 获得完整来源。交互式 Run 的 `agent_id` 必须等于 `follow_session_id` 所绑定的 `Session.agent_id`；同一 Session 的所有 Run 因而使用同一 Agent，但每个 Run 仍固定触发时解析到的 revision。Cron 或无 Session Run 直接固定其显式选择的 Agent。
 
 `follow_session_id` 可空：从交互式 Session 启动时设置，并在启动事务中确认 Session 当前指针等于 `base_message_id`、写入 `active_run_id`；Cron 或后台调用可直接基于 Message 启动 Run，不必创建 Session。无 Session 的 Run 仍通过 `last_message_id` 暴露结果，用户之后可在任一产出 Message 上打开 Session。
 
@@ -265,6 +265,7 @@ Project 1 ───── * Message
    │                         └── ToolUse 仅属于 assistant Message
    │
    ├──── * Session ── current_message_id ──> Message
+   │          ├── agent_id ──> Agent
    │          └── active_run_id? ──> Run
    │
    ├──── * Run ── base_message_id ──> Message
@@ -285,7 +286,7 @@ Message.role = user | system | assistant
 
 1. Project 创建结束后，`workdir` 等于 Git top-level；若创建前不是 Git root，必须先在该目录成功执行 `git init`。规范化路径在系统内唯一。
 2. 一个 Message 只属于一个 Project；其 parent 必须属于同一 Project；Message 图必须无环。每个连通树恰有一个根，根必须是 `role=system` 的 Message。
-3. 一个 Session 只属于一个 Project，并且只指向该 Project 的一个 Message。Message 不属于 Session；多个 Session 可以指向同一个 Message。
+3. 一个 Session 只属于一个 Project、固定绑定一个 Agent，并且只指向该 Project 的一个 Message。Message 不属于 Session；多个 Session 可以指向同一个 Message。Session 创建后不能切换 Agent；换 Agent 必须新建 Session。
 4. Message 创建后不可变。编辑旧 Message 会以旧 Message 的 parent 为基点创建替代分支；重新生成会以旧 assistant Message 的 parent 为 `base_message_id` 启动新 Run。查看或继续历史节点时创建新的 Session 引用，不复制历史。
 5. Message role 严格限制为 `user | system | assistant`。ToolUse 只能是 assistant Message 内的 sub-message；ToolResult 必须是 `role=user, message_kind=tool_result` 的 Message。
 6. Run 创建后固定 `base_message_id`、Agent 与 Agent revision。首个输出 Message 以 `base_message_id` 为 parent；后续输出以前一个 Run 输出 Message 为 parent；`run_seq` 从 1 连续递增。并发 Run 因而自然形成分支。
@@ -293,7 +294,7 @@ Message.role = user | system | assistant
 8. 每个 Agent 输出 Message 必须先持久化，才能开始下一模型或工具步骤；重试、压缩恢复和崩溃恢复只能从最后一个已提交 Message/检查点继续，并沿用同一 `run_id`。
 9. Run 固定 Agent revision 和预算。凭证不得进入 Message、日志、导出或 metadata。
 10. Session 的自动推进只能从当前 Message 移到其新建的直接子 Message，并且必须使用 `version` compare-and-swap。指针冲突时保留已生成分支并返回错误，不覆盖 Session。
-11. 一个 Session 同时最多有一个非终态 `active_run_id`。从同一 Message 并发运行时必须创建另一个 Session，或启动不跟随 Session 的 Run。
+11. 一个 Session 同时最多有一个非终态 `active_run_id`。跟随 Session 的 Run 必须使用 `Session.agent_id`。从同一 Message 并发运行或切换 Agent 时必须创建另一个 Session，或启动不跟随 Session 的 Run。
 12. 交互式 Run 每次持久化 Message 时，必须在同一事务内推进其 `follow_session_id`；所有终态都必须条件式释放匹配的 `active_run_id`。
 13. `completed` 只能由终止屏障原子写入：无待处理工具、重试、压缩/恢复或队列项，输出已落盘，且 `queue_version` 未变化。
 14. Cron 必须固定引用 `project_id + base_message_id + agent_id`；每次触发创建不跟随 Session 的新 Run，按 dedupe key 幂等。多个触发从同一 Message 形成分支。
@@ -327,10 +328,10 @@ Agent 产生最终 assistant Message 且没有待处理 ToolUse 时，只能进�
 createProject(workdir, metadata) // 必要时在 workdir 执行 git init
 updateProjectMetadata(project_id, patch)
 createMessageRoot(project_id, system_sub_messages)
-openSession(project_id, at_message_id, name?, default_agent_id?)
+openSession(project_id, at_message_id, agent_id, name?)
 getSessionView(session_id)
 getMessagePath(message_id)
-submitUserInput(session_id, expected_version, sub_messages, agent_id)
+submitUserInput(session_id, expected_version, sub_messages)
 appendMessage(project_id, parent_message_id, role, sub_messages) // 内部原语
 startRun(base_message_id, agent_id, follow_session_id?, limits, dedupe_key?)
 enqueueRunItem(run_id, kind, payload_ref, expected_status?)
@@ -364,7 +365,7 @@ DomainError { code, message, retryable, details?, cause_id? }
 ## 8. 五项开放决策的结论
 
 1. **Agent 语义**：采用“统一运行 API + 可运行的版本化配置”；Provider 是适配层，不是一级领域对象；人格和工具策略属于 Agent 配置。
-2. **Session 与 Agent**：Session 只是可移动 Message ref，可保存默认 Agent，但实际 Agent 按 Run 选择并固定 revision；历史不被改写。
+2. **Session 与 Agent**：Session 是固定绑定 Agent 的可移动 Message ref，也是交互式 Agent 的最小运行单元；跟随它的 Run 使用该 Agent 并固定触发时的 revision。切换 Agent 会新建 Session，历史不被改写。
 3. **跨 Provider 工具协议**：Message 树只包含 Message。ToolUse 是 assistant Message 内的 sub-message；ToolResult 是 user Message；Adapter 双向转换供应商协议。
 4. **Cron target**：固定 `project_id + base_message_id + agent_id`。每次到点从同一 Message 配合该 Agent 创建一个不跟随 Session 的 Run；不添加隐式输入，也不移动 Session。
 5. **本地持久化**：SQLite + append-only Message + mutable Session ref + FTS5；sub-message 随 Message 原子持久化；大附件采用内容寻址文件存储；schema 使用单调递增 migration，并在迁移前备份数据库。

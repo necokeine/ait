@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use ait_domain::{
-    Message, MessageId, MessageKind, MessageRole, MessageValidationError, ProjectId,
+    AgentId, Message, MessageId, MessageKind, MessageRole, MessageValidationError, ProjectId,
     ProjectedMessage, Session, SessionId, TimestampMs,
 };
 use ait_ports::{MessageStore, MessageStoreError, SessionAdvance};
@@ -38,7 +38,7 @@ pub enum MessageServiceError {
         actual: ProjectId,
     },
     /// Imported or corrupted storage contains a parent cycle.
-    #[error("message parent cycle detected at {message_id}", message_id = .0.as_str())]
+    #[error("message parent cycle detected at {0}")]
     CycleDetected(MessageId),
     /// A path terminated at a non-System root.
     #[error("message path terminated at an invalid root")]
@@ -55,7 +55,7 @@ pub enum MessageServiceError {
     /// The append committed but the Session compare-and-swap lost a race.
     #[error(
         "session pointer conflict; message {preserved_message_id} was preserved",
-        preserved_message_id = .preserved_message_id.as_str()
+        preserved_message_id = .preserved_message_id
     )]
     PointerConflict {
         /// Current Session state observed by persistence.
@@ -73,6 +73,7 @@ impl MessageServiceError {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
+            Self::Validation(MessageValidationError::InvalidMessageId) => "INVALID_MESSAGE_ID",
             Self::Validation(MessageValidationError::InvalidRootMessage) | Self::InvalidRoot => {
                 "INVALID_ROOT_MESSAGE"
             }
@@ -168,6 +169,7 @@ impl MessageService {
         session_id: SessionId,
         project_id: ProjectId,
         at_message_id: MessageId,
+        agent_id: AgentId,
     ) -> Result<Session, MessageServiceError> {
         let target = self.store.get_message(&at_message_id)?;
         require_project(&project_id, &target.message.project_id)?;
@@ -178,6 +180,7 @@ impl MessageService {
                 project_id,
                 name,
                 at_message_id,
+                agent_id,
                 TimestampMs(0),
             ))
             .map_err(Into::into)
@@ -202,11 +205,11 @@ impl MessageService {
         let project_id = current.message.project_id.clone();
 
         loop {
-            if !seen.insert(current.message.id.clone()) {
+            if !seen.insert(current.message.id) {
                 return Err(MessageServiceError::CycleDetected(current.message.id));
             }
             require_project(&project_id, &current.message.project_id)?;
-            let parent = current.message.parent_message_id.clone();
+            let parent = current.message.parent_message_id;
             path.push(ProjectedMessage::from(current));
             let Some(parent_id) = parent else { break };
             current = self.store.get_message(&parent_id)?;

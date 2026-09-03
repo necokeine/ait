@@ -410,7 +410,7 @@ impl Run {
 
         if self.id.as_str().is_empty()
             || self.project_id.as_str().is_empty()
-            || self.base_message_id.as_str().is_empty()
+            || self.base_message_id.as_uuid().is_nil()
             || !snapshot_valid
             || !trigger_valid
             || !terminal_fields_valid
@@ -664,7 +664,7 @@ mod tests {
         Run {
             id: RunId::new("run-1"),
             project_id: ProjectId::new("project-1"),
-            base_message_id: MessageId::new("message-1"),
+            base_message_id: MessageId::from_u128(1),
             last_message_id: None,
             follow_session_id: Some(SessionId::new("session-1")),
             agent_id: AgentId::new("agent-1"),

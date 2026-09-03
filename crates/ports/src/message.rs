@@ -37,7 +37,7 @@ pub enum MessageStoreError {
 impl std::fmt::Display for MessageStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MessageNotFound(id) => write!(formatter, "message not found: {}", id.as_str()),
+            Self::MessageNotFound(id) => write!(formatter, "message not found: {id}"),
             Self::SessionNotFound(id) => write!(formatter, "session not found: {}", id.as_str()),
             Self::MessageProjectMismatch { expected, actual } => write!(
                 formatter,

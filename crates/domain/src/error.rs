@@ -36,6 +36,8 @@ pub enum ErrorCode {
     InvalidRootMessage,
     /// Message role is invalid for the operation.
     InvalidMessageRole,
+    /// Message UUID is nil or otherwise unusable as an identity.
+    InvalidMessageId,
     /// A sub-message is invalid for its containing Message.
     InvalidSubmessageKind,
     /// Run identity and sequence were not supplied together on a Message.
@@ -122,6 +124,7 @@ impl ErrorCode {
             Self::MessageProjectMismatch => "MESSAGE_PROJECT_MISMATCH",
             Self::InvalidRootMessage => "INVALID_ROOT_MESSAGE",
             Self::InvalidMessageRole => "INVALID_MESSAGE_ROLE",
+            Self::InvalidMessageId => "INVALID_MESSAGE_ID",
             Self::InvalidSubmessageKind => "INVALID_SUBMESSAGE_KIND",
             Self::InvalidMessageRunProvenance => "INVALID_MESSAGE_RUN_PROVENANCE",
             Self::MessageImmutable => "MESSAGE_IMMUTABLE",

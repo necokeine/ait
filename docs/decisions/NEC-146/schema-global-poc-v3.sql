@@ -21,7 +21,7 @@ CREATE TABLE schema_migrations (
 CREATE TABLE projects (
   id                       TEXT PRIMARY KEY,
   name                     TEXT NOT NULL,
-  description              TEXT,
+  description              TEXT NOT NULL DEFAULT '',
   root_path                TEXT NOT NULL UNIQUE,
   project_db_relative_path TEXT NOT NULL DEFAULT '.metafab/project.sqlite3'
     CHECK (project_db_relative_path = '.metafab/project.sqlite3'),

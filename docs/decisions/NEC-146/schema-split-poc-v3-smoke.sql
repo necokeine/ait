@@ -46,31 +46,31 @@ INSERT INTO messages(
   id, parent_message_id, role, message_kind, origin,
   content_json, content_digest, created_at_ms
 ) VALUES (
-  'm0', NULL, 'system', 'standard', 'project',
+  '00000000-0000-0000-0000-000000000001', NULL, 'system', 'standard', 'project',
   '[{"type":"structured_data","media_type":"application/vnd.ait.project-instructions+json","value":{"revision":1,"sources":[{"summary":{"name":"project","locator":"AGENTS.md","priority":100,"content_digest":"e2dfb1f8d36be60f741d8cc19877dc5cd43c704c3d31da416eced952a952064d","byte_len":22},"content":"You are a local agent."}]}}]',
   lower(hex(randomblob(32))), 2
 );
-INSERT INTO sessions(id, name, current_message_id, version, created_at_ms, updated_at_ms)
-VALUES ('s1', 'main', 'm0', 1, 3, 3);
+INSERT INTO sessions(id, name, current_message_id, agent_id, version, created_at_ms, updated_at_ms)
+VALUES ('s1', 'main', '00000000-0000-0000-0000-000000000001', 'a1', 1, 3, 3);
 INSERT INTO messages(
   id, parent_message_id, role, message_kind, origin, content_json,
   content_digest, created_by_session_id, created_at_ms
 ) VALUES (
-  'm1', 'm0', 'user', 'standard', 'human',
+  '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'user', 'standard', 'human',
   '[{"type":"text","text":"read this"},{"type":"file_ref","attachment_id":"att1"}]',
   lower(hex(randomblob(32))), 's1', 4
 );
 INSERT INTO message_attachments(message_id, part_index, attachment_id)
-VALUES ('m1', 1, 'att1');
-UPDATE sessions SET current_message_id = 'm1', version = version + 1, updated_at_ms = 4
- WHERE id = 's1' AND version = 1 AND current_message_id = 'm0';
+VALUES ('00000000-0000-0000-0000-000000000002', 1, 'att1');
+UPDATE sessions SET current_message_id = '00000000-0000-0000-0000-000000000002', version = version + 1, updated_at_ms = 4
+ WHERE id = 's1' AND version = 1 AND current_message_id = '00000000-0000-0000-0000-000000000001';
 
 INSERT INTO runs(
   id, base_message_id, follow_session_id, agent_id, agent_revision,
   agent_snapshot_json, agent_snapshot_digest, trigger_kind, status, phase,
   max_steps, retry_policy_json, started_at_ms, created_at_ms, updated_at_ms
 ) VALUES (
-  'r1', 'm1', 's1', 'a1', 1,
+  'r1', '00000000-0000-0000-0000-000000000002', 's1', 'a1', 1,
   '{"agent_id":"a1","revision":1,"driver_type":"mock","connection_name":"local_mock","model":"mock-v1"}',
   lower(hex(zeroblob(32))), 'manual', 'running', 'calling_agent',
   10, '{}', 5, 5, 5
@@ -81,20 +81,20 @@ INSERT INTO messages(
   id, parent_message_id, role, message_kind, origin, content_json,
   content_digest, created_by_session_id, run_id, run_seq, created_at_ms
 ) VALUES (
-  'm2', 'm1', 'assistant', 'standard', 'agent',
+  '00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000002', 'assistant', 'standard', 'agent',
   '[{"type":"text","text":"checking"},{"type":"tool_use","call_id":"call-1","tool_name":"read_file","arguments":{"path":"note.txt"}}]',
   lower(hex(randomblob(32))), 's1', 'r1', 1, 6
 );
-UPDATE sessions SET current_message_id = 'm2', version = version + 1, updated_at_ms = 6
- WHERE id = 's1' AND active_run_id = 'r1' AND current_message_id = 'm1';
-UPDATE runs SET last_message_id = 'm2', step_count = 1, updated_at_ms = 6
+UPDATE sessions SET current_message_id = '00000000-0000-0000-0000-000000000003', version = version + 1, updated_at_ms = 6
+ WHERE id = 's1' AND active_run_id = 'r1' AND current_message_id = '00000000-0000-0000-0000-000000000002';
+UPDATE runs SET last_message_id = '00000000-0000-0000-0000-000000000003', step_count = 1, updated_at_ms = 6
  WHERE id = 'r1' AND last_message_id IS NULL;
 INSERT INTO tool_executions(
   id, run_id, call_id, assistant_message_id, tool_use_index, tool_name,
   arguments_json, attempt, approval_status, status, result_json,
   started_at_ms, ended_at_ms, created_at_ms
 ) VALUES (
-  'te1', 'r1', 'call-1', 'm2', 1, 'read_file', '{"path":"note.txt"}',
+  'te1', 'r1', 'call-1', '00000000-0000-0000-0000-000000000003', 1, 'read_file', '{"path":"note.txt"}',
   1, 'not_required', 'succeeded', '{"text":"note"}', 7, 7, 7
 );
 INSERT INTO messages(
@@ -102,15 +102,15 @@ INSERT INTO messages(
   content_digest, created_by_session_id, run_id, run_seq,
   tool_result_call_id, tool_result_status, created_at_ms
 ) VALUES (
-  'm3', 'm2', 'user', 'tool_result', 'tool',
+  '00000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000003', 'user', 'tool_result', 'tool',
   '[{"type":"tool_result","call_id":"call-1","status":"succeeded","result":{"text":"note"}}]',
   lower(hex(randomblob(32))), 's1', 'r1', 2, 'call-1', 'succeeded', 8
 );
-UPDATE sessions SET current_message_id = 'm3', version = version + 1, updated_at_ms = 8
- WHERE id = 's1' AND active_run_id = 'r1' AND current_message_id = 'm2';
-UPDATE runs SET last_message_id = 'm3', step_count = 2,
+UPDATE sessions SET current_message_id = '00000000-0000-0000-0000-000000000004', version = version + 1, updated_at_ms = 8
+ WHERE id = 's1' AND active_run_id = 'r1' AND current_message_id = '00000000-0000-0000-0000-000000000003';
+UPDATE runs SET last_message_id = '00000000-0000-0000-0000-000000000004', step_count = 2,
   usage_json = '{"input_tokens":10,"output_tokens":3}', updated_at_ms = 8
- WHERE id = 'r1' AND last_message_id = 'm2';
+ WHERE id = 'r1' AND last_message_id = '00000000-0000-0000-0000-000000000003';
 INSERT INTO run_events(run_id, seq, event_type, payload_json, created_at_ms)
 VALUES ('r1', 1, 'message_committed', '{"message_id":"m3"}', 8);
 UPDATE run_attempts SET status = 'completed', ended_at_ms = 9 WHERE id = 'ra1';
@@ -125,7 +125,7 @@ INSERT INTO crons(
   id, name, project_id, base_message_id, agent_id, schedule, timezone,
   enabled, concurrency_policy, misfire_policy, next_run_at_ms, created_at_ms, updated_at_ms
 ) VALUES (
-  'c1', 'daily', 'p1', 'm3', 'a1', '0 9 * * *', 'Asia/Shanghai',
+  'c1', 'daily', 'p1', '00000000-0000-0000-0000-000000000004', 'a1', '0 9 * * *', 'Asia/Shanghai',
   1, 'forbid', 'run_once', 100, 10, 10
 );
 INSERT INTO cron_fires(
@@ -136,7 +136,7 @@ INSERT INTO project_runtime.runs(
   agent_snapshot_digest, trigger_kind, cron_id, scheduled_at_ms, status, phase,
   max_steps, retry_policy_json, dedupe_key, created_at_ms, updated_at_ms
 ) VALUES (
-  'r-cron-1', 'm3', 'a1', 1,
+  'r-cron-1', '00000000-0000-0000-0000-000000000004', 'a1', 1,
   '{"agent_id":"a1","revision":1,"driver_type":"mock","connection_name":"local_mock","model":"mock-v1"}',
   lower(hex(zeroblob(32))), 'cron', 'c1', 100, 'queued', 'queued',
   10, '{}', 'cron:c1:100', 100, 100
@@ -148,8 +148,8 @@ CREATE TEMP TABLE smoke_assertion(ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO smoke_assertion(ok)
 SELECT (SELECT project_id FROM project_runtime.project_identity WHERE singleton = 1) = 'p1'
    AND (SELECT root_path FROM projects WHERE id = 'p1') = '/tmp/metafab-poc-project'
-   AND EXISTS (SELECT 1 FROM project_runtime.messages WHERE id = 'm3')
-   AND (SELECT current_message_id FROM project_runtime.sessions WHERE id = 's1') = 'm3'
+   AND EXISTS (SELECT 1 FROM project_runtime.messages WHERE id = '00000000-0000-0000-0000-000000000004')
+   AND (SELECT current_message_id FROM project_runtime.sessions WHERE id = 's1') = '00000000-0000-0000-0000-000000000004'
    AND (SELECT data FROM project_runtime.attachments WHERE id = 'att1') = x'6e6f7465'
    AND EXISTS (
      SELECT 1 FROM crons c JOIN project_runtime.messages m ON m.id = c.base_message_id

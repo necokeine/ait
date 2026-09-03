@@ -101,7 +101,7 @@ impl Cron {
         if self.id.as_str().is_empty()
             || self.name.trim().is_empty()
             || self.project_id.as_str().is_empty()
-            || self.base_message_id.as_str().is_empty()
+            || self.base_message_id.as_uuid().is_nil()
             || self.agent_id.as_str().is_empty()
             || self.schedule.trim().is_empty()
             || self.timezone.trim().is_empty()
@@ -136,7 +136,7 @@ mod tests {
             id: CronId::new("cron-1"),
             name: "nightly".into(),
             project_id: ProjectId::new("project-1"),
-            base_message_id: MessageId::new("message-1"),
+            base_message_id: MessageId::from_u128(1),
             agent_id: AgentId::new("agent-1"),
             schedule: "0 0 * * *".into(),
             timezone: "Asia/Shanghai".into(),
