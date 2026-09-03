@@ -1,7 +1,8 @@
 ## ADR-002：Rust workspace 与 AI harness 运行时架构
 
-- 状态：Proposed，待评审
+- 状态：Accepted，作为实现基线
 - 日期：2026-09-02
+- 接受日期：2026-09-03
 - 依赖：ADR-001 v4（已确认）
 - 适用范围：本地优先 AI harness/App 的 core、daemon、Run worker、CLI 与 desktop shell
 - 非目标：不重新讨论 Rust 语言选型；不在本 ADR 固化数据库表结构、具体 Provider 字段或 UI 视觉方案
@@ -252,10 +253,13 @@ SQLite/outbox 是 durable event 的权威；broadcast channel 只是低延迟提
 以下是形状约束，不是最终完整 API：
 
 ```rust
+#[async_trait]
 pub trait Provider: Send + Sync + 'static {
     fn capabilities(&self) -> ProviderCapabilities;
-    fn stream(&self, req: ProviderRequest)
-        -> BoxFuture<'static, Result<BoxStream<'static, Result<ProviderEvent, ProviderError>>, ProviderError>>;
+    async fn stream(
+        &self,
+        req: ProviderRequest,
+    ) -> Result<BoxStream<'static, Result<ProviderEvent, ProviderError>>, ProviderError>;
 }
 
 pub trait Tool: Send + Sync + 'static {
@@ -309,7 +313,7 @@ pub trait Approval: Send + Sync + 'static {
 - composition root 与运行期可选择组件：`Arc<dyn Trait>`。Provider/Tool/Sandbox 需要按 Agent 或平台动态选择，测试也需替换。
 - 高频、同步、纯函数（路径投影、状态 reducer、策略组合）：泛型或普通函数，保留内联与静态检查。
 - 不追求 Rust ABI 稳定；workspace 内 trait 是 source contract。外部 Provider/Tool 插件运行在子进程，以 versioned contracts + capability handshake 通信。
-- `async fn in trait` 当前不作为公共 dyn port；显式 boxed future/stream 让 object safety、分配成本与 `Send` 约束可见。
+- I/O-bound、需要动态分发的 async port 可在 adapter 边界使用 `async-trait`；其 boxed future 成本在网络/进程调用中可接受。高频同步纯逻辑仍不用该抽象，stream 继续显式 boxed，使 `Send`、生命周期与背压边界可见。
 
 ## 7. 幂等、持久化与崩溃恢复
 
@@ -435,9 +439,17 @@ sequenceDiagram
 
 版本由实现时的 `Cargo.lock` 与 MSRV ADR 固定；下表选择 API family，不把 semver 写进领域类型。
 
+### 9.1 LLM API 与 Agent framework 决策
+
+- 普通 LLM API 不引入通用编排框架。`ait-providers` 维护项目自己的 provider-neutral contract；当前实现使用 `reqwest` + rustls、Tokio、futures、Serde 与 `async-trait`，已包含 `ScriptedProvider` 和 OpenAI-compatible 流式 adapter。
+- 核心 Agent harness 由本项目的 runtime、providers、tools、sandbox、approval 与 scheduler 组合，不采用 Rig、LangChain 或 LlamaIndex 作为核心框架。这样 Message/Session/Run、取消、恢复、幂等和审批语义仍由 ADR-001 与本 ADR 控制。
+- 已有完整执行 runtime 时，通过 `agent-adapters` 接入，而不是把其模型塞进 Provider port。Codex 当前通过官方 `codex app-server` 的 stdio JSONL 协议适配，覆盖初始化、thread start/resume、流式事件、审批、interrupt 与默认 deny-all 策略。
+- 未来可以在单个 adapter 内使用第三方 SDK 或框架，但它们不得拥有 domain/runtime，也不得成为本地数据或执行状态的权威。
+
 | 领域 | 选择 | 候选/拒绝 | 依据与边界 |
 |---|---|---|---|
 | async runtime | `tokio`, `tokio-util::CancellationToken`, `JoinSet`, bounded `mpsc/watch` | async-std、smol | Provider/HTTP/IPC 生态与监督原语更完整；禁止裸 spawn，把结构化并发规则封装在 runtime |
+| async trait | adapter dyn port 使用 `async-trait`；stream 显式 boxed | 所有层统一 boxed future、在 domain 暴露 runtime 类型 | 网络/进程边界的分配成本可接受；domain 保持同步、runtime-neutral，高频纯逻辑保留静态分发 |
 | stream | `futures-core`/`futures-util` boxed stream | 自定义 callback | Provider 与 IPC 可组合、可 backpressure；对外不泄露具体 SDK stream |
 | serialization | `serde` + `serde_json`；IPC length-delimited | protobuf/tonic、postcard、bincode | JSON 可调试、schema 演进容易；bincode 不适合长期兼容；大 payload 用 CAS。未来远程高吞吐可另加 protobuf adapter |
 | error | domain `ErrorCode` + typed details；crate 内 `thiserror`；binary 边界 `anyhow`；CLI 可选 `miette` | 全栈 `anyhow`、字符串错误 | 稳定错误语义跨 IPC；保留 source chain 但默认脱敏，不把 SQLx/Reqwest error 暴露给调用者 |
