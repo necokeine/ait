@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, DomainError, DurationMs, ErrorCode, MessageId, ProjectId, TimestampMs};
+use crate::{
+    AgentId, DomainError, DurationMs, ErrorCode, MessageId, ProjectId, RunId, TimestampMs,
+};
 
 /// Stable identity of a Cron schedule.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -43,6 +45,78 @@ pub enum CronMisfirePolicy {
     RunOnce,
     /// Replay each missed occurrence in schedule order.
     CatchUp,
+}
+
+/// Durable lifecycle of one scheduled Cron occurrence.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronFireState {
+    /// The global scheduler cursor and occurrence identity were claimed.
+    Claimed,
+    /// The unified Run entry accepted the occurrence.
+    Started,
+    /// Recovery policy intentionally ignored the occurrence.
+    Skipped,
+    /// Concurrency policy prevented the occurrence from starting.
+    Blocked,
+    /// Target validation or Run creation failed permanently for this occurrence.
+    Failed,
+}
+
+/// Auditable bridge from a scheduled occurrence to its Run.
+///
+/// `(cron_id, scheduled_at)` is the durable idempotency identity. A started
+/// fire links to a Run, whose `base_message_id` and `last_message_id` expose
+/// the input branch point and eventual result branch respectively.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CronFire {
+    /// Source Cron.
+    pub cron_id: CronId,
+    /// Exact scheduled instant represented by this occurrence.
+    pub scheduled_at: TimestampMs,
+    /// Project copied from the Cron for cross-database routing and validation.
+    pub project_id: ProjectId,
+    /// Fire lifecycle.
+    pub state: CronFireState,
+    /// Created or recovered Run, present only after a successful start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    /// Stable safe failure, present only for a failed occurrence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<DomainError>,
+    /// Time at which the scheduler first claimed this occurrence.
+    pub claimed_at: TimestampMs,
+    /// Last fire-state update.
+    pub updated_at: TimestampMs,
+}
+
+impl CronFire {
+    /// Validates the persisted fire envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::InvalidCron`] when identity, state payload, or
+    /// timestamps are inconsistent.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        let payload_valid = match self.state {
+            CronFireState::Started => self.run_id.is_some() && self.error.is_none(),
+            CronFireState::Failed => self.run_id.is_none() && self.error.is_some(),
+            CronFireState::Claimed | CronFireState::Skipped | CronFireState::Blocked => {
+                self.run_id.is_none() && self.error.is_none()
+            }
+        };
+        if self.cron_id.as_str().is_empty()
+            || self.project_id.as_str().is_empty()
+            || !payload_valid
+            || self.updated_at < self.claimed_at
+        {
+            return Err(DomainError::invariant(
+                ErrorCode::InvalidCron,
+                "cron fire identity, state payload, or timestamps are invalid",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Recurring trigger with a fixed Project, base Message, and Agent target.
@@ -167,5 +241,25 @@ mod tests {
         assert!(encoded.contains("\"concurrency_policy\":\"forbid\""));
         assert!(encoded.contains("\"misfire_policy\":\"run_once\""));
         assert_eq!(serde_json::from_str::<Cron>(&encoded).unwrap(), cron());
+    }
+
+    #[test]
+    fn fire_requires_a_run_only_after_start() {
+        let mut fire = CronFire {
+            cron_id: CronId::new("cron-1"),
+            scheduled_at: TimestampMs(100),
+            project_id: ProjectId::new("project-1"),
+            state: CronFireState::Claimed,
+            run_id: None,
+            error: None,
+            claimed_at: TimestampMs(101),
+            updated_at: TimestampMs(101),
+        };
+        fire.validate().unwrap();
+
+        fire.state = CronFireState::Started;
+        assert_eq!(fire.validate().unwrap_err().code, ErrorCode::InvalidCron);
+        fire.run_id = Some(RunId::new("run-1"));
+        fire.validate().unwrap();
     }
 }

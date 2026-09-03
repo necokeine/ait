@@ -21,7 +21,7 @@ pub use agent::{
     Agent, AgentCapability, AgentConfigSnapshot, AgentId, AgentRevision, ToolPermission, ToolPolicy,
 };
 pub use common::{CostMicros, DomainMetadata, DurationMs, TimestampMs};
-pub use cron::{Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy};
+pub use cron::{Cron, CronConcurrencyPolicy, CronFire, CronFireState, CronId, CronMisfirePolicy};
 pub use error::{DomainError, ErrorCode};
 
 pub use message::{
