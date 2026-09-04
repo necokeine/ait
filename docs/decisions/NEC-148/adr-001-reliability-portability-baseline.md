@@ -8,7 +8,7 @@
 
 1. 本地 API 的结构化日志和单调计数指标使用同一个 `Correlation`：
    `project_id`、`session_id`、`run_id`、`call_id` 均为可选，但调用边界始终生成
-   `call_id`。日志输出前递归脱敏，指标通过仅回环可访问的 `/v1/metrics` 暴露。
+   `call_id`。日志输出前递归脱敏，指标通过仅回环可访问的 `/v1/metric/list` 暴露。
 2. Project 归档使用显式 `format_version`。归档包含 Project、引用的 Agent 非敏感
    配置、全部 Message 分支和 Session ref；保留 Project/Agent/Session revision 与 Message
    identity/parent edge。Run/Cron、活动 Run 绑定、附件字节和凭证不进入归档。

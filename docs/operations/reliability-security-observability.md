@@ -2,16 +2,16 @@
 
 ## 可观测性
 
-daemon 对每个 `/v1/commands` 调用输出一行 JSON。日志与 `/v1/metrics` 的每个采样点使用
-相同关联字段：`project_id`、`session_id`、`run_id`、`call_id`。命令入口一定生成
+daemon 对每个实体操作 API 调用输出一行 JSON。日志与 `/v1/metric/list` 的每个采样点使用
+相同关联字段：`project_id`、`session_id`、`run_id`、`call_id`。操作入口一定生成
 `call_id`；其余 ID 在请求或结果可确定时补齐。
 
-日志只记录命令名、成功状态和耗时，不记录命令正文。`authorization`、`cookie`、
+日志只记录操作名、成功状态和耗时，不记录请求正文。`authorization`、`cookie`、
 `password`、`secret`、`token`、`api_key`、`credential` 等键以及 Bearer 字符串会在 JSON
 输出前递归替换为 `[REDACTED]`。本地指标入口：
 
 ```bash
-curl http://127.0.0.1:7314/v1/metrics
+curl http://127.0.0.1:7314/v1/metric/list
 ```
 
 当前指标为进程内单调计数器，重启后清零；权威业务状态仍是 SQLite snapshot 和 durable
