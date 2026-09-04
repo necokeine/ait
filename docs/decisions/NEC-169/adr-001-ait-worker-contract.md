@@ -85,7 +85,56 @@ Run 数据、凭证、工作目录和权限不得出现在命令行参数或环�
 
 首版使用标准输入/输出是因为它天然私有、跨平台、便于父进程检测 EOF，也不需要为每个 Run 分配可发现 endpoint。stdout 只能写 protocol frame；普通日志写 stderr。若未来改成 socket/pipe，envelope 和语义保持不变，只替换 framing transport。
 
-### 4.2 Framing 与 envelope
+### 4.2 调用方 API
+
+直接调用方只有 daemon 内的 Run dispatcher。CLI、Desktop、Cron 和未来远程控制面都只调用 application command；它们创建/取消 Run 后由 dispatcher 间接启动或控制 worker，不能持有 `WorkerHandle`，也不能发送 worker wire message。
+
+daemon 侧预期暴露下面的 host interface（名称可在实现时调整，语义固定）：
+
+```rust
+#[async_trait::async_trait]
+pub trait WorkerSupervisor: Send + Sync {
+    async fn start(
+        &self,
+        request: StartWorkerRequest,
+    ) -> Result<Box<dyn WorkerHandle>, WorkerHostError>;
+}
+
+pub struct StartWorkerRequest {
+    pub run_id: RunId,
+    pub agent: AgentConfigSnapshotDto,
+    pub limits: RunLimitsDto,
+    pub workspace: WorkspaceCapabilityDto,
+    pub checkpoint: Option<CheckpointDto>,
+    pub recovery: RecoveryMode,
+}
+
+#[async_trait::async_trait]
+pub trait WorkerHandle: Send {
+    fn run_id(&self) -> &RunId;
+    async fn cancel(
+        &self,
+        reason: CancelReason,
+        deadlines: ShutdownDeadlines,
+    ) -> Result<(), WorkerHostError>;
+    async fn shutdown(&self, deadlines: ShutdownDeadlines) -> Result<(), WorkerHostError>;
+    async fn wait(self: Box<Self>) -> Result<WorkerExit, WorkerHostError>;
+}
+```
+
+`WorkerSupervisor::start` 内部生成 `worker_instance_id + lease_epoch`、spawn `ait-worker`、完成握手和 bootstrap，并启动 RPC dispatch/heartbeat/process monitor。调用方不直接管理 stdin/stdout。`WorkerHandle::wait` 只报告进程结果和最后 ACK cursor；Run 是否 terminal 必须重新读取 daemon store，不能由退出码或 `exit_report` 推断。
+
+预期调用流程：
+
+1. `LocalControlService` 在事务中创建/恢复 Run，并固定 Agent revision。
+2. Run dispatcher 构造 `StartWorkerRequest`，调用 `WorkerSupervisor::start`；若 spawn/握手失败，记录 attempt failure，再按 Run retry policy 决定是否重试。
+3. worker 运行期间的 store、approval、heartbeat 都由 supervisor 内部 bridge 处理；上层只通过 durable Run/event 观察进度。
+4. `CancelRun` 先由 daemon 持久化取消意图，再调用对应 handle 的 `cancel`；超时由 supervisor 清理 OS 进程树。
+5. `wait` 返回后，dispatcher 从 store 重读 Run：terminal 则移除 handle，非 terminal 则按 recovery policy 启动新的 worker，沿用原 Run ID。
+
+因此，对使用者而言 worker 是一个受监督的 `start/cancel/shutdown/wait` 执行资源；下面的 stdio RPC 是 supervisor 与子进程之间的私有协议，不是业务调用 API。
+
+### 4.3 Framing 与 envelope
 
 每个 frame 为 `u32` big-endian 长度加 UTF-8 JSON body。双方在握手时协商 `max_frame_bytes`；初始上限建议 8 MiB，Message path 按页/块传输且单块不超过协商上限。未知 optional field 必须忽略，未知 required capability 或消息 kind 必须以协议错误终止。
 
@@ -109,7 +158,7 @@ Envelope {
 - `operation_id` 在同一 Run 内稳定；daemon 对重试返回原 commit receipt，不重复执行 mutation。
 - secret-bearing bootstrap field 的 Rust 类型必须固定脱敏 `Debug`，禁止实现通用持久化/导出转换。
 
-### 4.3 消息集合
+### 4.4 消息集合
 
 daemon → worker：
 
@@ -139,7 +188,7 @@ worker → daemon：
 
 协议层只传 `ait-contracts` 中定义的 versioned DTO；`ait-domain` 类型与 Provider SDK 类型都不能直接作为 wire contract。
 
-### 4.4 正常执行时序
+### 4.5 正常执行时序
 
 ```mermaid
 sequenceDiagram
@@ -148,8 +197,10 @@ sequenceDiagram
   participant P as Agent/Provider
   participant T as sandboxed tool
 
-  D->>W: spawn + hello_ack + run_bootstrap
-  W->>D: hello + ready
+  D->>W: spawn
+  W->>D: hello
+  D-->>W: hello_ack + run_bootstrap
+  W->>D: ready
   W->>D: store_request(load current Run state)
   D-->>W: store_response(snapshot/path/checkpoint)
   W->>P: invoke fixed Agent revision
@@ -171,7 +222,7 @@ sequenceDiagram
 
 严格规则：worker 只有在 `append_message` ACK 后才可处理其中的 ToolUse，只有在 ToolExecution intent ACK 后才可触发外部副作用，只有在 ToolResult ACK 后才可进行下一轮 Agent 调用。
 
-### 4.5 失败、取消与恢复
+### 4.6 失败、取消与恢复
 
 1. daemon 为每次 spawn 生成新的 `worker_instance_id` 和递增 `lease_epoch`；旧 lease 的 mutation 一律返回 `STALE_WORKER_LEASE`。
 2. worker panic、非零退出、stdout EOF 或 heartbeat 超时只结束当前 attempt。daemon 保存 `interrupted`，根据 Run policy 启动新 worker；Run ID 不变。
@@ -244,4 +295,3 @@ sequenceDiagram
 正面影响：Run 的高风险 Provider/工具执行与 daemon 隔离，SQLite 单写者和领域不变量不被破坏；同一套 port 可先以内存实现测试，再替换为跨进程 RPC；协议预留 future remote worker 所需的 version、capability、lease 与幂等语义。
 
 代价：每个 Run 多一次进程启动和大量 RPC；`RunStore` 的细粒度方法跨进程后可能形成往返开销。首版先以正确性和恢复语义为准，通过 trace/benchmark 确认瓶颈后，可以增加只读 snapshot 批量响应或无状态预热池，但不能牺牲 ACK 屏障和 daemon 权威。
-
