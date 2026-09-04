@@ -222,11 +222,17 @@ name = "ait-worker"
 version = "0.1.0"
 dependencies = [
  "ait-agent-adapters",
+ "ait-domain",
  "ait-ipc",
+ "ait-ports",
  "ait-providers",
  "ait-runtime",
  "ait-sandbox",
  "ait-tools",
+ "async-trait",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
