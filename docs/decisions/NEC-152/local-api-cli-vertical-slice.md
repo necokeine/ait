@@ -24,6 +24,7 @@ cargo run -p ait-cli -- command \
 - `create_session`：在 Project root 或任意已有 Message 上创建分支 Session；
 - `send_message`、`get_run`、`cancel_run`：交互与 Run 生命周期；
 - `create_cron`、`set_cron_enabled`、`trigger_cron`：持久化 Cron、启停与幂等 occurrence 触发；
+- `export_project`、`import_project`：版本化导出/原子导入无凭证 Project archive；
 - `snapshot`：从 SQLite 恢复完整最终投影。
 
 `AgentMode::Tool` 是不依赖凭据的验收驱动：它按顺序持久化 assistant ToolUse、user
@@ -34,6 +35,7 @@ ToolResult 和最终 assistant Message。`Manual` 留下可取消 Run；`Provide
 
 - `POST /v1/commands` 接受 `Command` 并返回统一 `Response`。
 - `GET /v1/events?after=<cursor>&limit=<n>` 返回 SSE。
+- `GET /v1/metrics` 返回带 project/session/run/call 关联字段的进程内计数指标。
 
 状态快照和 durable event outbox 在同一 SQLite 事务提交。事件 cursor 单调递增；连接
 断开后用最后收到的 SSE `id` 作为 `after` 即可无损续读。实时流不是最终状态权威，客户端

@@ -8,6 +8,9 @@ use serde_json::Value;
 /// Current command/event wire contract version.
 pub const API_VERSION: u16 = 1;
 
+/// Current portable Project archive format.
+pub const PROJECT_EXPORT_VERSION: u16 = 1;
+
 /// Deterministic built-in driver used by the executable vertical slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +74,13 @@ pub enum Command {
         cron_id: String,
         scheduled_at: i64,
     },
+    ExportProject {
+        project_id: String,
+    },
+    ImportProject {
+        archive: ProjectExport,
+        workdir: String,
+    },
     Snapshot,
 }
 
@@ -92,6 +102,12 @@ pub struct ProjectView {
     pub name: String,
     pub workdir: String,
     pub root_message_id: String,
+    #[serde(default = "default_revision")]
+    pub revision: u64,
+}
+
+const fn default_revision() -> u64 {
+    1
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -164,6 +180,21 @@ pub struct WorkspaceView {
     pub crons: Vec<CronView>,
 }
 
+/// Portable, credential-free Project and Session archive.
+///
+/// Runtime attempts, active Run bindings, Cron registrations, attachment
+/// bytes, and provider credentials are deliberately outside this format.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectExport {
+    pub format_version: u16,
+    pub source_revision: u64,
+    pub project: ProjectView,
+    pub agents: Vec<AgentView>,
+    pub sessions: Vec<SessionView>,
+    pub messages: Vec<MessageView>,
+}
+
 /// Successful command payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -173,6 +204,7 @@ pub enum CommandResult {
     Session(SessionView),
     Run(RunView),
     Cron(CronView),
+    ProjectExport(ProjectExport),
     Workspace(WorkspaceView),
 }
 

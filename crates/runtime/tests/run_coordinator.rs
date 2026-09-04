@@ -327,6 +327,23 @@ impl RunTool for ScriptedTools {
     }
 }
 
+struct NeverCompletesTool;
+
+#[async_trait]
+impl RunTool for NeverCompletesTool {
+    fn requires_approval(&self, _tool_name: &str, _arguments: &serde_json::Value) -> bool {
+        false
+    }
+
+    async fn execute(&self, _request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        std::future::pending().await
+    }
+
+    async fn reconcile(&self, _execution: &ToolExecution) -> Result<ToolRecovery, DomainError> {
+        Ok(ToolRecovery::Unknown)
+    }
+}
+
 struct ScriptedApprovals(Mutex<VecDeque<ApprovalDecision>>);
 
 impl ScriptedApprovals {
@@ -818,6 +835,37 @@ async fn cancellation_and_all_configured_budgets_force_terminal_states() {
         store.snapshot().run.stop_reason,
         Some(RunStopReason::StepLimit)
     );
+}
+
+#[tokio::test]
+async fn a_hung_tool_is_cancelled_at_the_persisted_runtime_deadline() {
+    let (mut run, messages) = fixture();
+    run.budget.max_runtime = Some(DurationMs(5));
+    let store = Arc::new(MemoryStore::seeded(run, messages));
+    let engine = RunCoordinator::new(
+        store.clone(),
+        Arc::new(ScriptedAgent::new(vec![Ok(tool_calls(&[(
+            "call-timeout",
+            "hang",
+        )]))])),
+        Arc::new(NeverCompletesTool),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(10)),
+        Arc::new(SequenceIds::default()),
+    );
+
+    let outcome = engine
+        .drive(&RunId::new("run-1"), CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert!(matches!(outcome, DriveOutcome::Terminal(_)));
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.run.status, RunStatus::LimitExceeded);
+    assert_eq!(snapshot.run.stop_reason, Some(RunStopReason::RuntimeLimit));
+    let execution = snapshot.tools.last().unwrap();
+    assert_eq!(execution.status, ToolExecutionStatus::Cancelled);
+    assert!(execution.tool_result_message_id.is_some());
 }
 
 #[tokio::test]
