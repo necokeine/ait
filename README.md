@@ -19,12 +19,13 @@ cargo run -p ait-daemon -- --database ./ait.sqlite3
 cargo run -p ait-cli -- snapshot
 ```
 
-daemon 暴露 `POST /v1/commands` 与可按 cursor 续读的 `GET /v1/events` SSE；CLI 通过同一
-API 调用 application service。命令示例和端到端演示见
-`docs/decisions/NEC-152/local-api-cli-vertical-slice.md`。
+daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/register`、
+`POST /v1/session/create`；可按 cursor 续读的 SSE 位于 `GET /v1/event/list`。CLI 通过
+同一组 API 调用 application service。完整路由表见
+`docs/decisions/NEC-166/entity-operation-http-api.md`。
 
 Project 的无凭证 JSON 归档使用 `ait-cli export` / `ait-cli import`；结构化指标位于
-`GET /v1/metrics`。备份恢复、数据保留、附件清理与性能基准见
+`GET /v1/metric/list`。备份恢复、数据保留、附件清理与性能基准见
 `docs/operations/reliability-security-observability.md`。
 
 ## Workspace
