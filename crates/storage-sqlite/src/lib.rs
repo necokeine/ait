@@ -4,7 +4,7 @@ use std::{path::Path, sync::Mutex};
 
 use ait_ports::{ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, PendingEvent};
 use async_trait::async_trait;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
 use serde_json::Value;
 
 /// SQLite-backed application snapshot and transactional durable event outbox.
@@ -36,6 +36,8 @@ impl SqliteControlStore {
         connection
             .execute_batch(
                 "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = FULL;
+             PRAGMA wal_autocheckpoint = 1000;
              PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS control_state (
                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -54,6 +56,55 @@ impl SqliteControlStore {
         Ok(Self {
             connection: Mutex::new(connection),
         })
+    }
+
+    /// Creates a transactionally consistent online backup.
+    ///
+    /// Provider credentials and external secret stores are not part of this
+    /// `SQLite` archive.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe adapter error if the source cannot be locked or copied.
+    pub fn backup_to(&self, destination: impl AsRef<Path>) -> Result<(), ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .backup(MAIN_DB, destination, None)
+            .map_err(sql_error)
+    }
+
+    /// Restores an online backup into this open store.
+    ///
+    /// Callers should stop request processing before restore so successful
+    /// post-backup writes are not intentionally discarded.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe adapter error if the source is invalid or restore fails.
+    pub fn restore_from(&self, source: impl AsRef<Path>) -> Result<(), ControlStoreError> {
+        let mut connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .restore(MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>)
+            .map_err(sql_error)
+    }
+
+    /// Runs `SQLite`'s fast structural integrity check.
+    ///
+    /// # Errors
+    ///
+    /// Returns a safe adapter error when the check cannot run or reports damage.
+    pub fn quick_check(&self) -> Result<(), ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        let result = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .map_err(sql_error)?;
+        if result == "ok" {
+            Ok(())
+        } else {
+            Err(ControlStoreError::Other(format!(
+                "SQLite quick_check failed: {result}"
+            )))
+        }
     }
 }
 
@@ -167,4 +218,42 @@ fn json_error(error: serde_json::Error) -> ControlStoreError {
 #[allow(clippy::needless_pass_by_value)]
 fn lock_error<T>(error: std::sync::PoisonError<T>) -> ControlStoreError {
     ControlStoreError::Other(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn online_backup_restores_a_consistent_revision_and_outbox() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let database = temporary.path().join("live.sqlite3");
+        let backup = temporary.path().join("backup.sqlite3");
+        let store = SqliteControlStore::open(&database).unwrap();
+        store
+            .commit(
+                0,
+                serde_json::json!({"state": "backed-up"}),
+                vec![PendingEvent {
+                    kind: "test.committed".into(),
+                    entity_id: Some("p1".into()),
+                    body: serde_json::json!({"revision": 1}),
+                    created_at: 1,
+                }],
+            )
+            .await
+            .unwrap();
+        store.backup_to(&backup).unwrap();
+        store
+            .commit(1, serde_json::json!({"state": "newer"}), Vec::new())
+            .await
+            .unwrap();
+
+        store.restore_from(&backup).unwrap();
+        store.quick_check().unwrap();
+        let recovered = store.load().await.unwrap();
+        assert_eq!(recovered.revision, 1);
+        assert_eq!(recovered.value["state"], "backed-up");
+        assert_eq!(store.replay(0, 10).await.unwrap().len(), 1);
+    }
 }

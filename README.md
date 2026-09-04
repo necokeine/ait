@@ -23,6 +23,10 @@ daemon 暴露 `POST /v1/commands` 与可按 cursor 续读的 `GET /v1/events` SS
 API 调用 application service。命令示例和端到端演示见
 `docs/decisions/NEC-152/local-api-cli-vertical-slice.md`。
 
+Project 的无凭证 JSON 归档使用 `ait-cli export` / `ait-cli import`；结构化指标位于
+`GET /v1/metrics`。备份恢复、数据保留、附件清理与性能基准见
+`docs/operations/reliability-security-observability.md`。
+
 ## Workspace
 
 - `crates/domain`：纯领域模型与不变量。

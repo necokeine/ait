@@ -8,8 +8,12 @@ publish.workspace = true
 ait-domain = { path = "../domain" }
 ait-ports = { path = "../ports" }
 async-trait = "0.1"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["backup", "bundled"] }
 serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
 
 [lints]
 workspace = true

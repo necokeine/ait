@@ -1,6 +1,7 @@
 #![allow(missing_docs)]
 
 use std::{
+    collections::{HashMap, HashSet},
     path::Path,
     process::Command as ProcessCommand,
     sync::Arc,
@@ -9,7 +10,8 @@ use std::{
 
 use ait_contracts::{
     API_VERSION, AgentMode, AgentView, ApiError, Command, CommandResult, CronView, Event,
-    MessageView, ProjectView, Response, RunView, SessionView, WorkspaceView,
+    MessageView, PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, Response, RunView,
+    SessionView, WorkspaceView,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, ErrorCode, MessageId,
@@ -88,10 +90,13 @@ impl LocalControlService {
     }
 
     async fn try_execute(&self, command: Command) -> Result<CommandResult, ApiError> {
-        if matches!(command, Command::Snapshot | Command::GetRun { .. }) {
+        if matches!(
+            command,
+            Command::Snapshot | Command::GetRun { .. } | Command::ExportProject { .. }
+        ) {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let state = decode_state(snapshot.value)?;
-            return read_command(state, command);
+            return read_command(state, snapshot.revision, command);
         }
 
         for _ in 0..4 {
@@ -113,7 +118,7 @@ impl LocalControlService {
     }
 }
 
-fn read_command(state: State, command: Command) -> Result<CommandResult, ApiError> {
+fn read_command(state: State, revision: u64, command: Command) -> Result<CommandResult, ApiError> {
     match command {
         Command::Snapshot => Ok(CommandResult::Workspace(state.into())),
         Command::GetRun { run_id } => state
@@ -122,6 +127,9 @@ fn read_command(state: State, command: Command) -> Result<CommandResult, ApiErro
             .find(|run| run.id == run_id)
             .map(CommandResult::Run)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false)),
+        Command::ExportProject { project_id } => {
+            export_project(&state, revision, &project_id).map(CommandResult::ProjectExport)
+        }
         _ => unreachable!("mutating command routed to read path"),
     }
 }
@@ -175,7 +183,8 @@ fn apply_command(
             cron_id,
             scheduled_at,
         } => trigger_cron(state, &cron_id, scheduled_at),
-        Command::Snapshot | Command::GetRun { .. } => {
+        Command::ImportProject { archive, workdir } => import_project(state, archive, &workdir),
+        Command::Snapshot | Command::GetRun { .. } | Command::ExportProject { .. } => {
             unreachable!("read command routed to write path")
         }
     }
@@ -220,6 +229,7 @@ fn register_project(
         name,
         workdir: canonical_text,
         root_message_id: root_id.clone(),
+        revision: 1,
     };
     state.messages.push(MessageView {
         id: root_id,
@@ -674,6 +684,215 @@ fn trigger_cron(
         CommandResult::Run(run.clone()),
         vec![pending("cron.run_triggered", Some(run_id), &run)],
     ))
+}
+
+fn export_project(
+    state: &State,
+    source_revision: u64,
+    project_id: &str,
+) -> Result<ProjectExport, ApiError> {
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .cloned()
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    let messages = state
+        .messages
+        .iter()
+        .filter(|message| message.project_id == project_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let sessions = state
+        .sessions
+        .iter()
+        .filter(|session| session.project_id == project_id)
+        .cloned()
+        .map(|mut session| {
+            // An active Run is process-local state and cannot safely be resumed
+            // from a portable archive.
+            session.active_run_id = None;
+            session
+        })
+        .collect::<Vec<_>>();
+    let referenced_agents = sessions
+        .iter()
+        .map(|session| session.agent_id.as_str())
+        .collect::<HashSet<_>>();
+    let agents = state
+        .agents
+        .iter()
+        .filter(|agent| referenced_agents.contains(agent.id.as_str()))
+        .cloned()
+        .collect();
+    let archive = ProjectExport {
+        format_version: PROJECT_EXPORT_VERSION,
+        source_revision,
+        project,
+        agents,
+        sessions,
+        messages,
+    };
+    validate_project_export(&archive)?;
+    Ok(archive)
+}
+
+fn import_project(
+    state: &mut State,
+    archive: ProjectExport,
+    workdir: &str,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    validate_project_export(&archive)?;
+    if state
+        .projects
+        .iter()
+        .any(|project| project.id == archive.project.id)
+    {
+        return Err(error(
+            ErrorCode::InvalidProject,
+            "project id already exists",
+            false,
+        ));
+    }
+    if archive.messages.iter().any(|imported| {
+        state
+            .messages
+            .iter()
+            .any(|existing| existing.id == imported.id)
+    }) || archive.sessions.iter().any(|imported| {
+        state
+            .sessions
+            .iter()
+            .any(|existing| existing.id == imported.id)
+    }) {
+        return Err(error(
+            ErrorCode::InvalidProject,
+            "archive identity conflicts with existing workspace state",
+            false,
+        ));
+    }
+    for imported in &archive.agents {
+        if let Some(existing) = state
+            .agents
+            .iter()
+            .find(|existing| existing.id == imported.id)
+            && existing != imported
+        {
+            return Err(error(
+                ErrorCode::InvalidAgentConfiguration,
+                "archive agent conflicts with an existing revision",
+                false,
+            ));
+        }
+    }
+
+    let canonical = prepare_git_root(Path::new(workdir))?;
+    let canonical_text = canonical.to_string_lossy().into_owned();
+    if state
+        .projects
+        .iter()
+        .any(|project| project.workdir == canonical_text)
+    {
+        return Err(error(
+            ErrorCode::ProjectPathAlreadyRegistered,
+            "project path is already registered",
+            false,
+        ));
+    }
+
+    let mut project = archive.project;
+    project.workdir = canonical_text;
+    for agent in archive.agents {
+        if !state.agents.iter().any(|existing| existing.id == agent.id) {
+            state.agents.push(agent);
+        }
+    }
+    state.messages.extend(archive.messages);
+    state.sessions.extend(archive.sessions);
+    state.projects.push(project.clone());
+    Ok((
+        CommandResult::Project(project.clone()),
+        vec![pending(
+            "project.imported",
+            Some(project.id.clone()),
+            &project,
+        )],
+    ))
+}
+
+fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
+    if archive.format_version != PROJECT_EXPORT_VERSION
+        || archive.source_revision == 0
+        || archive.project.id.trim().is_empty()
+        || archive.project.revision == 0
+        || archive.messages.is_empty()
+    {
+        return Err(invalid_archive(
+            "archive header or project revision is invalid",
+        ));
+    }
+
+    let mut message_by_id = HashMap::with_capacity(archive.messages.len());
+    for message in &archive.messages {
+        if message.project_id != archive.project.id
+            || Uuid::parse_str(&message.id).is_err()
+            || message_by_id.insert(message.id.as_str(), message).is_some()
+        {
+            return Err(invalid_archive(
+                "archive message identity or project ownership is invalid",
+            ));
+        }
+    }
+    let Some(root) = message_by_id.get(archive.project.root_message_id.as_str()) else {
+        return Err(invalid_archive("archive root message is missing"));
+    };
+    if root.parent_message_id.is_some() || root.role != "system" {
+        return Err(invalid_archive("archive root message is invalid"));
+    }
+    for message in &archive.messages {
+        let mut cursor = message;
+        let mut seen = HashSet::new();
+        while cursor.id != archive.project.root_message_id {
+            if !seen.insert(cursor.id.as_str()) {
+                return Err(invalid_archive("archive message graph contains a cycle"));
+            }
+            let Some(parent_id) = cursor.parent_message_id.as_deref() else {
+                return Err(invalid_archive(
+                    "archive message graph contains an unexpected root",
+                ));
+            };
+            cursor = message_by_id
+                .get(parent_id)
+                .copied()
+                .ok_or_else(|| invalid_archive("archive message parent is missing"))?;
+        }
+    }
+
+    let mut agent_ids = HashSet::with_capacity(archive.agents.len());
+    if archive.agents.iter().any(|agent| {
+        agent.id.trim().is_empty() || agent.revision == 0 || !agent_ids.insert(agent.id.as_str())
+    }) {
+        return Err(invalid_archive("archive agent revision is invalid"));
+    }
+    let mut session_ids = HashSet::with_capacity(archive.sessions.len());
+    for session in &archive.sessions {
+        if session.project_id != archive.project.id
+            || session.version == 0
+            || session.active_run_id.is_some()
+            || !session_ids.insert(session.id.as_str())
+            || !message_by_id.contains_key(session.current_message_id.as_str())
+            || !agent_ids.contains(session.agent_id.as_str())
+        {
+            return Err(invalid_archive(
+                "archive session pointer, agent binding, or revision is invalid",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn invalid_archive(message: impl Into<String>) -> ApiError {
+    error(ErrorCode::InvalidProject, message, false)
 }
 
 fn require_agent<'a>(state: &'a State, id: &str) -> Result<&'a AgentView, ApiError> {

@@ -13,7 +13,12 @@ cron = "0.17"
 
 [dev-dependencies]
 async-trait = "0.1"
+criterion = "0.7"
 tokio = { version = "1", features = ["macros", "rt"] }
+
+[[bench]]
+name = "scheduler_scan"
+harness = false
 
 [lints]
 workspace = true

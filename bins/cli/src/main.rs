@@ -1,6 +1,8 @@
 //! AIT command-line client entry point.
 
-use ait_contracts::{Command, Response};
+use std::{fs, path::PathBuf};
+
+use ait_contracts::{Command, CommandResult, ProjectExport, Response};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -22,6 +24,20 @@ enum CliCommand {
     Events {
         #[arg(long, default_value_t = 0)]
         after: u64,
+    },
+    /// Export one Project and all of its Message branches and Session refs.
+    Export {
+        #[arg(long)]
+        project_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Import a portable Project archive into an explicit local workdir.
+    Import {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        workdir: PathBuf,
     },
 }
 
@@ -46,6 +62,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .text()
                 .await?;
             print!("{body}");
+        }
+        CliCommand::Export { project_id, output } => {
+            let response = send(
+                &client,
+                &arguments.endpoint,
+                &Command::ExportProject { project_id },
+            )
+            .await?;
+            match &response.result {
+                Some(CommandResult::ProjectExport(archive)) if response.ok => {
+                    fs::write(output, serde_json::to_vec_pretty(&archive)?)?;
+                }
+                _ => print_response(&response),
+            }
+        }
+        CliCommand::Import { input, workdir } => {
+            let archive: ProjectExport = serde_json::from_slice(&fs::read(input)?)?;
+            let response = send(
+                &client,
+                &arguments.endpoint,
+                &Command::ImportProject {
+                    archive,
+                    workdir: workdir.to_string_lossy().into_owned(),
+                },
+            )
+            .await?;
+            print_response(&response);
         }
     }
     Ok(())

@@ -290,3 +290,99 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
     };
     assert_eq!(cancelled.error.unwrap().code, ErrorCode::RunCancelled);
 }
+
+#[tokio::test]
+async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_credentials() {
+    let temporary = TempDir::new().unwrap();
+    let source_dir = temporary.path().join("source");
+    let imported_dir = temporary.path().join("imported");
+    std::fs::create_dir(&source_dir).unwrap();
+    std::fs::create_dir(&imported_dir).unwrap();
+    let source = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let project = match run(
+        &source,
+        Command::RegisterProject {
+            id: "portable-project".into(),
+            name: "Portable".into(),
+            workdir: source_dir.display().to_string(),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    run(
+        &source,
+        Command::RegisterAgent {
+            id: "portable-agent".into(),
+            name: "Portable agent".into(),
+            model: "local-model".into(),
+            mode: AgentMode::Manual,
+        },
+    )
+    .await;
+    run(
+        &source,
+        Command::CreateSession {
+            id: "portable-session".into(),
+            project_id: project.id.clone(),
+            agent_id: "portable-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    run(
+        &source,
+        Command::SendMessage {
+            session_id: "portable-session".into(),
+            text: "preserve this branch".into(),
+            expected_version: Some(1),
+        },
+    )
+    .await;
+
+    let archive = match run(
+        &source,
+        Command::ExportProject {
+            project_id: project.id.clone(),
+        },
+    )
+    .await
+    {
+        CommandResult::ProjectExport(value) => value,
+        _ => panic!(),
+    };
+    let encoded = serde_json::to_string(&archive).unwrap();
+    assert!(!encoded.contains("secret"));
+    assert!(!encoded.contains("token"));
+    assert!(!encoded.contains("credential"));
+    assert_eq!(archive.project.revision, project.revision);
+    assert_eq!(archive.sessions[0].version, 2);
+    assert!(archive.sessions[0].active_run_id.is_none());
+    assert_eq!(archive.messages.len(), 2);
+
+    let target = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    run(
+        &target,
+        Command::ImportProject {
+            archive: archive.clone(),
+            workdir: imported_dir.display().to_string(),
+        },
+    )
+    .await;
+    let workspace = match run(&target, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(workspace.projects[0].revision, archive.project.revision);
+    assert_eq!(workspace.agents[0].revision, archive.agents[0].revision);
+    assert_eq!(workspace.sessions[0].version, archive.sessions[0].version);
+    assert_eq!(
+        workspace.sessions[0].current_message_id,
+        archive.sessions[0].current_message_id
+    );
+    assert_eq!(workspace.messages, archive.messages);
+    assert!(workspace.runs.is_empty());
+    assert!(workspace.crons.is_empty());
+}
