@@ -6,11 +6,19 @@ publish.workspace = true
 
 [dependencies]
 ait-agent-adapters = { path = "../../crates/agent-adapters" }
+ait-domain = { path = "../../crates/domain" }
 ait-ipc = { path = "../../crates/ipc" }
+ait-ports = { path = "../../crates/ports" }
 ait-providers = { path = "../../crates/providers" }
 ait-runtime = { path = "../../crates/runtime" }
 ait-sandbox = { path = "../../crates/sandbox" }
 ait-tools = { path = "../../crates/tools" }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true
