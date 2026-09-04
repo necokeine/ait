@@ -33,9 +33,10 @@ ToolResult 和最终 assistant Message。`Manual` 留下可取消 Run；`Provide
 
 ### API 与事件恢复
 
-- `POST /v1/commands` 接受 `Command` 并返回统一 `Response`。
-- `GET /v1/events?after=<cursor>&limit=<n>` 返回 SSE。
-- `GET /v1/metrics` 返回带 project/session/run/call 关联字段的进程内计数指标。
+- HTTP API 已由 NEC-166 改为按实体与操作拆分的路由；完整映射见
+  `docs/decisions/NEC-166/entity-operation-http-api.md`。
+- `GET /v1/event/list?after=<cursor>&limit=<n>` 返回 SSE。
+- `GET /v1/metric/list` 返回带 project/session/run/call 关联字段的进程内计数指标。
 
 状态快照和 durable event outbox 在同一 SQLite 事务提交。事件 cursor 单调递增；连接
 断开后用最后收到的 SSE `id` 作为 `after` 即可无损续读。实时流不是最终状态权威，客户端
@@ -50,5 +51,5 @@ ToolResult 和最终 assistant Message。`Manual` 留下可取消 Run；`Provide
 ### 验收测试
 
 `crates/application/tests/control_plane.rs` 演示 tool Session、从 root 切分支、Cron Run、
-cursor 分页重连与关闭/重开 SQLite 后恢复；`crates/api-http/tests/http.rs` 验证 HTTP command
-和 SSE 使用同一 application service。
+cursor 分页重连与关闭/重开 SQLite 后恢复；`crates/api-http/tests/http.rs` 验证各实体操作
+路由和 SSE 使用同一 application service。

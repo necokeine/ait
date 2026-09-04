@@ -55,7 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         CliCommand::Events { after } => {
             let body = client
-                .get(format!("{}/v1/events?after={after}", arguments.endpoint))
+                .get(format!(
+                    "{}/v1/event/list?after={after}",
+                    arguments.endpoint
+                ))
                 .send()
                 .await?
                 .error_for_status()?
@@ -99,14 +102,45 @@ async fn send(
     endpoint: &str,
     command: &Command,
 ) -> Result<Response, reqwest::Error> {
+    if matches!(command, Command::Snapshot) {
+        return client
+            .get(format!("{endpoint}/v1/workspace/snapshot"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await;
+    }
+
+    let mut body = serde_json::to_value(command).expect("command serializes");
+    body.as_object_mut()
+        .expect("command serializes as an object")
+        .remove("type");
     client
-        .post(format!("{endpoint}/v1/commands"))
-        .json(command)
+        .post(format!("{endpoint}{}", operation_path(command)))
+        .json(&body)
         .send()
         .await?
         .error_for_status()?
         .json()
         .await
+}
+
+const fn operation_path(command: &Command) -> &'static str {
+    match command {
+        Command::RegisterProject { .. } => "/v1/project/register",
+        Command::RegisterAgent { .. } => "/v1/agent/register",
+        Command::CreateSession { .. } => "/v1/session/create",
+        Command::SendMessage { .. } => "/v1/session/send-message",
+        Command::GetRun { .. } => "/v1/run/get",
+        Command::CancelRun { .. } => "/v1/run/cancel",
+        Command::CreateCron { .. } => "/v1/cron/create",
+        Command::SetCronEnabled { .. } => "/v1/cron/set-enabled",
+        Command::TriggerCron { .. } => "/v1/cron/trigger",
+        Command::ExportProject { .. } => "/v1/project/export",
+        Command::ImportProject { .. } => "/v1/project/import",
+        Command::Snapshot => "/v1/workspace/snapshot",
+    }
 }
 
 fn print_response(response: &Response) {

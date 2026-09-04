@@ -11,7 +11,9 @@ use std::{
 };
 
 use ait_application::LocalControlService;
-use ait_contracts::{ApiError, Command, CommandResult, Event as ControlEvent, Response};
+use ait_contracts::{
+    AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport, Response,
+};
 use ait_domain::ErrorCode;
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
 use axum::{
@@ -31,9 +33,20 @@ pub fn router(service: Arc<LocalControlService>) -> Router {
 /// Builds the version-one router with an injectable observability sink.
 pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telemetry) -> Router {
     Router::new()
-        .route("/v1/commands", post(command))
-        .route("/v1/events", get(events))
-        .route("/v1/metrics", get(metrics))
+        .route("/v1/project/register", post(register_project))
+        .route("/v1/project/export", post(export_project))
+        .route("/v1/project/import", post(import_project))
+        .route("/v1/agent/register", post(register_agent))
+        .route("/v1/session/create", post(create_session))
+        .route("/v1/session/send-message", post(send_message))
+        .route("/v1/run/get", post(get_run))
+        .route("/v1/run/cancel", post(cancel_run))
+        .route("/v1/cron/create", post(create_cron))
+        .route("/v1/cron/set-enabled", post(set_cron_enabled))
+        .route("/v1/cron/trigger", post(trigger_cron))
+        .route("/v1/workspace/snapshot", get(workspace_snapshot))
+        .route("/v1/event/list", get(events))
+        .route("/v1/metric/list", get(metrics))
         .with_state(ApiState { service, telemetry })
 }
 
@@ -43,9 +56,258 @@ struct ApiState {
     telemetry: Telemetry,
 }
 
-async fn command(State(state): State<ApiState>, Json(command): Json<Command>) -> Json<Response> {
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterProjectRequest {
+    id: String,
+    name: String,
+    workdir: String,
+}
+
+async fn register_project(
+    State(state): State<ApiState>,
+    Json(request): Json<RegisterProjectRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::RegisterProject {
+            id: request.id,
+            name: request.name,
+            workdir: request.workdir,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportProjectRequest {
+    project_id: String,
+}
+
+async fn export_project(
+    State(state): State<ApiState>,
+    Json(request): Json<ExportProjectRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ExportProject {
+            project_id: request.project_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportProjectRequest {
+    archive: ProjectExport,
+    workdir: String,
+}
+
+async fn import_project(
+    State(state): State<ApiState>,
+    Json(request): Json<ImportProjectRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ImportProject {
+            archive: request.archive,
+            workdir: request.workdir,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterAgentRequest {
+    id: String,
+    name: String,
+    model: String,
+    #[serde(default = "default_agent_mode")]
+    mode: AgentMode,
+}
+
+const fn default_agent_mode() -> AgentMode {
+    AgentMode::Echo
+}
+
+async fn register_agent(
+    State(state): State<ApiState>,
+    Json(request): Json<RegisterAgentRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::RegisterAgent {
+            id: request.id,
+            name: request.name,
+            model: request.model,
+            mode: request.mode,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateSessionRequest {
+    id: String,
+    project_id: String,
+    agent_id: String,
+    #[serde(default)]
+    at_message_id: Option<String>,
+}
+
+async fn create_session(
+    State(state): State<ApiState>,
+    Json(request): Json<CreateSessionRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::CreateSession {
+            id: request.id,
+            project_id: request.project_id,
+            agent_id: request.agent_id,
+            at_message_id: request.at_message_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendMessageRequest {
+    session_id: String,
+    text: String,
+    #[serde(default)]
+    expected_version: Option<u64>,
+}
+
+async fn send_message(
+    State(state): State<ApiState>,
+    Json(request): Json<SendMessageRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SendMessage {
+            session_id: request.session_id,
+            text: request.text,
+            expected_version: request.expected_version,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunRequest {
+    run_id: String,
+}
+
+async fn get_run(State(state): State<ApiState>, Json(request): Json<RunRequest>) -> Json<Response> {
+    execute_command(
+        state,
+        Command::GetRun {
+            run_id: request.run_id,
+        },
+    )
+    .await
+}
+
+async fn cancel_run(
+    State(state): State<ApiState>,
+    Json(request): Json<RunRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::CancelRun {
+            run_id: request.run_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateCronRequest {
+    id: String,
+    name: String,
+    project_id: String,
+    base_message_id: String,
+    agent_id: String,
+    schedule: String,
+    timezone: String,
+}
+
+async fn create_cron(
+    State(state): State<ApiState>,
+    Json(request): Json<CreateCronRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::CreateCron {
+            id: request.id,
+            name: request.name,
+            project_id: request.project_id,
+            base_message_id: request.base_message_id,
+            agent_id: request.agent_id,
+            schedule: request.schedule,
+            timezone: request.timezone,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetCronEnabledRequest {
+    cron_id: String,
+    enabled: bool,
+}
+
+async fn set_cron_enabled(
+    State(state): State<ApiState>,
+    Json(request): Json<SetCronEnabledRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SetCronEnabled {
+            cron_id: request.cron_id,
+            enabled: request.enabled,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TriggerCronRequest {
+    cron_id: String,
+    scheduled_at: i64,
+}
+
+async fn trigger_cron(
+    State(state): State<ApiState>,
+    Json(request): Json<TriggerCronRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::TriggerCron {
+            cron_id: request.cron_id,
+            scheduled_at: request.scheduled_at,
+        },
+    )
+    .await
+}
+
+async fn workspace_snapshot(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::Snapshot).await
+}
+
+async fn execute_command(state: ApiState, command: Command) -> Json<Response> {
     let started = Instant::now();
-    let command_name = command_name(&command);
+    let operation_name = operation_name(&command);
     let mut correlation = correlation_for_command(&command);
     let response = state.service.execute(command).await;
     enrich_correlation(&mut correlation, &response);
@@ -53,9 +315,9 @@ async fn command(State(state): State<ApiState>, Json(command): Json<Command>) ->
     state
         .telemetry
         .metrics()
-        .increment("api_commands_total", correlation.clone(), 1);
+        .increment("api_operations_total", correlation.clone(), 1);
     state.telemetry.metrics().increment(
-        "api_command_duration_ms_total",
+        "api_operation_duration_ms_total",
         correlation.clone(),
         elapsed,
     );
@@ -63,7 +325,7 @@ async fn command(State(state): State<ApiState>, Json(command): Json<Command>) ->
         state
             .telemetry
             .metrics()
-            .increment("api_command_errors_total", correlation.clone(), 1);
+            .increment("api_operation_errors_total", correlation.clone(), 1);
     }
     state.telemetry.emit(&LogRecord {
         timestamp_ms: now(),
@@ -73,10 +335,10 @@ async fn command(State(state): State<ApiState>, Json(command): Json<Command>) ->
             Level::Warn
         },
         target: "ait_api_http".into(),
-        event: "command.completed".into(),
+        event: "operation.completed".into(),
         correlation,
         fields: BTreeMap::from([
-            ("command".into(), command_name.into()),
+            ("operation".into(), operation_name.into()),
             ("duration_ms".into(), elapsed.into()),
             ("ok".into(), response.ok.into()),
         ]),
@@ -187,7 +449,7 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
     }
 }
 
-const fn command_name(command: &Command) -> &'static str {
+const fn operation_name(command: &Command) -> &'static str {
     match command {
         Command::RegisterProject { .. } => "register_project",
         Command::RegisterAgent { .. } => "register_agent",
