@@ -12,6 +12,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+## 本地 API 与 CLI
+
+```bash
+cargo run -p ait-daemon -- --database ./ait.sqlite3
+cargo run -p ait-cli -- snapshot
+```
+
+daemon 暴露 `POST /v1/commands` 与可按 cursor 续读的 `GET /v1/events` SSE；CLI 通过同一
+API 调用 application service。命令示例和端到端演示见
+`docs/decisions/NEC-152/local-api-cli-vertical-slice.md`。
+
 ## Workspace
 
 - `crates/domain`：纯领域模型与不变量。

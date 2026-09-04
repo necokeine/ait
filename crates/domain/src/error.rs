@@ -60,6 +60,8 @@ pub enum ErrorCode {
     AgentCapabilityUnsupported,
     /// Agent or revision configuration is invalid.
     InvalidAgentConfiguration,
+    /// Provider invocation failed after adapter normalization.
+    ProviderFailed,
     /// Run aggregate fields are inconsistent.
     InvalidRun,
     /// Run cannot be resumed from its current state.
@@ -136,6 +138,7 @@ impl ErrorCode {
             Self::AgentRevisionNotFound => "AGENT_REVISION_NOT_FOUND",
             Self::AgentCapabilityUnsupported => "AGENT_CAPABILITY_UNSUPPORTED",
             Self::InvalidAgentConfiguration => "INVALID_AGENT_CONFIGURATION",
+            Self::ProviderFailed => "PROVIDER_FAILED",
             Self::InvalidRun => "INVALID_RUN",
             Self::RunNotResumable => "RUN_NOT_RESUMABLE",
             Self::RunAlreadyTerminal => "RUN_ALREADY_TERMINAL",

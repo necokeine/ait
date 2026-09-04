@@ -86,6 +86,22 @@ impl ParsedSchedule {
     }
 }
 
+/// Validates a Cron expression and IANA timezone, returning the next occurrence.
+///
+/// Five-field expressions are normalized by adding a zero-seconds field, matching
+/// [`CronScheduler::prepare_cron`].
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::InvalidCron`] for invalid syntax, timezone, or timestamp.
+pub fn next_occurrence(
+    expression: &str,
+    timezone: &str,
+    after: TimestampMs,
+) -> Result<Option<TimestampMs>, DomainError> {
+    ParsedSchedule::parse(expression, timezone)?.next_after(after)
+}
+
 /// Durable scheduler service composed from persistence and unified Run ports.
 pub struct CronScheduler {
     store: Arc<dyn CronStore>,
