@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runFailure } from "./runs.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
@@ -13,6 +14,7 @@ const allowedMethods = new Set([
 ]);
 const builtInCodexAgentId = "codex-app-server";
 const legacyBuiltInCodexAgentId = "codex-local";
+const builtInCodexModel = "gpt-5.6-sol";
 
 interface DaemonResponse {
   ok: boolean;
@@ -85,10 +87,16 @@ class DaemonClient {
       return this.snapshot();
     }
     if (method === "session.send-message") {
-      await this.post("/v1/session/send-message", "run", {
+      const run = await this.post("/v1/session/send-message", "run", {
         session_id: params.sessionId, text: params.content,
         expected_version: params.expectedVersion,
       });
+      const failure = runFailure(run);
+      if (failure) {
+        const error = new Error(failure.message) as Error & { code?: string };
+        if (failure.code) error.code = failure.code;
+        throw error;
+      }
       return this.snapshot();
     }
 
@@ -136,7 +144,7 @@ class DaemonClient {
       await this.post("/v1/agent/register", "agent", {
         id: builtInCodexAgentId,
         name: "Codex",
-        model: "gpt-5.6-codex",
+        model: builtInCodexModel,
         mode: "codex",
       });
     }

@@ -53,9 +53,9 @@ test("derives the default Project name from the selected directory", () => {
 
 test("labels legacy echo Agents without masquerading as Codex", () => {
   const echo = { id: "codex-local", name: "Codex", model: "gpt-5.6-codex", mode: "echo", enabled: true };
-  const codex = { id: "codex-app-server", name: "Codex", model: "gpt-5.6-codex", mode: "codex", enabled: true };
+  const codex = { id: "codex-app-server", name: "Codex", model: "gpt-5.6-sol", mode: "codex", enabled: true };
 
   assert.equal(agentDisplayName(echo), "Echo");
   assert.equal(agentLabel(echo), "Echo · echo");
-  assert.equal(agentLabel(codex), "Codex · gpt-5.6-codex");
+  assert.equal(agentLabel(codex), "Codex · gpt-5.6-sol");
 });

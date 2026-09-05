@@ -181,7 +181,7 @@ async fn register_test_entities(client: &Client, base_url: &str, project: &Path)
             json!({
                 "id": "daemon-codex-agent",
                 "name": "Codex",
-                "model": "gpt-test",
+                "model": "gpt-5.6-codex",
                 "mode": "codex",
             }),
         ),
@@ -216,6 +216,10 @@ read_line
 printf '%s\n' '{{"id":0,"result":{{}}}}'
 read_line
 read_line
+case "$line" in
+  *'"model":"gpt-5.6-sol"'*) ;;
+  *) printf '%s\n' '{{"id":1,"error":{{"code":-32602,"message":"unsupported model"}}}}'; exit 4 ;;
+esac
 printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
 read_line
 printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-http-test"}}}}}}'
