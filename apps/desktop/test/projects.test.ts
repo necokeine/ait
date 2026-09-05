@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { groupProjects } from "../src/projects.js";
+import { groupProjects, projectNameFromWorkdir } from "../src/projects.js";
 import type { DesktopProject, DesktopSession, DesktopSnapshot } from "../src/types.js";
 
 const project = (id: string): DesktopProject => ({
@@ -42,4 +42,11 @@ test("keeps every Project visible and groups Sessions beneath their owner", () =
   assert.deepEqual(groups.map(({ project: item }) => item.id), ["project-a", "project-b"]);
   assert.deepEqual(groups[0]?.sessions.map(({ id }) => id), ["a-newer", "a-older"]);
   assert.deepEqual(groups[1]?.sessions.map(({ id }) => id), ["b-only"]);
+});
+
+test("derives the default Project name from the selected directory", () => {
+  assert.equal(projectNameFromWorkdir("/Users/member/code/ait"), "ait");
+  assert.equal(projectNameFromWorkdir("/Users/member/code/ait/"), "ait");
+  assert.equal(projectNameFromWorkdir("C:\\Users\\member\\code\\ait"), "ait");
+  assert.equal(projectNameFromWorkdir("C:\\Users\\member\\code\\ait\\"), "ait");
 });

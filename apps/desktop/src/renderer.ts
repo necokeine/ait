@@ -1,5 +1,5 @@
 import { flattenMessageTree, messageText, pathToMessage, type FlatTreeNode } from "./tree.js";
-import { groupProjects } from "./projects.js";
+import { groupProjects, projectNameFromWorkdir } from "./projects.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -452,11 +452,12 @@ async function chooseProjectPath(): Promise<void> {
 }
 
 async function createProject(): Promise<void> {
-  const name = $<HTMLInputElement>("#project-create-name").value.trim();
   const workdir = $<HTMLInputElement>("#project-create-path").value;
+  const enteredName = $<HTMLInputElement>("#project-create-name").value.trim();
+  const name = enteredName || projectNameFromWorkdir(workdir);
   const agentId = $<HTMLSelectElement>("#project-create-agent").value;
   if (!name || !workdir || !agentId) {
-    showToast("Choose a name, directory, and backend.", true);
+    showToast("Choose a directory and backend.", true);
     return;
   }
   const button = $<HTMLButtonElement>("#project-create-submit");

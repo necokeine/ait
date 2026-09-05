@@ -5,6 +5,11 @@ export interface ProjectGroup {
   sessions: DesktopSession[];
 }
 
+export function projectNameFromWorkdir(workdir: string): string {
+  const withoutTrailingSeparators = workdir.replace(/[\\/]+$/, "");
+  return withoutTrailingSeparators.split(/[\\/]/).at(-1) ?? "";
+}
+
 export function groupProjects(snapshot: DesktopSnapshot): ProjectGroup[] {
   return snapshot.projects.map((project) => ({
     project,
