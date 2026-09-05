@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { flattenMessageTree, pathToMessage } from "../src/tree.js";
-import type { DesktopMessage, DesktopSession } from "../src/types.js";
+import { flattenMessageTree, messageAuthor, pathToMessage } from "../src/tree.js";
+import type { AgentSummary, DesktopMessage, DesktopSession } from "../src/types.js";
 
 const message = (id: string, parentMessageId: string | null, createdAt: number): DesktopMessage => ({
   id,
@@ -10,6 +10,9 @@ const message = (id: string, parentMessageId: string | null, createdAt: number):
   role: id === "root" ? "system" : "user",
   kind: "standard",
   parts: [{ type: "text", text: id }],
+  agentId: null,
+  agentRevision: null,
+  gitCommitId: null,
   createdAt,
 });
 
@@ -61,4 +64,23 @@ test("handles a large deep tree iteratively", () => {
   const flat = flattenMessageTree(large, undefined, "9999", new Set());
   assert.equal(flat.length, 10_000);
   assert.equal(flat.at(-1)?.depth, 9_999);
+});
+
+test("labels assistant messages with their generating Agent", () => {
+  const assistant: DesktopMessage = {
+    ...message("reply", "root", 1),
+    role: "assistant",
+    agentId: "codex-app-server",
+    agentRevision: 4,
+  };
+  const agents: AgentSummary[] = [{
+    id: "codex-app-server",
+    name: "Codex",
+    model: "gpt-5.6-sol",
+    mode: "codex",
+    enabled: true,
+  }];
+
+  assert.equal(messageAuthor(assistant, agents), "Codex");
+  assert.equal(messageAuthor({ ...assistant, agentId: null }, agents), "Agent");
 });

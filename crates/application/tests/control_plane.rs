@@ -1,7 +1,7 @@
 //! End-to-end control-plane acceptance coverage.
 #![allow(clippy::pedantic)]
 
-use std::sync::Arc;
+use std::{process::Command as ProcessCommand, sync::Arc};
 
 use ait_application::LocalControlService;
 use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
@@ -109,9 +109,136 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Some("Implemented and verified the feature.")
     );
     assert_eq!(
-        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
+        assistant.metadata.0["codex"]["commit_id"],
         serde_json::json!("0123456789abcdef")
     );
+    assert_eq!(
+        assistant.metadata.0["agent"],
+        serde_json::json!({"id":"codex-agent","revision":1})
+    );
+}
+
+#[tokio::test]
+async fn assistant_advances_the_existing_session_with_agent_and_git_provenance() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let git_commit_id = initial_git_commit(&project_dir);
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+
+    run(
+        &service,
+        Command::RegisterProject {
+            id: "provenance-project".into(),
+            name: "Provenance Project".into(),
+            workdir: project_dir.display().to_string(),
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "echo-agent".into(),
+            name: "Echo Test".into(),
+            model: "echo-test".into(),
+            mode: AgentMode::Echo,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "existing-session".into(),
+            project_id: "provenance-project".into(),
+            agent_id: "echo-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SendMessage {
+            session_id: "existing-session".into(),
+            text: "keep this session".into(),
+            expected_version: Some(1),
+        },
+    )
+    .await;
+
+    let workspace = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(workspace.sessions.len(), 1);
+    let session = &workspace.sessions[0];
+    assert_eq!(session.id, "existing-session");
+    let assistant = workspace
+        .messages
+        .iter()
+        .find(|message| message.id == session.current_message_id)
+        .unwrap();
+    assert_eq!(assistant.role, "assistant");
+    let user = workspace
+        .messages
+        .iter()
+        .find(|message| assistant.parent_message_id.as_deref() == Some(message.id.as_str()))
+        .unwrap();
+    assert_eq!(user.text.as_deref(), Some("keep this session"));
+    assert!(workspace.messages.iter().all(|message| {
+        message.metadata.0["git"]["commit_id"] == serde_json::json!(git_commit_id)
+    }));
+    assert_eq!(
+        assistant.metadata.0["agent"],
+        serde_json::json!({"id":"echo-agent","revision":1})
+    );
+}
+
+fn initial_git_commit(project_dir: &std::path::Path) -> String {
+    assert!(
+        ProcessCommand::new("git")
+            .arg("-C")
+            .arg(project_dir)
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(project_dir.join("README.md"), "initial\n").unwrap();
+    assert!(
+        ProcessCommand::new("git")
+            .arg("-C")
+            .arg(project_dir)
+            .args(["add", "README.md"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        ProcessCommand::new("git")
+            .arg("-C")
+            .arg(project_dir)
+            .args([
+                "-c",
+                "user.name=Ait Test",
+                "-c",
+                "user.email=ait-test@localhost",
+                "commit",
+                "--quiet",
+                "-m",
+                "initial",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[tokio::test]

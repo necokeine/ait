@@ -1,7 +1,7 @@
 //! Versioned transport DTOs shared by HTTP, CLI, IPC, and future UI clients.
 #![allow(missing_docs)]
 
-use ait_domain::ErrorCode;
+use ait_domain::{DomainMetadata, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -166,6 +166,8 @@ pub struct MessageView {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+    #[serde(default)]
+    pub metadata: DomainMetadata,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

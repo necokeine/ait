@@ -15,6 +15,9 @@ export interface DesktopMessage {
   role: MessageRole;
   kind: MessageKind;
   parts: MessagePart[];
+  agentId: string | null;
+  agentRevision: number | null;
+  gitCommitId: string | null;
   createdAt: number;
 }
 

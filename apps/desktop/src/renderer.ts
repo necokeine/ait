@@ -1,4 +1,4 @@
-import { flattenMessageTree, messageText, pathToMessage, type FlatTreeNode } from "./tree.js";
+import { flattenMessageTree, messageAuthor, messageText, pathToMessage, type FlatTreeNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
 import type {
   DesktopMessage,
@@ -238,7 +238,8 @@ function renderConversation(): void {
 }
 
 function renderMessage(message: DesktopMessage): string {
-  const icon = message.role === "assistant" ? "AI" : message.role === "user" ? "U" : "S";
+  const author = messageAuthor(message, snapshot?.agents ?? []);
+  const icon = message.role === "assistant" ? author.slice(0, 1).toUpperCase() : message.role === "user" ? "U" : "S";
   const content = message.parts.map((part) => {
     if (part.type === "text") return `<div class="message-content">${escapeHtml(part.text)}</div>`;
     if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
@@ -248,7 +249,7 @@ function renderMessage(message: DesktopMessage): string {
   }).join("");
   return `<article class="message ${message.role}" data-message-id="${escapeAttribute(message.id)}">
     <div class="message-avatar">${icon}</div>
-    <div><div class="message-heading"><strong>${message.role}</strong><time>${formatTime(message.createdAt)}</time></div>${content}</div>
+    <div><div class="message-heading"><strong>${escapeHtml(author)}</strong><time>${formatTime(message.createdAt)}</time></div>${content}</div>
   </article>`;
 }
 
@@ -260,11 +261,12 @@ function renderTree(): void {
   const visible = flatTree.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
     const preview = messageText(node.message).replace(/\s+/g, " ").trim() || "Empty message";
+    const author = messageAuthor(node.message, snapshot?.agents ?? []);
     const expander = node.childCount > 0 ? (node.expanded ? "⌄" : "›") : "";
     return `<div class="tree-node tree-depth-${Math.min(node.depth, 12)}${node.selected ? " is-selected" : ""}${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" aria-selected="${node.selected}" aria-expanded="${node.childCount > 0 ? node.expanded : "false"}" tabindex="${node.selected ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}" data-depth="${node.depth}">
       <button class="tree-expander" type="button" aria-label="${node.expanded ? "Collapse" : "Expand"}">${expander}</button>
-      <span class="tree-role">${roleLetter(node.message.role)}</span>
-      <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${formatTime(node.message.createdAt)}</small></span>
+      <span class="tree-role">${escapeHtml(author.slice(0, 1).toUpperCase())}</span>
+      <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${escapeHtml(author)} · ${formatTime(node.message.createdAt)}</small></span>
       ${node.childCount > 1 ? `<span class="tree-count">${node.childCount}</span>` : ""}
     </div>`;
   }).join("");
@@ -304,11 +306,12 @@ function renderNodeDetails(): void {
     return;
   }
   const preview = messageText(selected);
-  nodeDetails.innerHTML = `<div class="node-details-header"><span class="node-role-pill">${selected.role}</span><code class="node-id">${escapeHtml(shortId(selected.id))}</code></div>
+  const author = messageAuthor(selected, snapshot?.agents ?? []);
+  nodeDetails.innerHTML = `<div class="node-details-header"><span class="node-role-pill">${escapeHtml(author)}</span><code class="node-id">${escapeHtml(shortId(selected.id))}</code></div>
     <p class="node-preview">${escapeHtml(preview)}</p>
     <div class="node-actions"><button id="branch-focus" class="primary-button" type="button">Branch from here</button></div>`;
   $("#branch-focus").addEventListener("click", () => messageInput.focus());
-  $("#branch-node-label").textContent = `${selected.role} · ${shortId(selected.id)}`;
+  $("#branch-node-label").textContent = `${author} · ${shortId(selected.id)}`;
   $("#branch-context").classList.remove("is-hidden");
 }
 
@@ -734,10 +737,6 @@ function showToast(message: string, error = false): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The operation could not be completed.";
-}
-
-function roleLetter(role: DesktopMessage["role"]): string {
-  return role === "assistant" ? "A" : role === "user" ? "U" : "S";
 }
 
 function shortId(id: string): string {

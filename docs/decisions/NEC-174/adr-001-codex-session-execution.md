@@ -11,7 +11,7 @@
 3. Session 输入先原子持久化 user Message、推进 Session 并创建 queued Run；提交成功后才调用外部 Codex。调用前另行持久化 running 状态。
 4. Codex invocation 使用 Project 的规范化 Git root 作为 cwd 和 workspace-write 沙箱边界，并把当前 Message 根到 user Message 的不可变路径组装为 prompt。
 5. Codex app-server 的 message delta（无 delta 时使用最终 agentMessage item）组装为 assistant result。成功后 application 原子追加 assistant Message、推进 Session、完成 Run 并释放 `active_run_id`。
-6. Codex 不自行提交。宿主仅在调用前工作树完全干净时允许运行，并在 turn 成功后执行 `git add --all` 与单个 Git commit；commit SHA 保存于 assistant Message 的结构化 `codex.commit_id` 元数据。
+6. Codex 不自行提交。宿主仅在调用前工作树完全干净时允许运行，并在 turn 成功后执行 `git add --all` 与单个 Git commit；commit SHA 保存于 assistant Message 的 `metadata.codex.commit_id`，通用追加时 HEAD 则遵循 NEC-173 的 `metadata.git.commit_id` 契约。
 7. 若 Codex 或 Git 失败，Run 进入 failed 并释放 Session；不会伪造 assistant result 或完成状态。调用前已有未提交改动时直接拒绝，避免把用户工作混入 Agent commit。
 8. UI 将 legacy echo mode 明确显示为 `Echo · echo`。空闲 Session 的 Agent 下拉选择会以 version CAS 原地重绑；活动 Run 期间保持禁用，每个已创建 Run 的 Agent revision 不受后续重绑影响。
 
