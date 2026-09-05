@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { flattenMessageTree, pathToMessage } from "../src/tree.js";
+import { buildMessageTimeline, pathToMessage, resolveBranchHead } from "../src/tree.js";
 import type { DesktopMessage, DesktopSession } from "../src/types.js";
 
 const message = (id: string, parentMessageId: string | null, createdAt: number): DesktopMessage => ({
@@ -18,47 +18,65 @@ const messages = [
   message("a", "root", 1),
   message("b", "a", 2),
   message("branch", "a", 3),
+  message("branch-tail", "branch", 4),
 ];
-const session: DesktopSession = {
-  id: "s1",
+const session = (id: string, currentMessageId: string, updatedAt = 0): DesktopSession => ({
+  id,
   projectId: "p1",
-  title: "Main",
-  currentMessageId: "b",
+  title: id,
+  currentMessageId,
   agentId: "agent",
   version: 1,
   active: false,
-  updatedAt: 0,
-};
-
-test("builds stable pre-order rows and marks both relevant paths", () => {
-  const flat = flattenMessageTree(messages, session, "branch", new Set());
-  assert.deepEqual(flat.map((node) => node.message.id), ["root", "a", "b", "branch"]);
-  assert.deepEqual(flat.map((node) => node.depth), [0, 1, 2, 2]);
-  assert.equal(flat.find((node) => node.message.id === "b")?.onCurrentBranch, true);
-  assert.equal(flat.find((node) => node.message.id === "branch")?.selected, true);
-  assert.equal(flat.find((node) => node.message.id === "a")?.ancestorOfSelection, true);
+  updatedAt,
 });
 
-test("collapse removes descendants without corrupting other roots", () => {
-  const flat = flattenMessageTree(
-    [...messages, message("second-root", null, 4)],
-    session,
-    "branch",
-    new Set(["a"]),
+test("projects a linear branch as one unindented timeline", () => {
+  const timeline = buildMessageTimeline(messages, session("main", "b"), undefined, "b");
+
+  assert.deepEqual(timeline.map((node) => node.message.id), ["root", "a", "b"]);
+  assert.equal(timeline.every((node) => !("depth" in node)), true);
+  assert.equal(timeline.at(-1)?.selected, true);
+  assert.equal(timeline.every((node) => node.onCurrentBranch), true);
+});
+
+test("offers sibling successors at the point where the timeline forks", () => {
+  const timeline = buildMessageTimeline(messages, session("main", "b"), undefined, undefined);
+  const fork = timeline.find((node) => node.message.id === "a");
+
+  assert.deepEqual(fork?.branches.map((branch) => branch.message.id), ["b", "branch"]);
+  assert.deepEqual(fork?.branches.map((branch) => branch.active), [true, false]);
+  assert.deepEqual(timeline.find((node) => node.message.id === "root")?.branches, []);
+});
+
+test("switches to the selected sibling branch and follows its Session head", () => {
+  const sessions = [session("main", "b", 1), session("alternative", "branch-tail", 2)];
+  const head = resolveBranchHead(messages, sessions, "branch");
+  const timeline = buildMessageTimeline(messages, sessions[0], head, undefined);
+
+  assert.equal(head, "branch-tail");
+  assert.deepEqual(timeline.map((node) => node.message.id), ["root", "a", "branch", "branch-tail"]);
+  assert.deepEqual(
+    timeline.find((node) => node.message.id === "a")?.branches.map((branch) => branch.active),
+    [false, true],
   );
-  assert.deepEqual(flat.map((node) => node.message.id), ["root", "a", "second-root"]);
+  assert.equal(timeline.find((node) => node.message.id === "branch")?.onCurrentBranch, false);
+});
+
+test("falls back to the latest descendant when a branch has no Session head", () => {
+  assert.equal(resolveBranchHead(messages, [], "branch"), "branch-tail");
 });
 
 test("projects root-to-head paths without copying history", () => {
-  assert.deepEqual(pathToMessage(messages, "branch").map(({ id }) => id), ["root", "a", "branch"]);
+  assert.deepEqual(pathToMessage(messages, "branch-tail").map(({ id }) => id), ["root", "a", "branch", "branch-tail"]);
 });
 
-test("handles a large deep tree iteratively", () => {
+test("handles a large deep timeline iteratively", () => {
   const large: DesktopMessage[] = [];
   for (let index = 0; index < 10_000; index += 1) {
     large.push(message(String(index), index === 0 ? null : String(index - 1), index));
   }
-  const flat = flattenMessageTree(large, undefined, "9999", new Set());
-  assert.equal(flat.length, 10_000);
-  assert.equal(flat.at(-1)?.depth, 9_999);
+  const timeline = buildMessageTimeline(large, undefined, "9999", "9999");
+  assert.equal(timeline.length, 10_000);
+  assert.equal(timeline.at(-1)?.message.id, "9999");
 });
