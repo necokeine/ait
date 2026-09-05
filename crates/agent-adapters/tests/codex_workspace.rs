@@ -4,9 +4,12 @@ use std::{process::Command, sync::Arc};
 
 use ait_agent_adapters::{
     AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
-    AgentStream, codex::CodexWorkspaceAgent,
+    AgentStream, SandboxMode,
+    codex::{CodexSessionTitleGenerator, CodexWorkspaceAgent},
 };
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation};
+use ait_ports::{
+    SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
+};
 use async_trait::async_trait;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
@@ -47,6 +50,68 @@ impl AgentAdapter for EditingAdapter {
     }
 }
 
+#[derive(Debug)]
+struct TitleAdapter;
+
+#[async_trait]
+impl AgentAdapter for TitleAdapter {
+    fn driver(&self) -> &'static str {
+        "title_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: false,
+            file_changes: false,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        assert_eq!(request.model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(request.sandbox, SandboxMode::ReadOnly);
+        assert_eq!(
+            request.output_schema.as_ref().unwrap()["required"][0],
+            "title"
+        );
+        assert!(request.prompt.contains("ABC-123"));
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::MessageDelta {
+                item_id: "message-title".into(),
+                delta: r#"{"title":"修复 ABC-123 登录","description":"修复登录流程中的工单问题"}"#
+                    .into(),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "turn-title".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
+
+#[tokio::test]
+async fn generates_structured_session_metadata_with_the_small_read_only_model() {
+    let project = TempDir::new().unwrap();
+    let generator = CodexSessionTitleGenerator::new(Arc::new(TitleAdapter));
+    let generated = generator
+        .generate(SessionTitleRequest {
+            request_id: "title-1".into(),
+            user_prompt: "修复 ABC-123 登录".into(),
+            cwd: project.path().to_path_buf(),
+            cancellation: CancellationToken::new(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(generated.title, "修复 ABC-123 登录");
+    assert_eq!(generated.description, "修复登录流程中的工单问题");
+}
+
 #[tokio::test]
 async fn returns_assistant_result_and_commits_generated_changes() {
     let project = TempDir::new().unwrap();
@@ -64,6 +129,7 @@ async fn returns_assistant_result_and_commits_generated_changes() {
         .invoke(WorkspaceAgentInvocation {
             request_id: "run-1".into(),
             model: "test-model".into(),
+            reasoning_effort: Some("high".into()),
             prompt: "Create answer.txt".into(),
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
@@ -112,6 +178,7 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
         .invoke(WorkspaceAgentInvocation {
             request_id: "run-2".into(),
             model: "test-model".into(),
+            reasoning_effort: None,
             prompt: "Change something".into(),
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),

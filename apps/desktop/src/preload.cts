@@ -15,6 +15,9 @@ const api: AitDesktopApi = {
   setProjectDefaultAgent: (input) => invoke("project.set-default-agent", input),
   createSession: (input) => invoke("session.create", input),
   setSessionAgent: (input) => invoke("session.set-agent", input),
+  renameSession: (input) => invoke("session.rename", input),
+  setSessionTitle: (input) => invoke("session.set-title", input),
+  generateSessionTitle: (input) => invoke("session.generate-title", input),
   sendMessage: (input) => invoke("session.send-message", input),
   fork: (input) => invoke("session.fork", input),
 };

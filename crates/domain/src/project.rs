@@ -270,10 +270,14 @@ pub struct Session {
     /// Owning project.
     pub project_id: ProjectId,
     /// Human-readable reference name.
+    #[serde(default)]
     pub name: String,
     /// Optional UI title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// AI-generated plain-text summary used by Session search.
+    #[serde(default)]
+    pub description: String,
     /// Current message pointer.
     pub current_message_id: MessageId,
     /// The sole non-terminal Run currently following this Session.
@@ -307,6 +311,7 @@ impl Session {
             project_id,
             name: name.into(),
             title: None,
+            description: String::new(),
             current_message_id,
             active_run_id: None,
             agent_id,
@@ -327,7 +332,6 @@ impl Session {
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.id.as_str().is_empty()
             || self.project_id.as_str().is_empty()
-            || self.name.trim().is_empty()
             || self.current_message_id.as_uuid().is_nil()
             || self.agent_id.as_str().is_empty()
             || self.version == 0
@@ -418,6 +422,22 @@ mod tests {
             missing_agent.validate().unwrap_err().code,
             ErrorCode::InvalidSession
         );
+    }
+
+    #[test]
+    fn session_name_may_be_empty_until_a_member_or_title_generator_names_it() {
+        let session = Session::new(
+            SessionId::new("session-1"),
+            ProjectId::new("project-1"),
+            "",
+            MessageId::from_u128(1),
+            AgentId::new("agent-1"),
+            TimestampMs(1),
+        );
+
+        session.validate().unwrap();
+        assert!(session.name.is_empty());
+        assert!(session.description.is_empty());
     }
 
     #[test]

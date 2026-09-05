@@ -12,8 +12,8 @@ use std::{
 
 use ait_application::LocalControlService;
 use ait_contracts::{
-    AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport, Response,
-    SettingsDocument,
+    AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport,
+    ReasoningEffort, Response, SettingsDocument,
 };
 use ait_domain::ErrorCode;
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
@@ -44,6 +44,9 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/agent/register", post(register_agent))
         .route("/v1/session/create", post(create_session))
         .route("/v1/session/set-agent", post(set_session_agent))
+        .route("/v1/session/rename", post(rename_session))
+        .route("/v1/session/set-title", post(set_session_title))
+        .route("/v1/session/generate-title", post(generate_session_title))
         .route("/v1/session/send-message", post(send_message))
         .route("/v1/session/fork", post(fork_session))
         .route("/v1/run/get", post(get_run))
@@ -232,11 +235,74 @@ async fn set_session_agent(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RenameSessionRequest {
+    session_id: String,
+    name: String,
+}
+
+async fn rename_session(
+    State(state): State<ApiState>,
+    Json(request): Json<RenameSessionRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::RenameSession {
+            session_id: request.session_id,
+            name: request.name,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSessionTitleRequest {
+    session_id: String,
+    title: String,
+}
+
+async fn set_session_title(
+    State(state): State<ApiState>,
+    Json(request): Json<SetSessionTitleRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SetSessionTitle {
+            session_id: request.session_id,
+            title: request.title,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenerateSessionTitleRequest {
+    session_id: String,
+    prompt: String,
+}
+
+async fn generate_session_title(
+    State(state): State<ApiState>,
+    Json(request): Json<GenerateSessionTitleRequest>,
+) -> Json<Response> {
+    Json(
+        state
+            .service
+            .generate_session_title(request.session_id, request.prompt)
+            .await,
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SendMessageRequest {
     session_id: String,
     text: String,
     #[serde(default)]
     expected_version: Option<u64>,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn send_message(
@@ -249,6 +315,7 @@ async fn send_message(
             session_id: request.session_id,
             text: request.text,
             expected_version: request.expected_version,
+            reasoning_effort: request.reasoning_effort,
         },
     )
     .await
@@ -262,6 +329,8 @@ struct ForkSessionRequest {
     agent_id: String,
     at_message_id: String,
     text: String,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn fork_session(
@@ -276,6 +345,7 @@ async fn fork_session(
             agent_id: request.agent_id,
             at_message_id: request.at_message_id,
             text: request.text,
+            reasoning_effort: request.reasoning_effort,
         },
     )
     .await
@@ -505,7 +575,10 @@ fn correlation_for_command(command: &Command) -> Correlation {
             correlation.project_id = Some(project_id.clone());
             correlation.session_id = Some(id.clone());
         }
-        Command::SetSessionAgent { session_id, .. } | Command::SendMessage { session_id, .. } => {
+        Command::SetSessionAgent { session_id, .. }
+        | Command::RenameSession { session_id, .. }
+        | Command::SetSessionTitle { session_id, .. }
+        | Command::SendMessage { session_id, .. } => {
             correlation.session_id = Some(session_id.clone());
         }
         Command::GetRun { run_id } | Command::CancelRun { run_id } => {
@@ -578,6 +651,8 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::RegisterAgent { .. } => "register_agent",
         Command::CreateSession { .. } => "create_session",
         Command::SetSessionAgent { .. } => "set_session_agent",
+        Command::RenameSession { .. } => "rename_session",
+        Command::SetSessionTitle { .. } => "set_session_title",
         Command::SendMessage { .. } => "send_message",
         Command::ForkSession { .. } => "fork_session",
         Command::GetRun { .. } => "get_run",

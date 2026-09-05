@@ -10,13 +10,16 @@ import {
   normalizedBuiltInAgent,
 } from "./agents.js";
 import { runFailure } from "./runs.js";
+import { messageAgentIds } from "./messages.js";
+import { sessionDisplayTitle } from "./session-titles.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.create", "project.set-default-agent",
-  "session.create", "session.set-agent", "session.send-message", "session.fork",
+  "session.create", "session.set-agent", "session.rename", "session.set-title",
+  "session.generate-title", "session.send-message", "session.fork",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -27,8 +30,13 @@ interface DaemonResponse {
 interface WorkspaceView {
   projects: Array<{ id: string; name: string; workdir: string; default_agent_id?: string | null }>;
   agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
-  sessions: Array<{ id: string; project_id: string; agent_id: string; current_message_id: string; active_run_id: string | null; version: number }>;
+  sessions: Array<{
+    id: string; project_id: string; name?: string; title?: string | null; description?: string;
+    title_generation_started?: boolean; agent_id: string; current_message_id: string;
+    active_run_id: string | null; version: number;
+  }>;
   messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown; metadata?: unknown }>;
+  runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
 }
 
 class DaemonClient {
@@ -88,10 +96,29 @@ class DaemonClient {
       });
       return this.snapshot();
     }
+    if (method === "session.rename") {
+      await this.post("/v1/session/rename", "session", {
+        session_id: params.sessionId, name: params.name,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.set-title") {
+      await this.post("/v1/session/set-title", "session", {
+        session_id: params.sessionId, title: params.title,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.generate-title") {
+      await this.post("/v1/session/generate-title", "session", {
+        session_id: params.sessionId, prompt: params.prompt,
+      });
+      return this.snapshot();
+    }
     if (method === "session.send-message") {
       const run = await this.post("/v1/session/send-message", "run", {
         session_id: params.sessionId, text: params.content,
         expected_version: params.expectedVersion,
+        reasoning_effort: params.reasoningEffort,
       });
       const failure = runFailure(run);
       if (failure) {
@@ -106,6 +133,7 @@ class DaemonClient {
     await this.post("/v1/session/fork", "run", {
       id, project_id: params.projectId, agent_id: params.agentId,
       at_message_id: params.sourceMessageId, text: params.content,
+      reasoning_effort: params.reasoningEffort,
     });
     return { snapshot: await this.snapshot(), selectedSessionId: id };
   }
@@ -188,6 +216,7 @@ class DaemonClient {
 
   private async snapshot(): Promise<unknown> {
     const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
+    const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
     this.snapshotRevision += 1;
     return {
       protocolVersion: 1,
@@ -198,14 +227,16 @@ class DaemonClient {
       })),
       agents: workspace.agents.map(normalizedBuiltInAgent),
       sessions: workspace.sessions.map((session) => ({
-        id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,
+        id: session.id, projectId: session.project_id, name: session.name ?? "",
+        title: sessionDisplayTitle(session), description: session.description ?? "",
+        titleGenerationStarted: session.title_generation_started ?? false,
         currentMessageId: session.current_message_id, agentId: session.agent_id,
         version: session.version, active: session.active_run_id !== null, updatedAt: 0,
       })),
       messages: workspace.messages.map((message) => ({
         id: message.id, projectId: message.project_id, parentMessageId: message.parent_message_id,
-        role: message.role, kind: message.kind, parts: messageParts(message),
-        ...messageProvenance(message.metadata), createdAt: 0,
+        role: message.role, kind: message.kind, parts: messageParts(message), createdAt: 0,
+        ...messageProvenance(message.metadata, messageAgents.get(message.id)),
       })),
     };
   }
@@ -227,7 +258,7 @@ function messageParts(message: WorkspaceView["messages"][number]): unknown[] {
   return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
 }
 
-function messageProvenance(value: unknown): {
+function messageProvenance(value: unknown, legacyAgentId?: string): {
   agentId: string | null;
   agentRevision: number | null;
   gitCommitId: string | null;
@@ -236,7 +267,7 @@ function messageProvenance(value: unknown): {
   const agent = objectParams(metadata.agent);
   const git = objectParams(metadata.git);
   return {
-    agentId: typeof agent.id === "string" ? agent.id : null,
+    agentId: typeof agent.id === "string" ? agent.id : legacyAgentId ?? null,
     agentRevision: typeof agent.revision === "number" ? agent.revision : null,
     gitCommitId: typeof git.commit_id === "string" ? git.commit_id : null,
   };

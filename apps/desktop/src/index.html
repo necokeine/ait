@@ -31,18 +31,18 @@
       </header>
 
       <aside id="sidebar" class="sidebar">
-        <nav class="primary-nav" aria-label="Workspace">
-          <button class="nav-item is-active" type="button"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
-          <button class="nav-item" type="button"><span>⌁</span>Runs</button>
-          <button class="nav-item" type="button"><span>◇</span>Agents</button>
-        </nav>
         <div class="sidebar-section-heading">
           <span>Projects</span>
           <button id="project-create-trigger" class="small-icon-button" type="button" aria-label="Create new Project">＋</button>
         </div>
         <div id="project-list" class="project-list" aria-label="Projects"></div>
         <div class="sidebar-footer">
-          <button id="settings-trigger" class="nav-item" type="button"><span>⚙</span>Settings <kbd>⌘,</kbd></button>
+          <nav class="primary-nav" aria-label="Workspace">
+            <button class="nav-item is-active" type="button"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
+            <button class="nav-item" type="button"><span>⌁</span>Runs</button>
+            <button class="nav-item" type="button"><span>◇</span>Agents</button>
+            <button id="settings-trigger" class="nav-item" type="button"><span>⚙</span>Settings <kbd>⌘,</kbd></button>
+          </nav>
           <div class="profile-row"><span class="profile-avatar">MK</span><span><strong>Local profile</strong><small>Private on this machine</small></span></div>
         </div>
       </aside>
@@ -76,6 +76,7 @@
                   <button class="tool-button" type="button" aria-label="Attach file">＋</button>
                   <button class="mode-button" type="button">Local <span>⌄</span></button>
                   <select id="composer-agent" class="agent-select" aria-label="Agent"></select>
+                  <select id="composer-reasoning" class="agent-select reasoning-select is-hidden" aria-label="Reasoning effort"></select>
                 </div>
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>
@@ -86,11 +87,11 @@
 
         <aside id="tree-panel" class="tree-panel">
           <header class="panel-header">
-            <div><span class="eyebrow">Project history</span><h2>Session tree</h2></div>
+            <div><span class="eyebrow">Project history</span><h2>Session timeline</h2></div>
             <button id="tree-close" class="icon-button" type="button" aria-label="Close session tree">×</button>
           </header>
           <div class="tree-legend"><span><i class="legend-current"></i>Current path</span><span><i class="legend-selected"></i>Selected</span></div>
-          <div id="tree-scroll" class="tree-scroll" tabindex="0" role="tree" aria-label="Message tree">
+          <div id="tree-scroll" class="tree-scroll" tabindex="0" role="tree" aria-label="Message timeline">
             <div id="tree-list" class="tree-list"></div>
           </div>
           <section id="node-details" class="node-details">
@@ -176,6 +177,28 @@
           <footer class="settings-footer">
             <button id="session-cancel" class="secondary-button" type="button">Cancel</button>
             <button id="session-create-submit" class="primary-button" type="submit">Create Session</button>
+          </footer>
+        </form>
+      </div>
+
+      <div id="session-context-menu" class="context-menu is-hidden" role="menu" aria-label="Session actions">
+        <button id="session-rename-action" type="button" role="menuitem">Rename</button>
+      </div>
+
+      <div id="rename-session-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="rename-session-title">
+        <form id="rename-session-form" class="action-window rename-session-window">
+          <header class="settings-header">
+            <div><span class="eyebrow">Session name</span><h2 id="rename-session-title">Rename Session</h2></div>
+            <button id="rename-session-close" class="icon-button" type="button" aria-label="Close rename Session">×</button>
+          </header>
+          <div class="action-form">
+            <label class="field-label" for="rename-session-name">Name</label>
+            <input id="rename-session-name" type="text" maxlength="100" autocomplete="off" placeholder="Leave empty to use the generated title" />
+            <p class="field-help">Clear the name to return to the generated or default Session title.</p>
+          </div>
+          <footer class="settings-footer">
+            <button id="rename-session-cancel" class="secondary-button" type="button">Cancel</button>
+            <button id="rename-session-submit" class="primary-button" type="submit">Save name</button>
           </footer>
         </form>
       </div>

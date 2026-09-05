@@ -1,5 +1,6 @@
 export type MessageRole = "user" | "system" | "assistant";
 export type MessageKind = "standard" | "tool_result";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export type MessagePart =
   | { type: "text"; text: string }
@@ -15,9 +16,9 @@ export interface DesktopMessage {
   role: MessageRole;
   kind: MessageKind;
   parts: MessagePart[];
-  agentId: string | null;
-  agentRevision: number | null;
-  gitCommitId: string | null;
+  agentId?: string | null;
+  agentRevision?: number | null;
+  gitCommitId?: string | null;
   createdAt: number;
 }
 
@@ -35,12 +36,17 @@ export interface AgentSummary {
   model: string;
   mode: string;
   enabled: boolean;
+  supportedReasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 export interface DesktopSession {
   id: string;
   projectId: string;
+  name: string;
   title: string;
+  description: string;
+  titleGenerationStarted: boolean;
   currentMessageId: string;
   agentId: string;
   version: number;
@@ -121,16 +127,21 @@ export interface AitDesktopApi {
     agentId: string;
     expectedVersion: number;
   }): Promise<DesktopSnapshot>;
+  renameSession(input: { sessionId: string; name: string }): Promise<DesktopSnapshot>;
+  setSessionTitle(input: { sessionId: string; title: string }): Promise<DesktopSnapshot>;
+  generateSessionTitle(input: { sessionId: string; prompt: string }): Promise<DesktopSnapshot>;
   sendMessage(input: {
     sessionId: string;
     expectedVersion: number;
     content: string;
+    reasoningEffort?: ReasoningEffort;
   }): Promise<DesktopSnapshot>;
   fork(input: {
     projectId: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
+    reasoningEffort?: ReasoningEffort;
   }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
 }
 

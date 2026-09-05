@@ -86,7 +86,7 @@ Session 是持有当前 Agent、指向 Project 某个 Message 的可移动命名
 
 ```text
 Session {
-  id, project_id, name, title?,
+  id, project_id, name, title?, description,
   current_message_id,
   active_run_id?,
   agent_id,
@@ -95,6 +95,8 @@ Session {
   created_at, updated_at
 }
 ```
+
+经 NEC-176 ADR-005 修订，`name` 对新 Session 默认为空且只由成员显式设置；`title` 与 `description` 分别保存 AI 生成的展示标题与检索摘要。展示时按 `name → title → Session <短 id>` 回退。
 
 `SessionView(session_id)` 是从 `current_message_id` 沿 parent 回溯到根、再反向排列得到的 Message 路径。多个 Session 可以指向同一个 Message，也可以沿不同子节点形成分支。
 

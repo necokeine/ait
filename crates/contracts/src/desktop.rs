@@ -45,8 +45,12 @@ pub struct DesktopSession {
     pub id: String,
     /// Owning Project.
     pub project_id: String,
+    /// Optional member-authored name, empty when unset.
+    pub name: String,
     /// Display title.
     pub title: String,
+    /// AI-generated plain-text summary used by search.
+    pub description: String,
     /// Current immutable Message pointer.
     pub current_message_id: String,
     /// Fixed Agent binding.
@@ -64,10 +68,18 @@ impl From<&Session> for DesktopSession {
         Self {
             id: session.id.as_str().to_owned(),
             project_id: session.project_id.as_str().to_owned(),
-            title: session
-                .title
-                .clone()
-                .unwrap_or_else(|| session.name.clone()),
+            name: session.name.clone(),
+            title: if session.name.trim().is_empty() {
+                session.title.clone().unwrap_or_else(|| {
+                    format!(
+                        "Session {}",
+                        session.id.as_str().chars().take(8).collect::<String>()
+                    )
+                })
+            } else {
+                session.name.clone()
+            },
+            description: session.description.clone(),
             current_message_id: session.current_message_id.to_string(),
             agent_id: session.agent_id.as_str().to_owned(),
             version: session.version,

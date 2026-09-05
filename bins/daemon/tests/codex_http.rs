@@ -101,6 +101,7 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
             "session_id": "daemon-codex-session",
             "text": "Generate a response through Codex.",
             "expected_version": 1,
+            "reasoning_effort": "high",
         }),
     )
     .await;
@@ -139,6 +140,7 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     let protocol = fs::read_to_string(codex_log).unwrap();
     assert!(protocol.contains("\"method\":\"initialize\""));
     assert!(protocol.contains("\"method\":\"turn/start\""));
+    assert!(protocol.contains("\"effort\":\"high\""));
     assert!(protocol.contains("Generate a response through Codex."));
 }
 

@@ -51,11 +51,13 @@ impl ApprovalPolicy {
 pub struct AgentRunRequest {
     pub request_id: String,
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub prompt: String,
     pub cwd: PathBuf,
     pub resume_thread_id: Option<String>,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
+    pub output_schema: Option<Value>,
     pub cancellation: CancellationToken,
 }
 

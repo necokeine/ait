@@ -143,6 +143,8 @@ pub struct WorkspaceAgentInvocation {
     pub request_id: String,
     /// Provider-specific model selected by the pinned Agent revision.
     pub model: String,
+    /// Optional model-supported reasoning effort fixed for this Run.
+    pub reasoning_effort: Option<String>,
     /// Fully assembled immutable Message path and current user task.
     pub prompt: String,
     /// Short subject used when the harness produced a Git commit.
@@ -160,6 +162,38 @@ pub struct WorkspaceAgentResponse {
     pub assistant_text: String,
     /// Commit created for workspace changes, when the turn changed files.
     pub commit_id: Option<String>,
+}
+
+/// Input for a small, read-only Session-title generation turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTitleRequest {
+    /// Stable correlation identity for the external turn.
+    pub request_id: String,
+    /// At most 2,000 user-prompt characters, without transport instructions.
+    pub user_prompt: String,
+    /// Canonical Project root used only as the harness working directory.
+    pub cwd: PathBuf,
+    /// Cooperative cancellation shared with the caller.
+    pub cancellation: CancellationToken,
+}
+
+/// Searchable metadata returned by a Session-title generation turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedSessionTitle {
+    /// Short visible Session title.
+    pub title: String,
+    /// Compact natural-language description used by Session search.
+    pub description: String,
+}
+
+/// Read-only model boundary for generating Session metadata.
+#[async_trait]
+pub trait SessionTitleGenerator: Send + Sync {
+    /// Generates one title and search description for a Session.
+    async fn generate(
+        &self,
+        request: SessionTitleRequest,
+    ) -> Result<GeneratedSessionTitle, DomainError>;
 }
 
 /// Complete coding-harness boundary used by the local control-plane slice.

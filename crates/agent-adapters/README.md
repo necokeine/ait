@@ -51,6 +51,7 @@ let adapter = CodexAppServerAdapter::new(CodexAppServerConfig::default())?;
 let stream = adapter.run(AgentRunRequest {
     request_id: "run-message-1".into(),
     model: None, // use the local Codex default
+    reasoning_effort: None, // use the model's advertised default
     prompt: "Inspect this project and summarize its architecture.".into(),
     cwd: PathBuf::from("/absolute/path/to/project"),
     resume_thread_id: None,

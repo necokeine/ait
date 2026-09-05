@@ -1,12 +1,19 @@
 //! End-to-end control-plane acceptance coverage.
 #![allow(clippy::pedantic)]
 
-use std::{process::Command as ProcessCommand, sync::Arc};
+use std::process::Command as ProcessCommand;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
+use ait_contracts::{AgentMode, Command, CommandResult, ReasoningEffort, default_settings};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::{
+    GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+};
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use tempfile::TempDir;
@@ -28,11 +35,133 @@ impl WorkspaceAgent for SuccessfulCodex {
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         assert!(request.prompt.contains("user: implement the feature"));
         assert_eq!(request.commit_subject, "implement the feature");
+        assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
         Ok(WorkspaceAgentResponse {
             assistant_text: "Implemented and verified the feature.".into(),
             commit_id: Some("0123456789abcdef".into()),
         })
     }
+}
+
+#[derive(Debug)]
+struct SuccessfulTitleGenerator {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SessionTitleGenerator for SuccessfulTitleGenerator {
+    async fn generate(
+        &self,
+        request: SessionTitleRequest,
+    ) -> Result<GeneratedSessionTitle, DomainError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(request.user_prompt.chars().count(), 2_000);
+        Ok(GeneratedSessionTitle {
+            title: "Implement session naming".into(),
+            description: "Add editable and generated Session names".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn first_interaction_generates_session_metadata_once_and_preserves_manual_name() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()))
+        .with_session_title_generator(Arc::new(SuccessfulTitleGenerator {
+            calls: calls.clone(),
+        }));
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "named-project".into(),
+            name: "Named Project".into(),
+            workdir: project_dir.display().to_string(),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "echo-agent".into(),
+            name: "Echo".into(),
+            model: "echo".into(),
+            mode: AgentMode::Echo,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "named-session".into(),
+            project_id: project.id,
+            agent_id: "echo-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SetSessionTitle {
+            session_id: "named-session".into(),
+            title: "Temporary prompt title".into(),
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SendMessage {
+            session_id: "named-session".into(),
+            text: "first interaction".into(),
+            expected_version: Some(1),
+            reasoning_effort: None,
+        },
+    )
+    .await;
+    let pointer_version = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value.sessions[0].version,
+        _ => panic!(),
+    };
+
+    let first = service
+        .generate_session_title("named-session".into(), "x".repeat(2_100))
+        .await;
+    assert!(first.ok, "{:?}", first.error);
+    let second = service
+        .generate_session_title("named-session".into(), "x".repeat(2_100))
+        .await;
+    assert!(second.ok, "{:?}", second.error);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+    let renamed = match run(
+        &service,
+        Command::RenameSession {
+            session_id: "named-session".into(),
+            name: "  My   Session  ".into(),
+        },
+    )
+    .await
+    {
+        CommandResult::Session(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(renamed.name, "My Session");
+    assert_eq!(renamed.title.as_deref(), Some("Implement session naming"));
+    assert_eq!(
+        renamed.description,
+        "Add editable and generated Session names"
+    );
+    assert!(renamed.title_generation_started);
+    assert_eq!(
+        renamed.version, pointer_version,
+        "metadata updates must not move the pointer version"
+    );
 }
 
 #[tokio::test]
@@ -62,7 +191,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Command::RegisterAgent {
             id: "codex-agent".into(),
             name: "Codex".into(),
-            model: "codex-test".into(),
+            model: "gpt-5.6-sol".into(),
             mode: AgentMode::Codex,
         },
     )
@@ -83,6 +212,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
             session_id: "codex-session".into(),
             text: "implement the feature".into(),
             expected_version: Some(1),
+            reasoning_effort: Some(ReasoningEffort::High),
         },
     )
     .await
@@ -91,6 +221,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         _ => panic!(),
     };
     assert_eq!(completed.status, "completed");
+    assert_eq!(completed.reasoning_effort, Some(ReasoningEffort::High));
 
     let workspace = match run(&service, Command::Snapshot).await {
         CommandResult::Workspace(value) => value,
@@ -161,6 +292,7 @@ async fn assistant_advances_the_existing_session_with_agent_and_git_provenance()
             session_id: "existing-session".into(),
             text: "keep this session".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await;
@@ -316,6 +448,7 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
             session_id: "rebind-session".into(),
             text: "keep this run queued".into(),
             expected_version: Some(2),
+            reasoning_effort: None,
         },
     )
     .await
@@ -381,6 +514,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
             session_id: "session-main".into(),
             text: "use the echo tool".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -553,6 +687,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             session_id: "s-provider".into(),
             text: "go".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -567,6 +702,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             session_id: "s-approval".into(),
             text: "go".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -579,11 +715,25 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
         ErrorCode::ToolApprovalRequired
     );
 
+    let unsupported_effort = service
+        .execute(Command::SendMessage {
+            session_id: "s-manual".into(),
+            text: "go".into(),
+            expected_version: Some(1),
+            reasoning_effort: Some(ReasoningEffort::High),
+        })
+        .await;
+    assert_eq!(
+        unsupported_effort.error.unwrap().code,
+        ErrorCode::InvalidAgentConfiguration
+    );
+
     let conflict = service
         .execute(Command::SendMessage {
             session_id: "s-manual".into(),
             text: "go".into(),
             expected_version: Some(99),
+            reasoning_effort: None,
         })
         .await;
     assert_eq!(
@@ -596,6 +746,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             session_id: "s-manual".into(),
             text: "go".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -665,6 +816,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
             session_id: "portable-session".into(),
             text: "preserve this branch".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await;
@@ -760,6 +912,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
             agent_id: "desktop-agent".into(),
             at_message_id: project.root_message_id,
             text: "first branch message".into(),
+            reasoning_effort: None,
         },
     )
     .await;
@@ -870,6 +1023,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
                 session_id: session_id.into(),
                 text: input.into(),
                 expected_version: Some(1),
+                reasoning_effort: None,
             },
         )
         .await
