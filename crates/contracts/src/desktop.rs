@@ -19,6 +19,12 @@ pub struct DesktopProject {
     pub workdir: String,
     /// Optional descriptive context.
     pub description: String,
+    /// Optional remote repository URL declared for this Project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    /// Immutable repository HEAD captured at Project registration.
+    #[serde(default)]
+    pub base_commit: String,
     /// Agent suggested when creating a Session in this Project.
     pub default_agent_id: Option<String>,
 }
@@ -141,6 +147,9 @@ pub struct DesktopMessage {
     pub kind: MessageKind,
     /// Ordered safe parts.
     pub parts: Vec<DesktopMessagePart>,
+    /// Clean repository HEAD captured for interactive human input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
     /// Creation time in milliseconds since Unix epoch.
     pub created_at: i64,
 }
@@ -161,6 +170,7 @@ impl From<ProjectedMessage> for DesktopMessage {
                 role,
                 kind: MessageKind::Standard,
                 parts: vec![DesktopMessagePart::Redacted],
+                git_commit: None,
                 created_at: 0,
             },
         }
@@ -169,6 +179,10 @@ impl From<ProjectedMessage> for DesktopMessage {
 
 impl From<Message> for DesktopMessage {
     fn from(message: Message) -> Self {
+        let git_commit = message
+            .git_commit
+            .as_ref()
+            .map(|commit| commit.as_str().to_owned());
         let parts = message
             .sub_messages
             .into_iter()
@@ -197,6 +211,7 @@ impl From<Message> for DesktopMessage {
             role: message.role,
             kind: message.kind,
             parts,
+            git_commit,
             created_at: message.created_at.get(),
         }
     }

@@ -7,6 +7,7 @@ use std::{
     process::Command,
 };
 
+use ait_domain::GitCommit;
 use ait_ports::{EnvironmentError, ProjectEnvironment};
 
 /// Canonical project-root guard shared by instruction loading and future file tools.
@@ -145,6 +146,78 @@ impl ProjectEnvironment for LocalProjectEnvironment {
                 String::from_utf8_lossy(&output.stderr).trim().to_owned(),
             ))
         }
+    }
+
+    fn git_head(&self, directory: &Path) -> Result<Option<GitCommit>, EnvironmentError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .map_err(|error| EnvironmentError::Git(error.to_string()))?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let raw = String::from_utf8(output.stdout)
+            .map_err(|error| EnvironmentError::Git(error.to_string()))?;
+        GitCommit::parse(raw.trim()).map(Some).map_err(|error| {
+            EnvironmentError::Git(format!("Git returned an invalid HEAD: {}", error.message))
+        })
+    }
+
+    fn git_commit_initial(&self, directory: &Path) -> Result<(), EnvironmentError> {
+        let staged = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["diff", "--cached", "--quiet", "--exit-code"])
+            .output()
+            .map_err(|error| EnvironmentError::Git(error.to_string()))?;
+        if !staged.status.success() {
+            return Err(EnvironmentError::Git(
+                "cannot create an empty initial commit while the index contains staged changes"
+                    .into(),
+            ));
+        }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args([
+                "-c",
+                "user.name=AIT",
+                "-c",
+                "user.email=ait@localhost",
+                "commit",
+                "--allow-empty",
+                "--no-gpg-sign",
+                "--no-verify",
+                "--quiet",
+                "-m",
+                "Initialize AIT project",
+            ])
+            .output()
+            .map_err(|error| EnvironmentError::Git(error.to_string()))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(EnvironmentError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ))
+        }
+    }
+
+    fn git_is_clean(&self, directory: &Path) -> Result<bool, EnvironmentError> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+            .output()
+            .map_err(|error| EnvironmentError::Git(error.to_string()))?;
+        if !output.status.success() {
+            return Err(EnvironmentError::Git(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        Ok(output.stdout.is_empty())
     }
 
     fn read_project_file(

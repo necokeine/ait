@@ -9,6 +9,7 @@ const project = (id: string): DesktopProject => ({
   name: id,
   workdir: `/${id}`,
   description: "",
+  baseCommit: "a".repeat(40),
   defaultAgentId: "codex-local",
 });
 

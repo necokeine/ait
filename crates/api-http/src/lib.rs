@@ -75,6 +75,8 @@ struct RegisterProjectRequest {
     id: String,
     name: String,
     workdir: String,
+    #[serde(default)]
+    repo_url: Option<String>,
 }
 
 async fn register_project(
@@ -87,6 +89,7 @@ async fn register_project(
             id: request.id,
             name: request.name,
             workdir: request.workdir,
+            repo_url: request.repo_url,
         },
     )
     .await

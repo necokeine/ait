@@ -152,6 +152,7 @@ fn registration(path: &Path, id: &str) -> ProjectRegistration {
         id: ProjectId::new(id),
         name: id.to_owned(),
         workdir: path.to_path_buf(),
+        repo_url: None,
     }
 }
 
@@ -170,6 +171,7 @@ fn registration_canonicalizes_and_initializes_an_independent_git_root() {
 
     assert_eq!(project.workdir, fs::canonicalize(&nested).unwrap());
     assert!(project.git_initialized_by_manager);
+    assert_eq!(project.base_commit.as_str().len(), 40);
     let top = Command::new("git")
         .arg("-C")
         .arg(&nested)
@@ -180,6 +182,36 @@ fn registration_canonicalizes_and_initializes_an_independent_git_root() {
         fs::canonicalize(String::from_utf8(top.stdout).unwrap().trim()).unwrap(),
         project.workdir
     );
+}
+
+#[test]
+fn clean_head_is_captured_and_dirty_input_is_rejected() {
+    let temp = TempDir::new().unwrap();
+    let store = Arc::new(MemoryProjectStore::default());
+    let service = service(Arc::clone(&store), vec![]);
+    let project = service
+        .register_project(ProjectRegistration {
+            id: ProjectId::new("p1"),
+            name: "p1".into(),
+            workdir: temp.path().to_path_buf(),
+            repo_url: Some("git@github.com:member/fork.git".into()),
+        })
+        .unwrap();
+
+    assert_eq!(
+        service.capture_clean_head(&project.id).unwrap(),
+        project.base_commit
+    );
+    assert_eq!(
+        project.repo_url.as_deref(),
+        Some("git@github.com:member/fork.git")
+    );
+
+    fs::write(temp.path().join("dirty.txt"), "not committed").unwrap();
+    assert!(matches!(
+        service.capture_clean_head(&project.id),
+        Err(ait_application::ProjectError::GitDirty)
+    ));
 }
 
 #[test]

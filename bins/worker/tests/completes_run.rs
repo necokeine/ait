@@ -7,9 +7,10 @@ use std::{
 
 use ait_domain::{
     AgentCapability, AgentConfigSnapshot, AgentId, DomainError, DomainMetadata, DurationMs,
-    Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId, ProjectedMessage,
-    RetryPolicy, Run, RunAttempt, RunAttemptStatus, RunBudget, RunId, RunPhase, RunStatus,
-    RunStopReason, RunTrigger, RunUsage, SubMessage, TimestampMs, ToolExecution, ToolPolicy,
+    GitCommit, Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId,
+    ProjectedMessage, RetryPolicy, Run, RunAttempt, RunAttemptStatus, RunBudget, RunId, RunPhase,
+    RunStatus, RunStopReason, RunTrigger, RunUsage, SubMessage, TimestampMs, ToolExecution,
+    ToolPolicy,
 };
 use ait_ports::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent,
@@ -240,6 +241,7 @@ fn fixture() -> (Run, Vec<Message>) {
         run_id: None,
         run_seq: None,
         tool_result: None,
+        git_commit: None,
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(1),
     };
@@ -257,6 +259,7 @@ fn fixture() -> (Run, Vec<Message>) {
         run_id: None,
         run_seq: None,
         tool_result: None,
+        git_commit: Some(GitCommit::parse("a".repeat(40)).unwrap()),
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(2),
     };
