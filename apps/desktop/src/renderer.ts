@@ -1,4 +1,4 @@
-import { flattenMessageTree, messageText, pathToMessage, type FlatTreeNode } from "./tree.js";
+import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
 import type {
   DesktopMessage,
@@ -36,8 +36,9 @@ let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
 let selectedNodeId: string | undefined;
 let configuringProjectId: string | undefined;
-let collapsedNodes = new Set<string>();
-let flatTree: FlatTreeNode[] = [];
+let viewedTreeHeadId: string | undefined;
+let branchPickerNodeId: string | undefined;
+let timeline: TimelineNode[] = [];
 let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let settingsCategory: SettingCategory = "models";
@@ -152,6 +153,12 @@ function currentProject() {
   return snapshot?.projects.find((project) => project.id === selectedProjectId);
 }
 
+function resetTreeView(): void {
+  selectedNodeId = undefined;
+  viewedTreeHeadId = undefined;
+  branchPickerNodeId = undefined;
+}
+
 function renderProjects(): void {
   if (!snapshot) return;
   if (snapshot.projects.length === 0) {
@@ -191,7 +198,7 @@ function renderProjects(): void {
       const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
-      selectedNodeId = undefined;
+      resetTreeView();
       renderAll();
     });
   });
@@ -256,27 +263,43 @@ function renderTree(): void {
   if (!snapshot) return;
   const session = currentSession();
   const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
-  flatTree = flattenMessageTree(messages, session, selectedNodeId, collapsedNodes);
-  const visible = flatTree.slice(0, 2_000);
+  timeline = buildMessageTimeline(messages, session, viewedTreeHeadId, selectedNodeId);
+  const visible = timeline.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
     const preview = messageText(node.message).replace(/\s+/g, " ").trim() || "Empty message";
-    const expander = node.childCount > 0 ? (node.expanded ? "⌄" : "›") : "";
-    return `<div class="tree-node tree-depth-${Math.min(node.depth, 12)}${node.selected ? " is-selected" : ""}${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" aria-selected="${node.selected}" aria-expanded="${node.childCount > 0 ? node.expanded : "false"}" tabindex="${node.selected ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}" data-depth="${node.depth}">
-      <button class="tree-expander" type="button" aria-label="${node.expanded ? "Collapse" : "Expand"}">${expander}</button>
-      <span class="tree-role">${roleLetter(node.message.role)}</span>
-      <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${formatTime(node.message.createdAt)}</small></span>
-      ${node.childCount > 1 ? `<span class="tree-count">${node.childCount}</span>` : ""}
+    const pickerOpen = branchPickerNodeId === node.message.id;
+    const branchPicker = pickerOpen
+      ? `<div class="tree-branches" role="group" aria-label="Branches after ${escapeAttribute(preview)}">
+          ${node.branches.map((branch, index) => {
+            const branchPreview = messageText(branch.message).replace(/\s+/g, " ").trim() || "Empty message";
+            return `<button class="tree-branch${branch.active ? " is-active" : ""}" type="button" data-branch-root-id="${escapeAttribute(branch.message.id)}" aria-pressed="${branch.active}" title="${escapeAttribute(branchPreview)}"><span>${index + 1}</span>${escapeHtml(branchPreview)}</button>`;
+          }).join("")}
+        </div>`
+      : "";
+    return `<div class="tree-timeline-item" role="none">
+      <div class="tree-node${node.selected ? " is-selected" : ""}${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" aria-selected="${node.selected}" tabindex="${node.selected ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}">
+        <span class="tree-marker" aria-hidden="true"></span>
+        <span class="tree-role">${roleLetter(node.message.role)}</span>
+        <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${formatTime(node.message.createdAt)}</small></span>
+        ${node.branches.length > 0 ? `<button class="tree-branch-trigger" type="button" aria-label="Choose branch after this message" aria-expanded="${pickerOpen}">⑂ ${node.branches.length}</button>` : ""}
+      </div>
+      ${branchPicker}
     </div>`;
   }).join("");
-  if (flatTree.length > visible.length) {
-    treeList.insertAdjacentHTML("beforeend", `<div class="tree-limit">Showing first ${visible.length.toLocaleString()} of ${flatTree.length.toLocaleString()} nodes</div>`);
+  if (timeline.length > visible.length) {
+    treeList.insertAdjacentHTML("beforeend", `<div class="tree-limit">Showing first ${visible.length.toLocaleString()} of ${timeline.length.toLocaleString()} messages</div>`);
   }
   treeList.querySelectorAll<HTMLElement>(".tree-node").forEach((row) => {
     row.addEventListener("click", () => selectTreeNode(row.dataset.messageId));
-    row.querySelector(".tree-expander")?.addEventListener("click", (event) => {
+    row.querySelector(".tree-branch-trigger")?.addEventListener("click", (event) => {
       event.stopPropagation();
-      toggleNode(row.dataset.messageId);
+      branchPickerNodeId = branchPickerNodeId === row.dataset.messageId ? undefined : row.dataset.messageId;
+      renderTree();
+      treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(row.dataset.messageId ?? "")}"] .tree-branch-trigger`)?.focus();
     });
+  });
+  treeList.querySelectorAll<HTMLElement>("[data-branch-root-id]").forEach((button) => {
+    button.addEventListener("click", () => switchTreeBranch(button.dataset.branchRootId));
   });
   renderNodeDetails();
 }
@@ -289,11 +312,18 @@ function selectTreeNode(id: string | undefined): void {
   treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)?.focus();
 }
 
-function toggleNode(id: string | undefined): void {
-  if (!id) return;
-  if (collapsedNodes.has(id)) collapsedNodes.delete(id);
-  else collapsedNodes.add(id);
+function switchTreeBranch(branchRootId: string | undefined): void {
+  if (!snapshot || !branchRootId || !selectedProjectId) return;
+  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
+  const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
+  const headId = resolveBranchHead(messages, sessions, branchRootId);
+  if (!headId) return;
+  viewedTreeHeadId = headId;
+  branchPickerNodeId = undefined;
+  selectedNodeId = undefined;
   renderTree();
+  updateComposerState();
+  treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(branchRootId)}"]`)?.focus();
 }
 
 function renderNodeDetails(): void {
@@ -343,7 +373,7 @@ async function submitMessage(): Promise<void> {
       });
       showToast("Message sent.");
     }
-    selectedNodeId = undefined;
+    resetTreeView();
     messageInput.value = "";
     renderAll();
   } catch (error) {
@@ -399,13 +429,20 @@ function toggleTree(): void {
 function handleTreeKeyboard(event: KeyboardEvent): void {
   if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) return;
   event.preventDefault();
-  const currentIndex = Math.max(0, flatTree.findIndex((node) => node.message.id === selectedNodeId));
-  if (event.key === "ArrowDown") selectTreeNode(flatTree[Math.min(flatTree.length - 1, currentIndex + 1)]?.message.id);
-  if (event.key === "ArrowUp") selectTreeNode(flatTree[Math.max(0, currentIndex - 1)]?.message.id);
+  const currentIndex = Math.max(0, timeline.findIndex((node) => node.message.id === selectedNodeId));
+  if (event.key === "ArrowDown") selectTreeNode(timeline[Math.min(timeline.length - 1, currentIndex + 1)]?.message.id);
+  if (event.key === "ArrowUp") selectTreeNode(timeline[Math.max(0, currentIndex - 1)]?.message.id);
   if (event.key === "Enter") messageInput.focus();
-  const current = flatTree[currentIndex];
-  if (event.key === "ArrowLeft" && current?.expanded && current.childCount > 0) toggleNode(current.message.id);
-  if (event.key === "ArrowRight" && !current?.expanded && current?.childCount) toggleNode(current.message.id);
+  const current = timeline[currentIndex];
+  if (event.key === "ArrowLeft" && branchPickerNodeId === current?.message.id) {
+    branchPickerNodeId = undefined;
+    renderTree();
+  }
+  if (event.key === "ArrowRight" && current?.branches.length) {
+    branchPickerNodeId = current.message.id;
+    renderTree();
+    treeList.querySelector<HTMLElement>(".tree-branch.is-active")?.focus();
+  }
 }
 
 function handleGlobalKeyboard(event: KeyboardEvent): void {
@@ -464,7 +501,7 @@ function selectProject(projectId: string | undefined): void {
   selectedSessionId = snapshot.sessions
     .filter((session) => session.projectId === projectId)
     .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
-  selectedNodeId = undefined;
+  resetTreeView();
   renderAll();
 }
 
@@ -490,7 +527,7 @@ async function createProject(): Promise<void> {
     snapshot = result.snapshot;
     selectedProjectId = result.selectedProjectId;
     selectedSessionId = undefined;
-    selectedNodeId = undefined;
+    resetTreeView();
     $<HTMLInputElement>("#project-create-name").value = "";
     $<HTMLInputElement>("#project-create-path").value = "";
     closeProjectDialog();
@@ -547,7 +584,7 @@ async function createSession(): Promise<void> {
     const result = await window.ait.createSession({ projectId: project.id, agentId });
     snapshot = result.snapshot;
     selectedSessionId = result.selectedSessionId;
-    selectedNodeId = undefined;
+    resetTreeView();
     closeSessionDialog();
     renderAll();
     messageInput.focus();
@@ -701,7 +738,7 @@ function renderCommandResults(): void {
       const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.session);
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
-      selectedNodeId = undefined;
+      resetTreeView();
       closeCommandPalette();
       renderAll();
     });

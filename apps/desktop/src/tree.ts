@@ -1,13 +1,15 @@
 import type { DesktopMessage, DesktopSession } from "./types.js";
 
-export interface FlatTreeNode {
+export interface TimelineBranch {
   message: DesktopMessage;
-  depth: number;
-  childCount: number;
-  expanded: boolean;
+  active: boolean;
+}
+
+export interface TimelineNode {
+  message: DesktopMessage;
   selected: boolean;
   onCurrentBranch: boolean;
-  ancestorOfSelection: boolean;
+  branches: TimelineBranch[];
 }
 
 export function messageText(message: DesktopMessage): string {
@@ -33,55 +35,92 @@ export function pathToMessage(messages: DesktopMessage[], headId: string): Deskt
   return path.reverse();
 }
 
-export function flattenMessageTree(
+export function buildMessageTimeline(
   messages: DesktopMessage[],
   currentSession: DesktopSession | undefined,
+  viewedHeadId: string | undefined,
   selectedId: string | undefined,
-  collapsed: ReadonlySet<string>,
-): FlatTreeNode[] {
+): TimelineNode[] {
   const byId = new Map(messages.map((message) => [message.id, message]));
-  const children = new Map<string | null, DesktopMessage[]>();
+  const children = collectChildren(messages, byId);
+  const currentBranch = collectAncestors(byId, currentSession?.currentMessageId);
+  const requestedHead = viewedHeadId && byId.has(viewedHeadId)
+    ? viewedHeadId
+    : currentSession?.currentMessageId;
+  const path = requestedHead ? pathToMessage(messages, requestedHead) : [];
+
+  return path.map((message, index) => {
+    const successors = children.get(message.id) ?? [];
+    const activeSuccessorId = path[index + 1]?.id;
+    return {
+      message,
+      selected: message.id === selectedId,
+      onCurrentBranch: currentBranch.has(message.id),
+      branches: successors.length > 1
+        ? successors.map((successor) => ({
+            message: successor,
+            active: successor.id === activeSuccessorId,
+          }))
+        : [],
+    };
+  });
+}
+
+export function resolveBranchHead(
+  messages: DesktopMessage[],
+  sessions: DesktopSession[],
+  branchRootId: string,
+): string | undefined {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  if (!byId.has(branchRootId)) return undefined;
+
+  const session = sessions
+    .filter((candidate) => isDescendantOf(byId, candidate.currentMessageId, branchRootId))
+    .toSorted((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0];
+  if (session) return session.currentMessageId;
+
+  const children = collectChildren(messages, byId);
+  let cursor = byId.get(branchRootId);
+  const seen = new Set<string>();
+  while (cursor && !seen.has(cursor.id)) {
+    seen.add(cursor.id);
+    const successor = (children.get(cursor.id) ?? []).at(-1);
+    if (!successor) return cursor.id;
+    cursor = successor;
+  }
+  return branchRootId;
+}
+
+function collectChildren(
+  messages: DesktopMessage[],
+  byId: ReadonlyMap<string, DesktopMessage>,
+): Map<string, DesktopMessage[]> {
+  const children = new Map<string, DesktopMessage[]>();
   for (const message of messages) {
-    const parent = message.parentMessageId && byId.has(message.parentMessageId)
-      ? message.parentMessageId
-      : null;
-    const siblings = children.get(parent) ?? [];
+    if (!message.parentMessageId || !byId.has(message.parentMessageId)) continue;
+    const siblings = children.get(message.parentMessageId) ?? [];
     siblings.push(message);
-    children.set(parent, siblings);
+    children.set(message.parentMessageId, siblings);
   }
   for (const siblings of children.values()) {
     siblings.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
   }
+  return children;
+}
 
-  const ancestorsOfSelection = collectAncestors(byId, selectedId);
-  const currentBranch = collectAncestors(byId, currentSession?.currentMessageId);
-  const flat: FlatTreeNode[] = [];
-  const roots = children.get(null) ?? [];
-  const stack = roots.toReversed().map((message) => ({ message, depth: 0 }));
+function isDescendantOf(
+  byId: ReadonlyMap<string, DesktopMessage>,
+  candidateId: string,
+  ancestorId: string,
+): boolean {
   const seen = new Set<string>();
-
-  while (stack.length > 0) {
-    const entry = stack.pop();
-    if (!entry || seen.has(entry.message.id)) continue;
-    seen.add(entry.message.id);
-    const descendants = children.get(entry.message.id) ?? [];
-    const expanded = !collapsed.has(entry.message.id);
-    flat.push({
-      message: entry.message,
-      depth: entry.depth,
-      childCount: descendants.length,
-      expanded,
-      selected: entry.message.id === selectedId,
-      onCurrentBranch: currentBranch.has(entry.message.id),
-      ancestorOfSelection: ancestorsOfSelection.has(entry.message.id),
-    });
-    if (expanded) {
-      for (const child of descendants.toReversed()) {
-        stack.push({ message: child, depth: entry.depth + 1 });
-      }
-    }
+  let cursor = byId.get(candidateId);
+  while (cursor && !seen.has(cursor.id)) {
+    if (cursor.id === ancestorId) return true;
+    seen.add(cursor.id);
+    cursor = cursor.parentMessageId ? byId.get(cursor.parentMessageId) : undefined;
   }
-  return flat;
+  return false;
 }
 
 function collectAncestors(
