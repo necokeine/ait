@@ -16,6 +16,7 @@ export interface DesktopMessage {
   role: MessageRole;
   kind: MessageKind;
   parts: MessagePart[];
+  gitCommit?: string;
   createdAt: number;
   agentId?: string | null;
 }
@@ -25,6 +26,8 @@ export interface DesktopProject {
   name: string;
   workdir: string;
   description: string;
+  forkRepoUrl?: string;
+  baseCommit: string;
   defaultAgentId: string | null;
 }
 
@@ -111,6 +114,7 @@ export interface AitDesktopApi {
     name: string;
     workdir: string;
     agentId: string;
+    forkRepoUrl?: string;
   }): Promise<{ snapshot: DesktopSnapshot; selectedProjectId: string }>;
   setProjectDefaultAgent(input: {
     projectId: string;

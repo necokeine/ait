@@ -41,6 +41,15 @@ struct State {
     settings_revision: u64,
 }
 
+struct ForkSessionInput {
+    id: String,
+    project_id: String,
+    agent_id: String,
+    at_message_id: String,
+    text: String,
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -392,6 +401,7 @@ impl LocalControlService {
                         "assistant",
                         "standard",
                         Some(output.assistant_text.clone()),
+                        None,
                         data,
                     );
                     append_output(&mut state, &mut run, reply);
@@ -465,7 +475,9 @@ impl LocalControlService {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
-            let (result, events) = apply_command(&mut state, command.clone())?;
+            let git_commit = user_message_git_commit(&state, &command)?;
+            let (result, events) =
+                apply_command(&mut state, command.clone(), git_commit.as_deref())?;
             let value = serde_json::to_value(&state).map_err(serialization_error)?;
             match self.store.commit(snapshot.revision, value, events).await {
                 Ok(_) => return Ok(result),
@@ -501,11 +513,15 @@ fn read_command(state: State, revision: u64, command: Command) -> Result<Command
 fn apply_command(
     state: &mut State,
     command: Command,
+    user_git_commit: Option<&str>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     match command {
-        Command::RegisterProject { id, name, workdir } => {
-            register_project(state, id, name, &workdir)
-        }
+        Command::RegisterProject {
+            id,
+            name,
+            workdir,
+            fork_repo_url,
+        } => register_project(state, id, name, &workdir, fork_repo_url),
         Command::SetProjectDefaultAgent {
             project_id,
             agent_id,
@@ -536,7 +552,14 @@ fn apply_command(
             text,
             expected_version,
             reasoning_effort,
-        } => send_message(state, session_id, text, expected_version, reasoning_effort),
+        } => send_message(
+            state,
+            session_id,
+            text,
+            expected_version,
+            reasoning_effort,
+            require_user_git_commit(user_git_commit)?,
+        ),
         Command::ForkSession {
             id,
             project_id,
@@ -546,12 +569,15 @@ fn apply_command(
             reasoning_effort,
         } => fork_session(
             state,
-            id,
-            project_id,
-            agent_id,
-            at_message_id,
-            text,
-            reasoning_effort,
+            ForkSessionInput {
+                id,
+                project_id,
+                agent_id,
+                at_message_id,
+                text,
+                reasoning_effort,
+            },
+            require_user_git_commit(user_git_commit)?,
         ),
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
         Command::CreateCron {
@@ -586,9 +612,7 @@ fn apply_command(
         Command::Snapshot
         | Command::GetRun { .. }
         | Command::ExportProject { .. }
-        | Command::GetSettings => {
-            unreachable!("read command routed to write path")
-        }
+        | Command::GetSettings => unreachable!("read command routed to write path"),
     }
 }
 
@@ -618,18 +642,36 @@ fn set_project_default_agent(
 
 fn fork_session(
     state: &mut State,
-    id: String,
-    project_id: String,
-    agent_id: String,
-    at_message_id: String,
-    text: String,
-    reasoning_effort: Option<ReasoningEffort>,
+    input: ForkSessionInput,
+    git_commit: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    let (_, mut events) =
-        create_session(state, id.clone(), project_id, agent_id, Some(at_message_id))?;
-    let (result, mut run_events) = send_message(state, id, text, Some(1), reasoning_effort)?;
+    let (_, mut events) = create_session(
+        state,
+        input.id.clone(),
+        input.project_id,
+        input.agent_id,
+        Some(input.at_message_id),
+    )?;
+    let (result, mut run_events) = send_message(
+        state,
+        input.id,
+        input.text,
+        Some(1),
+        input.reasoning_effort,
+        git_commit,
+    )?;
     events.append(&mut run_events);
     Ok((result, events))
+}
+
+fn require_user_git_commit(commit: Option<&str>) -> Result<&str, ApiError> {
+    commit.ok_or_else(|| {
+        error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Git HEAD snapshot is missing for user message",
+            false,
+        )
+    })
 }
 
 fn settings_view(state: &State) -> SettingsView {
@@ -722,6 +764,7 @@ fn register_project(
     id: String,
     name: String,
     workdir: &str,
+    mut fork_repo_url: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     if id.trim().is_empty() || name.trim().is_empty() {
         return Err(error(
@@ -737,7 +780,18 @@ fn register_project(
             false,
         ));
     }
+    if let Some(url) = &mut fork_repo_url {
+        *url = url.trim().to_owned();
+        if url.is_empty() {
+            return Err(error(
+                ErrorCode::InvalidProject,
+                "fork repository URL cannot be empty",
+                false,
+            ));
+        }
+    }
     let canonical = prepare_git_root(Path::new(&workdir))?;
+    let base_commit = ensure_git_head(&canonical)?;
     let canonical_text = canonical.to_string_lossy().into_owned();
     if state
         .projects
@@ -756,6 +810,8 @@ fn register_project(
         name,
         workdir: canonical_text,
         root_message_id: root_id.clone(),
+        fork_repo_url,
+        base_commit,
         default_agent_id: None,
         revision: 1,
     };
@@ -766,6 +822,7 @@ fn register_project(
         role: "system".into(),
         kind: "standard".into(),
         text: Some("AIT project instructions".into()),
+        git_commit: None,
         data: None,
     });
     state.projects.push(project.clone());
@@ -1022,6 +1079,7 @@ fn send_message(
     text: String,
     expected_version: Option<u64>,
     reasoning_effort: Option<ReasoningEffort>,
+    git_commit: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     if text.trim().is_empty() {
         return Err(error(
@@ -1058,6 +1116,7 @@ fn send_message(
         "user",
         "standard",
         Some(text),
+        Some(git_commit),
         None,
     );
     state.messages.push(user.clone());
@@ -1148,6 +1207,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 "standard",
                 Some("echo: completed".into()),
                 None,
+                None,
             );
             append_output(state, &mut run, reply);
             run.status = "completed".into();
@@ -1160,6 +1220,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 "assistant",
                 "standard",
                 None,
+                None,
                 Some(
                     json!({"tool_use":{"call_id":"call-1","tool_name":"echo","arguments":{"text":"hello from tool"}}}),
                 ),
@@ -1170,6 +1231,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 run.last_message_id.as_deref(),
                 "user",
                 "tool_result",
+                None,
                 None,
                 Some(
                     json!({"tool_result":{"call_id":"call-1","status":"succeeded","output":"hello from tool"}}),
@@ -1182,6 +1244,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 "assistant",
                 "standard",
                 Some("tool call completed".into()),
+                None,
                 None,
             );
             append_output(state, &mut run, reply);
@@ -1542,6 +1605,7 @@ fn import_project(
 
     let mut project = archive.project;
     project.workdir = canonical_text;
+    project.base_commit = ensure_git_head(&canonical)?;
     for agent in archive.agents {
         if !state.agents.iter().any(|existing| existing.id == agent.id) {
             state.agents.push(agent);
@@ -1565,6 +1629,12 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
         || archive.source_revision == 0
         || archive.project.id.trim().is_empty()
         || archive.project.revision == 0
+        || !is_git_commit(&archive.project.base_commit)
+        || archive
+            .project
+            .fork_repo_url
+            .as_ref()
+            .is_some_and(|url| url.trim().is_empty())
         || archive.messages.is_empty()
     {
         return Err(invalid_archive(
@@ -1576,6 +1646,14 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
     for message in &archive.messages {
         if message.project_id != archive.project.id
             || Uuid::parse_str(&message.id).is_err()
+            || (message.role == "user"
+                && message.kind == "standard"
+                && message
+                    .git_commit
+                    .as_deref()
+                    .is_none_or(|commit| !is_git_commit(commit)))
+            || (message.git_commit.is_some()
+                && (message.role != "user" || message.kind != "standard"))
             || message_by_id.insert(message.id.as_str(), message).is_some()
         {
             return Err(invalid_archive(
@@ -1659,6 +1737,7 @@ fn message(
     role: &str,
     kind: &str,
     text: Option<String>,
+    git_commit: Option<&str>,
     data: Option<Value>,
 ) -> MessageView {
     MessageView {
@@ -1668,6 +1747,7 @@ fn message(
         role: role.into(),
         kind: kind.into(),
         text,
+        git_commit: git_commit.map(str::to_owned),
         data,
     }
 }
@@ -1716,6 +1796,180 @@ fn prepare_git_root(path: &Path) -> Result<std::path::PathBuf, ApiError> {
         ));
     }
     Ok(canonical)
+}
+
+fn ensure_git_head(path: &Path) -> Result<String, ApiError> {
+    if let Some(head) = git_head(path)? {
+        return Ok(head);
+    }
+    let staged = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["diff", "--cached", "--quiet", "--exit-code"])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+    if !staged.status.success() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "cannot create an empty initial commit while the index contains staged changes",
+            false,
+        ));
+    }
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args([
+            "-c",
+            "user.name=AIT",
+            "-c",
+            "user.email=ait@localhost",
+            "commit",
+            "--allow-empty",
+            "--no-gpg-sign",
+            "--no-verify",
+            "--quiet",
+            "-m",
+            "Initialize AIT project",
+        ])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+    if !output.status.success() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            false,
+        ));
+    }
+    git_head(path)?.ok_or_else(|| {
+        error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "initial commit succeeded but Git HEAD is unavailable",
+            false,
+        )
+    })
+}
+
+fn user_message_git_commit(state: &State, command: &Command) -> Result<Option<String>, ApiError> {
+    let project_id = match command {
+        Command::SendMessage { session_id, .. } => Some(
+            state
+                .sessions
+                .iter()
+                .find(|session| session.id == *session_id)
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?
+                .project_id
+                .as_str(),
+        ),
+        Command::ForkSession { project_id, .. } => Some(project_id.as_str()),
+        _ => return Ok(None),
+    };
+    let Some(project_id) = project_id else {
+        return Ok(None);
+    };
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    clean_git_head(Path::new(&project.workdir)).map(Some)
+}
+
+fn clean_git_head(path: &Path) -> Result<String, ApiError> {
+    let before = git_head(path)?.ok_or_else(|| {
+        error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "project repository has no HEAD commit",
+            false,
+        )
+    })?;
+    let status = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+    if !status.status.success() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&status.stderr).trim(),
+            false,
+        ));
+    }
+    if !status.stdout.is_empty() {
+        return Err(error(
+            ErrorCode::ProjectGitDirty,
+            "project Git worktree and index must be clean before adding a user message",
+            false,
+        ));
+    }
+    let after = git_head(path)?.ok_or_else(|| {
+        error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "project repository HEAD disappeared while adding a user message",
+            true,
+        )
+    })?;
+    if before != after {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "project repository HEAD changed while adding a user message; retry",
+            true,
+        ));
+    }
+    Ok(after)
+}
+
+fn git_head(path: &Path) -> Result<Option<String>, ApiError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if is_git_commit(&head) {
+        Ok(Some(head))
+    } else {
+        Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Git returned an invalid full HEAD object id",
+            false,
+        ))
+    }
+}
+
+fn is_git_commit(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn git_top_level(path: &Path) -> Option<std::path::PathBuf> {

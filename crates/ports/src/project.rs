@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use ait_domain::{
-    AgentId, InstructionSourceSnapshot, MessageId, Project, ProjectId, SessionId, SessionRoot,
+    AgentId, GitCommit, InstructionSourceSnapshot, MessageId, Project, ProjectId, SessionId,
+    SessionRoot,
 };
 
 /// Captured Project-instruction component before a store assigns its revision.
@@ -98,6 +99,28 @@ pub trait ProjectEnvironment: Send + Sync {
     ///
     /// Returns an [`EnvironmentError`] when Git cannot initialize the directory.
     fn git_init(&self, directory: &Path) -> Result<(), EnvironmentError>;
+
+    /// Returns the repository HEAD, or `None` for an unborn repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EnvironmentError`] when Git cannot inspect HEAD or returns
+    /// an invalid full object identity.
+    fn git_head(&self, directory: &Path) -> Result<Option<GitCommit>, EnvironmentError>;
+
+    /// Creates the manager-owned empty initial commit for an unborn repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EnvironmentError`] when Git cannot create the commit.
+    fn git_commit_initial(&self, directory: &Path) -> Result<(), EnvironmentError>;
+
+    /// Reports whether the index and worktree, including untracked files, are clean.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EnvironmentError`] when Git cannot inspect repository status.
+    fn git_is_clean(&self, directory: &Path) -> Result<bool, EnvironmentError>;
 
     /// Reads an optional project-relative instruction file without allowing symlink escape.
     ///

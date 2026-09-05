@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{DomainError, DomainMetadata, ErrorCode, MessageId, ProjectId, SessionId, TimestampMs};
+use crate::{
+    DomainError, DomainMetadata, ErrorCode, GitCommit, MessageId, ProjectId, SessionId, TimestampMs,
+};
 
 /// Stable identity of a Run that produced a Message.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -269,6 +271,9 @@ pub struct Message {
     /// Fields present only for [`MessageKind::ToolResult`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result: Option<ToolResult>,
+    /// Clean repository HEAD captured for an interactive human user Message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<GitCommit>,
     /// Non-secret extension metadata fixed at creation.
     #[serde(default)]
     pub metadata: DomainMetadata,
@@ -286,6 +291,13 @@ impl Message {
     pub fn validate(&self) -> Result<(), MessageValidationError> {
         if self.id.as_uuid().is_nil() {
             return Err(MessageValidationError::InvalidMessageId);
+        }
+        if self
+            .git_commit
+            .as_ref()
+            .is_some_and(|commit| !commit.is_valid())
+        {
+            return Err(MessageValidationError::InvalidGitCommit);
         }
         if self.parent_message_id.is_none()
             && (self.role != MessageRole::System
@@ -355,6 +367,20 @@ impl Message {
             {
                 Err(MessageValidationError::ToolResultMessageInvalid)
             }
+            _ if self.role == MessageRole::User
+                && self.kind == MessageKind::Standard
+                && self.origin == MessageOrigin::Human
+                && self.git_commit.is_none() =>
+            {
+                Err(MessageValidationError::HumanMessageGitCommitRequired)
+            }
+            _ if self.git_commit.is_some()
+                && (self.role != MessageRole::User
+                    || self.kind != MessageKind::Standard
+                    || self.origin != MessageOrigin::Human) =>
+            {
+                Err(MessageValidationError::GitCommitNotAllowed)
+            }
             _ => Ok(()),
         }
     }
@@ -378,6 +404,12 @@ pub enum MessageValidationError {
     ToolResultRequiresUser,
     /// `ToolResult` fields, role, origin, or Run provenance were inconsistent.
     ToolResultMessageInvalid,
+    /// A human user Message omitted its clean repository HEAD snapshot.
+    HumanMessageGitCommitRequired,
+    /// Git provenance was attached to a Message that is not human user input.
+    GitCommitNotAllowed,
+    /// The attached Git object identity was not a full SHA-1 or SHA-256 hash.
+    InvalidGitCommit,
 }
 
 impl std::fmt::Display for MessageValidationError {
@@ -390,6 +422,9 @@ impl std::fmt::Display for MessageValidationError {
             Self::InvalidSubMessage => "INVALID_SUBMESSAGE_KIND",
             Self::ToolResultRequiresUser => "TOOL_RESULT_REQUIRES_USER",
             Self::ToolResultMessageInvalid => "TOOL_RESULT_MESSAGE_INVALID",
+            Self::HumanMessageGitCommitRequired => "HUMAN_MESSAGE_GIT_COMMIT_REQUIRED",
+            Self::GitCommitNotAllowed => "MESSAGE_GIT_COMMIT_NOT_ALLOWED",
+            Self::InvalidGitCommit => "INVALID_MESSAGE_GIT_COMMIT",
         })
     }
 }
@@ -406,6 +441,11 @@ impl From<MessageValidationError> for DomainError {
             MessageValidationError::InvalidSubMessage => ErrorCode::InvalidSubmessageKind,
             MessageValidationError::ToolResultRequiresUser => ErrorCode::ToolResultRequiresUser,
             MessageValidationError::ToolResultMessageInvalid => ErrorCode::ToolResultMessageInvalid,
+            MessageValidationError::HumanMessageGitCommitRequired => {
+                ErrorCode::HumanMessageGitCommitRequired
+            }
+            MessageValidationError::GitCommitNotAllowed => ErrorCode::MessageGitCommitNotAllowed,
+            MessageValidationError::InvalidGitCommit => ErrorCode::InvalidMessageGitCommit,
         };
         Self::invariant(code, error.to_string())
     }
@@ -476,6 +516,8 @@ mod tests {
             run_id: None,
             run_seq: None,
             tool_result: None,
+            git_commit: (role == MessageRole::User)
+                .then(|| GitCommit::parse("a".repeat(40)).unwrap()),
             metadata: DomainMetadata::default(),
             created_at: TimestampMs(1),
         }
@@ -511,6 +553,7 @@ mod tests {
         result.origin = MessageOrigin::Tool;
         result.run_id = Some(RunId::new("run-1"));
         result.run_seq = Some(2);
+        result.git_commit = None;
         result.tool_result = Some(ToolResult {
             call_id: "call-1".into(),
             status: ToolResultStatus::Succeeded,
@@ -547,5 +590,26 @@ mod tests {
             candidate.validate().unwrap_err(),
             MessageValidationError::InvalidRunProvenance
         );
+    }
+
+    #[test]
+    fn human_user_message_requires_exclusive_valid_git_provenance() {
+        let mut user = message(MessageRole::User);
+        user.validate().unwrap();
+
+        user.git_commit = None;
+        assert_eq!(
+            user.validate().unwrap_err(),
+            MessageValidationError::HumanMessageGitCommitRequired
+        );
+
+        let mut assistant = message(MessageRole::Assistant);
+        assistant.git_commit = Some(GitCommit::parse("b".repeat(40)).unwrap());
+        assert_eq!(
+            assistant.validate().unwrap_err(),
+            MessageValidationError::GitCommitNotAllowed
+        );
+
+        assert!(serde_json::from_str::<GitCommit>("\"short\"").is_err());
     }
 }

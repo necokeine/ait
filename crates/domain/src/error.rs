@@ -14,6 +14,10 @@ pub enum ErrorCode {
     ProjectPathAlreadyRegistered,
     /// Git initialization failed.
     ProjectGitInitFailed,
+    /// Project Git worktree or index contains changes.
+    ProjectGitDirty,
+    /// Project repository has no readable HEAD commit.
+    ProjectGitHeadUnavailable,
     /// A file operation escaped the Project boundary.
     ProjectPathOutOfScope,
     /// Project aggregate fields are inconsistent.
@@ -50,6 +54,12 @@ pub enum ErrorCode {
     ToolResultRequiresUser,
     /// `ToolResult` envelope is inconsistent.
     ToolResultMessageInvalid,
+    /// An interactive human Message omitted its Git HEAD snapshot.
+    HumanMessageGitCommitRequired,
+    /// Git HEAD provenance appeared on a non-human Message.
+    MessageGitCommitNotAllowed,
+    /// A Message carried a malformed Git object identity.
+    InvalidMessageGitCommit,
     /// Agent does not exist.
     AgentNotFound,
     /// Agent is disabled.
@@ -117,6 +127,8 @@ impl ErrorCode {
             Self::ProjectPathNotDirectory => "PROJECT_PATH_NOT_DIRECTORY",
             Self::ProjectPathAlreadyRegistered => "PROJECT_PATH_ALREADY_REGISTERED",
             Self::ProjectGitInitFailed => "PROJECT_GIT_INIT_FAILED",
+            Self::ProjectGitDirty => "PROJECT_GIT_DIRTY",
+            Self::ProjectGitHeadUnavailable => "PROJECT_GIT_HEAD_UNAVAILABLE",
             Self::ProjectPathOutOfScope => "PROJECT_PATH_OUT_OF_SCOPE",
             Self::InvalidProject => "INVALID_PROJECT",
             Self::SessionNotFound => "SESSION_NOT_FOUND",
@@ -135,6 +147,9 @@ impl ErrorCode {
             Self::ToolUseRequiresAssistant => "TOOL_USE_REQUIRES_ASSISTANT",
             Self::ToolResultRequiresUser => "TOOL_RESULT_REQUIRES_USER",
             Self::ToolResultMessageInvalid => "TOOL_RESULT_MESSAGE_INVALID",
+            Self::HumanMessageGitCommitRequired => "HUMAN_MESSAGE_GIT_COMMIT_REQUIRED",
+            Self::MessageGitCommitNotAllowed => "MESSAGE_GIT_COMMIT_NOT_ALLOWED",
+            Self::InvalidMessageGitCommit => "INVALID_MESSAGE_GIT_COMMIT",
             Self::AgentNotFound => "AGENT_NOT_FOUND",
             Self::AgentDisabled => "AGENT_DISABLED",
             Self::AgentRevisionNotFound => "AGENT_REVISION_NOT_FOUND",

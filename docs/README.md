@@ -22,6 +22,7 @@
 - `decisions/NEC-174/adr-001-codex-session-execution.md`：Codex Session 输入、assistant result 与 Git commit 的首个可执行闭环。
 - `decisions/NEC-174/adr-002-codex-run-reasoning-effort.md`：Codex 推理强度作为 Run 级固定覆盖值的传递、校验与桌面能力投影边界。
 - `decisions/NEC-176/adr-005-session-naming-and-generated-metadata.md`：Session 手工命名、首次交互临时标题与只读 AI 检索元数据生成。
+- `decisions/adr-006-project-git-provenance.md`：Project 初始 Git 基线、可选 fork 地址，以及 human user Message 的干净 HEAD 快照约束。
 
 ## 运维手册
 

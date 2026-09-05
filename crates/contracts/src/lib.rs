@@ -9,7 +9,7 @@ use serde_json::Value;
 pub const API_VERSION: u16 = 1;
 
 /// Current portable Project archive format.
-pub const PROJECT_EXPORT_VERSION: u16 = 1;
+pub const PROJECT_EXPORT_VERSION: u16 = 2;
 
 /// Execution backend selected by an Agent revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -57,6 +57,8 @@ pub enum Command {
         id: String,
         name: String,
         workdir: String,
+        #[serde(default)]
+        fork_repo_url: Option<String>,
     },
     SetProjectDefaultAgent {
         project_id: String,
@@ -164,6 +166,11 @@ pub struct ProjectView {
     pub name: String,
     pub workdir: String,
     pub root_message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_repo_url: Option<String>,
+    /// Immutable repository HEAD captured when the Project was registered.
+    #[serde(default)]
+    pub base_commit: String,
     #[serde(default)]
     pub default_agent_id: Option<String>,
     #[serde(default = "default_revision")]
@@ -210,6 +217,9 @@ pub struct MessageView {
     pub role: String,
     pub kind: String,
     pub text: Option<String>,
+    /// Clean repository HEAD captured with interactive human input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }

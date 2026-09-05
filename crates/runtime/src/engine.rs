@@ -322,6 +322,7 @@ impl RunCoordinator {
                     run_id: Some(run.id.clone()),
                     run_seq: Some(next_step),
                     tool_result: None,
+                    git_commit: None,
                     metadata: DomainMetadata::default(),
                     created_at: self.clock.now(),
                 };
@@ -821,6 +822,7 @@ impl RunCoordinator {
                 output,
                 error,
             }),
+            git_commit: None,
             metadata: DomainMetadata::default(),
             created_at: self.clock.now(),
         };

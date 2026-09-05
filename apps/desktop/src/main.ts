@@ -28,14 +28,20 @@ interface DaemonResponse {
 }
 
 interface WorkspaceView {
-  projects: Array<{ id: string; name: string; workdir: string; default_agent_id?: string | null }>;
+  projects: Array<{
+    id: string; name: string; workdir: string; fork_repo_url?: string | null;
+    base_commit: string; default_agent_id?: string | null;
+  }>;
   agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
   sessions: Array<{
     id: string; project_id: string; name?: string; title?: string | null; description?: string;
     title_generation_started?: boolean; agent_id: string; current_message_id: string;
     active_run_id: string | null; version: number;
   }>;
-  messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
+  messages: Array<{
+    id: string; project_id: string; parent_message_id: string | null; role: string;
+    kind: string; text: string | null; git_commit?: string | null; data?: unknown;
+  }>;
   runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
 }
 
@@ -69,7 +75,7 @@ class DaemonClient {
     if (method === "project.create") {
       const id = randomUUID();
       await this.post("/v1/project/register", "project", {
-        id, name: params.name, workdir: params.workdir,
+        id, name: params.name, workdir: params.workdir, fork_repo_url: params.forkRepoUrl,
       });
       await this.post("/v1/project/set-default-agent", "project", {
         project_id: id, agent_id: params.agentId,
@@ -223,6 +229,7 @@ class DaemonClient {
       revision: this.snapshotRevision,
       projects: workspace.projects.map((project) => ({
         id: project.id, name: project.name, workdir: project.workdir, description: "",
+        forkRepoUrl: project.fork_repo_url ?? undefined, baseCommit: project.base_commit,
         defaultAgentId: project.default_agent_id ?? null,
       })),
       agents: workspace.agents.map(normalizedBuiltInAgent),
@@ -236,6 +243,7 @@ class DaemonClient {
       messages: workspace.messages.map((message) => ({
         id: message.id, projectId: message.project_id, parentMessageId: message.parent_message_id,
         role: message.role, kind: message.kind, parts: messageParts(message), createdAt: 0,
+        gitCommit: message.git_commit ?? undefined,
         agentId: messageAgents.get(message.id) ?? null,
       })),
     };

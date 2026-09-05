@@ -1,7 +1,7 @@
 # 核心术语速查
 
-- **Project**：拥有一个工作目录和元数据；目录根是 Git 仓库。如果指定目录尚非 Git 仓库，初始化为新仓库。
-- **Message**：不可变的对话树节点，角色为 `system`、`user` 或 `assistant`。它类似 Git commit。
+- **Project**：拥有一个 Git 工作目录、注册时冻结的 `base_commit`、可选远端 fork 地址和元数据；无 HEAD 的新仓库会获得一个空初始提交。
+- **Message**：不可变的对话树节点，角色为 `system`、`user` 或 `assistant`。普通 human user Message 只在仓库干净时创建，并记录当时的 `git_commit`。
 - **SubMessage**：Message 内部的有序内容节点；ToolUse 是 assistant Message 中的一种 SubMessage。
 - **ToolResult**：承载工具结果的一种 user Message，并关联对应 ToolUse。
 - **Session**：指向 Message 树上当前节点的可移动引用，类似 Git branch。用户可从任意节点打开 Session；新增 Message 后，Session 指针向新叶子移动。

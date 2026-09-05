@@ -29,9 +29,9 @@ pub use message::{
     RunId, StoredMessage, SubMessage, ToolResult, ToolResultStatus, ToolUse,
 };
 pub use project::{
-    InstructionSnapshot, InstructionSourceSnapshot, InstructionSourceSummary, MessageId, Project,
-    ProjectId, ProjectStatus, Session, SessionId, SessionRoot, SessionStatus, SystemMessage,
-    SystemMessageComponent,
+    GitCommit, InstructionSnapshot, InstructionSourceSnapshot, InstructionSourceSummary, MessageId,
+    Project, ProjectId, ProjectStatus, Session, SessionId, SessionRoot, SessionStatus,
+    SystemMessage, SystemMessageComponent,
 };
 pub use run::{
     CheckpointId, RetryPolicy, Run, RunAttempt, RunAttemptId, RunAttemptReason, RunAttemptStatus,

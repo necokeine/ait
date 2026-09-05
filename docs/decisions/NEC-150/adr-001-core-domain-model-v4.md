@@ -31,6 +31,8 @@ Project {
   id, name, description,          // 未提供时为空字符串
   workdir,                       // 规范化后的绝对路径
   git_initialized_by_manager,
+  fork_repo_url?,                // 可选、声明型的远端 fork 地址
+  base_commit,                   // 注册 Project 时冻结的初始 HEAD
   default_agent_id?,              // 创建 Session 时的默认建议，可覆盖
   instruction_revision,
   metadata,                      // 可扩展、非敏感、可序列化元数据
@@ -43,9 +45,10 @@ Project {
 1. 校验 `workdir` 存在、是目录且可访问，然后解析为规范化绝对路径。
 2. 若 `git -C <workdir> rev-parse --show-toplevel` 的规范化结果正好等于 `workdir`，直接复用现有仓库。
 3. 否则在 `workdir` 执行 `git init`。这也适用于位于另一个仓库内部、但自身不是 Git root 的目录；结果是一个独立的嵌套仓库。
-4. 再次校验 Git top-level 等于 `workdir`；只有成功后才持久化 Project。`git init` 失败则 Project 创建失败。
+4. 再次校验 Git top-level 等于 `workdir`。读取完整 `HEAD` object id；若新初始化或已有仓库仍是 unborn HEAD，创建一个 manager-owned 的空初始提交后再次读取。
+5. 将该 object id 冻结为 `Project.base_commit`；只有 Git root 与 HEAD 都验证成功后才持久化 Project。
 
-一个规范化路径最多注册为一个 Project。Git remote、当前分支等是可刷新派生信息，不是 Project 身份。默认情况下，文件工具不得越出 `workdir`；越界必须经过显式授权。
+一个规范化路径最多注册为一个 Project。`fork_repo_url` 是可选的声明型来源信息，不参与 Project 身份；实际 Git remote、当前分支等仍是可刷新派生信息。默认情况下，文件工具不得越出 `workdir`；越界必须经过显式授权。
 
 创建一棵新的 Message 树时，从 Project 指令源生成根 System Message 快照。仅在已有 Message 上打开 Session 时不创建或改写 System Message。Project 后续变化不回写旧 Message。
 
@@ -103,7 +106,7 @@ Session {
 点击任意 Message 并“打开 Session”时，必须选择 Agent 并创建一个新 Session；其 `current_message_id` 指向该 Message，不复制 Message，也不移动其他 Session。若要让同一节点由不同 Agent 并排推进，应打开另一个 Session；若只需继续同一 Session，可在空闲时显式重绑。常规交互流程为：
 
 1. Session 当前指向 `M0`。
-2. 用户提交内容，系统创建 `U1(parent=M0, role=user)`，并以 Session `version` 做 compare-and-swap，将指针从 `M0` 推进到 `U1`。
+2. 用户提交内容，系统先确认 Project Git index、worktree（含未跟踪文件）均干净，并稳定读取完整 HEAD；然后创建 `U1(parent=M0, role=user, git_commit=HEAD)`，再以 Session `version` 做 compare-and-swap，将指针从 `M0` 推进到 `U1`。检查失败时不得写 Message、Run 或移动 Session。
 3. 系统以 `U1 + Session.agent_id` 创建 Run，解析并固定 Agent revision，并把该 Session 绑定为 `follow_session_id`。
 4. Run 每持久化一个新 Message，就把 Session 指针从上一个 Message CAS 推进到新 Message；Session 因而随着生成过程逐步向下移动。
 5. Run 通过终止屏障后清除 `active_run_id`，Session 留在本次 Run 的最后一个 Message。
@@ -123,6 +126,7 @@ Message {
   origin: project | human | agent | tool | scheduler | system,
   created_by_session_id?,
   run_id?, run_seq?,
+  git_commit?,                   // 仅普通 human user Message 必填
   created_at, metadata
 }
 
@@ -140,6 +144,7 @@ SubMessage =
 - `system` Message 保存 System prompt，只允许系统支持的普通 sub-message，不允许 ToolUse。
 - `assistant` Message 可包含 Text、StructuredData、FileRef 和零个或多个 ToolUse。ToolUse 是 assistant Message 内部的 sub-message 节点，不能单独成为 Message 树节点。
 - 普通 `user` Message 承载人类、调度器或系统注入的输入。
+- `origin=human` 的普通 `user` Message 必须携带创建时 Project 的完整 `git_commit`；该提交只可在 Git index 与 worktree 均干净时捕获。其他 Message 不携带该字段。
 - ToolResult 是 `role=user, message_kind=tool_result, origin=tool` 的特殊 Message：
 
 ```text
@@ -286,20 +291,21 @@ Message.role = user | system | assistant
 
 ## 4. 核心不变量
 
-1. Project 创建结束后，`workdir` 等于 Git top-level；若创建前不是 Git root，必须先在该目录成功执行 `git init`。规范化路径在系统内唯一。
+1. Project 创建结束后，`workdir` 等于 Git top-level，`base_commit` 是注册时冻结的有效完整 HEAD；若创建前不是 Git root，必须先在该目录成功执行 `git init`，若 HEAD 尚未出生则创建空初始提交。规范化路径在系统内唯一。
 2. 一个 Message 只属于一个 Project；其 parent 必须属于同一 Project；Message 图必须无环。每个连通树恰有一个根，根必须是 `role=system` 的 Message。
 3. 一个 Session 只属于一个 Project、持有一个当前 Agent，并且只指向该 Project 的一个 Message。Message 不属于 Session；多个 Session 可以指向同一个 Message。只有 `active_run_id` 为空时才能以 version CAS 重绑 Agent。
 4. Message 创建后不可变。编辑旧 Message 会以旧 Message 的 parent 为基点创建替代分支；重新生成会以旧 assistant Message 的 parent 为 `base_message_id` 启动新 Run。查看或继续历史节点时创建新的 Session 引用，不复制历史。
 5. Message role 严格限制为 `user | system | assistant`。ToolUse 只能是 assistant Message 内的 sub-message；ToolResult 必须是 `role=user, message_kind=tool_result` 的 Message。
-6. Run 创建后固定 `base_message_id`、Agent 与 Agent revision。首个输出 Message 以 `base_message_id` 为 parent；后续输出以前一个 Run 输出 Message 为 parent；`run_seq` 从 1 连续递增。并发 Run 因而自然形成分支。
-7. ToolResult Message 必须引用同一 Run 当前路径上尚未完成的 ToolUse；每个 `call_id` 在 Run 内唯一，且最多有一个最终 ToolResult Message。
-8. 每个 Agent 输出 Message 必须先持久化，才能开始下一模型或工具步骤；重试、压缩恢复和崩溃恢复只能从最后一个已提交 Message/检查点继续，并沿用同一 `run_id`。
-9. Run 固定 Agent revision 和预算。凭证不得进入 Message、日志、导出或 metadata。
-10. Session 的自动推进只能从当前 Message 移到其新建的直接子 Message，并且必须使用 `version` compare-and-swap。指针冲突时保留已生成分支并返回错误，不覆盖 Session。
-11. 一个 Session 同时最多有一个非终态 `active_run_id`。跟随 Session 的 Run 必须使用创建 Run 时的 `Session.agent_id`。从同一 Message 并发运行必须创建另一个 Session，或启动不跟随 Session 的 Run；空闲 Session 可显式切换 Agent。
-12. 交互式 Run 每次持久化 Message 时，必须在同一事务内推进其 `follow_session_id`；所有终态都必须条件式释放匹配的 `active_run_id`。
-13. `completed` 只能由终止屏障原子写入：无待处理工具、重试、压缩/恢复或队列项，输出已落盘，且 `queue_version` 未变化。
-14. Cron 必须固定引用 `project_id + base_message_id + agent_id`；每次触发创建不跟随 Session 的新 Run，按 dedupe key 幂等。多个触发从同一 Message 形成分支。
+6. `role=user, message_kind=standard, origin=human` 的 Message 必须携带有效完整 `git_commit`，且追加前 Project Git index/worktree（含未跟踪文件）必须干净；Git 检查失败时不得产生任何领域写入。该字段不得出现在其他 Message 上。
+7. Run 创建后固定 `base_message_id`、Agent 与 Agent revision。首个输出 Message 以 `base_message_id` 为 parent；后续输出以前一个 Run 输出 Message 为 parent；`run_seq` 从 1 连续递增。并发 Run 因而自然形成分支。
+8. ToolResult Message 必须引用同一 Run 当前路径上尚未完成的 ToolUse；每个 `call_id` 在 Run 内唯一，且最多有一个最终 ToolResult Message。
+9. 每个 Agent 输出 Message 必须先持久化，才能开始下一模型或工具步骤；重试、压缩恢复和崩溃恢复只能从最后一个已提交 Message/检查点继续，并沿用同一 `run_id`。
+10. Run 固定 Agent revision 和预算。凭证不得进入 Message、日志、导出或 metadata。
+11. Session 的自动推进只能从当前 Message 移到其新建的直接子 Message，并且必须使用 `version` compare-and-swap。指针冲突时保留已生成分支并返回错误，不覆盖 Session。
+12. 一个 Session 同时最多有一个非终态 `active_run_id`。跟随 Session 的 Run 必须使用创建 Run 时的 `Session.agent_id`。从同一 Message 并发运行必须创建另一个 Session，或启动不跟随 Session 的 Run；空闲 Session 可显式切换 Agent。
+13. 交互式 Run 每次持久化 Message 时，必须在同一事务内推进其 `follow_session_id`；所有终态都必须条件式释放匹配的 `active_run_id`。
+14. `completed` 只能由终止屏障原子写入：无待处理工具、重试、压缩/恢复或队列项，输出已落盘，且 `queue_version` 未变化。
+15. Cron 必须固定引用 `project_id + base_message_id + agent_id`；每次触发创建不跟随 Session 的新 Run，按 dedupe key 幂等。多个触发从同一 Message 形成分支。
 
 ## 5. Run 状态机
 
@@ -327,7 +333,7 @@ Agent 产生最终 assistant Message 且没有待处理 ToolUse 时，只能进�
 ## 6. 最小 API 契约
 
 ```text
-createProject(workdir, metadata) // 必要时在 workdir 执行 git init
+createProject(workdir, fork_repo_url?, metadata) // 必要时 git init 并创建空初始提交
 updateProjectMetadata(project_id, patch)
 createMessageRoot(project_id, system_sub_messages)
 openSession(project_id, at_message_id, agent_id, name?)
