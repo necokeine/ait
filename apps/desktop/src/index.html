@@ -31,23 +31,16 @@
       </header>
 
       <aside id="sidebar" class="sidebar">
-        <div class="workspace-switcher">
-          <button id="project-button" class="workspace-button" type="button" aria-haspopup="dialog">
-            <span class="workspace-avatar">A</span>
-            <span class="workspace-copy"><strong id="project-name">Ait</strong><small id="project-path">Loading workspace…</small></span>
-            <span class="chevron">⌄</span>
-          </button>
-        </div>
         <nav class="primary-nav" aria-label="Workspace">
           <button class="nav-item is-active" type="button"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
           <button class="nav-item" type="button"><span>⌁</span>Runs</button>
           <button class="nav-item" type="button"><span>◇</span>Agents</button>
         </nav>
         <div class="sidebar-section-heading">
-          <span>Recent</span>
-          <button id="new-session" class="small-icon-button" type="button" aria-label="New session">＋</button>
+          <span>Projects</span>
+          <button id="project-create-trigger" class="small-icon-button" type="button" aria-label="Create new Project">＋</button>
         </div>
-        <div id="session-list" class="session-list" role="listbox" aria-label="Sessions"></div>
+        <div id="project-list" class="project-list" aria-label="Projects"></div>
         <div class="sidebar-footer">
           <button id="settings-trigger" class="nav-item" type="button"><span>⚙</span>Settings <kbd>⌘,</kbd></button>
           <div class="profile-row"><span class="profile-avatar">MK</span><span><strong>Local profile</strong><small>Private on this machine</small></span></div>
@@ -128,38 +121,45 @@
       </div>
 
       <div id="project-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title">
-        <section class="action-window project-window">
+        <form id="project-create" class="action-window project-window">
           <header class="settings-header">
-            <div><span class="eyebrow">Local workspaces</span><h2 id="project-dialog-title">Projects</h2></div>
-            <button id="project-close" class="icon-button" type="button" aria-label="Close projects">×</button>
+            <div><span class="eyebrow">Local workspace</span><h2 id="project-dialog-title">Create Project</h2></div>
+            <button id="project-close" class="icon-button" type="button" aria-label="Close new Project">×</button>
           </header>
-          <div class="project-dialog-body">
-            <section>
-              <h3>Open a Project</h3>
-              <div id="project-list" class="project-list"></div>
-            </section>
-            <section class="project-config">
-              <h3>Project backend</h3>
-              <p id="project-backend-copy" class="field-help">Choose the default Agent for new Sessions.</p>
-              <label class="field-label" for="project-backend">Backend</label>
-              <select id="project-backend"></select>
-              <button id="project-backend-save" class="secondary-button" type="button">Save backend</button>
-            </section>
-            <form id="project-create" class="project-create">
-              <h3>Create Project</h3>
-              <label class="field-label" for="project-create-name">Name</label>
-              <input id="project-create-name" type="text" autocomplete="off" required placeholder="Project name" />
-              <label class="field-label" for="project-create-path">Directory</label>
-              <div class="path-control">
-                <input id="project-create-path" type="text" readonly required placeholder="Choose a local directory" />
-                <button id="project-choose-path" class="secondary-button" type="button">Choose…</button>
-              </div>
-              <label class="field-label" for="project-create-agent">Backend</label>
-              <select id="project-create-agent"></select>
-              <button id="project-create-submit" class="primary-button" type="submit">Create Project</button>
-            </form>
+          <div class="action-form">
+            <label class="field-label" for="project-create-name">Name</label>
+            <input id="project-create-name" type="text" autocomplete="off" required placeholder="Project name" />
+            <label class="field-label" for="project-create-path">Directory</label>
+            <div class="path-control">
+              <input id="project-create-path" type="text" readonly required placeholder="Choose a local directory" />
+              <button id="project-choose-path" class="secondary-button" type="button">Choose…</button>
+            </div>
+            <label class="field-label" for="project-create-agent">Backend</label>
+            <select id="project-create-agent"></select>
           </div>
-        </section>
+          <footer class="settings-footer">
+            <button id="project-cancel" class="secondary-button" type="button">Cancel</button>
+            <button id="project-create-submit" class="primary-button" type="submit">Create Project</button>
+          </footer>
+        </form>
+      </div>
+
+      <div id="project-settings-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+        <form id="project-settings" class="action-window project-settings-window">
+          <header class="settings-header">
+            <div><span class="eyebrow">Project defaults</span><h2 id="project-settings-title">Project settings</h2></div>
+            <button id="project-settings-close" class="icon-button" type="button" aria-label="Close Project settings">×</button>
+          </header>
+          <div class="action-form">
+            <p id="project-backend-copy" class="field-help">Choose the default Agent for new Sessions.</p>
+            <label class="field-label" for="project-backend">Backend</label>
+            <select id="project-backend"></select>
+          </div>
+          <footer class="settings-footer">
+            <button id="project-settings-cancel" class="secondary-button" type="button">Cancel</button>
+            <button id="project-backend-save" class="primary-button" type="submit">Save backend</button>
+          </footer>
+        </form>
       </div>
 
       <div id="session-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="session-dialog-title">

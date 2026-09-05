@@ -13,7 +13,7 @@ npm run dev
 
 Main first reuses a daemon already listening on `127.0.0.1:7314`. Otherwise it starts `cargo run -p ait-daemon` with a SQLite database under Electron's per-user `userData` directory. Only a daemon started by this Electron process is stopped on application exit.
 
-The Project switcher can register local directories, persist a default Agent backend per Project, and switch between their isolated Session lists. Create a Session with the `+` button, send from the composer, then move between Projects without losing either conversation. The development control-plane currently provides a deterministic built-in Codex profile so this full flow is testable without network access.
+The sidebar keeps every Project and its isolated Session list visible at once. Use the `+` beside Projects to register a local directory, choose that Project's default Agent backend, and use the `+` on a Project row to create a Session. Starting the desktop with an empty workspace leaves this list empty until the user explicitly creates a Project. The development control-plane currently provides a deterministic built-in Codex profile so this full flow is testable without network access.
 
 ## Packaging
 
