@@ -16,6 +16,11 @@ The Codex adapter supports:
 - safe defaults: workspace-write, on-request approvals, deny-all handler;
 - protocol forward compatibility through `RawNotification` and `Raw` approval responses.
 
+`CodexWorkspaceAgent` is the higher-level local execution boundary used by the
+daemon. It collects the final assistant result and commits changes produced in
+the Project Git root. It requires a clean worktree before invocation so it can
+never fold pre-existing user changes into the generated commit.
+
 Codex authentication remains owned by the local Codex installation. The
 adapter does not accept, persist, or log an API key or ChatGPT token.
 

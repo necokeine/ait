@@ -9,9 +9,10 @@ const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.create", "project.set-default-agent",
-  "session.create", "session.send-message", "session.fork",
+  "session.create", "session.set-agent", "session.send-message", "session.fork",
 ]);
-const builtInCodexAgentId = "codex-local";
+const builtInCodexAgentId = "codex-app-server";
+const legacyBuiltInCodexAgentId = "codex-local";
 
 interface DaemonResponse {
   ok: boolean;
@@ -21,7 +22,7 @@ interface DaemonResponse {
 
 interface WorkspaceView {
   projects: Array<{ id: string; name: string; workdir: string; default_agent_id?: string | null }>;
-  agents: Array<{ id: string; name: string; model: string; enabled: boolean }>;
+  agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
   sessions: Array<{ id: string; project_id: string; agent_id: string; current_message_id: string; active_run_id: string | null; version: number }>;
   messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
 }
@@ -76,6 +77,13 @@ class DaemonClient {
       });
       return { snapshot: await this.snapshot(), selectedSessionId: id };
     }
+    if (method === "session.set-agent") {
+      await this.post("/v1/session/set-agent", "session", {
+        session_id: params.sessionId, agent_id: params.agentId,
+        expected_version: params.expectedVersion,
+      });
+      return this.snapshot();
+    }
     if (method === "session.send-message") {
       await this.post("/v1/session/send-message", "run", {
         session_id: params.sessionId, text: params.content,
@@ -124,13 +132,19 @@ class DaemonClient {
 
   private async ensureBuiltInAgents(): Promise<void> {
     const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
-    if (workspace.agents.some((agent) => agent.id === builtInCodexAgentId)) return;
-    await this.post("/v1/agent/register", "agent", {
-      id: builtInCodexAgentId,
-      name: "Codex",
-      model: "gpt-5.6-codex",
-      mode: "echo",
-    });
+    if (!workspace.agents.some((agent) => agent.id === builtInCodexAgentId)) {
+      await this.post("/v1/agent/register", "agent", {
+        id: builtInCodexAgentId,
+        name: "Codex",
+        model: "gpt-5.6-codex",
+        mode: "codex",
+      });
+    }
+    await Promise.all(workspace.projects
+      .filter((project) => project.default_agent_id === legacyBuiltInCodexAgentId)
+      .map((project) => this.post("/v1/project/set-default-agent", "project", {
+        project_id: project.id, agent_id: builtInCodexAgentId,
+      })));
   }
 
   private async isReady(): Promise<boolean> {
@@ -172,7 +186,7 @@ class DaemonClient {
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map(({ id, name, model, enabled }) => ({ id, name, model, enabled })),
+      agents: workspace.agents.map(({ id, name, model, mode, enabled }) => ({ id, name, model, mode, enabled })),
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,
         currentMessageId: session.current_message_id, agentId: session.agent_id,

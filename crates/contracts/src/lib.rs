@@ -11,10 +11,11 @@ pub const API_VERSION: u16 = 1;
 /// Current portable Project archive format.
 pub const PROJECT_EXPORT_VERSION: u16 = 1;
 
-/// Deterministic built-in driver used by the executable vertical slice.
+/// Execution backend selected by an Agent revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
+    Codex,
     Echo,
     Tool,
     Manual,
@@ -48,6 +49,12 @@ pub enum Command {
         agent_id: String,
         #[serde(default)]
         at_message_id: Option<String>,
+    },
+    SetSessionAgent {
+        session_id: String,
+        agent_id: String,
+        #[serde(default)]
+        expected_version: Option<u64>,
     },
     SendMessage {
         session_id: String,

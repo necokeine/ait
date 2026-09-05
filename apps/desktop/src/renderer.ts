@@ -1,5 +1,5 @@
 import { flattenMessageTree, messageText, pathToMessage, type FlatTreeNode } from "./tree.js";
-import { groupProjects, projectNameFromWorkdir } from "./projects.js";
+import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -84,6 +84,7 @@ function bindInteractions(): void {
   $("#session-close").addEventListener("click", closeSessionDialog);
   $("#session-cancel").addEventListener("click", closeSessionDialog);
   $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
+  composerAgent.addEventListener("change", () => void changeSessionAgent());
   $("#project-create").addEventListener("submit", (event) => {
     event.preventDefault();
     void createProject();
@@ -164,7 +165,7 @@ function renderProjects(): void {
       const selected = session.id === selectedSessionId;
       return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}">
         <span class="session-symbol">${session.active ? "◉" : "⑂"}</span>
-        <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(agent?.name ?? "Agent")} · ${relativeTime(session.updatedAt)}</small></span>
+        <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(agent ? agentDisplayName(agent) : "Agent")} · ${relativeTime(session.updatedAt)}</small></span>
         ${session.active ? '<i class="running-dot" title="Run active"></i>' : ""}
       </button>`;
     }).join("") || '<p class="project-sessions-empty">No sessions</p>';
@@ -207,11 +208,11 @@ function renderAgents(): void {
   const current = currentSession();
   composerAgent.innerHTML = snapshot.agents
     .filter((agent) => agent.enabled)
-    .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agent.name)} · ${escapeHtml(agent.model)}</option>`)
+    .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agentLabel(agent))}</option>`)
     .join("");
-  composerAgent.disabled = selectedNodeId === undefined;
+  composerAgent.disabled = !current || current.active;
   const agent = snapshot.agents.find((candidate) => candidate.id === current?.agentId);
-  $("#agent-chip").textContent = agent ? `${agent.name} · ${agent.model}` : "No Agent";
+  $("#agent-chip").textContent = agent ? agentLabel(agent) : "No Agent";
 }
 
 function renderConversation(): void {
@@ -353,11 +354,32 @@ async function submitMessage(): Promise<void> {
   }
 }
 
+async function changeSessionAgent(): Promise<void> {
+  const session = currentSession();
+  const agentId = composerAgent.value;
+  if (!session || session.active || !agentId || agentId === session.agentId) return;
+  composerAgent.disabled = true;
+  sendButton.disabled = true;
+  try {
+    snapshot = await window.ait.setSessionAgent({
+      sessionId: session.id,
+      agentId,
+      expectedVersion: session.version,
+    });
+    renderAll();
+    const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
+    showToast(`Session Agent changed to ${agent ? agentDisplayName(agent) : "Agent"}.`);
+  } catch (error) {
+    renderAll();
+    showToast(errorMessage(error), true);
+  }
+}
+
 function updateComposerState(): void {
   const session = currentSession();
   sendButton.disabled = !session || messageInput.value.trim().length === 0 || session.active;
   messageInput.disabled = !session;
-  composerAgent.disabled = selectedNodeId === undefined;
+  composerAgent.disabled = !session || session.active;
   messageInput.placeholder = !session
     ? "Create a Session to start…"
     : selectedNodeId
@@ -506,7 +528,7 @@ function openSessionDialog(projectId?: string): void {
   const select = $<HTMLSelectElement>("#session-agent");
   select.innerHTML = agentOptions();
   if (project.defaultAgentId) select.value = project.defaultAgentId;
-  $("#session-project-copy").textContent = `The Session belongs to ${project.name} and stays bound to this Agent.`;
+  $("#session-project-copy").textContent = `The Session belongs to ${project.name}; its Agent can be changed while idle.`;
   sessionDialog.classList.remove("is-hidden");
 }
 
@@ -541,7 +563,7 @@ async function createSession(): Promise<void> {
 function agentOptions(): string {
   return snapshot?.agents
     .filter((agent) => agent.enabled)
-    .map((agent) => `<option value="${escapeAttribute(agent.id)}">${escapeHtml(agent.name)} · ${escapeHtml(agent.model)}</option>`)
+    .map((agent) => `<option value="${escapeAttribute(agent.id)}">${escapeHtml(agentLabel(agent))}</option>`)
     .join("") ?? "";
 }
 

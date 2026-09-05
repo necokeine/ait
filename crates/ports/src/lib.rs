@@ -16,7 +16,7 @@ pub use project::{
 pub use run::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent,
     RunApproval, RunClock, RunIdGenerator, RunStore, RunStoreError, RunTool, ToolInvocation,
-    ToolOutcome, ToolRecovery,
+    ToolOutcome, ToolRecovery, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
 pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,

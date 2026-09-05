@@ -30,6 +30,7 @@ export interface AgentSummary {
   id: string;
   name: string;
   model: string;
+  mode: string;
   enabled: boolean;
 }
 
@@ -112,6 +113,11 @@ export interface AitDesktopApi {
     projectId: string;
     agentId: string;
   }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
+  setSessionAgent(input: {
+    sessionId: string;
+    agentId: string;
+    expectedVersion: number;
+  }): Promise<DesktopSnapshot>;
   sendMessage(input: {
     sessionId: string;
     expectedVersion: number;

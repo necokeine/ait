@@ -5,14 +5,21 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+ait-agent-adapters = { path = "../../crates/agent-adapters" }
 ait-application = { path = "../../crates/application" }
 ait-api-http = { path = "../../crates/api-http" }
 ait-ipc = { path = "../../crates/ipc" }
 ait-observability = { path = "../../crates/observability" }
+ait-ports = { path = "../../crates/ports" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tempfile = "3"
 
 [lints]
 workspace = true

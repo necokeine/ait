@@ -2,7 +2,9 @@
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
+use ait_agent_adapters::codex::{CodexAppServerConfig, CodexWorkspaceAgent};
 use ait_application::LocalControlService;
+use ait_ports::WorkspaceAgent;
 use ait_storage_sqlite::SqliteControlStore;
 use clap::Parser;
 
@@ -23,7 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("local API must bind a loopback address".into());
     }
     let store = Arc::new(SqliteControlStore::open(arguments.database)?);
-    let service = Arc::new(LocalControlService::new(store));
+    let codex: Arc<dyn WorkspaceAgent> = Arc::new(CodexWorkspaceAgent::from_config(
+        CodexAppServerConfig::default(),
+    )?);
+    let service = Arc::new(LocalControlService::with_workspace_agent(store, codex));
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
     eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
     axum::serve(listener, ait_api_http::router(service)).await?;

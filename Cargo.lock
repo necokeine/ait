@@ -15,10 +15,13 @@ dependencies = [
 name = "ait-agent-adapters"
 version = "0.1.0"
 dependencies = [
+ "ait-domain",
+ "ait-ports",
  "async-trait",
  "futures-core",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -54,6 +57,7 @@ dependencies = [
  "ait-runtime",
  "ait-scheduler",
  "ait-storage-sqlite",
+ "async-trait",
  "criterion",
  "serde",
  "serde_json",
@@ -61,6 +65,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -89,13 +94,18 @@ dependencies = [
 name = "ait-daemon"
 version = "0.1.0"
 dependencies = [
+ "ait-agent-adapters",
  "ait-api-http",
  "ait-application",
  "ait-ipc",
  "ait-observability",
+ "ait-ports",
  "ait-storage-sqlite",
  "axum",
  "clap",
+ "reqwest",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 

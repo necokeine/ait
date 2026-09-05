@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ait_domain::{
     DomainError, Message, MessageId, ProjectedMessage, Run, RunAttempt, RunAttemptId, RunId,
     RunUsage, TimestampMs, ToolExecution, ToolExecutionId,
@@ -132,6 +134,42 @@ pub struct AgentResponse {
 pub trait RunAgent: Send + Sync {
     /// Executes one model turn over the supplied path.
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError>;
+}
+
+/// One workspace-scoped invocation of a complete coding Agent harness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceAgentInvocation {
+    /// Stable correlation identity for the external turn.
+    pub request_id: String,
+    /// Provider-specific model selected by the pinned Agent revision.
+    pub model: String,
+    /// Fully assembled immutable Message path and current user task.
+    pub prompt: String,
+    /// Short subject used when the harness produced a Git commit.
+    pub commit_subject: String,
+    /// Canonical Project Git root and sandbox boundary.
+    pub cwd: PathBuf,
+    /// Cooperative cancellation shared with the caller.
+    pub cancellation: CancellationToken,
+}
+
+/// Durable-facing result of one workspace Agent turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceAgentResponse {
+    /// Final assistant result shown in the Session.
+    pub assistant_text: String,
+    /// Commit created for workspace changes, when the turn changed files.
+    pub commit_id: Option<String>,
+}
+
+/// Complete coding-harness boundary used by the local control-plane slice.
+#[async_trait]
+pub trait WorkspaceAgent: Send + Sync {
+    /// Runs the selected harness and commits any generated workspace changes.
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError>;
 }
 
 /// A tool invocation with stable host-assigned idempotency identity.

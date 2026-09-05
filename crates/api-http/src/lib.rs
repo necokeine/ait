@@ -43,6 +43,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/project/import", post(import_project))
         .route("/v1/agent/register", post(register_agent))
         .route("/v1/session/create", post(create_session))
+        .route("/v1/session/set-agent", post(set_session_agent))
         .route("/v1/session/send-message", post(send_message))
         .route("/v1/session/fork", post(fork_session))
         .route("/v1/run/get", post(get_run))
@@ -200,6 +201,30 @@ async fn create_session(
             project_id: request.project_id,
             agent_id: request.agent_id,
             at_message_id: request.at_message_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSessionAgentRequest {
+    session_id: String,
+    agent_id: String,
+    #[serde(default)]
+    expected_version: Option<u64>,
+}
+
+async fn set_session_agent(
+    State(state): State<ApiState>,
+    Json(request): Json<SetSessionAgentRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SetSessionAgent {
+            session_id: request.session_id,
+            agent_id: request.agent_id,
+            expected_version: request.expected_version,
         },
     )
     .await
@@ -480,7 +505,7 @@ fn correlation_for_command(command: &Command) -> Correlation {
             correlation.project_id = Some(project_id.clone());
             correlation.session_id = Some(id.clone());
         }
-        Command::SendMessage { session_id, .. } => {
+        Command::SetSessionAgent { session_id, .. } | Command::SendMessage { session_id, .. } => {
             correlation.session_id = Some(session_id.clone());
         }
         Command::GetRun { run_id } | Command::CancelRun { run_id } => {
@@ -552,6 +577,7 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::SetProjectDefaultAgent { .. } => "set_project_default_agent",
         Command::RegisterAgent { .. } => "register_agent",
         Command::CreateSession { .. } => "create_session",
+        Command::SetSessionAgent { .. } => "set_session_agent",
         Command::SendMessage { .. } => "send_message",
         Command::ForkSession { .. } => "fork_session",
         Command::GetRun { .. } => "get_run",

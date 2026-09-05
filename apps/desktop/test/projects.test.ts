@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { groupProjects, projectNameFromWorkdir } from "../src/projects.js";
+import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "../src/projects.js";
 import type { DesktopProject, DesktopSession, DesktopSnapshot } from "../src/types.js";
 
 const project = (id: string): DesktopProject => ({
@@ -49,4 +49,13 @@ test("derives the default Project name from the selected directory", () => {
   assert.equal(projectNameFromWorkdir("/Users/member/code/ait/"), "ait");
   assert.equal(projectNameFromWorkdir("C:\\Users\\member\\code\\ait"), "ait");
   assert.equal(projectNameFromWorkdir("C:\\Users\\member\\code\\ait\\"), "ait");
+});
+
+test("labels legacy echo Agents without masquerading as Codex", () => {
+  const echo = { id: "codex-local", name: "Codex", model: "gpt-5.6-codex", mode: "echo", enabled: true };
+  const codex = { id: "codex-app-server", name: "Codex", model: "gpt-5.6-codex", mode: "codex", enabled: true };
+
+  assert.equal(agentDisplayName(echo), "Echo");
+  assert.equal(agentLabel(echo), "Echo · echo");
+  assert.equal(agentLabel(codex), "Codex · gpt-5.6-codex");
 });
