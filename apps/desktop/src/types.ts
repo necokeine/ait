@@ -1,5 +1,6 @@
 export type MessageRole = "user" | "system" | "assistant";
 export type MessageKind = "standard" | "tool_result";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export type MessagePart =
   | { type: "text"; text: string }
@@ -16,6 +17,7 @@ export interface DesktopMessage {
   kind: MessageKind;
   parts: MessagePart[];
   createdAt: number;
+  agentId?: string | null;
 }
 
 export interface DesktopProject {
@@ -32,6 +34,8 @@ export interface AgentSummary {
   model: string;
   mode: string;
   enabled: boolean;
+  supportedReasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 export interface DesktopSession {
@@ -122,12 +126,14 @@ export interface AitDesktopApi {
     sessionId: string;
     expectedVersion: number;
     content: string;
+    reasoningEffort?: ReasoningEffort;
   }): Promise<DesktopSnapshot>;
   fork(input: {
     projectId: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
+    reasoningEffort?: ReasoningEffort;
   }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
 }
 

@@ -164,6 +164,7 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
             .run(AgentRunRequest {
                 request_id: request.request_id,
                 model: Some(request.model),
+                reasoning_effort: request.reasoning_effort,
                 prompt: request.prompt,
                 cwd: request.cwd.clone(),
                 resume_thread_id: None,
@@ -497,6 +498,7 @@ where
                 "threadId": thread_id,
                 "input": [{"type": "text", "text": request.prompt}],
                 "clientUserMessageId": request.request_id,
+                "effort": request.reasoning_effort,
             }
         }),
     )

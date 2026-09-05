@@ -11,9 +11,9 @@ use std::{
 
 use ait_contracts::{
     API_VERSION, AgentMode, AgentView, ApiError, Command, CommandResult, CronView, Event,
-    MessageView, PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, Response, RunView,
-    SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView, default_settings,
-    settings_schema,
+    MessageView, PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ReasoningEffort, Response,
+    RunView, SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView,
+    default_settings, settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
@@ -149,6 +149,9 @@ impl LocalControlService {
                     .invoke(WorkspaceAgentInvocation {
                         request_id: run.id.clone(),
                         model: agent.model,
+                        reasoning_effort: run
+                            .reasoning_effort
+                            .map(|effort| effort.as_str().to_owned()),
                         prompt,
                         commit_subject: user_text,
                         cwd: workdir,
@@ -369,14 +372,24 @@ fn apply_command(
             session_id,
             text,
             expected_version,
-        } => send_message(state, session_id, text, expected_version),
+            reasoning_effort,
+        } => send_message(state, session_id, text, expected_version, reasoning_effort),
         Command::ForkSession {
             id,
             project_id,
             agent_id,
             at_message_id,
             text,
-        } => fork_session(state, id, project_id, agent_id, at_message_id, text),
+            reasoning_effort,
+        } => fork_session(
+            state,
+            id,
+            project_id,
+            agent_id,
+            at_message_id,
+            text,
+            reasoning_effort,
+        ),
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
         Command::CreateCron {
             id,
@@ -447,10 +460,11 @@ fn fork_session(
     agent_id: String,
     at_message_id: String,
     text: String,
+    reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let (_, mut events) =
         create_session(state, id.clone(), project_id, agent_id, Some(at_message_id))?;
-    let (result, mut run_events) = send_message(state, id, text, Some(1))?;
+    let (result, mut run_events) = send_message(state, id, text, Some(1), reasoning_effort)?;
     events.append(&mut run_events);
     Ok((result, events))
 }
@@ -735,6 +749,7 @@ fn send_message(
     session_id: String,
     text: String,
     expected_version: Option<u64>,
+    reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     if text.trim().is_empty() {
         return Err(error(
@@ -764,6 +779,7 @@ fn send_message(
         ));
     }
     let agent = require_agent(state, &session.agent_id)?.clone();
+    validate_reasoning_effort(&agent, reasoning_effort)?;
     let user = message(
         &session.project_id,
         Some(&session.current_message_id),
@@ -787,6 +803,7 @@ fn send_message(
         session_id: Some(session_id),
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
+        reasoning_effort,
         trigger: "manual".into(),
         cron_id: None,
         scheduled_at: None,
@@ -799,6 +816,30 @@ fn send_message(
         CommandResult::Run(run.clone()),
         vec![pending("run.updated", Some(run_id), &run)],
     ))
+}
+
+fn validate_reasoning_effort(
+    agent: &AgentView,
+    reasoning_effort: Option<ReasoningEffort>,
+) -> Result<(), ApiError> {
+    if reasoning_effort.is_none() {
+        return Ok(());
+    }
+    if agent.mode != AgentMode::Codex {
+        return Err(error(
+            ErrorCode::InvalidAgentConfiguration,
+            "reasoning effort is only supported by Codex Agents",
+            false,
+        ));
+    }
+    if !matches!(agent.model.as_str(), "gpt-5.6-sol" | "gpt-5.6-codex") {
+        return Err(error(
+            ErrorCode::InvalidAgentConfiguration,
+            "the selected Codex model does not advertise reasoning effort options",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
@@ -1096,6 +1137,7 @@ fn trigger_cron(
         session_id: None,
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
+        reasoning_effort: None,
         trigger: "cron".into(),
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),

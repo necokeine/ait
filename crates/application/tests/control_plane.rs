@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
+use ait_contracts::{AgentMode, Command, CommandResult, ReasoningEffort, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
 use ait_storage_sqlite::SqliteControlStore;
@@ -28,6 +28,7 @@ impl WorkspaceAgent for SuccessfulCodex {
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         assert!(request.prompt.contains("user: implement the feature"));
         assert_eq!(request.commit_subject, "implement the feature");
+        assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
         Ok(WorkspaceAgentResponse {
             assistant_text: "Implemented and verified the feature.".into(),
             commit_id: Some("0123456789abcdef".into()),
@@ -62,7 +63,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Command::RegisterAgent {
             id: "codex-agent".into(),
             name: "Codex".into(),
-            model: "codex-test".into(),
+            model: "gpt-5.6-sol".into(),
             mode: AgentMode::Codex,
         },
     )
@@ -83,6 +84,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
             session_id: "codex-session".into(),
             text: "implement the feature".into(),
             expected_version: Some(1),
+            reasoning_effort: Some(ReasoningEffort::High),
         },
     )
     .await
@@ -91,6 +93,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         _ => panic!(),
     };
     assert_eq!(completed.status, "completed");
+    assert_eq!(completed.reasoning_effort, Some(ReasoningEffort::High));
 
     let workspace = match run(&service, Command::Snapshot).await {
         CommandResult::Workspace(value) => value,
@@ -189,6 +192,7 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
             session_id: "rebind-session".into(),
             text: "keep this run queued".into(),
             expected_version: Some(2),
+            reasoning_effort: None,
         },
     )
     .await
@@ -254,6 +258,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
             session_id: "session-main".into(),
             text: "use the echo tool".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -426,6 +431,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             session_id: "s-provider".into(),
             text: "go".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -440,6 +446,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             session_id: "s-approval".into(),
             text: "go".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -452,11 +459,25 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
         ErrorCode::ToolApprovalRequired
     );
 
+    let unsupported_effort = service
+        .execute(Command::SendMessage {
+            session_id: "s-manual".into(),
+            text: "go".into(),
+            expected_version: Some(1),
+            reasoning_effort: Some(ReasoningEffort::High),
+        })
+        .await;
+    assert_eq!(
+        unsupported_effort.error.unwrap().code,
+        ErrorCode::InvalidAgentConfiguration
+    );
+
     let conflict = service
         .execute(Command::SendMessage {
             session_id: "s-manual".into(),
             text: "go".into(),
             expected_version: Some(99),
+            reasoning_effort: None,
         })
         .await;
     assert_eq!(
@@ -469,6 +490,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             session_id: "s-manual".into(),
             text: "go".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await
@@ -538,6 +560,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
             session_id: "portable-session".into(),
             text: "preserve this branch".into(),
             expected_version: Some(1),
+            reasoning_effort: None,
         },
     )
     .await;
@@ -633,6 +656,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
             agent_id: "desktop-agent".into(),
             at_message_id: project.root_message_id,
             text: "first branch message".into(),
+            reasoning_effort: None,
         },
     )
     .await;
@@ -743,6 +767,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
                 session_id: session_id.into(),
                 text: input.into(),
                 expected_version: Some(1),
+                reasoning_effort: None,
             },
         )
         .await

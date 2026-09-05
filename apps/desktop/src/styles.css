@@ -105,10 +105,14 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .loading-state, .empty-state { min-height: 350px; display: grid; place-content: center; justify-items: center; color: var(--text-muted); font-size: 12px; }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.message { position: relative; display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 13px; margin-bottom: 26px; }
-.message::before { content: ""; position: absolute; left: 14px; top: 33px; bottom: -23px; width: 1px; background: var(--line-soft); }
-.message:last-child::before { display: none; }
+.message { display: flex; align-items: flex-start; gap: 13px; margin-bottom: 26px; }
+.message[role="button"] { border-radius: 10px; cursor: pointer; outline: none; }
+.message[role="button"]:focus-visible, .message.is-selected { box-shadow: 0 0 0 1px var(--line); background: rgba(255,255,255,.015); }
+.message-body { min-width: 0; flex: 1; }
+.message.user { flex-direction: row-reverse; margin-left: 15%; }
+.message.user .message-body { display: flex; flex-direction: column; align-items: flex-end; }
 .message-avatar { width: 28px; height: 28px; border-radius: 8px; background: var(--surface-raised); border: 1px solid var(--line); display: grid; place-items: center; font-size: 10px; color: var(--text-soft); }
+.message.assistant .message-avatar { color: var(--accent); }
 .message.user .message-avatar { background: #24291f; color: var(--accent); }
 .message.system { opacity: .72; }
 .message-heading { height: 28px; display: flex; align-items: center; gap: 8px; }
@@ -133,6 +137,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .mode-button { padding: 0 8px; cursor: pointer; }
 .mode-button span { color: var(--text-muted); margin-left: 4px; }
 .agent-select { max-width: 150px; padding: 0 6px; }
+.reasoning-select { max-width: 130px; }
 .send-button { width: 28px; height: 28px; border: 0; border-radius: 8px; background: var(--accent); color: #14200b; font-size: 16px; font-weight: 800; cursor: pointer; }
 .send-button:disabled { background: #30342c; color: #696e64; cursor: default; }
 .branch-context { height: 31px; display: flex; align-items: center; gap: 7px; color: var(--text-soft); background: var(--accent-soft); border: 1px solid rgba(184,239,115,.2); border-bottom: 0; border-radius: 9px 9px 0 0; padding: 0 9px; font-size: 10px; }

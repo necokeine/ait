@@ -91,6 +91,20 @@ export function resolveBranchHead(
   return branchRootId;
 }
 
+export function sessionForMessage(
+  messages: DesktopMessage[],
+  sessions: DesktopSession[],
+  messageId: string,
+  preferredSessionId: string | undefined,
+): DesktopSession | undefined {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  const candidates = sessions.filter((session) =>
+    isDescendantOf(byId, session.currentMessageId, messageId));
+  return candidates.find((session) => session.id === preferredSessionId)
+    ?? candidates.toSorted((left, right) =>
+      right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0];
+}
+
 function collectChildren(
   messages: DesktopMessage[],
   byId: ReadonlyMap<string, DesktopMessage>,

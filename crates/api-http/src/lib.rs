@@ -12,8 +12,8 @@ use std::{
 
 use ait_application::LocalControlService;
 use ait_contracts::{
-    AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport, Response,
-    SettingsDocument,
+    AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport,
+    ReasoningEffort, Response, SettingsDocument,
 };
 use ait_domain::ErrorCode;
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
@@ -237,6 +237,8 @@ struct SendMessageRequest {
     text: String,
     #[serde(default)]
     expected_version: Option<u64>,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn send_message(
@@ -249,6 +251,7 @@ async fn send_message(
             session_id: request.session_id,
             text: request.text,
             expected_version: request.expected_version,
+            reasoning_effort: request.reasoning_effort,
         },
     )
     .await
@@ -262,6 +265,8 @@ struct ForkSessionRequest {
     agent_id: String,
     at_message_id: String,
     text: String,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn fork_session(
@@ -276,6 +281,7 @@ async fn fork_session(
             agent_id: request.agent_id,
             at_message_id: request.at_message_id,
             text: request.text,
+            reasoning_effort: request.reasoning_effort,
         },
     )
     .await

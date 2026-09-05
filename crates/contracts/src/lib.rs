@@ -23,6 +23,32 @@ pub enum AgentMode {
     ApprovalRequired,
 }
 
+/// Codex reasoning effort values supported by the built-in model catalog entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+    Ultra,
+}
+
+impl ReasoningEffort {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
+        }
+    }
+}
+
 /// Commands accepted by the shared application service.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -61,6 +87,8 @@ pub enum Command {
         text: String,
         #[serde(default)]
         expected_version: Option<u64>,
+        #[serde(default)]
+        reasoning_effort: Option<ReasoningEffort>,
     },
     ForkSession {
         id: String,
@@ -68,6 +96,8 @@ pub enum Command {
         agent_id: String,
         at_message_id: String,
         text: String,
+        #[serde(default)]
+        reasoning_effort: Option<ReasoningEffort>,
     },
     GetRun {
         run_id: String,
@@ -177,6 +207,8 @@ pub struct RunView {
     pub session_id: Option<String>,
     pub agent_id: String,
     pub agent_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
