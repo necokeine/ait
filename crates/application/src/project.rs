@@ -1,8 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
-    AgentId, DomainMetadata, InstructionSourceSnapshot, InstructionSourceSummary, MessageId,
-    Project, ProjectId, ProjectStatus, SessionId, SessionRoot, TimestampMs,
+    AgentId, DomainError, DomainMetadata, GitCommit, InstructionSourceSnapshot,
+    InstructionSourceSummary, MessageId, Project, ProjectId, ProjectStatus, SessionId, SessionRoot,
+    TimestampMs,
 };
 use ait_ports::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
@@ -75,6 +76,8 @@ pub struct ProjectRegistration {
     pub name: String,
     /// Candidate workdir.
     pub workdir: PathBuf,
+    /// Optional remote repository URL retained as declared Project provenance.
+    pub repo_url: Option<String>,
 }
 
 /// Stable Project use-case failures.
@@ -86,6 +89,18 @@ pub enum ProjectError {
     /// An instruction source was not valid UTF-8.
     #[error("instruction source is not UTF-8: {0}")]
     InvalidInstructionEncoding(String),
+    /// Human input cannot be recorded while tracked or untracked changes exist.
+    #[error("project Git worktree and index must be clean before adding a user message")]
+    GitDirty,
+    /// The registered repository no longer has a readable HEAD.
+    #[error("project repository has no readable HEAD commit")]
+    GitHeadUnavailable,
+    /// Declared repository URL was present but empty.
+    #[error("repository URL cannot be empty")]
+    InvalidRepoUrl,
+    /// A constructed aggregate violated a pure domain invariant.
+    #[error(transparent)]
+    Domain(#[from] DomainError),
     /// Local filesystem or Git failure.
     #[error(transparent)]
     Environment(#[from] EnvironmentError),
@@ -136,8 +151,14 @@ impl ProjectService {
     /// prepared, instructions cannot be read, or the Project cannot be stored.
     pub fn register_project(
         &self,
-        registration: ProjectRegistration,
+        mut registration: ProjectRegistration,
     ) -> Result<Project, ProjectError> {
+        if let Some(url) = &mut registration.repo_url {
+            *url = url.trim().to_owned();
+            if url.is_empty() {
+                return Err(ProjectError::InvalidRepoUrl);
+            }
+        }
         let root = self
             .environment
             .canonicalize_directory(&registration.workdir)?;
@@ -157,6 +178,17 @@ impl ProjectService {
             ))));
         }
 
+        let base_commit = if let Some(commit) = self.environment.git_head(&root)? {
+            commit
+        } else {
+            self.environment.git_commit_initial(&root)?;
+            self.environment.git_head(&root)?.ok_or_else(|| {
+                ProjectError::Environment(EnvironmentError::Git(
+                    "initial commit succeeded but HEAD is still unavailable".into(),
+                ))
+            })?
+        };
+
         let instructions = self.discover_instructions(&root)?;
         let project = Project {
             id: registration.id,
@@ -164,6 +196,8 @@ impl ProjectService {
             description: String::new(),
             workdir: root,
             git_initialized_by_manager,
+            repo_url: registration.repo_url,
+            base_commit,
             default_agent_id: None,
             instruction_revision: 1,
             instruction_digest: instructions.content_digest.clone(),
@@ -172,6 +206,7 @@ impl ProjectService {
             created_at: TimestampMs(0),
             updated_at: TimestampMs(0),
         };
+        project.validate()?;
         self.store
             .register_project(project, instructions)
             .map_err(Into::into)
@@ -206,6 +241,35 @@ impl ProjectService {
                 instructions,
             })
             .map_err(Into::into)
+    }
+
+    /// Captures the stable HEAD used as provenance for a human user Message.
+    ///
+    /// The worktree and index, including untracked files, must be clean. Callers
+    /// should put the returned value directly on the immutable Message they
+    /// append; no Git process or filesystem concern enters the domain crate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectError::GitDirty`] for local changes or
+    /// [`ProjectError::GitHeadUnavailable`] for an unborn/unreadable HEAD.
+    pub fn capture_clean_head(&self, project_id: &ProjectId) -> Result<GitCommit, ProjectError> {
+        let project = self.store.get_project(project_id)?;
+        let before = self
+            .environment
+            .git_head(&project.workdir)?
+            .ok_or(ProjectError::GitHeadUnavailable)?;
+        if !self.environment.git_is_clean(&project.workdir)? {
+            return Err(ProjectError::GitDirty);
+        }
+        let after = self
+            .environment
+            .git_head(&project.workdir)?
+            .ok_or(ProjectError::GitHeadUnavailable)?;
+        if before != after {
+            return Err(ProjectError::GitHeadUnavailable);
+        }
+        Ok(after)
     }
 
     fn discover_instructions(

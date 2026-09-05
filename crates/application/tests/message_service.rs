@@ -196,6 +196,7 @@ fn root(id: &str, project_id: &str) -> Message {
         run_id: None,
         run_seq: None,
         tool_result: None,
+        git_commit: None,
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(0),
     }
@@ -224,6 +225,8 @@ fn child(
         run_id: None,
         run_seq: None,
         tool_result: None,
+        git_commit: (role == MessageRole::User)
+            .then(|| ait_domain::GitCommit::parse("a".repeat(40)).unwrap()),
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(0),
     }

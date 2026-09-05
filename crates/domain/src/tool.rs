@@ -292,6 +292,7 @@ mod tests {
                 output: Some("ok".into()),
                 error: None,
             }),
+            git_commit: None,
             metadata: DomainMetadata::default(),
             created_at: TimestampMs(12),
         };
