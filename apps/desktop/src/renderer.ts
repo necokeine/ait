@@ -1,9 +1,11 @@
-import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, type TimelineNode } from "./tree.js";
+import { messageAuthor } from "./messages.js";
+import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
 import type {
   DesktopMessage,
   DesktopSession,
   DesktopSnapshot,
+  ReasoningEffort,
   SettingCategory,
   SettingDefinition,
   SettingsResponse,
@@ -24,6 +26,7 @@ const treeScroll = $<HTMLElement>("#tree-scroll");
 const nodeDetails = $("#node-details");
 const messageInput = $<HTMLTextAreaElement>("#message-input");
 const composerAgent = $<HTMLSelectElement>("#composer-agent");
+const composerReasoning = $<HTMLSelectElement>("#composer-reasoning");
 const sendButton = $<HTMLButtonElement>("#send-button");
 const settingsDialog = $("#settings-dialog");
 const commandDialog = $("#command-dialog");
@@ -39,6 +42,7 @@ let configuringProjectId: string | undefined;
 let viewedTreeHeadId: string | undefined;
 let branchPickerNodeId: string | undefined;
 let timeline: TimelineNode[] = [];
+const sessionReasoningEfforts = new Map<string, ReasoningEffort>();
 let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let settingsCategory: SettingCategory = "models";
@@ -86,6 +90,10 @@ function bindInteractions(): void {
   $("#session-cancel").addEventListener("click", closeSessionDialog);
   $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
   composerAgent.addEventListener("change", () => void changeSessionAgent());
+  composerReasoning.addEventListener("change", () => {
+    const session = currentSession();
+    if (session) sessionReasoningEfforts.set(session.id, composerReasoning.value as ReasoningEffort);
+  });
   $("#project-create").addEventListener("submit", (event) => {
     event.preventDefault();
     void createProject();
@@ -220,6 +228,17 @@ function renderAgents(): void {
   composerAgent.disabled = !current || current.active;
   const agent = snapshot.agents.find((candidate) => candidate.id === current?.agentId);
   $("#agent-chip").textContent = agent ? agentLabel(agent) : "No Agent";
+  const efforts = agent?.supportedReasoningEfforts ?? [];
+  const savedEffort = current ? sessionReasoningEfforts.get(current.id) : undefined;
+  const selectedEffort = savedEffort && efforts.includes(savedEffort)
+    ? savedEffort
+    : agent?.defaultReasoningEffort;
+  composerReasoning.innerHTML = efforts
+    .map((effort) => `<option value="${effort}"${effort === selectedEffort ? " selected" : ""}>Reasoning: ${humanize(effort)}</option>`)
+    .join("");
+  composerReasoning.classList.toggle("is-hidden", efforts.length === 0);
+  composerReasoning.disabled = efforts.length === 0 || !current || current.active;
+  if (current && selectedEffort) sessionReasoningEfforts.set(current.id, selectedEffort);
 }
 
 function renderConversation(): void {
@@ -239,13 +258,23 @@ function renderConversation(): void {
     session.currentMessageId,
   );
   conversation.innerHTML = messages.map(renderMessage).join("");
+  conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
+    item.addEventListener("click", () => selectTreeNode(item.dataset.messageId, false));
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        selectTreeNode(item.dataset.messageId, false);
+      }
+    });
+  });
   requestAnimationFrame(() => {
     conversationScroll.scrollTop = conversationScroll.scrollHeight;
   });
 }
 
 function renderMessage(message: DesktopMessage): string {
-  const icon = message.role === "assistant" ? "AI" : message.role === "user" ? "U" : "S";
+  const author = messageAuthor(message, snapshot?.agents ?? []);
+  const icon = message.role === "assistant" ? author.slice(0, 2).toUpperCase() : message.role === "user" ? "U" : "S";
   const content = message.parts.map((part) => {
     if (part.type === "text") return `<div class="message-content">${escapeHtml(part.text)}</div>`;
     if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
@@ -253,9 +282,9 @@ function renderMessage(message: DesktopMessage): string {
     if (part.type === "structured") return `<div class="tool-card"><header><span>{ }</span><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(part.value)}</pre></div>`;
     return '<div class="message-content">Content redacted</div>';
   }).join("");
-  return `<article class="message ${message.role}" data-message-id="${escapeAttribute(message.id)}">
-    <div class="message-avatar">${icon}</div>
-    <div><div class="message-heading"><strong>${message.role}</strong><time>${formatTime(message.createdAt)}</time></div>${content}</div>
+  return `<article class="message ${message.role}${message.id === selectedNodeId ? " is-selected" : ""}" data-message-id="${escapeAttribute(message.id)}" role="button" tabindex="0" aria-pressed="${message.id === selectedNodeId}">
+    <div class="message-avatar">${escapeHtml(icon)}</div>
+    <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong><time>${formatTime(message.createdAt)}</time></div>${content}</div>
   </article>`;
 }
 
@@ -304,12 +333,32 @@ function renderTree(): void {
   renderNodeDetails();
 }
 
-function selectTreeNode(id: string | undefined): void {
-  if (!id) return;
+function selectTreeNode(id: string | undefined, focusTree = true): void {
+  if (!id || !snapshot || !selectedProjectId) return;
   selectedNodeId = id;
+  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
+  const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
+  const session = sessionForMessage(messages, sessions, id, selectedSessionId);
+  const sessionChanged = session !== undefined && session.id !== selectedSessionId;
+  if (session) selectedSessionId = session.id;
+  renderProjects();
+  if (sessionChanged) {
+    renderAgents();
+    renderConversation();
+  } else {
+    syncMessageSelection();
+  }
   renderTree();
   updateComposerState();
-  treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)?.focus();
+  if (focusTree) treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)?.focus();
+}
+
+function syncMessageSelection(): void {
+  conversation.querySelectorAll<HTMLElement>(".message").forEach((message) => {
+    const selected = message.dataset.messageId === selectedNodeId;
+    message.classList.toggle("is-selected", selected);
+    message.setAttribute("aria-pressed", String(selected));
+  });
 }
 
 function switchTreeBranch(branchRootId: string | undefined): void {
@@ -318,11 +367,12 @@ function switchTreeBranch(branchRootId: string | undefined): void {
   const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
   const headId = resolveBranchHead(messages, sessions, branchRootId);
   if (!headId) return;
+  const session = sessionForMessage(messages, sessions, branchRootId, selectedSessionId);
+  if (session) selectedSessionId = session.id;
   viewedTreeHeadId = headId;
   branchPickerNodeId = undefined;
   selectedNodeId = undefined;
-  renderTree();
-  updateComposerState();
+  renderAll();
   treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(branchRootId)}"]`)?.focus();
 }
 
@@ -352,6 +402,7 @@ async function submitMessage(): Promise<void> {
   const session = currentSession();
   const content = messageInput.value.trim();
   if (!snapshot || !session || !content || sendButton.disabled) return;
+  const reasoningEffort = selectedReasoningEffort();
   sendButton.disabled = true;
   sendButton.textContent = "…";
   try {
@@ -361,6 +412,7 @@ async function submitMessage(): Promise<void> {
         sourceMessageId: selectedNodeId,
         agentId: composerAgent.value,
         content,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
       });
       snapshot = result.snapshot;
       selectedSessionId = result.selectedSessionId;
@@ -370,6 +422,7 @@ async function submitMessage(): Promise<void> {
         sessionId: session.id,
         expectedVersion: session.version,
         content,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
       });
       showToast("Message sent.");
     }
@@ -410,6 +463,7 @@ function updateComposerState(): void {
   sendButton.disabled = !session || messageInput.value.trim().length === 0 || session.active;
   messageInput.disabled = !session;
   composerAgent.disabled = !session || session.active;
+  composerReasoning.disabled = composerReasoning.options.length === 0 || !session || session.active;
   messageInput.placeholder = !session
     ? "Create a Session to start…"
     : selectedNodeId
@@ -420,6 +474,13 @@ function updateComposerState(): void {
   $("#composer-hint").textContent = selectedNodeId
     ? "A new immutable branch and Session will be created · ⌘ Enter to send"
     : "Send to the current Session, or select a tree node to branch · ⌘ Enter to send";
+}
+
+function selectedReasoningEffort(): ReasoningEffort | undefined {
+  const session = currentSession();
+  const agent = snapshot?.agents.find((candidate) => candidate.id === session?.agentId);
+  const effort = composerReasoning.value as ReasoningEffort;
+  return agent?.supportedReasoningEfforts?.includes(effort) ? effort : undefined;
 }
 
 function toggleTree(): void {

@@ -64,6 +64,7 @@ async fn returns_assistant_result_and_commits_generated_changes() {
         .invoke(WorkspaceAgentInvocation {
             request_id: "run-1".into(),
             model: "test-model".into(),
+            reasoning_effort: Some("high".into()),
             prompt: "Create answer.txt".into(),
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
@@ -112,6 +113,7 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
         .invoke(WorkspaceAgentInvocation {
             request_id: "run-2".into(),
             model: "test-model".into(),
+            reasoning_effort: None,
             prompt: "Change something".into(),
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),

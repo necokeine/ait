@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildMessageTimeline, pathToMessage, resolveBranchHead } from "../src/tree.js";
+import { buildMessageTimeline, pathToMessage, resolveBranchHead, sessionForMessage } from "../src/tree.js";
 import type { DesktopMessage, DesktopSession } from "../src/types.js";
 
 const message = (id: string, parentMessageId: string | null, createdAt: number): DesktopMessage => ({
@@ -65,6 +65,14 @@ test("switches to the selected sibling branch and follows its Session head", () 
 
 test("falls back to the latest descendant when a branch has no Session head", () => {
   assert.equal(resolveBranchHead(messages, [], "branch"), "branch-tail");
+});
+
+test("maps a selected message to its corresponding Session for sidebar highlighting", () => {
+  const sessions = [session("main", "b", 1), session("alternative", "branch-tail", 2)];
+
+  assert.equal(sessionForMessage(messages, sessions, "branch", "main")?.id, "alternative");
+  assert.equal(sessionForMessage(messages, sessions, "a", "main")?.id, "main");
+  assert.equal(sessionForMessage(messages, sessions, "a", undefined)?.id, "alternative");
 });
 
 test("projects root-to-head paths without copying history", () => {

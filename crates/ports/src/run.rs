@@ -143,6 +143,8 @@ pub struct WorkspaceAgentInvocation {
     pub request_id: String,
     /// Provider-specific model selected by the pinned Agent revision.
     pub model: String,
+    /// Optional model-supported reasoning effort fixed for this Run.
+    pub reasoning_effort: Option<String>,
     /// Fully assembled immutable Message path and current user task.
     pub prompt: String,
     /// Short subject used when the harness produced a Git commit.

@@ -10,6 +10,7 @@ import {
   normalizedBuiltInAgent,
 } from "./agents.js";
 import { runFailure } from "./runs.js";
+import { messageAgentIds } from "./messages.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
@@ -29,6 +30,7 @@ interface WorkspaceView {
   agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
   sessions: Array<{ id: string; project_id: string; agent_id: string; current_message_id: string; active_run_id: string | null; version: number }>;
   messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
+  runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
 }
 
 class DaemonClient {
@@ -92,6 +94,7 @@ class DaemonClient {
       const run = await this.post("/v1/session/send-message", "run", {
         session_id: params.sessionId, text: params.content,
         expected_version: params.expectedVersion,
+        reasoning_effort: params.reasoningEffort,
       });
       const failure = runFailure(run);
       if (failure) {
@@ -106,6 +109,7 @@ class DaemonClient {
     await this.post("/v1/session/fork", "run", {
       id, project_id: params.projectId, agent_id: params.agentId,
       at_message_id: params.sourceMessageId, text: params.content,
+      reasoning_effort: params.reasoningEffort,
     });
     return { snapshot: await this.snapshot(), selectedSessionId: id };
   }
@@ -188,6 +192,7 @@ class DaemonClient {
 
   private async snapshot(): Promise<unknown> {
     const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
+    const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
     this.snapshotRevision += 1;
     return {
       protocolVersion: 1,
@@ -205,6 +210,7 @@ class DaemonClient {
       messages: workspace.messages.map((message) => ({
         id: message.id, projectId: message.project_id, parentMessageId: message.parent_message_id,
         role: message.role, kind: message.kind, parts: messageParts(message), createdAt: 0,
+        agentId: messageAgents.get(message.id) ?? null,
       })),
     };
   }

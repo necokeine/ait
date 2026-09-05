@@ -19,6 +19,7 @@ fn request() -> AgentRunRequest {
     AgentRunRequest {
         request_id: "message-1".into(),
         model: Some("test-model".into()),
+        reasoning_effort: Some("high".into()),
         prompt: "Inspect the project".into(),
         cwd: PathBuf::from("/workspace"),
         resume_thread_id: None,
@@ -71,6 +72,7 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
         let turn = read_json(&mut lines).await;
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["input"][0]["text"], "Inspect the project");
+        assert_eq!(turn["params"]["effort"], "high");
         write_json(
             &mut server_write,
             json!({"id": 2, "result": {"turn": {"id": "turn-1"}}}),

@@ -20,6 +20,7 @@
 - `decisions/NEC-166/entity-operation-http-api.md`：按实体/操作拆分的本地 HTTP API 路由，替代统一 command 入口。
 - `decisions/NEC-169/adr-001-ait-worker-contract.md`：`ait-worker` 功能边界、daemon 私有协议、恢复语义与分阶段实现计划。
 - `decisions/NEC-174/adr-001-codex-session-execution.md`：Codex Session 输入、assistant result 与 Git commit 的首个可执行闭环。
+- `decisions/NEC-174/adr-002-codex-run-reasoning-effort.md`：Codex 推理强度作为 Run 级固定覆盖值的传递、校验与桌面能力投影边界。
 
 ## 运维手册
 

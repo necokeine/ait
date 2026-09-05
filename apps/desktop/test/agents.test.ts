@@ -16,7 +16,22 @@ test("projects the persisted legacy built-in Codex model as the supported model"
     model: "gpt-5.6-sol",
     mode: "codex",
     enabled: true,
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultReasoningEffort: "low",
   });
+});
+
+test("projects the built-in Codex model's advertised reasoning profile", () => {
+  const agent = normalizedBuiltInAgent({
+    id: "codex-app-server",
+    name: "Codex",
+    model: "gpt-5.6-sol",
+    mode: "codex",
+    enabled: true,
+  });
+
+  assert.deepEqual(agent.supportedReasoningEfforts, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+  assert.equal(agent.defaultReasoningEffort, "low");
 });
 
 test("does not rewrite user-defined Agents", () => {
