@@ -1,4 +1,5 @@
-import type { DesktopMessage, DesktopSession } from "./types.js";
+import { agentDisplayName } from "./projects.js";
+import type { AgentSummary, DesktopMessage, DesktopSession } from "./types.js";
 
 export interface TimelineBranch {
   message: DesktopMessage;
@@ -20,6 +21,13 @@ export function messageText(message: DesktopMessage): string {
     if (part.type === "redacted") return "Redacted message";
   }
   return message.kind === "tool_result" ? "Tool result" : "Structured message";
+}
+
+export function messageAuthor(message: DesktopMessage, agents: AgentSummary[]): string {
+  if (message.role === "user") return "You";
+  if (message.role === "system") return "System";
+  const agent = agents.find((candidate) => candidate.id === message.agentId);
+  return agent ? agentDisplayName(agent) : message.agentId ?? "Agent";
 }
 
 export function pathToMessage(messages: DesktopMessage[], headId: string): DesktopMessage[] {

@@ -16,8 +16,8 @@ use ait_contracts::{
     default_settings, settings_schema,
 };
 use ait_domain::{
-    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
-    MessageId, ProjectId, TimestampMs,
+    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, DomainMetadata,
+    ErrorCode, MessageId, ProjectId, TimestampMs,
 };
 use ait_ports::{
     ControlStore, ControlStoreError, PendingEvent, SessionTitleGenerator, SessionTitleRequest,
@@ -377,22 +377,24 @@ impl LocalControlService {
             }
             match &result {
                 Ok(output) => {
-                    let data = output
-                        .commit_id
-                        .as_ref()
-                        .map(|commit_id| json!({"codex":{"commit_id":commit_id}}));
                     let parent = run
                         .last_message_id
                         .as_deref()
                         .unwrap_or(&run.base_message_id)
                         .to_owned();
+                    let git_commit_id = project_git_head(&state, &run.project_id);
                     let reply = message(
                         &run.project_id,
                         Some(&parent),
                         "assistant",
                         "standard",
                         Some(output.assistant_text.clone()),
-                        data,
+                        None,
+                        message_metadata(
+                            git_commit_id.as_deref(),
+                            Some((&run.agent_id, run.agent_revision)),
+                            output.commit_id.as_deref(),
+                        ),
                     );
                     append_output(&mut state, &mut run, reply);
                     run.status = "completed".into();
@@ -767,6 +769,7 @@ fn register_project(
         kind: "standard".into(),
         text: Some("AIT project instructions".into()),
         data: None,
+        metadata: message_metadata(git_head(&canonical).as_deref(), None, None),
     });
     state.projects.push(project.clone());
     Ok((
@@ -1051,6 +1054,7 @@ fn send_message(
         ));
     }
     let agent = require_agent(state, &session.agent_id)?.clone();
+    let git_commit_id = project_git_head(state, &session.project_id);
     validate_reasoning_effort(&agent, reasoning_effort)?;
     let user = message(
         &session.project_id,
@@ -1059,6 +1063,7 @@ fn send_message(
         "standard",
         Some(text),
         None,
+        message_metadata(git_commit_id.as_deref(), None, None),
     );
     state.messages.push(user.clone());
     let run_id = Uuid::new_v4().to_string();
@@ -1121,6 +1126,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
         .position(|run| run.id == run_id)
         .expect("new run exists");
     let mut run = state.runs[index].clone();
+    let git_commit_id = project_git_head(state, &run.project_id);
     match agent.mode {
         AgentMode::Codex | AgentMode::Manual => {}
         AgentMode::ProviderFailure => {
@@ -1148,6 +1154,11 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 "standard",
                 Some("echo: completed".into()),
                 None,
+                message_metadata(
+                    git_commit_id.as_deref(),
+                    Some((&run.agent_id, run.agent_revision)),
+                    None,
+                ),
             );
             append_output(state, &mut run, reply);
             run.status = "completed".into();
@@ -1163,6 +1174,11 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 Some(
                     json!({"tool_use":{"call_id":"call-1","tool_name":"echo","arguments":{"text":"hello from tool"}}}),
                 ),
+                message_metadata(
+                    git_commit_id.as_deref(),
+                    Some((&run.agent_id, run.agent_revision)),
+                    None,
+                ),
             );
             append_output(state, &mut run, tool);
             let result = message(
@@ -1174,6 +1190,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 Some(
                     json!({"tool_result":{"call_id":"call-1","status":"succeeded","output":"hello from tool"}}),
                 ),
+                message_metadata(git_commit_id.as_deref(), None, None),
             );
             append_output(state, &mut run, result);
             let reply = message(
@@ -1183,6 +1200,11 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
                 "standard",
                 Some("tool call completed".into()),
                 None,
+                message_metadata(
+                    git_commit_id.as_deref(),
+                    Some((&run.agent_id, run.agent_revision)),
+                    None,
+                ),
             );
             append_output(state, &mut run, reply);
             run.status = "completed".into();
@@ -1660,6 +1682,7 @@ fn message(
     kind: &str,
     text: Option<String>,
     data: Option<Value>,
+    metadata: DomainMetadata,
 ) -> MessageView {
     MessageView {
         id: Uuid::new_v4().to_string(),
@@ -1669,7 +1692,38 @@ fn message(
         kind: kind.into(),
         text,
         data,
+        metadata,
     }
+}
+
+fn message_metadata(
+    git_commit_id: Option<&str>,
+    agent: Option<(&str, u64)>,
+    codex_commit_id: Option<&str>,
+) -> DomainMetadata {
+    let mut metadata = DomainMetadata::default();
+    metadata
+        .0
+        .insert("git".into(), json!({"commit_id": git_commit_id}));
+    if let Some((id, revision)) = agent {
+        metadata
+            .0
+            .insert("agent".into(), json!({"id": id, "revision": revision}));
+    }
+    if let Some(commit_id) = codex_commit_id {
+        metadata
+            .0
+            .insert("codex".into(), json!({"commit_id": commit_id}));
+    }
+    metadata
+}
+
+fn project_git_head(state: &State, project_id: &str) -> Option<String> {
+    state
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .and_then(|project| git_head(Path::new(&project.workdir)))
 }
 
 fn prepare_git_root(path: &Path) -> Result<std::path::PathBuf, ApiError> {
@@ -1731,6 +1785,19 @@ fn git_top_level(path: &Path) -> Option<std::path::PathBuf> {
     Path::new(String::from_utf8_lossy(&output.stdout).trim())
         .canonicalize()
         .ok()
+}
+
+fn git_head(path: &Path) -> Option<String> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 fn pending<T: Serialize>(kind: &str, entity_id: Option<String>, body: &T) -> PendingEvent {

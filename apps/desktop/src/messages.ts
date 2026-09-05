@@ -1,9 +1,11 @@
 import type { AgentSummary, DesktopMessage } from "./types.js";
+import { agentDisplayName } from "./projects.js";
 
 export function messageAuthor(message: DesktopMessage, agents: AgentSummary[]): string {
   if (message.role === "user") return "You";
   if (message.role === "system") return "System";
-  return agents.find((agent) => agent.id === message.agentId)?.name.trim() || "Assistant";
+  const agent = agents.find((candidate) => candidate.id === message.agentId);
+  return agent ? agentDisplayName(agent) : "Agent";
 }
 
 export function messageAgentIds(

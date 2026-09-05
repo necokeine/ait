@@ -35,7 +35,7 @@ interface WorkspaceView {
     title_generation_started?: boolean; agent_id: string; current_message_id: string;
     active_run_id: string | null; version: number;
   }>;
-  messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
+  messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown; metadata?: unknown }>;
   runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
 }
 
@@ -236,7 +236,7 @@ class DaemonClient {
       messages: workspace.messages.map((message) => ({
         id: message.id, projectId: message.project_id, parentMessageId: message.parent_message_id,
         role: message.role, kind: message.kind, parts: messageParts(message), createdAt: 0,
-        agentId: messageAgents.get(message.id) ?? null,
+        ...messageProvenance(message.metadata, messageAgents.get(message.id)),
       })),
     };
   }
@@ -256,6 +256,21 @@ function messageParts(message: WorkspaceView["messages"][number]): unknown[] {
     arguments: JSON.stringify(toolUse.arguments ?? {}),
   }];
   return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
+}
+
+function messageProvenance(value: unknown, legacyAgentId?: string): {
+  agentId: string | null;
+  agentRevision: number | null;
+  gitCommitId: string | null;
+} {
+  const metadata = objectParams(value);
+  const agent = objectParams(metadata.agent);
+  const git = objectParams(metadata.git);
+  return {
+    agentId: typeof agent.id === "string" ? agent.id : legacyAgentId ?? null,
+    agentRevision: typeof agent.revision === "number" ? agent.revision : null,
+    gitCommitId: typeof git.commit_id === "string" ? git.commit_id : null,
+  };
 }
 
 const daemon = new DaemonClient();

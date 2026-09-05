@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ait_domain::{Message, MessageKind, MessageRole, ProjectedMessage, Session};
+use ait_domain::{DomainMetadata, Message, MessageKind, MessageRole, ProjectedMessage, Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -141,6 +141,12 @@ pub struct DesktopMessage {
     pub kind: MessageKind,
     /// Ordered safe parts.
     pub parts: Vec<DesktopMessagePart>,
+    /// Agent that generated an assistant Message, when recorded.
+    pub agent_id: Option<String>,
+    /// Pinned Agent revision that generated an assistant Message.
+    pub agent_revision: Option<u64>,
+    /// Project Git HEAD observed when the Message was appended.
+    pub git_commit_id: Option<String>,
     /// Creation time in milliseconds since Unix epoch.
     pub created_at: i64,
 }
@@ -161,6 +167,9 @@ impl From<ProjectedMessage> for DesktopMessage {
                 role,
                 kind: MessageKind::Standard,
                 parts: vec![DesktopMessagePart::Redacted],
+                agent_id: None,
+                agent_revision: None,
+                git_commit_id: None,
                 created_at: 0,
             },
         }
@@ -169,6 +178,9 @@ impl From<ProjectedMessage> for DesktopMessage {
 
 impl From<Message> for DesktopMessage {
     fn from(message: Message) -> Self {
+        let agent_id = metadata_string(&message.metadata, "agent", "id");
+        let agent_revision = metadata_u64(&message.metadata, "agent", "revision");
+        let git_commit_id = metadata_string(&message.metadata, "git", "commit_id");
         let parts = message
             .sub_messages
             .into_iter()
@@ -197,9 +209,25 @@ impl From<Message> for DesktopMessage {
             role: message.role,
             kind: message.kind,
             parts,
+            agent_id,
+            agent_revision,
+            git_commit_id,
             created_at: message.created_at.get(),
         }
     }
+}
+
+fn metadata_string(metadata: &DomainMetadata, namespace: &str, field: &str) -> Option<String> {
+    metadata
+        .0
+        .get(namespace)?
+        .get(field)?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn metadata_u64(metadata: &DomainMetadata, namespace: &str, field: &str) -> Option<u64> {
+    metadata.0.get(namespace)?.get(field)?.as_u64()
 }
 
 /// Complete, bounded desktop projection returned after every mutation.

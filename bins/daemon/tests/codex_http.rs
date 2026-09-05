@@ -119,9 +119,23 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
         .unwrap();
     assert_ok(&snapshot);
     let messages = snapshot["result"]["value"]["messages"].as_array().unwrap();
-    assert!(messages.iter().any(|message| {
-        message["role"] == "assistant" && message["text"] == ASSISTANT_RESPONSE
+    let assistant = messages
+        .iter()
+        .find(|message| message["role"] == "assistant" && message["text"] == ASSISTANT_RESPONSE)
+        .unwrap();
+    assert_eq!(
+        assistant["metadata"]["agent"],
+        json!({"id":"daemon-codex-agent","revision":1})
+    );
+    assert!(messages.iter().all(|message| {
+        message["metadata"]["git"]
+            .as_object()
+            .is_some_and(|git| git.contains_key("commit_id"))
     }));
+    let sessions = snapshot["result"]["value"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["id"], "daemon-codex-session");
+    assert_eq!(sessions[0]["current_message_id"], assistant["id"]);
 
     let protocol = fs::read_to_string(codex_log).unwrap();
     assert!(protocol.contains("\"method\":\"initialize\""));

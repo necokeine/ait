@@ -317,6 +317,7 @@ function renderTree(): void {
   const visible = timeline.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
     const preview = messageText(node.message).replace(/\s+/g, " ").trim() || "Empty message";
+    const author = messageAuthor(node.message, snapshot?.agents ?? []);
     const pickerOpen = branchPickerNodeId === node.message.id;
     const branchPicker = pickerOpen
       ? `<div class="tree-branches" role="group" aria-label="Branches after ${escapeAttribute(preview)}">
@@ -329,8 +330,8 @@ function renderTree(): void {
     return `<div class="tree-timeline-item" role="none">
       <div class="tree-node${node.selected ? " is-selected" : ""}${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" aria-selected="${node.selected}" tabindex="${node.selected ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}">
         <span class="tree-marker" aria-hidden="true"></span>
-        <span class="tree-role">${roleLetter(node.message.role)}</span>
-        <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${formatTime(node.message.createdAt)}</small></span>
+        <span class="tree-role">${escapeHtml(author.slice(0, 1).toUpperCase())}</span>
+        <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${escapeHtml(author)} · ${formatTime(node.message.createdAt)}</small></span>
         ${node.branches.length > 0 ? `<button class="tree-branch-trigger" type="button" aria-label="Choose branch after this message" aria-expanded="${pickerOpen}">⑂ ${node.branches.length}</button>` : ""}
       </div>
       ${branchPicker}
@@ -405,11 +406,12 @@ function renderNodeDetails(): void {
     return;
   }
   const preview = messageText(selected);
-  nodeDetails.innerHTML = `<div class="node-details-header"><span class="node-role-pill">${selected.role}</span><code class="node-id">${escapeHtml(shortId(selected.id))}</code></div>
+  const author = messageAuthor(selected, snapshot?.agents ?? []);
+  nodeDetails.innerHTML = `<div class="node-details-header"><span class="node-role-pill">${escapeHtml(author)}</span><code class="node-id">${escapeHtml(shortId(selected.id))}</code></div>
     <p class="node-preview">${escapeHtml(preview)}</p>
     <div class="node-actions"><button id="branch-focus" class="primary-button" type="button">Branch from here</button></div>`;
   $("#branch-focus").addEventListener("click", () => messageInput.focus());
-  $("#branch-node-label").textContent = `${selected.role} · ${shortId(selected.id)}`;
+  $("#branch-node-label").textContent = `${author} · ${shortId(selected.id)}`;
   $("#branch-context").classList.remove("is-hidden");
 }
 
@@ -924,10 +926,6 @@ function showToast(message: string, error = false): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The operation could not be completed.";
-}
-
-function roleLetter(role: DesktopMessage["role"]): string {
-  return role === "assistant" ? "A" : role === "user" ? "U" : "S";
 }
 
 function shortId(id: string): string {

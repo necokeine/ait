@@ -24,7 +24,7 @@ test("labels assistant messages with their actual producing Agent", () => {
 });
 
 test("uses role-aware fallbacks when producer identity is unavailable", () => {
-  assert.equal(messageAuthor(message("assistant", "missing"), agents), "Assistant");
+  assert.equal(messageAuthor(message("assistant", "missing"), agents), "Agent");
   assert.equal(messageAuthor(message("user"), agents), "You");
   assert.equal(messageAuthor(message("system"), agents), "System");
 });

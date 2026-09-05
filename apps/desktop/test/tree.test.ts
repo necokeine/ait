@@ -10,6 +10,9 @@ const message = (id: string, parentMessageId: string | null, createdAt: number):
   role: id === "root" ? "system" : "user",
   kind: "standard",
   parts: [{ type: "text", text: id }],
+  agentId: null,
+  agentRevision: null,
+  gitCommitId: null,
   createdAt,
 });
 
