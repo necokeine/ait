@@ -1,7 +1,15 @@
 //! Codex adapter backed by `codex app-server` over stdio JSONL.
 
-use std::{collections::VecDeque, ffi::OsString, path::PathBuf, sync::Arc};
+use std::{
+    collections::VecDeque,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+    sync::Arc,
+};
 
+use ait_domain::{DomainError, ErrorCode};
+use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::{
@@ -9,7 +17,7 @@ use tokio::{
     process::{Child, Command},
     sync::mpsc,
 };
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 use crate::{
     AdapterError, AdapterErrorKind, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest,
@@ -106,6 +114,215 @@ impl CodexAppServerAdapter {
                 false,
             )
         })
+    }
+}
+
+/// Workspace-level Codex runner that turns app-server events into an assistant
+/// result and commits file changes as one Git record.
+#[derive(Clone)]
+pub struct CodexWorkspaceAgent {
+    adapter: Arc<dyn AgentAdapter>,
+}
+
+impl std::fmt::Debug for CodexWorkspaceAgent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CodexWorkspaceAgent")
+            .field("adapter", &self.adapter.driver())
+            .finish()
+    }
+}
+
+impl CodexWorkspaceAgent {
+    #[must_use]
+    pub fn new(adapter: Arc<dyn AgentAdapter>) -> Self {
+        Self { adapter }
+    }
+
+    /// Builds the production workspace runner from one app-server config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an adapter configuration error when the config is invalid.
+    pub fn from_config(config: CodexAppServerConfig) -> Result<Self, AdapterError> {
+        Ok(Self::new(Arc::new(CodexAppServerAdapter::new(config)?)))
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for CodexWorkspaceAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let head_before = ensure_clean_worktree(&request.cwd)?;
+        let mut stream = self
+            .adapter
+            .run(AgentRunRequest {
+                request_id: request.request_id,
+                model: Some(request.model),
+                prompt: request.prompt,
+                cwd: request.cwd.clone(),
+                resume_thread_id: None,
+                sandbox: crate::SandboxMode::WorkspaceWrite,
+                approval_policy: crate::ApprovalPolicy::Never,
+                cancellation: request.cancellation,
+            })
+            .await
+            .map_err(adapter_domain_error)?;
+        let mut assistant_text = String::new();
+        let mut completed_text = None;
+        let mut completed = false;
+        while let Some(event) = stream.next().await {
+            match event.map_err(adapter_domain_error)? {
+                AgentEvent::MessageDelta { delta, .. } => assistant_text.push_str(&delta),
+                AgentEvent::ItemCompleted { item } => {
+                    if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+                        completed_text =
+                            item.get("text").and_then(Value::as_str).map(str::to_owned);
+                    }
+                }
+                AgentEvent::Completed { status, error, .. } => {
+                    if status != AgentRunStatus::Completed {
+                        return Err(domain_error(
+                            ErrorCode::ProviderFailed,
+                            error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
+                            status == AgentRunStatus::Unknown,
+                        ));
+                    }
+                    completed = true;
+                }
+                _ => {}
+            }
+        }
+        if !completed {
+            return Err(domain_error(
+                ErrorCode::ProviderFailed,
+                "Codex stream ended before turn completion",
+                true,
+            ));
+        }
+        if assistant_text.trim().is_empty() {
+            assistant_text = completed_text.unwrap_or_default();
+        }
+        if assistant_text.trim().is_empty() {
+            return Err(domain_error(
+                ErrorCode::ProviderFailed,
+                "Codex returned an empty assistant result",
+                false,
+            ));
+        }
+        let commit_id = commit_workspace_changes(
+            &request.cwd,
+            &request.commit_subject,
+            head_before.as_deref(),
+        )?;
+        Ok(WorkspaceAgentResponse {
+            assistant_text,
+            commit_id,
+        })
+    }
+}
+
+fn ensure_clean_worktree(cwd: &Path) -> Result<Option<String>, DomainError> {
+    let output = git(cwd, &["status", "--porcelain=v1"])?;
+    if !output.stdout.is_empty() {
+        return Err(domain_error(
+            ErrorCode::InvalidConfiguration,
+            "Codex requires a clean Project worktree so existing user changes are never committed",
+            false,
+        ));
+    }
+    Ok(git_head(cwd))
+}
+
+fn commit_workspace_changes(
+    cwd: &Path,
+    subject: &str,
+    head_before: Option<&str>,
+) -> Result<Option<String>, DomainError> {
+    let status = git(cwd, &["status", "--porcelain=v1"])?;
+    if status.stdout.is_empty() {
+        let head_after = git_head(cwd);
+        return Ok((head_after.as_deref() != head_before)
+            .then_some(head_after)
+            .flatten());
+    }
+    git(cwd, &["add", "--all"])?;
+    let subject = normalized_commit_subject(subject);
+    git(
+        cwd,
+        &[
+            "-c",
+            "user.name=Ait Codex",
+            "-c",
+            "user.email=ait-codex@localhost",
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            &subject,
+        ],
+    )?;
+    let revision = git(cwd, &["rev-parse", "HEAD"])?;
+    Ok(Some(
+        String::from_utf8_lossy(&revision.stdout).trim().to_owned(),
+    ))
+}
+
+fn git_head(cwd: &Path) -> Option<String> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn normalized_commit_subject(subject: &str) -> String {
+    let one_line = subject.split_whitespace().collect::<Vec<_>>().join(" ");
+    let shortened = one_line.chars().take(60).collect::<String>();
+    if shortened.is_empty() {
+        "ait: apply Codex changes".to_owned()
+    } else {
+        format!("ait: {shortened}")
+    }
+}
+
+fn git(cwd: &Path, arguments: &[&str]) -> Result<std::process::Output, DomainError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(arguments)
+        .output()
+        .map_err(|failure| {
+            domain_error(ErrorCode::ProjectGitInitFailed, failure.to_string(), false)
+        })?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(domain_error(
+            ErrorCode::ProjectGitInitFailed,
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            false,
+        ))
+    }
+}
+
+fn adapter_domain_error(error: AdapterError) -> DomainError {
+    domain_error(ErrorCode::ProviderFailed, error.message, error.retryable)
+}
+
+fn domain_error(code: ErrorCode, message: impl Into<String>, retryable: bool) -> DomainError {
+    DomainError {
+        code,
+        message: message.into(),
+        retryable,
+        details: None,
+        cause_id: None,
     }
 }
 

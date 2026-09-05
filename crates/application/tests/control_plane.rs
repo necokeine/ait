@@ -5,14 +5,113 @@ use std::sync::Arc;
 
 use ait_application::LocalControlService;
 use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
-use ait_domain::ErrorCode;
+use ait_domain::{DomainError, ErrorCode};
+use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
 use ait_storage_sqlite::SqliteControlStore;
+use async_trait::async_trait;
 use tempfile::TempDir;
 
 async fn run(service: &LocalControlService, command: Command) -> CommandResult {
     let response = service.execute(command).await;
     assert!(response.ok, "{:?}", response.error);
     response.result.unwrap()
+}
+
+#[derive(Debug)]
+struct SuccessfulCodex;
+
+#[async_trait]
+impl WorkspaceAgent for SuccessfulCodex {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        assert!(request.prompt.contains("user: implement the feature"));
+        assert_eq!(request.commit_subject, "implement the feature");
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "Implemented and verified the feature.".into(),
+            commit_id: Some("0123456789abcdef".into()),
+        })
+    }
+}
+
+#[tokio::test]
+async fn codex_session_persists_assistant_result_and_commit_reference() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = LocalControlService::with_workspace_agent(
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+        Arc::new(SuccessfulCodex),
+    );
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "codex-project".into(),
+            name: "Codex Project".into(),
+            workdir: project_dir.display().to_string(),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "codex-agent".into(),
+            name: "Codex".into(),
+            model: "codex-test".into(),
+            mode: AgentMode::Codex,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "codex-session".into(),
+            project_id: project.id,
+            agent_id: "codex-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let completed = match run(
+        &service,
+        Command::SendMessage {
+            session_id: "codex-session".into(),
+            text: "implement the feature".into(),
+            expected_version: Some(1),
+        },
+    )
+    .await
+    {
+        CommandResult::Run(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(completed.status, "completed");
+
+    let workspace = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    let session = &workspace.sessions[0];
+    assert!(session.active_run_id.is_none());
+    let assistant = workspace
+        .messages
+        .iter()
+        .find(|message| message.id == session.current_message_id)
+        .unwrap();
+    assert_eq!(assistant.role, "assistant");
+    assert_eq!(
+        assistant.text.as_deref(),
+        Some("Implemented and verified the feature.")
+    );
+    assert_eq!(
+        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
+        serde_json::json!("0123456789abcdef")
+    );
 }
 
 #[tokio::test]

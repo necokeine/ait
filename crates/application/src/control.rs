@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write as _,
     path::Path,
     process::Command as ProcessCommand,
     sync::Arc,
@@ -15,10 +16,13 @@ use ait_contracts::{
     settings_schema,
 };
 use ait_domain::{
-    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, ErrorCode, MessageId,
-    ProjectId, TimestampMs,
+    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
+    MessageId, ProjectId, TimestampMs,
 };
-use ait_ports::{ControlStore, ControlStoreError, PendingEvent};
+use ait_ports::{
+    ControlStore, ControlStoreError, PendingEvent, WorkspaceAgent, WorkspaceAgentInvocation,
+    WorkspaceAgentResponse,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -72,20 +76,190 @@ impl From<State> for WorkspaceView {
 /// Shared application entry point used by every transport adapter.
 pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
+    workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
 }
 
 impl LocalControlService {
     #[must_use]
     pub fn new(store: Arc<dyn ControlStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            workspace_agent: None,
+        }
+    }
+
+    /// Creates a service that can execute real workspace-scoped coding Agents.
+    #[must_use]
+    pub fn with_workspace_agent(
+        store: Arc<dyn ControlStore>,
+        workspace_agent: Arc<dyn WorkspaceAgent>,
+    ) -> Self {
+        Self {
+            store,
+            workspace_agent: Some(workspace_agent),
+        }
     }
 
     /// Executes one versioned command and returns a stable response envelope.
     pub async fn execute(&self, command: Command) -> Response {
         match self.try_execute(command).await {
+            Ok(CommandResult::Run(run)) if run.status == "queued" => {
+                match self.execute_workspace_agent(run).await {
+                    Ok(result) => Response::success(CommandResult::Run(result)),
+                    Err(error) => Response::failure(error),
+                }
+            }
             Ok(result) => Response::success(result),
             Err(error) => Response::failure(error),
         }
+    }
+
+    async fn execute_workspace_agent(&self, run: RunView) -> Result<RunView, ApiError> {
+        let snapshot = self.store.load().await.map_err(store_error)?;
+        let state = decode_state(snapshot.value)?;
+        let agent = require_agent(&state, &run.agent_id)?.clone();
+        if agent.mode != AgentMode::Codex {
+            return Ok(run);
+        }
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == run.project_id)
+            .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+        let user_text = state
+            .messages
+            .iter()
+            .find(|message| message.id == run.base_message_id)
+            .and_then(|message| message.text.clone())
+            .ok_or_else(|| error(ErrorCode::MessageNotFound, "run input not found", false))?;
+        let prompt = codex_prompt(&state, &run.base_message_id)?;
+        let workdir = Path::new(&project.workdir).to_path_buf();
+        if !self.set_run_running(&run.id).await? {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let state = decode_state(snapshot.value)?;
+            return state
+                .runs
+                .into_iter()
+                .find(|candidate| candidate.id == run.id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false));
+        }
+        let result = match &self.workspace_agent {
+            Some(executor) => {
+                executor
+                    .invoke(WorkspaceAgentInvocation {
+                        request_id: run.id.clone(),
+                        model: agent.model,
+                        prompt,
+                        commit_subject: user_text,
+                        cwd: workdir,
+                        cancellation: tokio_util::sync::CancellationToken::new(),
+                    })
+                    .await
+            }
+            None => Err(DomainError::invariant(
+                ErrorCode::InvalidConfiguration,
+                "Codex workspace executor is not configured",
+            )),
+        };
+        self.finish_workspace_run(&run.id, result).await
+    }
+
+    async fn set_run_running(&self, run_id: &str) -> Result<bool, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let run = state
+                .runs
+                .iter_mut()
+                .find(|run| run.id == run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            if run.status != "queued" {
+                return Ok(false);
+            }
+            run.status = "running".into();
+            let event = pending("run.updated", Some(run_id.to_owned()), run);
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => return Ok(true),
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "concurrent run update did not settle",
+            true,
+        ))
+    }
+
+    async fn finish_workspace_run(
+        &self,
+        run_id: &str,
+        result: Result<WorkspaceAgentResponse, DomainError>,
+    ) -> Result<RunView, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let index = state
+                .runs
+                .iter()
+                .position(|run| run.id == run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            let mut run = state.runs[index].clone();
+            if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+                return Ok(run);
+            }
+            match &result {
+                Ok(output) => {
+                    let data = output
+                        .commit_id
+                        .as_ref()
+                        .map(|commit_id| json!({"codex":{"commit_id":commit_id}}));
+                    let parent = run
+                        .last_message_id
+                        .as_deref()
+                        .unwrap_or(&run.base_message_id)
+                        .to_owned();
+                    let reply = message(
+                        &run.project_id,
+                        Some(&parent),
+                        "assistant",
+                        "standard",
+                        Some(output.assistant_text.clone()),
+                        data,
+                    );
+                    append_output(&mut state, &mut run, reply);
+                    run.status = "completed".into();
+                    run.error = None;
+                }
+                Err(failure) => {
+                    run.status = "failed".into();
+                    run.error = Some(error(failure.code, &failure.message, failure.retryable));
+                }
+            }
+            release_session(&mut state, &run);
+            state.runs[index] = run.clone();
+            let event = pending("run.updated", Some(run_id.to_owned()), &run);
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => return Ok(run),
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "concurrent Codex completion did not settle",
+            true,
+        ))
     }
 
     /// Replays durable events after a cursor, allowing lossless reconnection.
@@ -588,7 +762,7 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
         .expect("new run exists");
     let mut run = state.runs[index].clone();
     match agent.mode {
-        AgentMode::Manual => {}
+        AgentMode::Codex | AgentMode::Manual => {}
         AgentMode::ProviderFailure => {
             run.status = "failed".into();
             run.error = Some(error(
@@ -657,6 +831,36 @@ fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
     }
     state.runs[index] = run.clone();
     run
+}
+
+fn codex_prompt(state: &State, head_id: &str) -> Result<String, ApiError> {
+    let mut path = Vec::new();
+    let mut current = Some(head_id);
+    while let Some(id) = current {
+        let message = state
+            .messages
+            .iter()
+            .find(|message| message.id == id)
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::MessageNotFound,
+                    "message path is incomplete",
+                    false,
+                )
+            })?;
+        path.push(message);
+        current = message.parent_message_id.as_deref();
+    }
+    path.reverse();
+    let mut prompt = String::from(
+        "Work on the user's latest request in this repository. Make the requested code changes and verify them. Do not create a Git commit; the host will commit successful workspace changes.\n\nConversation:\n",
+    );
+    for message in path {
+        if let Some(text) = &message.text {
+            let _ = writeln!(prompt, "{}: {text}", message.role);
+        }
+    }
+    Ok(prompt)
 }
 
 fn append_output(state: &mut State, run: &mut RunView, output: MessageView) {

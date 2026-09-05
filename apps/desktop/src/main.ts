@@ -11,7 +11,8 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.create", "project.set-default-agent",
   "session.create", "session.send-message", "session.fork",
 ]);
-const builtInCodexAgentId = "codex-local";
+const builtInCodexAgentId = "codex-app-server";
+const legacyBuiltInCodexAgentId = "codex-local";
 
 interface DaemonResponse {
   ok: boolean;
@@ -21,7 +22,7 @@ interface DaemonResponse {
 
 interface WorkspaceView {
   projects: Array<{ id: string; name: string; workdir: string; default_agent_id?: string | null }>;
-  agents: Array<{ id: string; name: string; model: string; enabled: boolean }>;
+  agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
   sessions: Array<{ id: string; project_id: string; agent_id: string; current_message_id: string; active_run_id: string | null; version: number }>;
   messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
 }
@@ -124,13 +125,19 @@ class DaemonClient {
 
   private async ensureBuiltInAgents(): Promise<void> {
     const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
-    if (workspace.agents.some((agent) => agent.id === builtInCodexAgentId)) return;
-    await this.post("/v1/agent/register", "agent", {
-      id: builtInCodexAgentId,
-      name: "Codex",
-      model: "gpt-5.6-codex",
-      mode: "echo",
-    });
+    if (!workspace.agents.some((agent) => agent.id === builtInCodexAgentId)) {
+      await this.post("/v1/agent/register", "agent", {
+        id: builtInCodexAgentId,
+        name: "Codex",
+        model: "gpt-5.6-codex",
+        mode: "codex",
+      });
+    }
+    await Promise.all(workspace.projects
+      .filter((project) => project.default_agent_id === legacyBuiltInCodexAgentId)
+      .map((project) => this.post("/v1/project/set-default-agent", "project", {
+        project_id: project.id, agent_id: builtInCodexAgentId,
+      })));
   }
 
   private async isReady(): Promise<boolean> {
