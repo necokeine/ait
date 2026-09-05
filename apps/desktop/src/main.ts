@@ -3,6 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  builtInCodexAgentId,
+  builtInCodexModel,
+  legacyBuiltInCodexAgentId,
+  normalizedBuiltInAgent,
+} from "./agents.js";
 import { runFailure } from "./runs.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -12,10 +18,6 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.send-message", "session.fork",
 ]);
-const builtInCodexAgentId = "codex-app-server";
-const legacyBuiltInCodexAgentId = "codex-local";
-const builtInCodexModel = "gpt-5.6-sol";
-
 interface DaemonResponse {
   ok: boolean;
   result?: { kind: string; value: unknown };
@@ -194,7 +196,7 @@ class DaemonClient {
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map(({ id, name, model, mode, enabled }) => ({ id, name, model, mode, enabled })),
+      agents: workspace.agents.map(normalizedBuiltInAgent),
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,
         currentMessageId: session.current_message_id, agentId: session.agent_id,
