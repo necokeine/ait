@@ -106,6 +106,15 @@ impl MessageServiceError {
             Self::Validation(MessageValidationError::ToolResultRequiresUser) => {
                 "TOOL_RESULT_REQUIRES_USER"
             }
+            Self::Validation(MessageValidationError::HumanMessageGitCommitRequired) => {
+                "HUMAN_MESSAGE_GIT_COMMIT_REQUIRED"
+            }
+            Self::Validation(MessageValidationError::GitCommitNotAllowed) => {
+                "MESSAGE_GIT_COMMIT_NOT_ALLOWED"
+            }
+            Self::Validation(MessageValidationError::InvalidGitCommit) => {
+                "INVALID_MESSAGE_GIT_COMMIT"
+            }
             Self::ParentRequired | Self::NotDirectChild => "MESSAGE_PARENT_INVALID",
             Self::ProjectMismatch { .. }
             | Self::MessageStore(MessageStoreError::MessageProjectMismatch { .. }) => {

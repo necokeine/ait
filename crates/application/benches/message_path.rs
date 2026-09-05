@@ -5,8 +5,8 @@ use std::{collections::HashMap, hint::black_box, sync::Arc};
 
 use ait_application::MessageService;
 use ait_domain::{
-    DomainMetadata, Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId,
-    Session, SessionId, StoredMessage, SubMessage, TimestampMs,
+    DomainMetadata, GitCommit, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
+    ProjectId, Session, SessionId, StoredMessage, SubMessage, TimestampMs,
 };
 use ait_ports::{MessageStore, MessageStoreError, SessionAdvance, SessionStore, SessionStoreError};
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -80,6 +80,7 @@ fn message_path(c: &mut Criterion) {
                 run_id: None,
                 run_seq: None,
                 tool_result: None,
+                git_commit: (index > 1).then(|| GitCommit::parse("a".repeat(40)).unwrap()),
                 metadata: DomainMetadata::default(),
                 created_at: TimestampMs(i64::try_from(index).unwrap()),
             },

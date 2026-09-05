@@ -23,6 +23,90 @@ async fn run(service: &LocalControlService, command: Command) -> CommandResult {
     response.result.unwrap()
 }
 
+#[tokio::test]
+async fn user_message_requires_clean_git_and_records_head_commit() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "git-project".into(),
+            name: "Git Project".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: Some("git@github.com:member/fork.git".into()),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(project) => project,
+        _ => panic!(),
+    };
+    assert_eq!(project.base_commit.len(), 40);
+    assert_eq!(
+        project.repo_url.as_deref(),
+        Some("git@github.com:member/fork.git")
+    );
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "echo".into(),
+            name: "Echo".into(),
+            model: "echo".into(),
+            mode: AgentMode::Echo,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "git-session".into(),
+            project_id: project.id.clone(),
+            agent_id: "echo".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+
+    let dirty_path = project_dir.join("dirty.txt");
+    std::fs::write(&dirty_path, "dirty").unwrap();
+    let rejected = service
+        .execute(Command::SendMessage {
+            session_id: "git-session".into(),
+            text: "must not append".into(),
+            expected_version: Some(1),
+            reasoning_effort: None,
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::ProjectGitDirty);
+    std::fs::remove_file(dirty_path).unwrap();
+
+    run(
+        &service,
+        Command::SendMessage {
+            session_id: "git-session".into(),
+            text: "append clean input".into(),
+            expected_version: Some(1),
+            reasoning_effort: None,
+        },
+    )
+    .await;
+    let workspace = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(workspace) => workspace,
+        _ => panic!(),
+    };
+    let user = workspace
+        .messages
+        .iter()
+        .find(|message| message.text.as_deref() == Some("append clean input"))
+        .unwrap();
+    assert_eq!(
+        user.git_commit.as_deref(),
+        Some(project.base_commit.as_str())
+    );
+}
+
 #[derive(Debug)]
 struct SuccessfulCodex;
 
@@ -78,6 +162,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
             id: "named-project".into(),
             name: "Named Project".into(),
             workdir: project_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -178,6 +263,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
             id: "codex-project".into(),
             name: "Codex Project".into(),
             workdir: project_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -256,6 +342,7 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
             id: "rebind-project".into(),
             name: "Rebind Project".into(),
             workdir: project_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -352,6 +439,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
             id: "project-1".into(),
             name: "Demo".into(),
             workdir: project_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -518,6 +606,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             id: "p".into(),
             name: "P".into(),
             workdir: project_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -646,6 +735,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
             id: "portable-project".into(),
             name: "Portable".into(),
             workdir: source_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -758,6 +848,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
             id: "desktop-project".into(),
             name: "Desktop".into(),
             workdir: project_dir.display().to_string(),
+            repo_url: None,
         },
     )
     .await
@@ -867,6 +958,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
                 id: id.into(),
                 name: name.into(),
                 workdir: directory.display().to_string(),
+                repo_url: None,
             },
         )
         .await;

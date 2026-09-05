@@ -5,6 +5,56 @@ use uuid::Uuid;
 
 use crate::{AgentId, DomainError, DomainMetadata, ErrorCode, RunId, TimestampMs};
 
+/// Immutable Git commit identity captured at a Project or Message boundary.
+///
+/// Both SHA-1 and SHA-256 object formats are accepted so repositories can
+/// migrate hash algorithms without changing the domain model.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct GitCommit(String);
+
+impl GitCommit {
+    /// Parses a full lowercase hexadecimal Git object identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::InvalidProject`] when `value` is not a full SHA-1
+    /// or SHA-256 object identity.
+    pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
+        let value = value.into();
+        if is_git_commit(&value) {
+            Ok(Self(value))
+        } else {
+            Err(DomainError::invariant(
+                ErrorCode::InvalidProject,
+                "Git commit must be a full lowercase SHA-1 or SHA-256 object id",
+            ))
+        }
+    }
+
+    /// Returns the full hexadecimal object identity.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Reports whether this value remains a valid full Git object identity.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        is_git_commit(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for GitCommit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Stable identity of a registered project.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -117,6 +167,11 @@ pub struct Project {
     pub workdir: PathBuf,
     /// Whether the manager initialized Git while registering the project.
     pub git_initialized_by_manager: bool,
+    /// Optional remote repository URL represented locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_url: Option<String>,
+    /// Repository HEAD captured once when the Project was registered.
+    pub base_commit: GitCommit,
     /// Default Agent suggested when creating a new Session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent_id: Option<AgentId>,
@@ -148,6 +203,11 @@ impl Project {
         if self.id.as_str().is_empty()
             || self.name.trim().is_empty()
             || !self.workdir.is_absolute()
+            || self
+                .repo_url
+                .as_ref()
+                .is_some_and(|url| url.trim().is_empty())
+            || !is_git_commit(self.base_commit.as_str())
             || self.instruction_revision == 0
             || !is_sha256(&self.instruction_digest)
             || self.updated_at < self.created_at
@@ -363,6 +423,13 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_git_commit(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -473,6 +540,8 @@ mod tests {
             description: String::new(),
             workdir: PathBuf::from("/project"),
             git_initialized_by_manager: false,
+            repo_url: None,
+            base_commit: GitCommit::parse("b".repeat(40)).unwrap(),
             default_agent_id: None,
             instruction_revision: 1,
             instruction_digest: "a".repeat(64),
@@ -496,5 +565,35 @@ mod tests {
                 .description,
             ""
         );
+    }
+
+    #[test]
+    fn project_requires_base_commit_and_nonempty_repo_url_when_present() {
+        let mut project = Project {
+            id: ProjectId::new("project-1"),
+            name: "Project".into(),
+            description: String::new(),
+            workdir: PathBuf::from("/project"),
+            git_initialized_by_manager: false,
+            repo_url: Some("git@github.com:member/fork.git".into()),
+            base_commit: GitCommit::parse("b".repeat(40)).unwrap(),
+            default_agent_id: None,
+            instruction_revision: 1,
+            instruction_digest: "a".repeat(64),
+            metadata: DomainMetadata::default(),
+            status: ProjectStatus::Active,
+            created_at: TimestampMs(1),
+            updated_at: TimestampMs(1),
+        };
+        project.validate().unwrap();
+
+        project.repo_url = Some("  ".into());
+        assert_eq!(
+            project.validate().unwrap_err().code,
+            ErrorCode::InvalidProject
+        );
+
+        project.repo_url = None;
+        assert!(serde_json::from_str::<GitCommit>("\"short\"").is_err());
     }
 }

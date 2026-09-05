@@ -10,10 +10,11 @@ use std::{
 
 use ait_domain::{
     AgentCapability, AgentConfigSnapshot, AgentId, CostMicros, DomainError, DomainMetadata,
-    DurationMs, ErrorCode, Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId,
-    ProjectedMessage, RetryPolicy, Run, RunAttempt, RunAttemptId, RunBudget, RunId, RunPhase,
-    RunStatus, RunStopReason, RunTrigger, RunUsage, SubMessage, TimestampMs, ToolApprovalStatus,
-    ToolExecution, ToolExecutionId, ToolExecutionStatus, ToolPolicy, ToolResultStatus, ToolUse,
+    DurationMs, ErrorCode, GitCommit, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
+    ProjectId, ProjectedMessage, RetryPolicy, Run, RunAttempt, RunAttemptId, RunBudget, RunId,
+    RunPhase, RunStatus, RunStopReason, RunTrigger, RunUsage, SubMessage, TimestampMs,
+    ToolApprovalStatus, ToolExecution, ToolExecutionId, ToolExecutionStatus, ToolPolicy,
+    ToolResultStatus, ToolUse,
 };
 use ait_ports::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent,
@@ -431,6 +432,7 @@ fn fixture() -> (Run, Vec<Message>) {
         run_id: None,
         run_seq: None,
         tool_result: None,
+        git_commit: None,
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(1),
     };
@@ -446,6 +448,7 @@ fn fixture() -> (Run, Vec<Message>) {
         run_id: None,
         run_seq: None,
         tool_result: None,
+        git_commit: Some(GitCommit::parse("a".repeat(40)).unwrap()),
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(2),
     };
@@ -885,6 +888,7 @@ async fn crash_recovery_persists_a_known_tool_outcome_without_reexecution() {
         run_id: Some(run.id.clone()),
         run_seq: Some(1),
         tool_result: None,
+        git_commit: None,
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(11),
     };
@@ -908,6 +912,7 @@ async fn crash_recovery_persists_a_known_tool_outcome_without_reexecution() {
             output: Some("{\"already\":\"done\"}".into()),
             error: None,
         }),
+        git_commit: None,
         metadata: DomainMetadata::default(),
         created_at: TimestampMs(14),
     };
