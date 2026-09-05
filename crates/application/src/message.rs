@@ -179,12 +179,11 @@ impl MessageService {
     ) -> Result<Session, MessageServiceError> {
         let target = self.messages.get_message(&at_message_id)?;
         require_project(&project_id, &target.message.project_id)?;
-        let name = session_id.as_str().to_owned();
         self.sessions
             .create_session(Session::new(
                 session_id,
                 project_id,
-                name,
+                "",
                 at_message_id,
                 agent_id,
                 TimestampMs(0),

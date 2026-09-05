@@ -10,13 +10,15 @@ import {
   normalizedBuiltInAgent,
 } from "./agents.js";
 import { runFailure } from "./runs.js";
+import { sessionDisplayTitle } from "./session-titles.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.create", "project.set-default-agent",
-  "session.create", "session.set-agent", "session.send-message", "session.fork",
+  "session.create", "session.set-agent", "session.rename", "session.set-title",
+  "session.generate-title", "session.send-message", "session.fork",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -27,7 +29,11 @@ interface DaemonResponse {
 interface WorkspaceView {
   projects: Array<{ id: string; name: string; workdir: string; default_agent_id?: string | null }>;
   agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
-  sessions: Array<{ id: string; project_id: string; agent_id: string; current_message_id: string; active_run_id: string | null; version: number }>;
+  sessions: Array<{
+    id: string; project_id: string; name?: string; title?: string | null; description?: string;
+    title_generation_started?: boolean; agent_id: string; current_message_id: string;
+    active_run_id: string | null; version: number;
+  }>;
   messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
 }
 
@@ -85,6 +91,24 @@ class DaemonClient {
       await this.post("/v1/session/set-agent", "session", {
         session_id: params.sessionId, agent_id: params.agentId,
         expected_version: params.expectedVersion,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.rename") {
+      await this.post("/v1/session/rename", "session", {
+        session_id: params.sessionId, name: params.name,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.set-title") {
+      await this.post("/v1/session/set-title", "session", {
+        session_id: params.sessionId, title: params.title,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.generate-title") {
+      await this.post("/v1/session/generate-title", "session", {
+        session_id: params.sessionId, prompt: params.prompt,
       });
       return this.snapshot();
     }
@@ -198,7 +222,9 @@ class DaemonClient {
       })),
       agents: workspace.agents.map(normalizedBuiltInAgent),
       sessions: workspace.sessions.map((session) => ({
-        id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,
+        id: session.id, projectId: session.project_id, name: session.name ?? "",
+        title: sessionDisplayTitle(session), description: session.description ?? "",
+        titleGenerationStarted: session.title_generation_started ?? false,
         currentMessageId: session.current_message_id, agentId: session.agent_id,
         version: session.version, active: session.active_run_id !== null, updatedAt: 0,
       })),

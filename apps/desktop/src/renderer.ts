@@ -1,5 +1,6 @@
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
+import { sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -30,12 +31,15 @@ const commandDialog = $("#command-dialog");
 const projectDialog = $("#project-dialog");
 const projectSettingsDialog = $("#project-settings-dialog");
 const sessionDialog = $("#session-dialog");
+const renameSessionDialog = $("#rename-session-dialog");
+const sessionContextMenu = $<HTMLElement>("#session-context-menu");
 
 let snapshot: DesktopSnapshot | undefined;
 let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
 let selectedNodeId: string | undefined;
 let configuringProjectId: string | undefined;
+let renamingSessionId: string | undefined;
 let viewedTreeHeadId: string | undefined;
 let branchPickerNodeId: string | undefined;
 let timeline: TimelineNode[] = [];
@@ -84,6 +88,9 @@ function bindInteractions(): void {
   $("#project-settings-cancel").addEventListener("click", closeProjectSettingsDialog);
   $("#session-close").addEventListener("click", closeSessionDialog);
   $("#session-cancel").addEventListener("click", closeSessionDialog);
+  $("#rename-session-close").addEventListener("click", closeRenameSessionDialog);
+  $("#rename-session-cancel").addEventListener("click", closeRenameSessionDialog);
+  $("#session-rename-action").addEventListener("click", openRenameSessionDialog);
   $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
   composerAgent.addEventListener("change", () => void changeSessionAgent());
   $("#project-create").addEventListener("submit", (event) => {
@@ -97,6 +104,10 @@ function bindInteractions(): void {
   $("#session-create").addEventListener("submit", (event) => {
     event.preventDefault();
     void createSession();
+  });
+  $("#rename-session-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void renameSession();
   });
   $("#settings-close").addEventListener("click", closeSettings);
   $("#settings-cancel").addEventListener("click", closeSettings);
@@ -116,6 +127,9 @@ function bindInteractions(): void {
   sessionDialog.addEventListener("click", (event) => {
     if (event.target === sessionDialog) closeSessionDialog();
   });
+  renameSessionDialog.addEventListener("click", (event) => {
+    if (event.target === renameSessionDialog) closeRenameSessionDialog();
+  });
   settingsDialog.addEventListener("click", (event) => {
     if (event.target === settingsDialog) closeSettings();
   });
@@ -132,6 +146,9 @@ function bindInteractions(): void {
     void submitMessage();
   });
   treeScroll.addEventListener("keydown", handleTreeKeyboard);
+  document.addEventListener("pointerdown", (event) => {
+    if (!sessionContextMenu.contains(event.target as Node)) closeSessionContextMenu();
+  });
   document.addEventListener("keydown", handleGlobalKeyboard);
 }
 
@@ -200,6 +217,10 @@ function renderProjects(): void {
       selectedSessionId = session?.id;
       resetTreeView();
       renderAll();
+    });
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openSessionContextMenu(event, button.dataset.sessionId);
     });
   });
   projectList.querySelectorAll<HTMLElement>("[data-new-session-project-id]").forEach((button) => {
@@ -376,11 +397,79 @@ async function submitMessage(): Promise<void> {
     resetTreeView();
     messageInput.value = "";
     renderAll();
+    const titledSession = currentSession();
+    const titledHead = snapshot.messages.find((message) => message.id === titledSession?.currentMessageId);
+    if (titledSession && titledHead?.role === "assistant"
+      && !titledSession.titleGenerationStarted && !titledSession.name.trim()) {
+      void generateFirstSessionTitle(titledSession.id, content);
+    }
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
     sendButton.textContent = "↑";
     updateComposerState();
+  }
+}
+
+async function generateFirstSessionTitle(sessionId: string, prompt: string): Promise<void> {
+  const title = temporarySessionTitle(prompt);
+  const modelPrompt = sanitizeSessionPrompt(prompt);
+  if (!snapshot || !title || !modelPrompt) return;
+  try {
+    snapshot = await window.ait.setSessionTitle({ sessionId, title });
+    renderAll();
+    snapshot = await window.ait.generateSessionTitle({ sessionId, prompt: modelPrompt });
+    renderAll();
+  } catch (error) {
+    console.warn("Session title generation failed; keeping the temporary title.", error);
+  }
+}
+
+function openSessionContextMenu(event: MouseEvent, sessionId?: string): void {
+  if (!sessionId) return;
+  renamingSessionId = sessionId;
+  sessionContextMenu.classList.remove("is-hidden");
+  const left = Math.min(event.clientX, window.innerWidth - sessionContextMenu.offsetWidth - 8);
+  const top = Math.min(event.clientY, window.innerHeight - sessionContextMenu.offsetHeight - 8);
+  sessionContextMenu.style.left = `${Math.max(8, left)}px`;
+  sessionContextMenu.style.top = `${Math.max(54, top)}px`;
+  $<HTMLButtonElement>("#session-rename-action").focus();
+}
+
+function closeSessionContextMenu(): void {
+  sessionContextMenu.classList.add("is-hidden");
+}
+
+function openRenameSessionDialog(): void {
+  const session = snapshot?.sessions.find((candidate) => candidate.id === renamingSessionId);
+  closeSessionContextMenu();
+  if (!session) return;
+  const input = $<HTMLInputElement>("#rename-session-name");
+  input.value = session.name;
+  renameSessionDialog.classList.remove("is-hidden");
+  requestAnimationFrame(() => input.select());
+}
+
+function closeRenameSessionDialog(): void {
+  renameSessionDialog.classList.add("is-hidden");
+}
+
+async function renameSession(): Promise<void> {
+  if (!renamingSessionId) return;
+  const button = $<HTMLButtonElement>("#rename-session-submit");
+  button.disabled = true;
+  try {
+    snapshot = await window.ait.renameSession({
+      sessionId: renamingSessionId,
+      name: $<HTMLInputElement>("#rename-session-name").value,
+    });
+    closeRenameSessionDialog();
+    renderAll();
+    showToast("Session renamed.");
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -458,6 +547,8 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
     closeSettings();
     closeCommandPalette();
     closeProjectDialog();
+    closeSessionContextMenu();
+    closeRenameSessionDialog();
     closeProjectSettingsDialog();
     closeSessionDialog();
   }
@@ -722,7 +813,8 @@ function closeCommandPalette(): void {
 
 function renderCommandResults(): void {
   const query = $<HTMLInputElement>("#command-input").value.trim().toLowerCase();
-  const sessions = snapshot?.sessions.filter((session) => session.title.toLowerCase().includes(query)) ?? [];
+  const sessions = snapshot?.sessions.filter((session) =>
+    `${session.title} ${session.description}`.toLowerCase().includes(query)) ?? [];
   const commands = [
     { id: "new-project", title: "Create Project", hint: "" },
     { id: "new-session", title: "Create Session", hint: "" },

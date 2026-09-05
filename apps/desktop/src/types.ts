@@ -37,7 +37,10 @@ export interface AgentSummary {
 export interface DesktopSession {
   id: string;
   projectId: string;
+  name: string;
   title: string;
+  description: string;
+  titleGenerationStarted: boolean;
   currentMessageId: string;
   agentId: string;
   version: number;
@@ -118,6 +121,9 @@ export interface AitDesktopApi {
     agentId: string;
     expectedVersion: number;
   }): Promise<DesktopSnapshot>;
+  renameSession(input: { sessionId: string; name: string }): Promise<DesktopSnapshot>;
+  setSessionTitle(input: { sessionId: string; title: string }): Promise<DesktopSnapshot>;
+  generateSessionTitle(input: { sessionId: string; prompt: string }): Promise<DesktopSnapshot>;
   sendMessage(input: {
     sessionId: string;
     expectedVersion: number;

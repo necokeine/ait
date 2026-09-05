@@ -180,6 +180,28 @@
         </form>
       </div>
 
+      <div id="session-context-menu" class="context-menu is-hidden" role="menu" aria-label="Session actions">
+        <button id="session-rename-action" type="button" role="menuitem">Rename</button>
+      </div>
+
+      <div id="rename-session-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="rename-session-title">
+        <form id="rename-session-form" class="action-window rename-session-window">
+          <header class="settings-header">
+            <div><span class="eyebrow">Session name</span><h2 id="rename-session-title">Rename Session</h2></div>
+            <button id="rename-session-close" class="icon-button" type="button" aria-label="Close rename Session">×</button>
+          </header>
+          <div class="action-form">
+            <label class="field-label" for="rename-session-name">Name</label>
+            <input id="rename-session-name" type="text" maxlength="100" autocomplete="off" placeholder="Leave empty to use the generated title" />
+            <p class="field-help">Clear the name to return to the generated or default Session title.</p>
+          </div>
+          <footer class="settings-footer">
+            <button id="rename-session-cancel" class="secondary-button" type="button">Cancel</button>
+            <button id="rename-session-submit" class="primary-button" type="submit">Save name</button>
+          </footer>
+        </form>
+      </div>
+
       <div id="command-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-label="Command palette">
         <section class="command-palette">
           <input id="command-input" type="search" placeholder="Search sessions and commands" autocomplete="off" />

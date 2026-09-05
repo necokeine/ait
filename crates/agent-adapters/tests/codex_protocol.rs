@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use ait_agent_adapters::{
     AgentEvent, AgentRunRequest, AgentRunStatus, ApprovalDecision, ApprovalHandler, ApprovalPolicy,
-    ApprovalRequest, SandboxMode,
+    ApprovalRequest, ReasoningEffort, SandboxMode,
     codex::{ClientInfo, drive_protocol},
 };
 use async_trait::async_trait;
@@ -24,6 +24,8 @@ fn request() -> AgentRunRequest {
         resume_thread_id: None,
         sandbox: SandboxMode::WorkspaceWrite,
         approval_policy: ApprovalPolicy::OnRequest,
+        reasoning_effort: Some(ReasoningEffort::Low),
+        output_schema: Some(json!({"type":"object"})),
         cancellation: CancellationToken::new(),
     }
 }
@@ -71,6 +73,8 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
         let turn = read_json(&mut lines).await;
         assert_eq!(turn["method"], "turn/start");
         assert_eq!(turn["params"]["input"][0]["text"], "Inspect the project");
+        assert_eq!(turn["params"]["effort"], "low");
+        assert_eq!(turn["params"]["outputSchema"]["type"], "object");
         write_json(
             &mut server_write,
             json!({"id": 2, "result": {"turn": {"id": "turn-1"}}}),

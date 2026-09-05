@@ -37,6 +37,24 @@ pub enum ApprovalPolicy {
     Never,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub(crate) fn as_wire_value(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
 impl ApprovalPolicy {
     pub(crate) fn as_wire_value(self) -> &'static str {
         match self {
@@ -56,6 +74,8 @@ pub struct AgentRunRequest {
     pub resume_thread_id: Option<String>,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
+    pub reasoning_effort: Option<ReasoningEffort>,
+    pub output_schema: Option<Value>,
     pub cancellation: CancellationToken,
 }
 
