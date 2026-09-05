@@ -3,6 +3,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  builtInCodexAgentId,
+  builtInCodexModel,
+  legacyBuiltInCodexAgentId,
+  normalizedBuiltInAgent,
+} from "./agents.js";
+import { runFailure } from "./runs.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
@@ -11,9 +18,6 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.send-message", "session.fork",
 ]);
-const builtInCodexAgentId = "codex-app-server";
-const legacyBuiltInCodexAgentId = "codex-local";
-
 interface DaemonResponse {
   ok: boolean;
   result?: { kind: string; value: unknown };
@@ -85,10 +89,16 @@ class DaemonClient {
       return this.snapshot();
     }
     if (method === "session.send-message") {
-      await this.post("/v1/session/send-message", "run", {
+      const run = await this.post("/v1/session/send-message", "run", {
         session_id: params.sessionId, text: params.content,
         expected_version: params.expectedVersion,
       });
+      const failure = runFailure(run);
+      if (failure) {
+        const error = new Error(failure.message) as Error & { code?: string };
+        if (failure.code) error.code = failure.code;
+        throw error;
+      }
       return this.snapshot();
     }
 
@@ -136,7 +146,7 @@ class DaemonClient {
       await this.post("/v1/agent/register", "agent", {
         id: builtInCodexAgentId,
         name: "Codex",
-        model: "gpt-5.6-codex",
+        model: builtInCodexModel,
         mode: "codex",
       });
     }
@@ -186,7 +196,7 @@ class DaemonClient {
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map(({ id, name, model, mode, enabled }) => ({ id, name, model, mode, enabled })),
+      agents: workspace.agents.map(normalizedBuiltInAgent),
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,
         currentMessageId: session.current_message_id, agentId: session.agent_id,

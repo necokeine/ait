@@ -25,6 +25,9 @@ use crate::{
     ApprovalRequest, DenyAllApprovals,
 };
 
+const LEGACY_BUILT_IN_MODEL: &str = "gpt-5.6-codex";
+const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
+
 #[derive(Clone)]
 pub struct CodexAppServerConfig {
     pub codex_binary: PathBuf,
@@ -456,8 +459,9 @@ where
         thread_params = json!({"threadId": thread_id});
     } else {
         thread_method = "thread/start";
+        let model = request.model.as_deref().map(normalized_model);
         thread_params = json!({
-            "model": request.model,
+            "model": model,
             "cwd": request.cwd,
             "sandbox": request.sandbox.as_wire_value(),
             "approvalPolicy": request.approval_policy.as_wire_value(),
@@ -530,6 +534,14 @@ where
         if handle_message(&message, &mut writer, &turn_id, approvals.as_ref(), sender).await? {
             return Ok(());
         }
+    }
+}
+
+fn normalized_model(model: &str) -> &str {
+    if model == LEGACY_BUILT_IN_MODEL {
+        DEFAULT_CODEX_MODEL
+    } else {
+        model
     }
 }
 
