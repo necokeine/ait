@@ -26,7 +26,7 @@ export interface DesktopProject {
   name: string;
   workdir: string;
   description: string;
-  forkRepoUrl?: string;
+  repoUrl?: string;
   baseCommit: string;
   defaultAgentId: string | null;
 }
@@ -114,7 +114,7 @@ export interface AitDesktopApi {
     name: string;
     workdir: string;
     agentId: string;
-    forkRepoUrl?: string;
+    repoUrl?: string;
   }): Promise<{ snapshot: DesktopSnapshot; selectedProjectId: string }>;
   setProjectDefaultAgent(input: {
     projectId: string;

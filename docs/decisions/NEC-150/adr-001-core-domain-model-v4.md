@@ -31,7 +31,7 @@ Project {
   id, name, description,          // 未提供时为空字符串
   workdir,                       // 规范化后的绝对路径
   git_initialized_by_manager,
-  fork_repo_url?,                // 可选、声明型的远端 fork 地址
+  repo_url?,                     // 可选、声明型的远端仓库地址
   base_commit,                   // 注册 Project 时冻结的初始 HEAD
   default_agent_id?,              // 创建 Session 时的默认建议，可覆盖
   instruction_revision,
@@ -48,7 +48,7 @@ Project {
 4. 再次校验 Git top-level 等于 `workdir`。读取完整 `HEAD` object id；若新初始化或已有仓库仍是 unborn HEAD，创建一个 manager-owned 的空初始提交后再次读取。
 5. 将该 object id 冻结为 `Project.base_commit`；只有 Git root 与 HEAD 都验证成功后才持久化 Project。
 
-一个规范化路径最多注册为一个 Project。`fork_repo_url` 是可选的声明型来源信息，不参与 Project 身份；实际 Git remote、当前分支等仍是可刷新派生信息。默认情况下，文件工具不得越出 `workdir`；越界必须经过显式授权。
+一个规范化路径最多注册为一个 Project。`repo_url` 是可选的声明型来源信息，不参与 Project 身份；实际 Git remote、当前分支等仍是可刷新派生信息。默认情况下，文件工具不得越出 `workdir`；越界必须经过显式授权。
 
 创建一棵新的 Message 树时，从 Project 指令源生成根 System Message 快照。仅在已有 Message 上打开 Session 时不创建或改写 System Message。Project 后续变化不回写旧 Message。
 
@@ -333,7 +333,7 @@ Agent 产生最终 assistant Message 且没有待处理 ToolUse 时，只能进�
 ## 6. 最小 API 契约
 
 ```text
-createProject(workdir, fork_repo_url?, metadata) // 必要时 git init 并创建空初始提交
+createProject(workdir, repo_url?, metadata) // 必要时 git init 并创建空初始提交
 updateProjectMetadata(project_id, patch)
 createMessageRoot(project_id, system_sub_messages)
 openSession(project_id, at_message_id, agent_id, name?)

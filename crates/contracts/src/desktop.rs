@@ -19,9 +19,9 @@ pub struct DesktopProject {
     pub workdir: String,
     /// Optional descriptive context.
     pub description: String,
-    /// Optional remote fork URL declared for this Project.
+    /// Optional remote repository URL declared for this Project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fork_repo_url: Option<String>,
+    pub repo_url: Option<String>,
     /// Immutable repository HEAD captured at Project registration.
     #[serde(default)]
     pub base_commit: String,

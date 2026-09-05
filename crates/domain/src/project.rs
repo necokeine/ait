@@ -167,9 +167,9 @@ pub struct Project {
     pub workdir: PathBuf,
     /// Whether the manager initialized Git while registering the project.
     pub git_initialized_by_manager: bool,
-    /// Optional remote repository URL identifying the fork represented locally.
+    /// Optional remote repository URL represented locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fork_repo_url: Option<String>,
+    pub repo_url: Option<String>,
     /// Repository HEAD captured once when the Project was registered.
     pub base_commit: GitCommit,
     /// Default Agent suggested when creating a new Session.
@@ -204,7 +204,7 @@ impl Project {
             || self.name.trim().is_empty()
             || !self.workdir.is_absolute()
             || self
-                .fork_repo_url
+                .repo_url
                 .as_ref()
                 .is_some_and(|url| url.trim().is_empty())
             || !is_git_commit(self.base_commit.as_str())
@@ -540,7 +540,7 @@ mod tests {
             description: String::new(),
             workdir: PathBuf::from("/project"),
             git_initialized_by_manager: false,
-            fork_repo_url: None,
+            repo_url: None,
             base_commit: GitCommit::parse("b".repeat(40)).unwrap(),
             default_agent_id: None,
             instruction_revision: 1,
@@ -568,14 +568,14 @@ mod tests {
     }
 
     #[test]
-    fn project_requires_base_commit_and_nonempty_fork_url_when_present() {
+    fn project_requires_base_commit_and_nonempty_repo_url_when_present() {
         let mut project = Project {
             id: ProjectId::new("project-1"),
             name: "Project".into(),
             description: String::new(),
             workdir: PathBuf::from("/project"),
             git_initialized_by_manager: false,
-            fork_repo_url: Some("git@github.com:member/fork.git".into()),
+            repo_url: Some("git@github.com:member/fork.git".into()),
             base_commit: GitCommit::parse("b".repeat(40)).unwrap(),
             default_agent_id: None,
             instruction_revision: 1,
@@ -587,13 +587,13 @@ mod tests {
         };
         project.validate().unwrap();
 
-        project.fork_repo_url = Some("  ".into());
+        project.repo_url = Some("  ".into());
         assert_eq!(
             project.validate().unwrap_err().code,
             ErrorCode::InvalidProject
         );
 
-        project.fork_repo_url = None;
+        project.repo_url = None;
         assert!(serde_json::from_str::<GitCommit>("\"short\"").is_err());
     }
 }

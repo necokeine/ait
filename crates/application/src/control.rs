@@ -520,8 +520,8 @@ fn apply_command(
             id,
             name,
             workdir,
-            fork_repo_url,
-        } => register_project(state, id, name, &workdir, fork_repo_url),
+            repo_url,
+        } => register_project(state, id, name, &workdir, repo_url),
         Command::SetProjectDefaultAgent {
             project_id,
             agent_id,
@@ -764,7 +764,7 @@ fn register_project(
     id: String,
     name: String,
     workdir: &str,
-    mut fork_repo_url: Option<String>,
+    mut repo_url: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     if id.trim().is_empty() || name.trim().is_empty() {
         return Err(error(
@@ -780,12 +780,12 @@ fn register_project(
             false,
         ));
     }
-    if let Some(url) = &mut fork_repo_url {
+    if let Some(url) = &mut repo_url {
         *url = url.trim().to_owned();
         if url.is_empty() {
             return Err(error(
                 ErrorCode::InvalidProject,
-                "fork repository URL cannot be empty",
+                "repository URL cannot be empty",
                 false,
             ));
         }
@@ -810,7 +810,7 @@ fn register_project(
         name,
         workdir: canonical_text,
         root_message_id: root_id.clone(),
-        fork_repo_url,
+        repo_url,
         base_commit,
         default_agent_id: None,
         revision: 1,
@@ -1632,7 +1632,7 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
         || !is_git_commit(&archive.project.base_commit)
         || archive
             .project
-            .fork_repo_url
+            .repo_url
             .as_ref()
             .is_some_and(|url| url.trim().is_empty())
         || archive.messages.is_empty()

@@ -29,7 +29,7 @@ interface DaemonResponse {
 
 interface WorkspaceView {
   projects: Array<{
-    id: string; name: string; workdir: string; fork_repo_url?: string | null;
+    id: string; name: string; workdir: string; repo_url?: string | null;
     base_commit: string; default_agent_id?: string | null;
   }>;
   agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
@@ -75,7 +75,7 @@ class DaemonClient {
     if (method === "project.create") {
       const id = randomUUID();
       await this.post("/v1/project/register", "project", {
-        id, name: params.name, workdir: params.workdir, fork_repo_url: params.forkRepoUrl,
+        id, name: params.name, workdir: params.workdir, repo_url: params.repoUrl,
       });
       await this.post("/v1/project/set-default-agent", "project", {
         project_id: id, agent_id: params.agentId,
@@ -229,7 +229,7 @@ class DaemonClient {
       revision: this.snapshotRevision,
       projects: workspace.projects.map((project) => ({
         id: project.id, name: project.name, workdir: project.workdir, description: "",
-        forkRepoUrl: project.fork_repo_url ?? undefined, baseCommit: project.base_commit,
+        repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
         defaultAgentId: project.default_agent_id ?? null,
       })),
       agents: workspace.agents.map(normalizedBuiltInAgent),

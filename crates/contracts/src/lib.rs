@@ -58,7 +58,7 @@ pub enum Command {
         name: String,
         workdir: String,
         #[serde(default)]
-        fork_repo_url: Option<String>,
+        repo_url: Option<String>,
     },
     SetProjectDefaultAgent {
         project_id: String,
@@ -167,7 +167,7 @@ pub struct ProjectView {
     pub workdir: String,
     pub root_message_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fork_repo_url: Option<String>,
+    pub repo_url: Option<String>,
     /// Immutable repository HEAD captured when the Project was registered.
     #[serde(default)]
     pub base_commit: String,

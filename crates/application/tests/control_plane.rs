@@ -35,7 +35,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
             id: "git-project".into(),
             name: "Git Project".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: Some("git@github.com:member/fork.git".into()),
+            repo_url: Some("git@github.com:member/fork.git".into()),
         },
     )
     .await
@@ -45,7 +45,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
     };
     assert_eq!(project.base_commit.len(), 40);
     assert_eq!(
-        project.fork_repo_url.as_deref(),
+        project.repo_url.as_deref(),
         Some("git@github.com:member/fork.git")
     );
     run(
@@ -162,7 +162,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
             id: "named-project".into(),
             name: "Named Project".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -263,7 +263,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
             id: "codex-project".into(),
             name: "Codex Project".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -342,7 +342,7 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
             id: "rebind-project".into(),
             name: "Rebind Project".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -439,7 +439,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
             id: "project-1".into(),
             name: "Demo".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -606,7 +606,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             id: "p".into(),
             name: "P".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -735,7 +735,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
             id: "portable-project".into(),
             name: "Portable".into(),
             workdir: source_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -848,7 +848,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
             id: "desktop-project".into(),
             name: "Desktop".into(),
             workdir: project_dir.display().to_string(),
-            fork_repo_url: None,
+            repo_url: None,
         },
     )
     .await
@@ -958,7 +958,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
                 id: id.into(),
                 name: name.into(),
                 workdir: directory.display().to_string(),
-                fork_repo_url: None,
+                repo_url: None,
             },
         )
         .await;

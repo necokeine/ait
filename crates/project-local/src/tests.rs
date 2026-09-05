@@ -152,7 +152,7 @@ fn registration(path: &Path, id: &str) -> ProjectRegistration {
         id: ProjectId::new(id),
         name: id.to_owned(),
         workdir: path.to_path_buf(),
-        fork_repo_url: None,
+        repo_url: None,
     }
 }
 
@@ -194,7 +194,7 @@ fn clean_head_is_captured_and_dirty_input_is_rejected() {
             id: ProjectId::new("p1"),
             name: "p1".into(),
             workdir: temp.path().to_path_buf(),
-            fork_repo_url: Some("git@github.com:member/fork.git".into()),
+            repo_url: Some("git@github.com:member/fork.git".into()),
         })
         .unwrap();
 
@@ -203,7 +203,7 @@ fn clean_head_is_captured_and_dirty_input_is_rejected() {
         project.base_commit
     );
     assert_eq!(
-        project.fork_repo_url.as_deref(),
+        project.repo_url.as_deref(),
         Some("git@github.com:member/fork.git")
     );
 

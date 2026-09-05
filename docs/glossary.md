@@ -1,6 +1,6 @@
 # 核心术语速查
 
-- **Project**：拥有一个 Git 工作目录、注册时冻结的 `base_commit`、可选远端 fork 地址和元数据；无 HEAD 的新仓库会获得一个空初始提交。
+- **Project**：拥有一个 Git 工作目录、注册时冻结的 `base_commit`、可选 `repo_url` 和元数据；无 HEAD 的新仓库会获得一个空初始提交。
 - **Message**：不可变的对话树节点，角色为 `system`、`user` 或 `assistant`。普通 human user Message 只在仓库干净时创建，并记录当时的 `git_commit`。
 - **SubMessage**：Message 内部的有序内容节点；ToolUse 是 assistant Message 中的一种 SubMessage。
 - **ToolResult**：承载工具结果的一种 user Message，并关联对应 ToolUse。

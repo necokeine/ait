@@ -76,8 +76,8 @@ pub struct ProjectRegistration {
     pub name: String,
     /// Candidate workdir.
     pub workdir: PathBuf,
-    /// Optional remote fork URL retained as declared Project provenance.
-    pub fork_repo_url: Option<String>,
+    /// Optional remote repository URL retained as declared Project provenance.
+    pub repo_url: Option<String>,
 }
 
 /// Stable Project use-case failures.
@@ -95,9 +95,9 @@ pub enum ProjectError {
     /// The registered repository no longer has a readable HEAD.
     #[error("project repository has no readable HEAD commit")]
     GitHeadUnavailable,
-    /// Declared fork repository URL was present but empty.
-    #[error("fork repository URL cannot be empty")]
-    InvalidForkRepoUrl,
+    /// Declared repository URL was present but empty.
+    #[error("repository URL cannot be empty")]
+    InvalidRepoUrl,
     /// A constructed aggregate violated a pure domain invariant.
     #[error(transparent)]
     Domain(#[from] DomainError),
@@ -153,10 +153,10 @@ impl ProjectService {
         &self,
         mut registration: ProjectRegistration,
     ) -> Result<Project, ProjectError> {
-        if let Some(url) = &mut registration.fork_repo_url {
+        if let Some(url) = &mut registration.repo_url {
             *url = url.trim().to_owned();
             if url.is_empty() {
-                return Err(ProjectError::InvalidForkRepoUrl);
+                return Err(ProjectError::InvalidRepoUrl);
             }
         }
         let root = self
@@ -196,7 +196,7 @@ impl ProjectService {
             description: String::new(),
             workdir: root,
             git_initialized_by_manager,
-            fork_repo_url: registration.fork_repo_url,
+            repo_url: registration.repo_url,
             base_commit,
             default_agent_id: None,
             instruction_revision: 1,
