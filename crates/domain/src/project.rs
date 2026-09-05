@@ -279,7 +279,7 @@ pub struct Session {
     /// The sole non-terminal Run currently following this Session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_id: Option<RunId>,
-    /// Agent fixed for every interactive Run in this Session.
+    /// Agent used by the next interactive Run; mutable only while idle.
     pub agent_id: AgentId,
     /// Session availability state.
     pub status: SessionStatus,

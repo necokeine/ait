@@ -1,4 +1,4 @@
-import type { DesktopProject, DesktopSession, DesktopSnapshot } from "./types.js";
+import type { AgentSummary, DesktopProject, DesktopSession, DesktopSnapshot } from "./types.js";
 
 export interface ProjectGroup {
   project: DesktopProject;
@@ -8,6 +8,14 @@ export interface ProjectGroup {
 export function projectNameFromWorkdir(workdir: string): string {
   const withoutTrailingSeparators = workdir.replace(/[\\/]+$/, "");
   return withoutTrailingSeparators.split(/[\\/]/).at(-1) ?? "";
+}
+
+export function agentDisplayName(agent: AgentSummary): string {
+  return agent.mode === "echo" ? "Echo" : agent.name;
+}
+
+export function agentLabel(agent: AgentSummary): string {
+  return agent.mode === "echo" ? "Echo · echo" : `${agent.name} · ${agent.model}`;
 }
 
 export function groupProjects(snapshot: DesktopSnapshot): ProjectGroup[] {

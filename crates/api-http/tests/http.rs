@@ -83,6 +83,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/project/import",
         "/v1/agent/register",
         "/v1/session/create",
+        "/v1/session/set-agent",
         "/v1/session/send-message",
         "/v1/session/fork",
         "/v1/run/get",

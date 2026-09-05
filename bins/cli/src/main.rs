@@ -132,6 +132,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::SetProjectDefaultAgent { .. } => "/v1/project/set-default-agent",
         Command::RegisterAgent { .. } => "/v1/agent/register",
         Command::CreateSession { .. } => "/v1/session/create",
+        Command::SetSessionAgent { .. } => "/v1/session/set-agent",
         Command::SendMessage { .. } => "/v1/session/send-message",
         Command::ForkSession { .. } => "/v1/session/fork",
         Command::GetRun { .. } => "/v1/run/get",

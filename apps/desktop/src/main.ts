@@ -9,7 +9,7 @@ const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.create", "project.set-default-agent",
-  "session.create", "session.send-message", "session.fork",
+  "session.create", "session.set-agent", "session.send-message", "session.fork",
 ]);
 const builtInCodexAgentId = "codex-app-server";
 const legacyBuiltInCodexAgentId = "codex-local";
@@ -76,6 +76,13 @@ class DaemonClient {
         id, project_id: params.projectId, agent_id: params.agentId,
       });
       return { snapshot: await this.snapshot(), selectedSessionId: id };
+    }
+    if (method === "session.set-agent") {
+      await this.post("/v1/session/set-agent", "session", {
+        session_id: params.sessionId, agent_id: params.agentId,
+        expected_version: params.expectedVersion,
+      });
+      return this.snapshot();
     }
     if (method === "session.send-message") {
       await this.post("/v1/session/send-message", "run", {
@@ -179,7 +186,7 @@ class DaemonClient {
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map(({ id, name, model, enabled }) => ({ id, name, model, enabled })),
+      agents: workspace.agents.map(({ id, name, model, mode, enabled }) => ({ id, name, model, mode, enabled })),
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,
         currentMessageId: session.current_message_id, agentId: session.agent_id,

@@ -13,6 +13,7 @@
 5. Codex app-server 的 message delta（无 delta 时使用最终 agentMessage item）组装为 assistant result。成功后 application 原子追加 assistant Message、推进 Session、完成 Run 并释放 `active_run_id`。
 6. Codex 不自行提交。宿主仅在调用前工作树完全干净时允许运行，并在 turn 成功后执行 `git add --all` 与单个 Git commit；commit SHA 保存于 assistant Message 的结构化 `codex.commit_id` 元数据。
 7. 若 Codex 或 Git 失败，Run 进入 failed 并释放 Session；不会伪造 assistant result 或完成状态。调用前已有未提交改动时直接拒绝，避免把用户工作混入 Agent commit。
+8. UI 将 legacy echo mode 明确显示为 `Echo · echo`。空闲 Session 的 Agent 下拉选择会以 version CAS 原地重绑；活动 Run 期间保持禁用，每个已创建 Run 的 Agent revision 不受后续重绑影响。
 
 ## 一致性边界
 

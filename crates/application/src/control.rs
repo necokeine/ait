@@ -360,6 +360,11 @@ fn apply_command(
             agent_id,
             at_message_id,
         } => create_session(state, id, project_id, agent_id, at_message_id),
+        Command::SetSessionAgent {
+            session_id,
+            agent_id,
+            expected_version,
+        } => set_session_agent(state, &session_id, &agent_id, expected_version),
         Command::SendMessage {
             session_id,
             text,
@@ -680,6 +685,48 @@ fn create_session(
     Ok((
         CommandResult::Session(session.clone()),
         vec![pending("session.created", Some(id), &session)],
+    ))
+}
+
+fn set_session_agent(
+    state: &mut State,
+    session_id: &str,
+    agent_id: &str,
+    expected_version: Option<u64>,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    require_agent(state, agent_id)?;
+    let session = state
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    if expected_version.is_some_and(|version| version != session.version) {
+        return Err(error(
+            ErrorCode::SessionPointerConflict,
+            "session version changed",
+            false,
+        ));
+    }
+    if session.active_run_id.is_some() {
+        return Err(error(
+            ErrorCode::SessionBusy,
+            "session already has an active run",
+            false,
+        ));
+    }
+    if session.agent_id == agent_id {
+        return Ok((CommandResult::Session(session.clone()), Vec::new()));
+    }
+    agent_id.clone_into(&mut session.agent_id);
+    session.version = session.version.saturating_add(1);
+    let session = session.clone();
+    Ok((
+        CommandResult::Session(session.clone()),
+        vec![pending(
+            "session.agent_updated",
+            Some(session_id.to_owned()),
+            &session,
+        )],
     ))
 }
 

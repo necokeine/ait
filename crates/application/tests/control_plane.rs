@@ -115,6 +115,99 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
 }
 
 #[tokio::test]
+async fn idle_session_can_rebind_agent_with_version_cas() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "rebind-project".into(),
+            name: "Rebind Project".into(),
+            workdir: project_dir.display().to_string(),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    for id in ["echo-agent", "manual-agent"] {
+        run(
+            &service,
+            Command::RegisterAgent {
+                id: id.into(),
+                name: id.into(),
+                model: id.into(),
+                mode: if id == "echo-agent" {
+                    AgentMode::Echo
+                } else {
+                    AgentMode::Manual
+                },
+            },
+        )
+        .await;
+    }
+    run(
+        &service,
+        Command::CreateSession {
+            id: "rebind-session".into(),
+            project_id: project.id,
+            agent_id: "echo-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let rebound = match run(
+        &service,
+        Command::SetSessionAgent {
+            session_id: "rebind-session".into(),
+            agent_id: "manual-agent".into(),
+            expected_version: Some(1),
+        },
+    )
+    .await
+    {
+        CommandResult::Session(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(rebound.agent_id, "manual-agent");
+    assert_eq!(rebound.version, 2);
+
+    let stale = service
+        .execute(Command::SetSessionAgent {
+            session_id: "rebind-session".into(),
+            agent_id: "echo-agent".into(),
+            expected_version: Some(1),
+        })
+        .await;
+    assert_eq!(stale.error.unwrap().code, ErrorCode::SessionPointerConflict);
+    let queued = match run(
+        &service,
+        Command::SendMessage {
+            session_id: "rebind-session".into(),
+            text: "keep this run queued".into(),
+            expected_version: Some(2),
+        },
+    )
+    .await
+    {
+        CommandResult::Run(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(queued.agent_id, "manual-agent");
+    let busy = service
+        .execute(Command::SetSessionAgent {
+            session_id: "rebind-session".into(),
+            agent_id: "echo-agent".into(),
+            expected_version: Some(3),
+        })
+        .await;
+    assert_eq!(busy.error.unwrap().code, ErrorCode::SessionBusy);
+}
+
+#[tokio::test]
 async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
     let temporary = TempDir::new().unwrap();
     let database = temporary.path().join("ait.sqlite3");

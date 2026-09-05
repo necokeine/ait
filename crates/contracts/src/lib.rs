@@ -50,6 +50,12 @@ pub enum Command {
         #[serde(default)]
         at_message_id: Option<String>,
     },
+    SetSessionAgent {
+        session_id: String,
+        agent_id: String,
+        #[serde(default)]
+        expected_version: Option<u64>,
+    },
     SendMessage {
         session_id: String,
         text: String,
