@@ -57,6 +57,7 @@ pub struct AgentRunRequest {
     pub resume_thread_id: Option<String>,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
+    pub output_schema: Option<Value>,
     pub cancellation: CancellationToken,
 }
 

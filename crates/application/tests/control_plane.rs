@@ -1,12 +1,18 @@
 //! End-to-end control-plane acceptance coverage.
 #![allow(clippy::pedantic)]
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use ait_application::LocalControlService;
 use ait_contracts::{AgentMode, Command, CommandResult, ReasoningEffort, default_settings};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::{
+    GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+};
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use tempfile::TempDir;
@@ -34,6 +40,127 @@ impl WorkspaceAgent for SuccessfulCodex {
             commit_id: Some("0123456789abcdef".into()),
         })
     }
+}
+
+#[derive(Debug)]
+struct SuccessfulTitleGenerator {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl SessionTitleGenerator for SuccessfulTitleGenerator {
+    async fn generate(
+        &self,
+        request: SessionTitleRequest,
+    ) -> Result<GeneratedSessionTitle, DomainError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(request.user_prompt.chars().count(), 2_000);
+        Ok(GeneratedSessionTitle {
+            title: "Implement session naming".into(),
+            description: "Add editable and generated Session names".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn first_interaction_generates_session_metadata_once_and_preserves_manual_name() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()))
+        .with_session_title_generator(Arc::new(SuccessfulTitleGenerator {
+            calls: calls.clone(),
+        }));
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "named-project".into(),
+            name: "Named Project".into(),
+            workdir: project_dir.display().to_string(),
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "echo-agent".into(),
+            name: "Echo".into(),
+            model: "echo".into(),
+            mode: AgentMode::Echo,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "named-session".into(),
+            project_id: project.id,
+            agent_id: "echo-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SetSessionTitle {
+            session_id: "named-session".into(),
+            title: "Temporary prompt title".into(),
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SendMessage {
+            session_id: "named-session".into(),
+            text: "first interaction".into(),
+            expected_version: Some(1),
+            reasoning_effort: None,
+        },
+    )
+    .await;
+    let pointer_version = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value.sessions[0].version,
+        _ => panic!(),
+    };
+
+    let first = service
+        .generate_session_title("named-session".into(), "x".repeat(2_100))
+        .await;
+    assert!(first.ok, "{:?}", first.error);
+    let second = service
+        .generate_session_title("named-session".into(), "x".repeat(2_100))
+        .await;
+    assert!(second.ok, "{:?}", second.error);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+    let renamed = match run(
+        &service,
+        Command::RenameSession {
+            session_id: "named-session".into(),
+            name: "  My   Session  ".into(),
+        },
+    )
+    .await
+    {
+        CommandResult::Session(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(renamed.name, "My Session");
+    assert_eq!(renamed.title.as_deref(), Some("Implement session naming"));
+    assert_eq!(
+        renamed.description,
+        "Add editable and generated Session names"
+    );
+    assert!(renamed.title_generation_started);
+    assert_eq!(
+        renamed.version, pointer_version,
+        "metadata updates must not move the pointer version"
+    );
 }
 
 #[tokio::test]

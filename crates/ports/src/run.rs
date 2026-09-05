@@ -164,6 +164,38 @@ pub struct WorkspaceAgentResponse {
     pub commit_id: Option<String>,
 }
 
+/// Input for a small, read-only Session-title generation turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTitleRequest {
+    /// Stable correlation identity for the external turn.
+    pub request_id: String,
+    /// At most 2,000 user-prompt characters, without transport instructions.
+    pub user_prompt: String,
+    /// Canonical Project root used only as the harness working directory.
+    pub cwd: PathBuf,
+    /// Cooperative cancellation shared with the caller.
+    pub cancellation: CancellationToken,
+}
+
+/// Searchable metadata returned by a Session-title generation turn.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedSessionTitle {
+    /// Short visible Session title.
+    pub title: String,
+    /// Compact natural-language description used by Session search.
+    pub description: String,
+}
+
+/// Read-only model boundary for generating Session metadata.
+#[async_trait]
+pub trait SessionTitleGenerator: Send + Sync {
+    /// Generates one title and search description for a Session.
+    async fn generate(
+        &self,
+        request: SessionTitleRequest,
+    ) -> Result<GeneratedSessionTitle, DomainError>;
+}
+
 /// Complete coding-harness boundary used by the local control-plane slice.
 #[async_trait]
 pub trait WorkspaceAgent: Send + Sync {

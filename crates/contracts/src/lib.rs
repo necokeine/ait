@@ -82,6 +82,14 @@ pub enum Command {
         #[serde(default)]
         expected_version: Option<u64>,
     },
+    RenameSession {
+        session_id: String,
+        name: String,
+    },
+    SetSessionTitle {
+        session_id: String,
+        title: String,
+    },
     SendMessage {
         session_id: String,
         text: String,
@@ -180,6 +188,14 @@ pub struct AgentView {
 pub struct SessionView {
     pub id: String,
     pub project_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub title_generation_started: bool,
     pub agent_id: String,
     pub current_message_id: String,
     pub active_run_id: Option<String>,

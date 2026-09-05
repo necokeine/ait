@@ -14,8 +14,9 @@ pub use project::{
     StoreError,
 };
 pub use run::{
-    AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent,
-    RunApproval, RunClock, RunIdGenerator, RunStore, RunStoreError, RunTool, ToolInvocation,
+    AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult,
+    GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator, RunStore,
+    RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
     ToolOutcome, ToolRecovery, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
 pub use scheduler::{

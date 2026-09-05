@@ -82,6 +82,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .session-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .session-copy strong { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11.5px; font-weight: 530; }
 .session-copy small { color: var(--text-muted); font-size: 9.5px; }
+.context-menu { position: fixed; z-index: 60; min-width: 142px; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow); }
+.context-menu button { width: 100%; height: 30px; border: 0; border-radius: 5px; background: transparent; color: var(--text); padding: 0 9px; text-align: left; font-size: 10.5px; cursor: pointer; }
+.context-menu button:hover, .context-menu button:focus { background: var(--surface-active); outline: none; }
 .running-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .project-sessions-empty { margin: 2px 0 3px 35px; color: var(--text-muted); font-size: 9px; }
 .project-list-empty { margin: 6px 8px; padding: 16px 12px; border: 1px dashed var(--line); border-radius: 9px; color: var(--text-muted); text-align: center; }
@@ -231,6 +234,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .path-control .secondary-button { flex: 0 0 auto; margin: 0; }
 .session-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(140px, auto) 58px; }
 .session-window .settings-footer { justify-content: flex-end; }
+.rename-session-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(150px, auto) 58px; }
+.rename-session-window .settings-footer { justify-content: flex-end; }
 .action-form { padding: 24px; }
 
 .command-palette { align-self: start; margin-top: 58px; width: min(600px, calc(100vw - 70px)); border: 1px solid #3a3e35; border-radius: 12px; overflow: hidden; background: var(--surface-raised); box-shadow: var(--shadow); }
