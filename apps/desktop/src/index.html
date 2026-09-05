@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Ait</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell is-loading">
+      <header class="titlebar">
+        <div class="traffic-spacer" aria-hidden="true"></div>
+        <button id="sidebar-toggle" class="icon-button" type="button" aria-label="Toggle navigation">☷</button>
+        <div class="history-controls" aria-label="Navigation history">
+          <button class="icon-button is-muted" type="button" disabled aria-label="Back">‹</button>
+          <button class="icon-button is-muted" type="button" disabled aria-label="Forward">›</button>
+        </div>
+        <button id="command-trigger" class="command-trigger" type="button">
+          <span class="search-mark">⌕</span>
+          <span>Search sessions and commands</span>
+          <kbd>⌘ K</kbd>
+        </button>
+        <div class="title-actions">
+          <span id="core-status" class="core-status"><i></i> Starting core</span>
+          <button id="tree-toggle" class="icon-button" type="button" aria-label="Toggle session tree">⑂</button>
+        </div>
+      </header>
+
+      <aside id="sidebar" class="sidebar">
+        <div class="workspace-switcher">
+          <button id="project-button" class="workspace-button" type="button">
+            <span class="workspace-avatar">A</span>
+            <span class="workspace-copy"><strong id="project-name">Ait</strong><small id="project-path">Loading workspace…</small></span>
+            <span class="chevron">⌄</span>
+          </button>
+        </div>
+        <nav class="primary-nav" aria-label="Workspace">
+          <button class="nav-item is-active" type="button"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
+          <button class="nav-item" type="button"><span>⌁</span>Runs</button>
+          <button class="nav-item" type="button"><span>◇</span>Agents</button>
+        </nav>
+        <div class="sidebar-section-heading">
+          <span>Recent</span>
+          <button class="small-icon-button" type="button" aria-label="New session">＋</button>
+        </div>
+        <div id="session-list" class="session-list" role="listbox" aria-label="Sessions"></div>
+        <div class="sidebar-footer">
+          <button id="settings-trigger" class="nav-item" type="button"><span>⚙</span>Settings <kbd>⌘,</kbd></button>
+          <div class="profile-row"><span class="profile-avatar">MK</span><span><strong>Local profile</strong><small>Private on this machine</small></span></div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section class="conversation-pane">
+          <header class="conversation-header">
+            <div>
+              <div class="eyebrow" id="session-breadcrumb">Ait / Session</div>
+              <h1 id="session-title">Loading session…</h1>
+            </div>
+            <div class="header-meta">
+              <span id="agent-chip" class="agent-chip">Agent</span>
+              <button class="icon-button" type="button" aria-label="More actions">•••</button>
+            </div>
+          </header>
+          <div id="conversation-scroll" class="conversation-scroll">
+            <div id="conversation" class="conversation" aria-live="polite">
+              <div class="loading-state"><div class="spinner"></div><p>Opening local workspace…</p></div>
+            </div>
+          </div>
+          <footer class="composer-wrap">
+            <div id="branch-context" class="branch-context is-hidden">
+              <span>⑂</span><span>Branching from <strong id="branch-node-label">selected node</strong></span>
+              <button id="clear-selection" class="small-icon-button" type="button" aria-label="Clear selected node">×</button>
+            </div>
+            <form id="composer" class="composer">
+              <textarea id="message-input" rows="2" placeholder="Ask Ait to work on this session…" aria-label="Message"></textarea>
+              <div class="composer-toolbar">
+                <div class="composer-tools">
+                  <button class="tool-button" type="button" aria-label="Attach file">＋</button>
+                  <button class="mode-button" type="button">Local <span>⌄</span></button>
+                  <select id="composer-agent" class="agent-select" aria-label="Agent"></select>
+                </div>
+                <button id="send-button" class="send-button" type="submit" disabled aria-label="Create branch">↑</button>
+              </div>
+            </form>
+            <p class="composer-hint">Select any node in the session tree to create an immutable branch · ⌘ Enter to send</p>
+          </footer>
+        </section>
+
+        <aside id="tree-panel" class="tree-panel">
+          <header class="panel-header">
+            <div><span class="eyebrow">Project history</span><h2>Session tree</h2></div>
+            <button id="tree-close" class="icon-button" type="button" aria-label="Close session tree">×</button>
+          </header>
+          <div class="tree-legend"><span><i class="legend-current"></i>Current path</span><span><i class="legend-selected"></i>Selected</span></div>
+          <div id="tree-scroll" class="tree-scroll" tabindex="0" role="tree" aria-label="Message tree">
+            <div id="tree-list" class="tree-list"></div>
+          </div>
+          <section id="node-details" class="node-details">
+            <div class="empty-details"><span>⑂</span><p>Select a node to inspect it and start a branch.</p></div>
+          </section>
+        </aside>
+      </main>
+
+      <div id="settings-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <section class="settings-window">
+          <header class="settings-header">
+            <div><span class="eyebrow">Local preferences</span><h2 id="settings-title">Settings</h2></div>
+            <button id="settings-close" class="icon-button" type="button" aria-label="Close settings">×</button>
+          </header>
+          <div class="settings-body">
+            <nav id="settings-nav" class="settings-nav" aria-label="Settings categories"></nav>
+            <form id="settings-form" class="settings-form">
+              <div id="settings-fields"></div>
+            </form>
+          </div>
+          <footer class="settings-footer">
+            <button id="settings-reset" class="secondary-button" type="button">Restore defaults</button>
+            <span id="settings-state" class="settings-state"></span>
+            <button id="settings-cancel" class="secondary-button" type="button">Cancel</button>
+            <button id="settings-save" class="primary-button" type="button">Save changes</button>
+          </footer>
+        </section>
+      </div>
+
+      <div id="command-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-label="Command palette">
+        <section class="command-palette">
+          <input id="command-input" type="search" placeholder="Search sessions and commands" autocomplete="off" />
+          <div id="command-results" class="command-results"></div>
+        </section>
+      </div>
+
+      <div id="toast" class="toast is-hidden" role="status"></div>
+    </div>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

@@ -13,6 +13,7 @@ use std::{
 use ait_application::LocalControlService;
 use ait_contracts::{
     AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport, Response,
+    SettingsDocument,
 };
 use ait_domain::ErrorCode;
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
@@ -39,12 +40,16 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/agent/register", post(register_agent))
         .route("/v1/session/create", post(create_session))
         .route("/v1/session/send-message", post(send_message))
+        .route("/v1/session/fork", post(fork_session))
         .route("/v1/run/get", post(get_run))
         .route("/v1/run/cancel", post(cancel_run))
         .route("/v1/cron/create", post(create_cron))
         .route("/v1/cron/set-enabled", post(set_cron_enabled))
         .route("/v1/cron/trigger", post(trigger_cron))
         .route("/v1/workspace/snapshot", get(workspace_snapshot))
+        .route("/v1/settings", get(get_settings))
+        .route("/v1/settings/save", post(save_settings))
+        .route("/v1/settings/reset", post(reset_settings))
         .route("/v1/event/list", get(events))
         .route("/v1/metric/list", get(metrics))
         .with_state(ApiState { service, telemetry })
@@ -201,6 +206,33 @@ async fn send_message(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ForkSessionRequest {
+    id: String,
+    project_id: String,
+    agent_id: String,
+    at_message_id: String,
+    text: String,
+}
+
+async fn fork_session(
+    State(state): State<ApiState>,
+    Json(request): Json<ForkSessionRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ForkSession {
+            id: request.id,
+            project_id: request.project_id,
+            agent_id: request.agent_id,
+            at_message_id: request.at_message_id,
+            text: request.text,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RunRequest {
     run_id: String,
 }
@@ -305,6 +337,35 @@ async fn workspace_snapshot(State(state): State<ApiState>) -> Json<Response> {
     execute_command(state, Command::Snapshot).await
 }
 
+async fn get_settings(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::GetSettings).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveSettingsRequest {
+    expected_revision: u64,
+    values: SettingsDocument,
+}
+
+async fn save_settings(
+    State(state): State<ApiState>,
+    Json(request): Json<SaveSettingsRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SaveSettings {
+            expected_revision: request.expected_revision,
+            values: request.values,
+        },
+    )
+    .await
+}
+
+async fn reset_settings(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::ResetSettings).await
+}
+
 async fn execute_command(state: ApiState, command: Command) -> Json<Response> {
     let started = Instant::now();
     let operation_name = operation_name(&command);
@@ -389,7 +450,8 @@ fn correlation_for_command(command: &Command) -> Correlation {
     };
     match command {
         Command::RegisterProject { id, .. } => correlation.project_id = Some(id.clone()),
-        Command::CreateSession { id, project_id, .. } => {
+        Command::CreateSession { id, project_id, .. }
+        | Command::ForkSession { id, project_id, .. } => {
             correlation.project_id = Some(project_id.clone());
             correlation.session_id = Some(id.clone());
         }
@@ -408,6 +470,9 @@ fn correlation_for_command(command: &Command) -> Correlation {
         Command::RegisterAgent { .. }
         | Command::SetCronEnabled { .. }
         | Command::TriggerCron { .. }
+        | Command::GetSettings
+        | Command::SaveSettings { .. }
+        | Command::ResetSettings
         | Command::Snapshot => {}
     }
     correlation
@@ -444,7 +509,12 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
                 .project_id
                 .get_or_insert_with(|| archive.project.id.clone());
         }
-        Some(CommandResult::Agent(_) | CommandResult::Cron(_) | CommandResult::Workspace(_))
+        Some(
+            CommandResult::Agent(_)
+            | CommandResult::Cron(_)
+            | CommandResult::Settings(_)
+            | CommandResult::Workspace(_),
+        )
         | None => {}
     }
 }
@@ -455,6 +525,7 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::RegisterAgent { .. } => "register_agent",
         Command::CreateSession { .. } => "create_session",
         Command::SendMessage { .. } => "send_message",
+        Command::ForkSession { .. } => "fork_session",
         Command::GetRun { .. } => "get_run",
         Command::CancelRun { .. } => "cancel_run",
         Command::CreateCron { .. } => "create_cron",
@@ -462,6 +533,9 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::TriggerCron { .. } => "trigger_cron",
         Command::ExportProject { .. } => "export_project",
         Command::ImportProject { .. } => "import_project",
+        Command::GetSettings => "get_settings",
+        Command::SaveSettings { .. } => "save_settings",
+        Command::ResetSettings => "reset_settings",
         Command::Snapshot => "snapshot",
     }
 }

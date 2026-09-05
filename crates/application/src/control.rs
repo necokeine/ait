@@ -11,7 +11,8 @@ use std::{
 use ait_contracts::{
     API_VERSION, AgentMode, AgentView, ApiError, Command, CommandResult, CronView, Event,
     MessageView, PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, Response, RunView,
-    SessionView, WorkspaceView,
+    SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView, default_settings,
+    settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, ErrorCode, MessageId,
@@ -22,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct State {
     projects: Vec<ProjectView>,
     agents: Vec<AgentView>,
@@ -30,6 +31,29 @@ struct State {
     messages: Vec<MessageView>,
     runs: Vec<RunView>,
     crons: Vec<CronView>,
+    #[serde(default = "default_settings")]
+    settings: SettingsDocument,
+    #[serde(default = "default_settings_revision")]
+    settings_revision: u64,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            projects: Vec::new(),
+            agents: Vec::new(),
+            sessions: Vec::new(),
+            messages: Vec::new(),
+            runs: Vec::new(),
+            crons: Vec::new(),
+            settings: default_settings(),
+            settings_revision: default_settings_revision(),
+        }
+    }
+}
+
+const fn default_settings_revision() -> u64 {
+    1
 }
 
 impl From<State> for WorkspaceView {
@@ -92,7 +116,10 @@ impl LocalControlService {
     async fn try_execute(&self, command: Command) -> Result<CommandResult, ApiError> {
         if matches!(
             command,
-            Command::Snapshot | Command::GetRun { .. } | Command::ExportProject { .. }
+            Command::Snapshot
+                | Command::GetRun { .. }
+                | Command::ExportProject { .. }
+                | Command::GetSettings
         ) {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let state = decode_state(snapshot.value)?;
@@ -130,6 +157,7 @@ fn read_command(state: State, revision: u64, command: Command) -> Result<Command
         Command::ExportProject { project_id } => {
             export_project(&state, revision, &project_id).map(CommandResult::ProjectExport)
         }
+        Command::GetSettings => Ok(CommandResult::Settings(settings_view(&state))),
         _ => unreachable!("mutating command routed to read path"),
     }
 }
@@ -159,6 +187,13 @@ fn apply_command(
             text,
             expected_version,
         } => send_message(state, session_id, text, expected_version),
+        Command::ForkSession {
+            id,
+            project_id,
+            agent_id,
+            at_message_id,
+            text,
+        } => fork_session(state, id, project_id, agent_id, at_message_id, text),
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
         Command::CreateCron {
             id,
@@ -184,10 +219,118 @@ fn apply_command(
             scheduled_at,
         } => trigger_cron(state, &cron_id, scheduled_at),
         Command::ImportProject { archive, workdir } => import_project(state, archive, &workdir),
-        Command::Snapshot | Command::GetRun { .. } | Command::ExportProject { .. } => {
+        Command::SaveSettings {
+            expected_revision,
+            values,
+        } => save_settings(state, expected_revision, values),
+        Command::ResetSettings => Ok(reset_settings(state)),
+        Command::Snapshot
+        | Command::GetRun { .. }
+        | Command::ExportProject { .. }
+        | Command::GetSettings => {
             unreachable!("read command routed to write path")
         }
     }
+}
+
+fn fork_session(
+    state: &mut State,
+    id: String,
+    project_id: String,
+    agent_id: String,
+    at_message_id: String,
+    text: String,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    let (_, mut events) =
+        create_session(state, id.clone(), project_id, agent_id, Some(at_message_id))?;
+    let (result, mut run_events) = send_message(state, id, text, Some(1))?;
+    events.append(&mut run_events);
+    Ok((result, events))
+}
+
+fn settings_view(state: &State) -> SettingsView {
+    SettingsView {
+        schema: settings_schema(),
+        values: state.settings.clone(),
+        revision: state.settings_revision,
+    }
+}
+
+fn save_settings(
+    state: &mut State,
+    expected_revision: u64,
+    values: SettingsDocument,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    if state.settings_revision != expected_revision {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            "settings changed in another client; reload and try again",
+            false,
+        ));
+    }
+    validate_settings(&values)?;
+    state.settings = values;
+    state.settings_revision = state.settings_revision.saturating_add(1);
+    let view = settings_view(state);
+    Ok((
+        CommandResult::Settings(view.clone()),
+        vec![pending("settings.updated", None, &view)],
+    ))
+}
+
+fn reset_settings(state: &mut State) -> (CommandResult, Vec<PendingEvent>) {
+    state.settings = default_settings();
+    state.settings_revision = state.settings_revision.saturating_add(1);
+    let view = settings_view(state);
+    (
+        CommandResult::Settings(view.clone()),
+        vec![pending("settings.reset", None, &view)],
+    )
+}
+
+fn validate_settings(values: &SettingsDocument) -> Result<(), ApiError> {
+    let schema = settings_schema();
+    let expected = schema
+        .definitions
+        .iter()
+        .map(|definition| definition.id.as_str())
+        .collect::<HashSet<_>>();
+    if values.0.keys().any(|key| !expected.contains(key.as_str())) {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            "settings contain an unknown key",
+            false,
+        ));
+    }
+    for definition in schema.definitions {
+        let Some(value) = values.0.get(&definition.id) else {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                format!("missing setting {}", definition.id),
+                false,
+            ));
+        };
+        let valid = match &definition.kind {
+            SettingKind::Text | SettingKind::Path | SettingKind::CredentialReference => {
+                value.is_string()
+            }
+            SettingKind::Boolean => value.is_boolean(),
+            SettingKind::Number { min, max } => value
+                .as_i64()
+                .is_some_and(|number| number >= *min && number <= *max),
+            SettingKind::Select { options } => value
+                .as_str()
+                .is_some_and(|choice| options.iter().any(|option| option == choice)),
+        };
+        if !valid {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                format!("invalid value for setting {}", definition.id),
+                false,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn register_project(

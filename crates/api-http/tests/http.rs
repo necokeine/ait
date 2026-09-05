@@ -83,11 +83,14 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/agent/register",
         "/v1/session/create",
         "/v1/session/send-message",
+        "/v1/session/fork",
         "/v1/run/get",
         "/v1/run/cancel",
         "/v1/cron/create",
         "/v1/cron/set-enabled",
         "/v1/cron/trigger",
+        "/v1/settings/save",
+        "/v1/settings/reset",
     ];
 
     for route in post_routes {
@@ -107,6 +110,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
 
     for route in [
         "/v1/workspace/snapshot",
+        "/v1/settings",
         "/v1/event/list",
         "/v1/metric/list",
     ] {

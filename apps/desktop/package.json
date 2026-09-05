@@ -1,0 +1,20 @@
+{
+  "name": "@ait/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
+    "dev": "npm run build && electron dist/main.js",
+    "start": "npm run dev",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "electron": "44.1.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}
