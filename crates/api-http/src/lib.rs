@@ -35,6 +35,10 @@ pub fn router(service: Arc<LocalControlService>) -> Router {
 pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telemetry) -> Router {
     Router::new()
         .route("/v1/project/register", post(register_project))
+        .route(
+            "/v1/project/set-default-agent",
+            post(set_project_default_agent),
+        )
         .route("/v1/project/export", post(export_project))
         .route("/v1/project/import", post(import_project))
         .route("/v1/agent/register", post(register_agent))
@@ -79,6 +83,27 @@ async fn register_project(
             id: request.id,
             name: request.name,
             workdir: request.workdir,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetProjectDefaultAgentRequest {
+    project_id: String,
+    agent_id: String,
+}
+
+async fn set_project_default_agent(
+    State(state): State<ApiState>,
+    Json(request): Json<SetProjectDefaultAgentRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SetProjectDefaultAgent {
+            project_id: request.project_id,
+            agent_id: request.agent_id,
         },
     )
     .await
@@ -461,7 +486,9 @@ fn correlation_for_command(command: &Command) -> Correlation {
         Command::GetRun { run_id } | Command::CancelRun { run_id } => {
             correlation.run_id = Some(run_id.clone());
         }
-        Command::CreateCron { project_id, .. } | Command::ExportProject { project_id } => {
+        Command::SetProjectDefaultAgent { project_id, .. }
+        | Command::CreateCron { project_id, .. }
+        | Command::ExportProject { project_id } => {
             correlation.project_id = Some(project_id.clone());
         }
         Command::ImportProject { archive, .. } => {
@@ -522,6 +549,7 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
 const fn operation_name(command: &Command) -> &'static str {
     match command {
         Command::RegisterProject { .. } => "register_project",
+        Command::SetProjectDefaultAgent { .. } => "set_project_default_agent",
         Command::RegisterAgent { .. } => "register_agent",
         Command::CreateSession { .. } => "create_session",
         Command::SendMessage { .. } => "send_message",

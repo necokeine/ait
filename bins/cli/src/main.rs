@@ -129,6 +129,7 @@ async fn send(
 const fn operation_path(command: &Command) -> &'static str {
     match command {
         Command::RegisterProject { .. } => "/v1/project/register",
+        Command::SetProjectDefaultAgent { .. } => "/v1/project/set-default-agent",
         Command::RegisterAgent { .. } => "/v1/agent/register",
         Command::CreateSession { .. } => "/v1/session/create",
         Command::SendMessage { .. } => "/v1/session/send-message",

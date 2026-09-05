@@ -170,6 +170,10 @@ fn apply_command(
         Command::RegisterProject { id, name, workdir } => {
             register_project(state, id, name, &workdir)
         }
+        Command::SetProjectDefaultAgent {
+            project_id,
+            agent_id,
+        } => set_project_default_agent(state, &project_id, &agent_id),
         Command::RegisterAgent {
             id,
             name,
@@ -231,6 +235,30 @@ fn apply_command(
             unreachable!("read command routed to write path")
         }
     }
+}
+
+fn set_project_default_agent(
+    state: &mut State,
+    project_id: &str,
+    agent_id: &str,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    require_agent(state, agent_id)?;
+    let project = state
+        .projects
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    project.default_agent_id = Some(agent_id.to_owned());
+    project.revision = project.revision.saturating_add(1);
+    let project = project.clone();
+    Ok((
+        CommandResult::Project(project.clone()),
+        vec![pending(
+            "project.default_agent_updated",
+            Some(project_id.to_owned()),
+            &project,
+        )],
+    ))
 }
 
 fn fork_session(
@@ -372,6 +400,7 @@ fn register_project(
         name,
         workdir: canonical_text,
         root_message_id: root_id.clone(),
+        default_agent_id: None,
         revision: 1,
     };
     state.messages.push(MessageView {
@@ -858,10 +887,13 @@ fn export_project(
             session
         })
         .collect::<Vec<_>>();
-    let referenced_agents = sessions
+    let mut referenced_agents = sessions
         .iter()
         .map(|session| session.agent_id.as_str())
         .collect::<HashSet<_>>();
+    if let Some(default_agent_id) = project.default_agent_id.as_deref() {
+        referenced_agents.insert(default_agent_id);
+    }
     let agents = state
         .agents
         .iter()
@@ -1016,6 +1048,16 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
         agent.id.trim().is_empty() || agent.revision == 0 || !agent_ids.insert(agent.id.as_str())
     }) {
         return Err(invalid_archive("archive agent revision is invalid"));
+    }
+    if archive
+        .project
+        .default_agent_id
+        .as_deref()
+        .is_some_and(|agent_id| !agent_ids.contains(agent_id))
+    {
+        return Err(invalid_archive(
+            "archive Project default Agent binding is invalid",
+        ));
     }
     let mut session_ids = HashSet::with_capacity(archive.sessions.len());
     for session in &archive.sessions {

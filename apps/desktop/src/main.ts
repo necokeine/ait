@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
-const allowedMethods = new Set(["workspace.snapshot", "settings.get", "settings.save", "settings.reset", "session.fork"]);
+const allowedMethods = new Set([
+  "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
+  "project.choose-directory", "project.create", "project.set-default-agent",
+  "session.create", "session.send-message", "session.fork",
+]);
+const builtInCodexAgentId = "codex-local";
 
 interface DaemonResponse {
   ok: boolean;
@@ -15,7 +20,7 @@ interface DaemonResponse {
 }
 
 interface WorkspaceView {
-  projects: Array<{ id: string; name: string; workdir: string }>;
+  projects: Array<{ id: string; name: string; workdir: string; default_agent_id?: string | null }>;
   agents: Array<{ id: string; name: string; model: string; enabled: boolean }>;
   sessions: Array<{ id: string; project_id: string; agent_id: string; current_message_id: string; active_run_id: string | null; version: number }>;
   messages: Array<{ id: string; project_id: string; parent_message_id: string | null; role: string; kind: string; text: string | null; data?: unknown }>;
@@ -27,7 +32,7 @@ class DaemonClient {
   private snapshotRevision = 0;
 
   ensureStarted(): Promise<void> {
-    this.startup ??= this.start();
+    this.startup ??= this.start().then(() => this.ensureBuiltInAgents());
     return this.startup;
   }
 
@@ -41,6 +46,43 @@ class DaemonClient {
       expected_revision: params.expectedRevision, values: params.values,
     });
     if (method === "settings.reset") return this.post("/v1/settings/reset", "settings", {});
+    if (method === "project.choose-directory") {
+      const result = await dialog.showOpenDialog({
+        title: "Choose a Project directory",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    }
+    if (method === "project.create") {
+      const id = randomUUID();
+      await this.post("/v1/project/register", "project", {
+        id, name: params.name, workdir: params.workdir,
+      });
+      await this.post("/v1/project/set-default-agent", "project", {
+        project_id: id, agent_id: params.agentId,
+      });
+      return { snapshot: await this.snapshot(), selectedProjectId: id };
+    }
+    if (method === "project.set-default-agent") {
+      await this.post("/v1/project/set-default-agent", "project", {
+        project_id: params.projectId, agent_id: params.agentId,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.create") {
+      const id = randomUUID();
+      await this.post("/v1/session/create", "session", {
+        id, project_id: params.projectId, agent_id: params.agentId,
+      });
+      return { snapshot: await this.snapshot(), selectedSessionId: id };
+    }
+    if (method === "session.send-message") {
+      await this.post("/v1/session/send-message", "run", {
+        session_id: params.sessionId, text: params.content,
+        expected_version: params.expectedVersion,
+      });
+      return this.snapshot();
+    }
 
     const id = randomUUID();
     await this.post("/v1/session/fork", "run", {
@@ -80,6 +122,17 @@ class DaemonClient {
     throw new Error("Ait daemon did not become ready in time.");
   }
 
+  private async ensureBuiltInAgents(): Promise<void> {
+    const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
+    if (workspace.agents.some((agent) => agent.id === builtInCodexAgentId)) return;
+    await this.post("/v1/agent/register", "agent", {
+      id: builtInCodexAgentId,
+      name: "Codex",
+      model: "gpt-5.6-codex",
+      mode: "echo",
+    });
+  }
+
   private async isReady(): Promise<boolean> {
     try {
       const response = await fetch(`${endpoint}/v1/workspace/snapshot`, { signal: AbortSignal.timeout(500) });
@@ -115,7 +168,10 @@ class DaemonClient {
     return {
       protocolVersion: 1,
       revision: this.snapshotRevision,
-      projects: workspace.projects.map((project) => ({ ...project, description: "" })),
+      projects: workspace.projects.map((project) => ({
+        id: project.id, name: project.name, workdir: project.workdir, description: "",
+        defaultAgentId: project.default_agent_id ?? null,
+      })),
       agents: workspace.agents.map(({ id, name, model, enabled }) => ({ id, name, model, enabled })),
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, title: `Session ${session.id.slice(0, 8)}`,

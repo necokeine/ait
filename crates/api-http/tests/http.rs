@@ -78,6 +78,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
     let app = ait_api_http::router(service);
     let post_routes = [
         "/v1/project/register",
+        "/v1/project/set-default-agent",
         "/v1/project/export",
         "/v1/project/import",
         "/v1/agent/register",

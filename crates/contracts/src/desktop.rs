@@ -19,6 +19,8 @@ pub struct DesktopProject {
     pub workdir: String,
     /// Optional descriptive context.
     pub description: String,
+    /// Agent suggested when creating a Session in this Project.
+    pub default_agent_id: Option<String>,
 }
 
 /// Runnable Agent choice exposed to desktop users.

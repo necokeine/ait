@@ -1,4 +1,5 @@
 import { flattenMessageTree, messageText, pathToMessage, type FlatTreeNode } from "./tree.js";
+import { groupProjects, projectNameFromWorkdir } from "./projects.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -15,7 +16,7 @@ const $ = <T extends Element>(selector: string): T => {
 };
 
 const appShell = $("#app");
-const sessionList = $("#session-list");
+const projectList = $("#project-list");
 const conversation = $("#conversation");
 const conversationScroll = $("#conversation-scroll");
 const treeList = $("#tree-list");
@@ -26,10 +27,15 @@ const composerAgent = $<HTMLSelectElement>("#composer-agent");
 const sendButton = $<HTMLButtonElement>("#send-button");
 const settingsDialog = $("#settings-dialog");
 const commandDialog = $("#command-dialog");
+const projectDialog = $("#project-dialog");
+const projectSettingsDialog = $("#project-settings-dialog");
+const sessionDialog = $("#session-dialog");
 
 let snapshot: DesktopSnapshot | undefined;
+let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
 let selectedNodeId: string | undefined;
+let configuringProjectId: string | undefined;
 let collapsedNodes = new Set<string>();
 let flatTree: FlatTreeNode[] = [];
 let settings: SettingsResponse | undefined;
@@ -49,8 +55,11 @@ async function initialize(): Promise<void> {
     snapshot = loadedSnapshot;
     settings = loadedSettings;
     settingsDraft = structuredClone(loadedSettings.values);
-    selectedSessionId = loadedSnapshot.sessions
+    const newestSession = loadedSnapshot.sessions
       .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
+    selectedSessionId = newestSession;
+    selectedProjectId = loadedSnapshot.sessions.find((session) => session.id === newestSession)?.projectId
+      ?? loadedSnapshot.projects[0]?.id;
     applyPreferences();
     renderAll();
     appShell.classList.remove("is-loading");
@@ -67,6 +76,26 @@ function bindInteractions(): void {
   $("#tree-toggle").addEventListener("click", toggleTree);
   $("#tree-close").addEventListener("click", () => appShell.classList.add("tree-collapsed"));
   $("#settings-trigger").addEventListener("click", openSettings);
+  $("#project-create-trigger").addEventListener("click", openProjectDialog);
+  $("#project-close").addEventListener("click", closeProjectDialog);
+  $("#project-cancel").addEventListener("click", closeProjectDialog);
+  $("#project-settings-close").addEventListener("click", closeProjectSettingsDialog);
+  $("#project-settings-cancel").addEventListener("click", closeProjectSettingsDialog);
+  $("#session-close").addEventListener("click", closeSessionDialog);
+  $("#session-cancel").addEventListener("click", closeSessionDialog);
+  $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
+  $("#project-create").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void createProject();
+  });
+  $("#project-settings").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void saveProjectBackend();
+  });
+  $("#session-create").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void createSession();
+  });
   $("#settings-close").addEventListener("click", closeSettings);
   $("#settings-cancel").addEventListener("click", closeSettings);
   $("#settings-save").addEventListener("click", () => void saveSettings());
@@ -76,6 +105,15 @@ function bindInteractions(): void {
   commandDialog.addEventListener("click", (event) => {
     if (event.target === commandDialog) closeCommandPalette();
   });
+  projectDialog.addEventListener("click", (event) => {
+    if (event.target === projectDialog) closeProjectDialog();
+  });
+  projectSettingsDialog.addEventListener("click", (event) => {
+    if (event.target === projectSettingsDialog) closeProjectSettingsDialog();
+  });
+  sessionDialog.addEventListener("click", (event) => {
+    if (event.target === sessionDialog) closeSessionDialog();
+  });
   settingsDialog.addEventListener("click", (event) => {
     if (event.target === settingsDialog) closeSettings();
   });
@@ -84,12 +122,12 @@ function bindInteractions(): void {
   messageInput.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
-      void submitBranch();
+      void submitMessage();
     }
   });
   $("#composer").addEventListener("submit", (event) => {
     event.preventDefault();
-    void submitBranch();
+    void submitMessage();
   });
   treeScroll.addEventListener("keydown", handleTreeKeyboard);
   document.addEventListener("keydown", handleGlobalKeyboard);
@@ -97,10 +135,7 @@ function bindInteractions(): void {
 
 function renderAll(): void {
   if (!snapshot) return;
-  const project = currentProject();
-  $("#project-name").textContent = project?.name ?? "No Project";
-  $("#project-path").textContent = project?.workdir ?? "Open a local Project";
-  renderSessions();
+  renderProjects();
   renderAgents();
   renderConversation();
   renderTree();
@@ -108,36 +143,62 @@ function renderAll(): void {
 }
 
 function currentSession(): DesktopSession | undefined {
-  return snapshot?.sessions.find((session) => session.id === selectedSessionId);
+  return snapshot?.sessions.find((session) =>
+    session.id === selectedSessionId && session.projectId === selectedProjectId);
 }
 
 function currentProject() {
-  const session = currentSession();
-  return snapshot?.projects.find((project) => project.id === session?.projectId) ?? snapshot?.projects[0];
+  return snapshot?.projects.find((project) => project.id === selectedProjectId);
 }
 
-function renderSessions(): void {
+function renderProjects(): void {
   if (!snapshot) return;
-  const sessions = snapshot.sessions.toSorted((left, right) => right.updatedAt - left.updatedAt);
-  if (sessions.length === 0) {
-    sessionList.innerHTML = '<div class="empty-state">No sessions yet</div>';
+  if (snapshot.projects.length === 0) {
+    projectList.innerHTML = '<div class="project-list-empty"><p>No Projects yet</p><small>Use + above to add a local workspace.</small></div>';
     return;
   }
-  sessionList.innerHTML = sessions.map((session) => {
-    const agent = snapshot?.agents.find((candidate) => candidate.id === session.agentId);
-    const selected = session.id === selectedSessionId;
-    return `<button class="session-item${selected ? " is-selected" : ""}" type="button" role="option" aria-selected="${selected}" data-session-id="${escapeAttribute(session.id)}">
-      <span class="session-symbol">${session.active ? "◉" : "⑂"}</span>
-      <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(agent?.name ?? "Agent")} · ${relativeTime(session.updatedAt)}</small></span>
-      ${session.active ? '<i class="running-dot" title="Run active"></i>' : ""}
-    </button>`;
+  projectList.innerHTML = groupProjects(snapshot).map(({ project, sessions }) => {
+    const projectSelected = project.id === selectedProjectId;
+    const sessionRows = sessions.map((session) => {
+      const agent = snapshot?.agents.find((candidate) => candidate.id === session.agentId);
+      const selected = session.id === selectedSessionId;
+      return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}">
+        <span class="session-symbol">${session.active ? "◉" : "⑂"}</span>
+        <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(agent?.name ?? "Agent")} · ${relativeTime(session.updatedAt)}</small></span>
+        ${session.active ? '<i class="running-dot" title="Run active"></i>' : ""}
+      </button>`;
+    }).join("") || '<p class="project-sessions-empty">No sessions</p>';
+    return `<section class="project-group${projectSelected ? " is-current" : ""}" data-project-group="${escapeAttribute(project.id)}">
+      <div class="project-row">
+        <button class="project-select" type="button" data-project-id="${escapeAttribute(project.id)}" title="${escapeAttribute(project.workdir)}">
+          <span class="project-avatar">${escapeHtml(project.name.trim().slice(0, 1).toUpperCase() || "P")}</span>
+          <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.workdir)}</small></span>
+        </button>
+        <div class="project-actions">
+          <button class="project-action" type="button" data-project-settings-id="${escapeAttribute(project.id)}" aria-label="Configure ${escapeAttribute(project.name)}">•••</button>
+          <button class="project-action" type="button" data-new-session-project-id="${escapeAttribute(project.id)}" aria-label="Create Session in ${escapeAttribute(project.name)}">＋</button>
+        </div>
+      </div>
+      <div class="project-sessions">${sessionRows}</div>
+    </section>`;
   }).join("");
-  sessionList.querySelectorAll<HTMLElement>("[data-session-id]").forEach((button) => {
+  projectList.querySelectorAll<HTMLElement>("[data-project-id]").forEach((button) => {
+    button.addEventListener("click", () => selectProject(button.dataset.projectId));
+  });
+  projectList.querySelectorAll<HTMLElement>("[data-session-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      selectedSessionId = button.dataset.sessionId;
+      const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
+      selectedProjectId = session?.projectId;
+      selectedSessionId = session?.id;
       selectedNodeId = undefined;
       renderAll();
     });
+  });
+  projectList.querySelectorAll<HTMLElement>("[data-new-session-project-id]").forEach((button) => {
+    button.addEventListener("click", () => openSessionDialog(button.dataset.newSessionProjectId));
+  });
+  projectList.querySelectorAll<HTMLElement>("[data-project-settings-id]").forEach((button) => {
+    button.addEventListener("click", () => openProjectSettingsDialog(button.dataset.projectSettingsId));
   });
 }
 
@@ -148,6 +209,7 @@ function renderAgents(): void {
     .filter((agent) => agent.enabled)
     .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agent.name)} · ${escapeHtml(agent.model)}</option>`)
     .join("");
+  composerAgent.disabled = selectedNodeId === undefined;
   const agent = snapshot.agents.find((candidate) => candidate.id === current?.agentId);
   $("#agent-chip").textContent = agent ? `${agent.name} · ${agent.model}` : "No Agent";
 }
@@ -157,7 +219,8 @@ function renderConversation(): void {
   const session = currentSession();
   if (!session) {
     $("#session-title").textContent = "No session selected";
-    conversation.innerHTML = '<div class="empty-state">Choose a session to view its current branch.</div>';
+    $("#session-breadcrumb").textContent = currentProject()?.name ?? "No Project";
+    conversation.innerHTML = `<div class="empty-state"><p>${currentProject() ? "Create or choose a Session to begin." : "Create a Project to begin."}</p></div>`;
     return;
   }
   const project = snapshot.projects.find((candidate) => candidate.id === session.projectId);
@@ -191,7 +254,7 @@ function renderMessage(message: DesktopMessage): string {
 function renderTree(): void {
   if (!snapshot) return;
   const session = currentSession();
-  const messages = snapshot.messages.filter((message) => message.projectId === session?.projectId);
+  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
   flatTree = flattenMessageTree(messages, session, selectedNodeId, collapsedNodes);
   const visible = flatTree.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
@@ -254,25 +317,34 @@ function clearNodeSelection(): void {
   updateComposerState();
 }
 
-async function submitBranch(): Promise<void> {
+async function submitMessage(): Promise<void> {
   const session = currentSession();
   const content = messageInput.value.trim();
-  if (!snapshot || !session || !selectedNodeId || !content || sendButton.disabled) return;
+  if (!snapshot || !session || !content || sendButton.disabled) return;
   sendButton.disabled = true;
   sendButton.textContent = "…";
   try {
-    const result = await window.ait.fork({
-      projectId: session.projectId,
-      sourceMessageId: selectedNodeId,
-      agentId: composerAgent.value,
-      content,
-    });
-    snapshot = result.snapshot;
-    selectedSessionId = result.selectedSessionId;
+    if (selectedNodeId) {
+      const result = await window.ait.fork({
+        projectId: session.projectId,
+        sourceMessageId: selectedNodeId,
+        agentId: composerAgent.value,
+        content,
+      });
+      snapshot = result.snapshot;
+      selectedSessionId = result.selectedSessionId;
+      showToast("New branch created. The original session was left unchanged.");
+    } else {
+      snapshot = await window.ait.sendMessage({
+        sessionId: session.id,
+        expectedVersion: session.version,
+        content,
+      });
+      showToast("Message sent.");
+    }
     selectedNodeId = undefined;
     messageInput.value = "";
     renderAll();
-    showToast("New branch created. The original session was left unchanged.");
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
@@ -282,10 +354,20 @@ async function submitBranch(): Promise<void> {
 }
 
 function updateComposerState(): void {
-  sendButton.disabled = !selectedNodeId || messageInput.value.trim().length === 0;
-  messageInput.placeholder = selectedNodeId
-    ? "Write the first user message on this branch…"
-    : "Select a node in the session tree to create a branch…";
+  const session = currentSession();
+  sendButton.disabled = !session || messageInput.value.trim().length === 0 || session.active;
+  messageInput.disabled = !session;
+  composerAgent.disabled = selectedNodeId === undefined;
+  messageInput.placeholder = !session
+    ? "Create a Session to start…"
+    : selectedNodeId
+      ? "Write the first user message on this branch…"
+      : session.active
+        ? "This Session is running…"
+        : "Send a message to this Session…";
+  $("#composer-hint").textContent = selectedNodeId
+    ? "A new immutable branch and Session will be created · ⌘ Enter to send"
+    : "Send to the current Session, or select a tree node to branch · ⌘ Enter to send";
 }
 
 function toggleTree(): void {
@@ -316,7 +398,151 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
   if (event.key === "Escape") {
     closeSettings();
     closeCommandPalette();
+    closeProjectDialog();
+    closeProjectSettingsDialog();
+    closeSessionDialog();
   }
+}
+
+function openProjectDialog(): void {
+  if (!snapshot) return;
+  const agent = $<HTMLSelectElement>("#project-create-agent");
+  agent.innerHTML = agentOptions();
+  projectDialog.classList.remove("is-hidden");
+  requestAnimationFrame(() => $<HTMLInputElement>("#project-create-name").focus());
+}
+
+function closeProjectDialog(): void {
+  projectDialog.classList.add("is-hidden");
+}
+
+function openProjectSettingsDialog(projectId: string | undefined): void {
+  const project = snapshot?.projects.find((candidate) => candidate.id === projectId);
+  if (!project) return;
+  configuringProjectId = project.id;
+  const options = agentOptions();
+  const backend = $<HTMLSelectElement>("#project-backend");
+  backend.innerHTML = options;
+  backend.disabled = options.length === 0;
+  $("#project-backend-save").toggleAttribute("disabled", options.length === 0);
+  if (project.defaultAgentId) backend.value = project.defaultAgentId;
+  $("#project-settings-title").textContent = project.name;
+  $("#project-backend-copy").textContent = `New Sessions in ${project.name} use this Agent by default.`;
+  projectSettingsDialog.classList.remove("is-hidden");
+}
+
+function closeProjectSettingsDialog(): void {
+  projectSettingsDialog.classList.add("is-hidden");
+  configuringProjectId = undefined;
+}
+
+function selectProject(projectId: string | undefined): void {
+  if (!snapshot || !projectId || !snapshot.projects.some((project) => project.id === projectId)) return;
+  selectedProjectId = projectId;
+  selectedSessionId = snapshot.sessions
+    .filter((session) => session.projectId === projectId)
+    .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
+  selectedNodeId = undefined;
+  renderAll();
+}
+
+async function chooseProjectPath(): Promise<void> {
+  const path = await window.ait.chooseProjectDirectory();
+  if (path) $<HTMLInputElement>("#project-create-path").value = path;
+}
+
+async function createProject(): Promise<void> {
+  const workdir = $<HTMLInputElement>("#project-create-path").value;
+  const enteredName = $<HTMLInputElement>("#project-create-name").value.trim();
+  const name = enteredName || projectNameFromWorkdir(workdir);
+  const agentId = $<HTMLSelectElement>("#project-create-agent").value;
+  if (!name || !workdir || !agentId) {
+    showToast("Choose a directory and backend.", true);
+    return;
+  }
+  const button = $<HTMLButtonElement>("#project-create-submit");
+  button.disabled = true;
+  button.textContent = "Creating…";
+  try {
+    const result = await window.ait.createProject({ name, workdir, agentId });
+    snapshot = result.snapshot;
+    selectedProjectId = result.selectedProjectId;
+    selectedSessionId = undefined;
+    selectedNodeId = undefined;
+    $<HTMLInputElement>("#project-create-name").value = "";
+    $<HTMLInputElement>("#project-create-path").value = "";
+    closeProjectDialog();
+    renderAll();
+    showToast(`${name} created with the selected backend.`);
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Create Project";
+  }
+}
+
+async function saveProjectBackend(): Promise<void> {
+  const project = snapshot?.projects.find((candidate) => candidate.id === configuringProjectId);
+  const agentId = $<HTMLSelectElement>("#project-backend").value;
+  if (!project || !agentId) return;
+  try {
+    snapshot = await window.ait.setProjectDefaultAgent({ projectId: project.id, agentId });
+    renderAll();
+    closeProjectSettingsDialog();
+    showToast(`${project.name} backend updated.`);
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  }
+}
+
+function openSessionDialog(projectId?: string): void {
+  if (projectId) selectProject(projectId);
+  const project = currentProject();
+  if (!project) {
+    openProjectDialog();
+    return;
+  }
+  const select = $<HTMLSelectElement>("#session-agent");
+  select.innerHTML = agentOptions();
+  if (project.defaultAgentId) select.value = project.defaultAgentId;
+  $("#session-project-copy").textContent = `The Session belongs to ${project.name} and stays bound to this Agent.`;
+  sessionDialog.classList.remove("is-hidden");
+}
+
+function closeSessionDialog(): void {
+  sessionDialog.classList.add("is-hidden");
+}
+
+async function createSession(): Promise<void> {
+  const project = currentProject();
+  const agentId = $<HTMLSelectElement>("#session-agent").value;
+  if (!project || !agentId) return;
+  const button = $<HTMLButtonElement>("#session-create-submit");
+  button.disabled = true;
+  button.textContent = "Creating…";
+  try {
+    const result = await window.ait.createSession({ projectId: project.id, agentId });
+    snapshot = result.snapshot;
+    selectedSessionId = result.selectedSessionId;
+    selectedNodeId = undefined;
+    closeSessionDialog();
+    renderAll();
+    messageInput.focus();
+    showToast("Session created.");
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Create Session";
+  }
+}
+
+function agentOptions(): string {
+  return snapshot?.agents
+    .filter((agent) => agent.enabled)
+    .map((agent) => `<option value="${escapeAttribute(agent.id)}">${escapeHtml(agent.name)} · ${escapeHtml(agent.model)}</option>`)
+    .join("") ?? "";
 }
 
 function openSettings(): void {
@@ -439,6 +665,8 @@ function renderCommandResults(): void {
   const query = $<HTMLInputElement>("#command-input").value.trim().toLowerCase();
   const sessions = snapshot?.sessions.filter((session) => session.title.toLowerCase().includes(query)) ?? [];
   const commands = [
+    { id: "new-project", title: "Create Project", hint: "" },
+    { id: "new-session", title: "Create Session", hint: "" },
     { id: "settings", title: "Open Settings", hint: "⌘," },
     { id: "tree", title: "Toggle Session Tree", hint: "" },
   ].filter((command) => command.title.toLowerCase().includes(query));
@@ -448,7 +676,9 @@ function renderCommandResults(): void {
   ].join("") || '<div class="empty-details"><p>No matching command</p></div>';
   $("#command-results").querySelectorAll<HTMLElement>("[data-session]").forEach((button) => {
     button.addEventListener("click", () => {
-      selectedSessionId = button.dataset.session;
+      const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.session);
+      selectedProjectId = session?.projectId;
+      selectedSessionId = session?.id;
       selectedNodeId = undefined;
       closeCommandPalette();
       renderAll();
@@ -457,6 +687,8 @@ function renderCommandResults(): void {
   $("#command-results").querySelectorAll<HTMLElement>("[data-command]").forEach((button) => {
     button.addEventListener("click", () => {
       closeCommandPalette();
+      if (button.dataset.command === "new-project") openProjectDialog();
+      if (button.dataset.command === "new-session") openSessionDialog();
       if (button.dataset.command === "settings") openSettings();
       if (button.dataset.command === "tree") toggleTree();
     });

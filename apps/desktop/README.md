@@ -13,6 +13,8 @@ npm run dev
 
 Main first reuses a daemon already listening on `127.0.0.1:7314`. Otherwise it starts `cargo run -p ait-daemon` with a SQLite database under Electron's per-user `userData` directory. Only a daemon started by this Electron process is stopped on application exit.
 
+The sidebar keeps every Project and its isolated Session list visible at once. Use the `+` beside Projects to register a local directory, choose that Project's default Agent backend, and use the `+` on a Project row to create a Session. Starting the desktop with an empty workspace leaves this list empty until the user explicitly creates a Project. The development control-plane currently provides a deterministic built-in Codex profile so this full flow is testable without network access.
+
 ## Packaging
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
