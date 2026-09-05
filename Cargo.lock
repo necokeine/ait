@@ -103,6 +103,9 @@ dependencies = [
  "ait-storage-sqlite",
  "axum",
  "clap",
+ "reqwest",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
