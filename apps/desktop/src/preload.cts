@@ -10,6 +10,11 @@ const api: AitDesktopApi = {
   saveSettings: (expectedRevision, values) =>
     invoke("settings.save", { expectedRevision, values }),
   resetSettings: () => invoke("settings.reset"),
+  chooseProjectDirectory: () => invoke("project.choose-directory"),
+  createProject: (input) => invoke("project.create", input),
+  setProjectDefaultAgent: (input) => invoke("project.set-default-agent", input),
+  createSession: (input) => invoke("session.create", input),
+  sendMessage: (input) => invoke("session.send-message", input),
   fork: (input) => invoke("session.fork", input),
 };
 

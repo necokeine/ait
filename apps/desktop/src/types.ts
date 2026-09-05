@@ -23,6 +23,7 @@ export interface DesktopProject {
   name: string;
   workdir: string;
   description: string;
+  defaultAgentId: string | null;
 }
 
 export interface AgentSummary {
@@ -97,6 +98,25 @@ export interface AitDesktopApi {
   settings(): Promise<SettingsResponse>;
   saveSettings(expectedRevision: number, values: Record<string, unknown>): Promise<SettingsResponse>;
   resetSettings(): Promise<SettingsResponse>;
+  chooseProjectDirectory(): Promise<string | null>;
+  createProject(input: {
+    name: string;
+    workdir: string;
+    agentId: string;
+  }): Promise<{ snapshot: DesktopSnapshot; selectedProjectId: string }>;
+  setProjectDefaultAgent(input: {
+    projectId: string;
+    agentId: string;
+  }): Promise<DesktopSnapshot>;
+  createSession(input: {
+    projectId: string;
+    agentId: string;
+  }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
+  sendMessage(input: {
+    sessionId: string;
+    expectedVersion: number;
+    content: string;
+  }): Promise<DesktopSnapshot>;
   fork(input: {
     projectId: string;
     sourceMessageId: string;

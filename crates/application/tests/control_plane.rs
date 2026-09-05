@@ -324,6 +324,14 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     .await;
     run(
         &source,
+        Command::SetProjectDefaultAgent {
+            project_id: project.id.clone(),
+            agent_id: "portable-agent".into(),
+        },
+    )
+    .await;
+    run(
+        &source,
         Command::CreateSession {
             id: "portable-session".into(),
             project_id: project.id.clone(),
@@ -357,7 +365,11 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     assert!(!encoded.contains("secret"));
     assert!(!encoded.contains("token"));
     assert!(!encoded.contains("credential"));
-    assert_eq!(archive.project.revision, project.revision);
+    assert_eq!(archive.project.revision, project.revision + 1);
+    assert_eq!(
+        archive.project.default_agent_id.as_deref(),
+        Some("portable-agent")
+    );
     assert_eq!(archive.sessions[0].version, 2);
     assert!(archive.sessions[0].active_run_id.is_none());
     assert_eq!(archive.messages.len(), 2);
@@ -376,6 +388,10 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         _ => panic!(),
     };
     assert_eq!(workspace.projects[0].revision, archive.project.revision);
+    assert_eq!(
+        workspace.projects[0].default_agent_id,
+        archive.project.default_agent_id
+    );
     assert_eq!(workspace.agents[0].revision, archive.agents[0].revision);
     assert_eq!(workspace.sessions[0].version, archive.sessions[0].version);
     assert_eq!(
@@ -464,4 +480,123 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         settings.values.0["interface.theme"],
         serde_json::json!("dark")
     );
+}
+
+#[tokio::test]
+async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated() {
+    let temporary = TempDir::new().unwrap();
+    let project_a_dir = temporary.path().join("project-a");
+    let project_b_dir = temporary.path().join("project-b");
+    std::fs::create_dir(&project_a_dir).unwrap();
+    std::fs::create_dir(&project_b_dir).unwrap();
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "codex-local".into(),
+            name: "Codex".into(),
+            model: "gpt-5.6-codex".into(),
+            mode: AgentMode::Echo,
+        },
+    )
+    .await;
+
+    for (id, name, directory, session_id, input) in [
+        (
+            "project-a",
+            "Project A",
+            &project_a_dir,
+            "session-a",
+            "message for A",
+        ),
+        (
+            "project-b",
+            "Project B",
+            &project_b_dir,
+            "session-b",
+            "message for B",
+        ),
+    ] {
+        run(
+            &service,
+            Command::RegisterProject {
+                id: id.into(),
+                name: name.into(),
+                workdir: directory.display().to_string(),
+            },
+        )
+        .await;
+        run(
+            &service,
+            Command::SetProjectDefaultAgent {
+                project_id: id.into(),
+                agent_id: "codex-local".into(),
+            },
+        )
+        .await;
+        run(
+            &service,
+            Command::CreateSession {
+                id: session_id.into(),
+                project_id: id.into(),
+                agent_id: "codex-local".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+        let completed = match run(
+            &service,
+            Command::SendMessage {
+                session_id: session_id.into(),
+                text: input.into(),
+                expected_version: Some(1),
+            },
+        )
+        .await
+        {
+            CommandResult::Run(value) => value,
+            _ => panic!(),
+        };
+        assert_eq!(completed.status, "completed");
+    }
+
+    let workspace = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    assert_eq!(workspace.projects.len(), 2);
+    assert!(workspace.projects.iter().all(|project| {
+        project.default_agent_id.as_deref() == Some("codex-local") && project.revision == 2
+    }));
+    assert_eq!(workspace.sessions.len(), 2);
+    for (project_id, session_id, input) in [
+        ("project-a", "session-a", "message for A"),
+        ("project-b", "session-b", "message for B"),
+    ] {
+        let session = workspace
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id)
+            .unwrap();
+        assert_eq!(session.project_id, project_id);
+        assert!(session.active_run_id.is_none());
+        let project_messages = workspace
+            .messages
+            .iter()
+            .filter(|message| message.project_id == project_id)
+            .collect::<Vec<_>>();
+        assert_eq!(project_messages.len(), 3);
+        assert!(
+            project_messages
+                .iter()
+                .any(|message| message.text.as_deref() == Some(input))
+        );
+        assert!(
+            project_messages
+                .iter()
+                .any(|message| message.role == "assistant"
+                    && message.id == session.current_message_id)
+        );
+    }
 }

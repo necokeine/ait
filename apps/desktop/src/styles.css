@@ -206,6 +206,32 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .secondary-button { border: 1px solid var(--line); background: transparent; color: var(--text-soft); }
 .secondary-button:hover { background: var(--surface-hover); }
 
+.action-window { border: 1px solid #34372f; border-radius: 13px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.action-window .settings-header { height: 67px; }
+.project-window { width: min(850px, calc(100vw - 70px)); max-height: min(700px, calc(100vh - 92px)); }
+.project-dialog-body { display: grid; grid-template-columns: minmax(190px, .8fr) minmax(210px, .8fr) minmax(280px, 1.25fr); gap: 0; min-height: 390px; }
+.project-dialog-body > section, .project-create { padding: 23px; min-width: 0; }
+.project-dialog-body > * + * { border-left: 1px solid var(--line); }
+.project-dialog-body h3, .action-form h3 { margin: 0 0 15px; font-size: 13px; font-weight: 590; }
+.project-list { display: grid; gap: 5px; }
+.project-list-item { width: 100%; min-height: 48px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-soft); padding: 7px 9px; text-align: left; cursor: pointer; }
+.project-list-item:hover { background: var(--surface-hover); }
+.project-list-item.is-selected { border-color: var(--line); background: var(--surface-active); color: var(--text); }
+.project-list-item strong, .project-list-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-list-item strong { font-size: 11px; }
+.project-list-item small { margin-top: 4px; color: var(--text-muted); font-size: 9px; }
+.project-config, .project-create { display: flex; flex-direction: column; align-items: stretch; }
+.project-config .secondary-button, .project-create .primary-button { margin-top: 16px; align-self: flex-end; }
+.field-label { margin: 13px 0 6px; color: var(--text-soft); font-size: 10px; font-weight: 600; }
+.field-help { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
+.project-dialog-body input, .project-dialog-body select, .action-form select { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 7px; background: #10120f; color: var(--text); padding: 0 9px; font-size: 10.5px; }
+.path-control { display: flex; gap: 6px; }
+.path-control input { min-width: 0; }
+.path-control .secondary-button { flex: 0 0 auto; margin: 0; }
+.session-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(140px, auto) 58px; }
+.session-window .settings-footer { justify-content: flex-end; }
+.action-form { padding: 24px; }
+
 .command-palette { align-self: start; margin-top: 58px; width: min(600px, calc(100vw - 70px)); border: 1px solid #3a3e35; border-radius: 12px; overflow: hidden; background: var(--surface-raised); box-shadow: var(--shadow); }
 .command-palette input { width: 100%; height: 51px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); padding: 0 16px; outline: 0; font-size: 13px; }
 .command-results { max-height: 340px; overflow: auto; padding: 7px; }

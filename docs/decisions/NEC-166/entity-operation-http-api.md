@@ -14,17 +14,22 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | Method | Path | Application command |
 | --- | --- | --- |
 | `POST` | `/v1/project/register` | `RegisterProject` |
+| `POST` | `/v1/project/set-default-agent` | `SetProjectDefaultAgent` |
 | `POST` | `/v1/project/export` | `ExportProject` |
 | `POST` | `/v1/project/import` | `ImportProject` |
 | `POST` | `/v1/agent/register` | `RegisterAgent` |
 | `POST` | `/v1/session/create` | `CreateSession` |
 | `POST` | `/v1/session/send-message` | `SendMessage` |
+| `POST` | `/v1/session/fork` | `ForkSession` |
 | `POST` | `/v1/run/get` | `GetRun` |
 | `POST` | `/v1/run/cancel` | `CancelRun` |
 | `POST` | `/v1/cron/create` | `CreateCron` |
 | `POST` | `/v1/cron/set-enabled` | `SetCronEnabled` |
 | `POST` | `/v1/cron/trigger` | `TriggerCron` |
 | `GET` | `/v1/workspace/snapshot` | `Snapshot` |
+| `GET` | `/v1/settings` | `GetSettings` |
+| `POST` | `/v1/settings/save` | `SaveSettings` |
+| `POST` | `/v1/settings/reset` | `ResetSettings` |
 | `GET` | `/v1/event/list` | durable event SSE replay |
 | `GET` | `/v1/metric/list` | in-process metric snapshot |
 

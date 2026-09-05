@@ -31,6 +31,10 @@ pub enum Command {
         name: String,
         workdir: String,
     },
+    SetProjectDefaultAgent {
+        project_id: String,
+        agent_id: String,
+    },
     RegisterAgent {
         id: String,
         name: String,
@@ -115,6 +119,8 @@ pub struct ProjectView {
     pub name: String,
     pub workdir: String,
     pub root_message_id: String,
+    #[serde(default)]
+    pub default_agent_id: Option<String>,
     #[serde(default = "default_revision")]
     pub revision: u64,
 }
