@@ -456,10 +456,27 @@ impl LocalControlService {
             }
             match &result {
                 Ok(output) => {
-                    let data = output
-                        .commit_id
-                        .as_ref()
-                        .map(|commit_id| json!({"codex":{"commit_id":commit_id}}));
+                    let operations = output
+                        .operations
+                        .iter()
+                        .map(|operation| {
+                            json!({
+                                "id": operation.id,
+                                "kind": operation.kind,
+                                "status": operation.status,
+                                "title": operation.title,
+                                "summary": operation.summary,
+                                "detail": operation.detail,
+                                "paths": operation.paths,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let data = (output.commit_id.is_some() || !operations.is_empty()).then(|| {
+                        json!({"codex":{
+                            "commit_id": output.commit_id,
+                            "operations": operations,
+                        }})
+                    });
                     let parent = run
                         .last_message_id
                         .as_deref()

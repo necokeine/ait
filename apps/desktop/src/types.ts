@@ -12,6 +12,16 @@ export type MessagePart =
   | { type: "text"; text: string }
   | { type: "file"; name: string; media_type: string }
   | { type: "tool_use"; call_id: string; tool_name: string; arguments: string }
+  | {
+    type: "operation";
+    id: string;
+    kind: string;
+    status: string;
+    title: string;
+    summary?: string;
+    detail?: string;
+    paths: string[];
+  }
   | { type: "structured"; media_type: string; value: string }
   | { type: "redacted" };
 
@@ -123,6 +133,12 @@ export interface AitDesktopApi {
   saveSettings(expectedRevision: number, values: Record<string, unknown>): Promise<SettingsResponse>;
   resetSettings(): Promise<SettingsResponse>;
   chooseProjectDirectory(): Promise<string | null>;
+  openProjectFile(input: {
+    projectId: string;
+    path: string;
+    line?: number;
+    column?: number;
+  }): Promise<{ positioned: boolean }>;
   createProject(input: {
     name: string;
     workdir: string;

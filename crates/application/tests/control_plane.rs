@@ -11,7 +11,7 @@ use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -117,6 +117,15 @@ impl WorkspaceAgent for SuccessfulCodex {
         Ok(WorkspaceAgentResponse {
             assistant_text: "Implemented and verified the feature.".into(),
             commit_id: Some("0123456789abcdef".into()),
+            operations: vec![WorkspaceOperation {
+                id: "operation-1".into(),
+                kind: "read".into(),
+                status: "completed".into(),
+                title: "Read file".into(),
+                summary: None,
+                detail: None,
+                paths: vec!["src/main.rs".into()],
+            }],
         })
     }
 }
@@ -316,6 +325,10 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
     assert_eq!(
         assistant.data.as_ref().unwrap()["codex"]["commit_id"],
         serde_json::json!("0123456789abcdef")
+    );
+    assert_eq!(
+        assistant.data.as_ref().unwrap()["codex"]["operations"][0]["paths"][0],
+        serde_json::json!("src/main.rs")
     );
 }
 

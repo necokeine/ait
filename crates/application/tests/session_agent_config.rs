@@ -119,6 +119,7 @@ impl WorkspaceAgent for BlockingAgent {
         Ok(WorkspaceAgentResponse {
             assistant_text: "done".into(),
             commit_id: None,
+            operations: Vec::new(),
         })
     }
 }
@@ -326,6 +327,7 @@ impl WorkspaceAgent for CapturingWorkspaceAgent {
         Ok(WorkspaceAgentResponse {
             assistant_text: "native result".into(),
             commit_id: None,
+            operations: Vec::new(),
         })
     }
 }

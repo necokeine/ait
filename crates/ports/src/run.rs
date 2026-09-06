@@ -164,6 +164,31 @@ pub struct WorkspaceAgentResponse {
     pub assistant_text: String,
     /// Commit created for workspace changes, when the turn changed files.
     pub commit_id: Option<String>,
+    /// Bounded, display-only records for native harness operations.
+    ///
+    /// These records preserve user-visible audit context without pretending
+    /// that harness-owned tools were executed through Ait's `ToolExecution`
+    /// lifecycle.
+    pub operations: Vec<WorkspaceOperation>,
+}
+
+/// Safe projection of one operation performed inside a workspace Agent harness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceOperation {
+    /// Harness-stable item identity when one was supplied.
+    pub id: String,
+    /// Stable operation category such as `read`, `search`, or `file_change`.
+    pub kind: String,
+    /// Completion state reported by the harness.
+    pub status: String,
+    /// Short human-readable action label.
+    pub title: String,
+    /// Optional bounded target, query, or command summary.
+    pub summary: Option<String>,
+    /// Optional bounded command output, diff, or result detail.
+    pub detail: Option<String>,
+    /// Project file references associated with the operation.
+    pub paths: Vec<String>,
 }
 
 /// Input for a small, read-only Session-title generation turn.

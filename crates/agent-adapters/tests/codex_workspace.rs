@@ -11,6 +11,7 @@ use ait_ports::{
     SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
 };
 use async_trait::async_trait;
+use serde_json::json;
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +45,23 @@ impl AgentAdapter for EditingAdapter {
             Ok(AgentEvent::MessageDelta {
                 item_id: "message-1".into(),
                 delta: "Implemented the requested change.".into(),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "command-1",
+                    "command": "sed -n '1,20p' src/main.rs",
+                    "cwd": "/workspace",
+                    "status": "completed",
+                    "commandActions": [{
+                        "type": "read",
+                        "command": "sed -n '1,20p' src/main.rs",
+                        "name": "main.rs",
+                        "path": "src/main.rs"
+                    }],
+                    "aggregatedOutput": "fn main() {}",
+                    "exitCode": 0
+                }),
             }),
             Ok(AgentEvent::Completed {
                 turn_id: "turn-1".into(),
@@ -145,6 +163,17 @@ async fn returns_assistant_result_and_commits_generated_changes() {
 
     assert_eq!(result.assistant_text, "Implemented the requested change.");
     assert!(result.commit_id.is_some());
+    assert_eq!(result.operations.len(), 1);
+    assert_eq!(result.operations[0].kind, "read");
+    assert_eq!(result.operations[0].title, "Read file");
+    assert_eq!(result.operations[0].paths, ["src/main.rs"]);
+    assert!(
+        result.operations[0]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("fn main() {}")
+    );
     let subject = Command::new("git")
         .arg("-C")
         .arg(project.path())

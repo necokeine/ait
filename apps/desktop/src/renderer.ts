@@ -95,7 +95,11 @@ async function initialize(): Promise<void> {
 }
 
 function bindInteractions(): void {
-  bindCodeBlockActions(conversation, showToast);
+  bindCodeBlockActions(conversation, showToast, async (reference) => {
+    const project = currentProject();
+    if (!project) throw new Error("No Project is selected.");
+    return window.ait.openProjectFile({ projectId: project.id, ...reference });
+  });
   $("#sidebar-toggle").addEventListener("click", () => appShell.classList.toggle("sidebar-collapsed"));
   $("#tree-toggle").addEventListener("click", toggleTree);
   $("#tree-close").addEventListener("click", () => appShell.classList.add("tree-collapsed"));

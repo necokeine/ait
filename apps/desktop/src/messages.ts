@@ -22,8 +22,31 @@ export function projectMessage(message: WorkspaceMessage, agentId: string | null
 }
 
 function messageParts(message: WorkspaceMessage): MessagePart[] {
-  if (message.text !== null) return [{ type: "text", text: message.text }];
+  const parts: MessagePart[] = [];
+  if (message.text !== null) parts.push({ type: "text", text: message.text });
   const data = objectValue(message.data);
+  const codex = objectValue(data.codex);
+  const operations = Array.isArray(codex.operations) ? codex.operations : [];
+  for (const value of operations.slice(0, 200)) {
+    const operation = objectValue(value);
+    const title = stringValue(operation.title);
+    if (!title) continue;
+    const summary = stringValue(operation.summary);
+    const detail = stringValue(operation.detail);
+    parts.push({
+      type: "operation",
+      id: stringValue(operation.id) ?? "operation",
+      kind: stringValue(operation.kind) ?? "operation",
+      status: stringValue(operation.status) ?? "completed",
+      title,
+      paths: Array.isArray(operation.paths)
+        ? operation.paths.filter((path): path is string => typeof path === "string").slice(0, 32)
+        : [],
+      ...(summary ? { summary } : {}),
+      ...(detail ? { detail } : {}),
+    });
+  }
+  if (parts.length > 0) return parts;
   const toolUse = objectValue(data.tool_use);
   if (Object.keys(toolUse).length > 0) return [{
     type: "tool_use", call_id: String(toolUse.call_id ?? ""), tool_name: String(toolUse.tool_name ?? "tool"),
@@ -35,6 +58,10 @@ function messageParts(message: WorkspaceMessage): MessagePart[] {
 function objectValue(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function messageAuthor(message: DesktopMessage, agents: AgentSummary[]): string {
