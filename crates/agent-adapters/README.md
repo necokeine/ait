@@ -59,6 +59,14 @@ let response = client.complete(request).await?;
 Rig's `CompletionResponse`. These types, `Message`, `AssistantContent`, `Model`
 and `ModelList` are re-exported from `ait_agent_adapters::llm`.
 `prompt` extracts text blocks and reports a protocol error if no text is returned.
+`completion_request` now includes Ait's default system prompt and function
+catalog; `completion_request_with_history` places system instructions before
+history and appends the current user message last. `LLMClientConfig.tool_sets`
+accepts exact provider/model overrides. See [the tool catalog](../tools/README.md)
+for the pinned DeepSeek Harness baseline and integration boundary.
+`prompt` and `text_request` omit tools for callers that consume only text.
+DeepSeek response normalization accepts null content and omitted tool-call
+indices before Rig deserialization; reasoning and call ids remain intact.
 Neither method executes tools, retries requests, or owns Message/Session/Run state.
 Dropping the operation's future cancels it; requests have a finite timeout.
 
@@ -127,3 +135,5 @@ control snapshot, events or Project export. Model reasoning levels are catalog
 metadata configured by the user; model discovery preserves existing levels.
 Draft discovery can use `list_models_with_secret` without storing the credential;
 persisting the selected catalog and credential remains a separate application operation.
+This text-only port prepends the default system prompt but does not expose
+function tools until the host implements a persisted tool execution loop.
