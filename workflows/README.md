@@ -7,7 +7,7 @@
 
 ## 流程与自动化覆盖
 
-| 编号 | 用户目标 | `bins/cli/tests/workflows.rs` 中的测试 |
+| 编号 | 用户目标 | 自动化测试（WF-01～09 位于 `bins/cli/tests/workflows.rs`） |
 | --- | --- | --- |
 | [WF-01](01-register-project.md) | 接入工作目录、选择 Agent、创建 Session | `wf01_register_project_and_agent` |
 | [WF-02](02-send-message.md) | 发送输入并查看工具调用和最终结果 | `wf02_send_message_and_inspect_tool_history` |
@@ -18,6 +18,7 @@
 | [WF-07](07-export-import.md) | 导出 Project 并导入另一个本地工作空间 | `wf07_export_and_import_project_archive` |
 | [WF-08](08-settings.md) | 修改设置、处理并发覆盖、恢复默认值 | `wf08_save_reset_and_recover_settings` |
 | [WF-09](09-errors-and-scripting.md) | 在脚本中判断命令结果并处理输入错误 | `wf09_cli_diagnostics_do_not_mutate_workspace` |
+| [WF-10](10-create-project-with-codex.md) | 空目录启动 daemon、接入项目、真实 Codex 生成 Rust Hello World 并提交 | `project_creation.rs::wf10_create_project_with_real_codex_and_commit`（手动启用） |
 
 ```bash
 cargo test -p ait-cli --test workflows
@@ -25,7 +26,7 @@ cargo test -p ait-cli --test workflows
 cargo test -p ait-cli --test workflows wf03_
 ```
 
-测试启动实际的 `ait-cli` 子进程，经随机 loopback 端口访问生产 HTTP router、application
+WF-01～09 的测试启动实际的 `ait-cli` 子进程，经随机 loopback 端口访问生产 HTTP router、application
 service 和独立的临时 SQLite 文件；目录含空格、中文内容和换行也在覆盖范围内。
 每个流程自行准备数据，通过 CLI 的退出码、stdout、文件和后续快照核对结果。
 CLI 子进程有 20 秒测试超时，服务显式停止并等待退出，断言失败时也会取消服务。
@@ -34,6 +35,8 @@ CLI 子进程有 20 秒测试超时，服务显式停止并等待退出，断言
 
 这是 CLI 到持久化状态的验收；daemon 二进制的启动配置、真实 Codex 调用、worker 崩溃恢复、
 长时间调度和附件字节搬迁不由这组测试验证。相关 daemon/adapter 测试仍保留原职责。
+WF-10 单独覆盖真实 daemon 启动、Codex 生成、Cargo 运行和 Git 提交，需按该篇说明显式启用；
+默认 CI 编译但跳过这项依赖模型凭据的测试。
 
 ## 手工演练准备
 
@@ -94,7 +97,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | `events` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |
 | Cron 配置和手动 occurrence 可用，daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
 | `manual` 停在 queued；等待审批没有 CLI approve/resume 入口 | 当前可查询和取消；实现审批/恢复后需验证同一 Run 继续 |
-| 启用真实 Codex 和 AI 标题生成需要外部执行环境 | 当前自动化用确定性 Agent；未来增加明确 opt-in 的真实执行测试 |
+| 启用真实 Codex 和 AI 标题生成需要外部执行环境 | WF-01～09 使用确定性 Agent；WF-10 提供明确 opt-in 的真实执行测试 |
 
 修改流程时同步修改表中的测试，注明哪些行为是已实现契约、哪些是待校正差距。
 添加新流程使用下一个 WF 编号，保持一篇 Markdown 对应一个用户目标；不要只记录命令清单。
