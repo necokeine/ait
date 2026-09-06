@@ -35,7 +35,8 @@ CLI 子进程有 20 秒测试超时，服务显式停止并等待退出，断言
 
 这是 CLI 到持久化状态的验收；daemon 二进制的启动配置、真实 Codex 调用、worker 崩溃恢复、
 长时间调度和附件字节搬迁不由这组测试验证。相关 daemon/adapter 测试仍保留原职责。
-WF-10 单独覆盖真实 daemon 启动、Codex 生成、Cargo 运行和 Git 提交，需按该篇说明显式启用；
+WF-10 单独覆盖真实 daemon 启动、Codex 生成、Cargo 运行和 Git 提交，
+通过根目录的 [`./test_with_codex.sh`](../test_with_codex.sh) 一键构建并运行；
 默认 CI 编译但跳过这项依赖模型凭据的测试。
 
 ## 手工演练准备

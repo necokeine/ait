@@ -19,9 +19,12 @@
 在仓库根目录执行：
 
 ```bash
-cargo build -p ait-cli -p ait-daemon
-cargo test -p ait-cli --test project_creation -- --ignored --nocapture
+./test_with_codex.sh
 ```
+
+根目录的 [`test_with_codex.sh`](../test_with_codex.sh) 会先构建 `ait-cli` 和 `ait-daemon`，
+再显式运行当前 WF-10 测试并显示输出；构建或测试失败时返回非零退出码。
+也可以从其他目录通过脚本路径调用，它会自动切换到所在仓库。
 
 测试：[`wf10_create_project_with_real_codex_and_commit`](../bins/cli/tests/project_creation.rs)。
 测试使用本次 Cargo 构建的 CLI，默认从其同级目录查找 `ait-daemon`；使用不同 target/profile
