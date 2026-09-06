@@ -11,11 +11,11 @@ export function projectNameFromWorkdir(workdir: string): string {
 }
 
 export function agentDisplayName(agent: AgentSummary): string {
-  return agent.ownerSessionId ? "Custom" : agent.mode === "echo" ? "Echo" : agent.name;
+  return agent.ownerSessionId ? "Custom" : agent.name;
 }
 
 export function agentLabel(agent: AgentSummary): string {
-  return agent.mode === "echo" ? "Echo · echo" : `${agentDisplayName(agent)} · ${agent.model}`;
+  return `${agentDisplayName(agent)} · ${agent.model}`;
 }
 
 export function groupProjects(snapshot: DesktopSnapshot): ProjectGroup[] {

@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-196/adr-001-remove-retired-provider.md`：退役内置 Provider 的删除范围、未引用目录项清理及旧数据兼容边界。
+
 - `decisions/adr-010-provider-discovery-and-agents-page.md`：Provider 两段式连接与模型选择、无持久化副作用的模型发现接口，以及独立 Agents 管理页面。
 
 - `decisions/adr-009-session-exclusion-and-agent-providers.md`：Session 独占准入、AgentProvider 共享连接、命名/匿名 Agent 配置及 reasoning effort 的当前修订；相关条款优先于旧设计。

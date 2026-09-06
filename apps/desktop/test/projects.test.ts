@@ -52,11 +52,12 @@ test("derives the default Project name from the selected directory", () => {
   assert.equal(projectNameFromWorkdir("C:\\Users\\member\\code\\ait\\"), "ait");
 });
 
-test("labels legacy echo Agents without masquerading as Codex", () => {
-  const echo = { id: "codex-local", name: "Codex", model: "default", mode: "echo", enabled: true };
+test("labels named presets and Session-owned Agents", () => {
   const codex = { id: "codex-app-server", name: "Codex", model: "gpt-5.6-sol", mode: "codex", enabled: true };
+  const custom = { ...codex, id: "session-agent", name: "", ownerSessionId: "session-a" };
 
-  assert.equal(agentDisplayName(echo), "Echo");
-  assert.equal(agentLabel(echo), "Echo · echo");
+  assert.equal(agentDisplayName(codex), "Codex");
   assert.equal(agentLabel(codex), "Codex · gpt-5.6-sol");
+  assert.equal(agentDisplayName(custom), "Custom");
+  assert.equal(agentLabel(custom), "Custom · gpt-5.6-sol");
 });

@@ -111,7 +111,7 @@ API key 不进入 Agent JSON、命令行参数、prompt 或项目文件；Provid
 
 测试同步等待 `send_message`，最多 600 秒。必须同时满足 `ok=true`、
 `status=completed`、`error=null`；queued、failed、超时或只有文字回复均不算通过。
-失败的 Run 不得生成成功报告，不回退到 Echo、Codex 或其他模型。
+失败的 Run 不得生成成功报告，不回退到模拟模式、Codex 或其他模型。
 
 ### 5. 调用程序并校验代码逻辑
 

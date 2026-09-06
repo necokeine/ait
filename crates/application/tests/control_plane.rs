@@ -51,9 +51,9 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
     run(
         &service,
         Command::RegisterAgent {
-            id: "echo".into(),
-            name: "Echo".into(),
-            config: config(AgentMode::Echo),
+            id: "tool".into(),
+            name: "Tool".into(),
+            config: config(AgentMode::Tool),
         },
     )
     .await;
@@ -62,7 +62,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         Command::CreateSession {
             id: "git-session".into(),
             project_id: project.id.clone(),
-            agent_id: "echo".into(),
+            agent_id: "tool".into(),
             at_message_id: None,
         },
     )
@@ -168,9 +168,9 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
     run(
         &service,
         Command::RegisterAgent {
-            id: "echo-agent".into(),
-            name: "Echo".into(),
-            config: config(AgentMode::Echo),
+            id: "tool-agent".into(),
+            name: "Tool".into(),
+            config: config(AgentMode::Tool),
         },
     )
     .await;
@@ -179,7 +179,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         Command::CreateSession {
             id: "named-session".into(),
             project_id: project.id,
-            agent_id: "echo-agent".into(),
+            agent_id: "tool-agent".into(),
             at_message_id: None,
         },
     )
@@ -339,14 +339,14 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         CommandResult::Project(value) => value,
         _ => panic!(),
     };
-    for id in ["echo-agent", "manual-agent"] {
+    for id in ["tool-agent", "manual-agent"] {
         run(
             &service,
             Command::RegisterAgent {
                 id: id.into(),
                 name: id.into(),
-                config: config(if id == "echo-agent" {
-                    AgentMode::Echo
+                config: config(if id == "tool-agent" {
+                    AgentMode::Tool
                 } else {
                     AgentMode::Manual
                 }),
@@ -359,7 +359,7 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         Command::CreateSession {
             id: "rebind-session".into(),
             project_id: project.id,
-            agent_id: "echo-agent".into(),
+            agent_id: "tool-agent".into(),
             at_message_id: None,
         },
     )
@@ -395,7 +395,7 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
     let busy = service
         .execute(Command::SetSessionAgent {
             session_id: "rebind-session".into(),
-            agent_id: "echo-agent".into(),
+            agent_id: "tool-agent".into(),
         })
         .await;
     assert_eq!(busy.error.unwrap().code, ErrorCode::SessionBusy);
@@ -584,7 +584,7 @@ async fn stable_failures_cover_configuration_provider_approval_busy_and_cancel()
         .execute(Command::RegisterAgent {
             id: "bad".into(),
             name: "".into(),
-            config: config(AgentMode::Echo),
+            config: config(AgentMode::Tool),
         })
         .await;
     assert_eq!(
@@ -836,7 +836,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         Command::RegisterAgent {
             id: "desktop-agent".into(),
             name: "Desktop agent".into(),
-            config: config(AgentMode::Echo),
+            config: config(AgentMode::Tool),
         },
     )
     .await;
@@ -878,7 +878,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         _ => panic!(),
     };
     assert_eq!(workspace.sessions.len(), 1);
-    assert_eq!(workspace.messages.len(), 3);
+    assert_eq!(workspace.messages.len(), 5);
     let settings = match run(&recovered, Command::GetSettings).await {
         CommandResult::Settings(value) => value,
         _ => panic!(),
@@ -901,9 +901,9 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
     run(
         &service,
         Command::RegisterAgent {
-            id: "codex-local".into(),
-            name: "Codex".into(),
-            config: config(AgentMode::Echo),
+            id: "tool-local".into(),
+            name: "Tool".into(),
+            config: config(AgentMode::Tool),
         },
     )
     .await;
@@ -938,7 +938,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             &service,
             Command::SetProjectDefaultAgent {
                 project_id: id.into(),
-                agent_id: "codex-local".into(),
+                agent_id: "tool-local".into(),
             },
         )
         .await;
@@ -947,7 +947,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             Command::CreateSession {
                 id: session_id.into(),
                 project_id: id.into(),
-                agent_id: "codex-local".into(),
+                agent_id: "tool-local".into(),
                 at_message_id: None,
             },
         )
@@ -973,7 +973,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
     };
     assert_eq!(workspace.projects.len(), 2);
     assert!(workspace.projects.iter().all(|project| {
-        project.default_agent_id.as_deref() == Some("codex-local") && project.revision == 2
+        project.default_agent_id.as_deref() == Some("tool-local") && project.revision == 2
     }));
     assert_eq!(workspace.sessions.len(), 2);
     for (project_id, session_id, input) in [
@@ -992,7 +992,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             .iter()
             .filter(|message| message.project_id == project_id)
             .collect::<Vec<_>>();
-        assert_eq!(project_messages.len(), 3);
+        assert_eq!(project_messages.len(), 5);
         assert!(
             project_messages
                 .iter()

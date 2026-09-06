@@ -14,7 +14,7 @@ RUN_ID="$(jq -r '.result.value.id' "$WF_ROOT/manual-run.json")"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"cancel_run",run_id:$id}')"
 
-ait command '{"type":"set_session_agent","session_id":"s-manual","agent_id":"agent-echo"}'
+ait command '{"type":"set_session_agent","session_id":"s-manual","agent_id":"agent-demo"}'
 ait command '{"type":"send_message","session_id":"s-manual","text":"继续处理"}'
 
 ```

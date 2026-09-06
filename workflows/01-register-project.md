@@ -12,20 +12,20 @@ ait command "$(jq -nc --arg workdir "$WF_ROOT/project" \
   | tee "$WF_ROOT/project.json"
 export ROOT_ID="$(jq -r '.result.value.root_message_id' "$WF_ROOT/project.json")"
 
-ait command '{"type":"register_agent","id":"agent-echo","name":"本地回声","config":{"provider_id":"builtin-echo","model":"default"}}'
-ait command '{"type":"set_project_default_agent","project_id":"p1","agent_id":"agent-echo"}'
-ait command '{"type":"create_session","id":"s-main","project_id":"p1","agent_id":"agent-echo"}'
+ait command '{"type":"register_agent","id":"agent-demo","name":"本地工具演练","config":{"provider_id":"builtin-tool","model":"default"}}'
+ait command '{"type":"set_project_default_agent","project_id":"p1","agent_id":"agent-demo"}'
+ait command '{"type":"create_session","id":"s-main","project_id":"p1","agent_id":"agent-demo"}'
 ait snapshot
 ```
 
-`echo` 是离线验收模式，不访问模型。注册真实执行 Agent 属于另外的运行环境配置。
+本例使用 `tool` 确定性工具演练模式，不访问模型。真实模型执行见 WF-10 和 WF-11。
 `repo_url` 可选且只记录来源；注册不会自动克隆或下载仓库。
 
 ## 验收与失败恢复
 
 - 初始快照各集合为空；注册返回规范化绝对路径、有效 `base_commit` 和根 System Message ID。
 - 若目录还不是 Git root，AIT 初始化 Git；unborn HEAD 会获得一个初始空提交。
-- 新 Session 指向根 Message，`agent_id=agent-echo`、`name=""`、`version=1`、`active_run_id=null`。
+- 新 Session 指向根 Message，`agent_id=agent-demo`、`name=""`、`version=1`、`active_run_id=null`。
   创建 Session 不复制历史。设置默认 Agent 使 Project revision 增长。
 - 换一个 Project ID 重复注册同一个规范化路径，返回 `PROJECT_PATH_ALREADY_REGISTERED`；
   路径不存在返回 `PROJECT_PATH_NOT_FOUND`。先修正路径，不要创建重复记录来绕过错误。
