@@ -133,8 +133,6 @@ fn send_message() -> Command {
     Command::SendMessage {
         session_id: "session".into(),
         text: "implement a feature".into(),
-        expected_version: Some(1),
-        reasoning_effort: None,
     }
 }
 
@@ -172,8 +170,7 @@ impl Fixture {
             Command::RegisterAgent {
                 id: "agent".into(),
                 name: "Agent".into(),
-                model: "fixture-model".into(),
-                mode,
+                config: config(mode),
             },
         )
         .await;
@@ -222,7 +219,6 @@ async fn run_commands_return_persisted_terminal_results_and_do_not_repeat_extern
             agent_id: "agent".into(),
             at_message_id: fixture.project.root_message_id.clone(),
             text: "implement a fork".into(),
-            reasoning_effort: None,
         },
         Command::TriggerCron {
             cron_id: "cron".into(),
@@ -318,15 +314,24 @@ async fn failed_creation_commit_never_invokes_the_agent() {
 #[tokio::test]
 async fn queued_run_queries_and_duplicate_cron_triggers_never_start_execution() {
     let fixture = Fixture::new(AgentMode::Manual).await;
-    let manual = run(&fixture.service, send_message()).await;
+    let mut manual = run(&fixture.service, send_message()).await;
     let trigger = Command::TriggerCron {
         cron_id: "cron".into(),
         scheduled_at: 42,
     };
-    let cron = run(&fixture.service, trigger.clone()).await;
+    let mut cron = run(&fixture.service, trigger.clone()).await;
     // Seed queued Codex checkpoints, as if execution had stopped after creation.
     let mut snapshot = fixture.store.load().await.unwrap();
-    snapshot.value["agents"][0]["mode"] = json!("codex");
+    let configuration = config(AgentMode::Codex);
+    let provider = snapshot.value["providers"][0].clone();
+    let mut provider = provider.as_object().unwrap().clone();
+    provider.remove("has_secret");
+    manual.config = configuration.clone();
+    cron.config = configuration.clone();
+    manual.provider = serde_json::from_value(json!(provider)).unwrap();
+    cron.provider = manual.provider.clone();
+    snapshot.value["agents"][0]["config"] = json!(configuration);
+    snapshot.value["runs"] = json!([manual, cron]);
     fixture
         .store
         .commit(snapshot.revision, snapshot.value, vec![])
@@ -375,5 +380,23 @@ async fn manual_and_approval_modes_remain_queryable_and_cancellable() {
         assert!(
             fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null()
         );
+    }
+}
+
+fn config(mode: AgentMode) -> ait_contracts::AgentConfiguration {
+    let key = serde_json::to_value(mode).unwrap();
+    ait_contracts::AgentConfiguration {
+        provider_id: format!("builtin-{}", key.as_str().unwrap()),
+        model: if mode == AgentMode::Codex {
+            "gpt-5.6-sol"
+        } else {
+            "default"
+        }
+        .into(),
+        reasoning_effort: if mode == AgentMode::Codex {
+            Some("high".into())
+        } else {
+            None
+        },
     }
 }

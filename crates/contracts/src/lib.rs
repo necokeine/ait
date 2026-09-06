@@ -9,49 +9,13 @@ use serde_json::Value;
 pub const API_VERSION: u16 = 1;
 
 /// Current portable Project archive format.
-pub const PROJECT_EXPORT_VERSION: u16 = 2;
+pub const PROJECT_EXPORT_VERSION: u16 = 3;
 
-/// Execution backend selected by an Agent revision.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentMode {
-    Codex,
-    Echo,
-    Tool,
-    Manual,
-    ProviderFailure,
-    ApprovalRequired,
-}
-
-/// Codex reasoning effort values supported by the built-in model catalog entry.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningEffort {
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-    Ultra,
-}
-
-impl ReasoningEffort {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-            Self::Max => "max",
-            Self::Ultra => "ultra",
-        }
-    }
-}
+pub use ait_domain::{AgentConfiguration, AgentProvider, ProviderKind as AgentMode, ProviderModel};
 
 /// Commands accepted by the shared application service.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     RegisterProject {
         id: String,
@@ -67,9 +31,24 @@ pub enum Command {
     RegisterAgent {
         id: String,
         name: String,
-        model: String,
-        #[serde(default = "default_agent_mode")]
-        mode: AgentMode,
+        config: AgentConfiguration,
+    },
+    SaveAgentProvider {
+        provider: AgentProvider,
+        #[serde(default)]
+        secret: Option<ProviderSecret>,
+    },
+    RefreshProviderModels {
+        provider_id: String,
+    },
+    UpdateAgent {
+        id: String,
+        name: String,
+        config: AgentConfiguration,
+    },
+    SetSessionConfig {
+        session_id: String,
+        config: AgentConfiguration,
     },
     CreateSession {
         id: String,
@@ -81,8 +60,6 @@ pub enum Command {
     SetSessionAgent {
         session_id: String,
         agent_id: String,
-        #[serde(default)]
-        expected_version: Option<u64>,
     },
     RenameSession {
         session_id: String,
@@ -95,10 +72,6 @@ pub enum Command {
     SendMessage {
         session_id: String,
         text: String,
-        #[serde(default)]
-        expected_version: Option<u64>,
-        #[serde(default)]
-        reasoning_effort: Option<ReasoningEffort>,
     },
     ForkSession {
         id: String,
@@ -106,8 +79,6 @@ pub enum Command {
         agent_id: String,
         at_message_id: String,
         text: String,
-        #[serde(default)]
-        reasoning_effort: Option<ReasoningEffort>,
     },
     GetRun {
         run_id: String,
@@ -148,10 +119,6 @@ pub enum Command {
     Snapshot,
 }
 
-const fn default_agent_mode() -> AgentMode {
-    AgentMode::Echo
-}
-
 /// Stable API error envelope.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApiError {
@@ -182,11 +149,13 @@ const fn default_revision() -> u64 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentView {
     pub id: String,
     pub name: String,
-    pub model: String,
-    pub mode: AgentMode,
+    pub config: AgentConfiguration,
+    #[serde(default)]
+    pub owner_session_id: Option<String>,
     pub revision: u64,
     pub enabled: bool,
 }
@@ -236,8 +205,8 @@ pub struct RunView {
     pub session_id: Option<String>,
     pub agent_id: String,
     pub agent_revision: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<ReasoningEffort>,
+    pub config: AgentConfiguration,
+    pub provider: AgentProvider,
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
@@ -261,6 +230,8 @@ pub struct CronView {
 pub struct WorkspaceView {
     pub projects: Vec<ProjectView>,
     pub agents: Vec<AgentView>,
+    #[serde(default)]
+    pub providers: Vec<AgentProviderView>,
     pub sessions: Vec<SessionView>,
     pub messages: Vec<MessageView>,
     pub runs: Vec<RunView>,
@@ -272,12 +243,14 @@ pub struct WorkspaceView {
 /// Runtime attempts, active Run bindings, Cron registrations, attachment
 /// bytes, and provider credentials are deliberately outside this format.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "archive::ArchiveInput")]
 pub struct ProjectExport {
     pub format_version: u16,
     pub source_revision: u64,
     pub project: ProjectView,
     pub agents: Vec<AgentView>,
+    #[serde(default)]
+    pub providers: Vec<AgentProvider>,
     pub sessions: Vec<SessionView>,
     pub messages: Vec<MessageView>,
 }
@@ -288,6 +261,7 @@ pub struct ProjectExport {
 pub enum CommandResult {
     Project(ProjectView),
     Agent(AgentView),
+    AgentProvider(AgentProviderView),
     Session(SessionView),
     Run(RunView),
     Cron(CronView),
@@ -348,3 +322,21 @@ pub use desktop::{
     SettingDefinition, SettingKind, SettingsDocument, SettingsSchema, SettingsView,
     default_settings, settings_schema,
 };
+
+/// A write-only secret; Debug never prints its contents.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProviderSecret(pub String);
+impl std::fmt::Debug for ProviderSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AgentProviderView {
+    #[serde(flatten)]
+    pub provider: AgentProvider,
+    pub has_secret: bool,
+}
+
+mod archive;

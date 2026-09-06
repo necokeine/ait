@@ -116,3 +116,12 @@ Official protocol references:
 
 - <https://developers.openai.com/codex/app-server>
 - <https://developers.openai.com/codex/codex-sdk>
+
+## Provider gateway
+
+`RigProviderGateway` implements the application-facing `AgentProviderGateway` port.
+It resolves immutable credential references through the operating system credential
+store, lists models through `LLMClient`, and executes a text-history completion
+using the Run's fixed Agent configuration. Secrets are never written into the
+control snapshot, events or Project export. Model reasoning levels are catalog
+metadata configured by the user; model discovery preserves existing levels.

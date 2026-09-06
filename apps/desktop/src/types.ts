@@ -1,6 +1,11 @@
 export type MessageRole = "user" | "system" | "assistant";
 export type MessageKind = "standard" | "tool_result";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type ReasoningEffort = string;
+
+export interface AgentConfiguration { provider_id: string; model: string; reasoning_effort: string | null }
+export interface ProviderModel { id: string; name: string; reasoning_efforts: string[] }
+export interface AgentProvider { id: string; name: string; kind: string; url: string | null; models: ProviderModel[]; has_secret: boolean }
+export interface AgentView { id: string; name: string; config: AgentConfiguration; owner_session_id: string | null; revision: number; enabled: boolean }
 
 export type MessagePart =
   | { type: "text"; text: string }
@@ -38,7 +43,8 @@ export interface AgentSummary {
   mode: string;
   enabled: boolean;
   supportedReasoningEfforts?: ReasoningEffort[];
-  defaultReasoningEffort?: ReasoningEffort;
+  config: AgentConfiguration;
+  ownerSessionId: string | null;
 }
 
 export interface DesktopSession {
@@ -60,6 +66,7 @@ export interface DesktopSnapshot {
   revision: number;
   projects: DesktopProject[];
   agents: AgentSummary[];
+  providers: AgentProvider[];
   sessions: DesktopSession[];
   messages: DesktopMessage[];
 }
@@ -106,6 +113,10 @@ export interface BridgeErrorShape {
 
 export interface AitDesktopApi {
   snapshot(): Promise<DesktopSnapshot>;
+  saveProvider(input: { provider: Omit<AgentProvider, "has_secret">; secret?: string }): Promise<DesktopSnapshot>;
+  refreshProviderModels(providerId: string): Promise<DesktopSnapshot>;
+  saveAgent(input: { id?: string; name: string; config: AgentConfiguration }): Promise<DesktopSnapshot>;
+  setSessionConfig(input: { sessionId: string; config: AgentConfiguration }): Promise<DesktopSnapshot>;
   settings(): Promise<SettingsResponse>;
   saveSettings(expectedRevision: number, values: Record<string, unknown>): Promise<SettingsResponse>;
   resetSettings(): Promise<SettingsResponse>;
@@ -127,23 +138,19 @@ export interface AitDesktopApi {
   setSessionAgent(input: {
     sessionId: string;
     agentId: string;
-    expectedVersion: number;
   }): Promise<DesktopSnapshot>;
   renameSession(input: { sessionId: string; name: string }): Promise<DesktopSnapshot>;
   setSessionTitle(input: { sessionId: string; title: string }): Promise<DesktopSnapshot>;
   generateSessionTitle(input: { sessionId: string; prompt: string }): Promise<DesktopSnapshot>;
   sendMessage(input: {
     sessionId: string;
-    expectedVersion: number;
     content: string;
-    reasoningEffort?: ReasoningEffort;
   }): Promise<DesktopSnapshot>;
   fork(input: {
     projectId: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
-    reasoningEffort?: ReasoningEffort;
   }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
 }
 

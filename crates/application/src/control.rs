@@ -5,32 +5,46 @@ use std::{
     fmt::Write as _,
     path::Path,
     process::Command as ProcessCommand,
-    sync::Arc,
+    sync::{Arc, Mutex, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use ait_contracts::{
-    API_VERSION, AgentMode, AgentView, ApiError, Command, CommandResult, CronView, Event,
-    MessageView, PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ReasoningEffort, Response,
-    RunView, SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView,
-    default_settings, settings_schema,
+    API_VERSION, AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView,
+    ApiError, Command, CommandResult, CronView, Event, MessageView, PROJECT_EXPORT_VERSION,
+    ProjectExport, ProjectView, ProviderModel, Response, RunView, SessionView, SettingKind,
+    SettingsDocument, SettingsView, WorkspaceView, default_settings, settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
     MessageId, ProjectId, TimestampMs,
 };
 use ait_ports::{
-    ControlStore, ControlStoreError, PendingEvent, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    AgentProviderGateway, ControlStore, ControlStoreError, PendingEvent, ProviderMessage,
+    SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
+    WorkspaceAgentResponse,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+mod agents;
+use agents::{
+    InvocationGuard, agent_for_session, builtin_providers, check_session_admission, migrate_state,
+    provider_kind, register_agent, require_named_agent, set_session_config, update_agent,
+    validate_config, validate_provider,
+};
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct State {
     projects: Vec<ProjectView>,
     agents: Vec<AgentView>,
+    #[serde(default = "builtin_providers")]
+    providers: Vec<AgentProviderView>,
+    #[serde(default)]
+    provider_credentials: HashMap<String, String>,
+    #[serde(default)]
+    run_credentials: HashMap<String, String>,
     sessions: Vec<SessionView>,
     messages: Vec<MessageView>,
     runs: Vec<RunView>,
@@ -47,7 +61,6 @@ struct ForkSessionInput {
     agent_id: String,
     at_message_id: String,
     text: String,
-    reasoning_effort: Option<ReasoningEffort>,
 }
 
 /// Internal continuation produced by a command, consumed only after its state
@@ -59,7 +72,10 @@ enum CommandOutcome {
 
 impl CommandOutcome {
     fn for_new_run(run: RunView, mode: AgentMode) -> Self {
-        if mode == AgentMode::Codex {
+        if matches!(
+            mode,
+            AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
+        ) {
             Self::ExecuteWorkspaceRun(run.id)
         } else {
             Self::Ready(Box::new(CommandResult::Run(run)))
@@ -72,6 +88,9 @@ impl Default for State {
         Self {
             projects: Vec::new(),
             agents: Vec::new(),
+            providers: builtin_providers(),
+            provider_credentials: HashMap::new(),
+            run_credentials: HashMap::new(),
             sessions: Vec::new(),
             messages: Vec::new(),
             runs: Vec::new(),
@@ -91,6 +110,7 @@ impl From<State> for WorkspaceView {
         Self {
             projects: state.projects,
             agents: state.agents,
+            providers: state.providers,
             sessions: state.sessions,
             messages: state.messages,
             runs: state.runs,
@@ -102,6 +122,9 @@ impl From<State> for WorkspaceView {
 /// Shared application entry point used by every transport adapter.
 pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
+    session_leases: Mutex<HashMap<String, Weak<()>>>,
+    cancellations: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
 }
@@ -111,6 +134,9 @@ impl LocalControlService {
     pub fn new(store: Arc<dyn ControlStore>) -> Self {
         Self {
             store,
+            session_leases: Mutex::new(HashMap::new()),
+            cancellations: Mutex::new(HashMap::new()),
+            provider_gateway: None,
             workspace_agent: None,
             session_title_generator: None,
         }
@@ -124,9 +150,18 @@ impl LocalControlService {
     ) -> Self {
         Self {
             store,
+            session_leases: Mutex::new(HashMap::new()),
+            cancellations: Mutex::new(HashMap::new()),
+            provider_gateway: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_provider_gateway(mut self, gateway: Arc<dyn AgentProviderGateway>) -> Self {
+        self.provider_gateway = Some(gateway);
+        self
     }
 
     /// Adds the read-only generator used for first-interaction Session metadata.
@@ -301,7 +336,6 @@ impl LocalControlService {
             .iter()
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-        let agent = require_agent(&state, &run.agent_id)?.clone();
         let project = state
             .projects
             .iter()
@@ -315,6 +349,8 @@ impl LocalControlService {
             .ok_or_else(|| error(ErrorCode::MessageNotFound, "run input not found", false))?;
         let prompt = codex_prompt(&state, &run.base_message_id)?;
         let workdir = Path::new(&project.workdir).to_path_buf();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _invocation = InvocationGuard::new(&self.cancellations, &run.id, cancellation.clone());
         if !self.set_run_running(&run.id).await? {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let state = decode_state(snapshot.value)?;
@@ -324,26 +360,34 @@ impl LocalControlService {
                 .find(|candidate| candidate.id == run.id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false));
         }
-        let result = match &self.workspace_agent {
-            Some(executor) => {
-                executor
-                    .invoke(WorkspaceAgentInvocation {
-                        request_id: run.id.clone(),
-                        model: agent.model,
-                        reasoning_effort: run
-                            .reasoning_effort
-                            .map(|effort| effort.as_str().to_owned()),
-                        prompt,
-                        commit_subject: user_text,
-                        cwd: workdir,
-                        cancellation: tokio_util::sync::CancellationToken::new(),
-                    })
-                    .await
+        let call = async {
+            if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+                self.invoke_provider(&state, run).await
+            } else {
+                match &self.workspace_agent {
+                    Some(executor) => {
+                        executor
+                            .invoke(WorkspaceAgentInvocation {
+                                request_id: run.id.clone(),
+                                model: run.config.model.clone(),
+                                reasoning_effort: run.config.reasoning_effort.clone(),
+                                prompt,
+                                commit_subject: user_text,
+                                cwd: workdir,
+                                cancellation: cancellation.clone(),
+                            })
+                            .await
+                    }
+                    None => Err(DomainError::invariant(
+                        ErrorCode::InvalidConfiguration,
+                        "Codex workspace executor is not configured",
+                    )),
+                }
             }
-            None => Err(DomainError::invariant(
-                ErrorCode::InvalidConfiguration,
-                "Codex workspace executor is not configured",
-            )),
+        };
+        let result = tokio::select! {
+            result = call => result,
+            () = cancellation.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled")),
         };
         self.finish_workspace_run(&run.id, result).await
     }
@@ -485,10 +529,30 @@ impl LocalControlService {
             return read_command(state, snapshot.revision, command);
         }
 
+        // A Session request never waits behind a running turn: reject it immediately.
+        let _lease = self.acquire_session(&command)?;
+        if let Command::SaveAgentProvider { provider, secret } = command {
+            return self.save_provider(provider, secret).await;
+        }
+        if let Command::RefreshProviderModels { provider_id } = command {
+            return self.refresh_provider(&provider_id).await;
+        }
         // Commit retries may reapply state changes, but never repeat an external
         // Agent invocation. Only the command that created the Run can request it.
         match self.commit_command(command).await? {
-            CommandOutcome::Ready(result) => Ok(*result),
+            CommandOutcome::Ready(result) => {
+                if let CommandResult::Run(run) = result.as_ref()
+                    && run.status == "cancelled"
+                    && let Some(token) = self
+                        .cancellations
+                        .lock()
+                        .expect("cancellations")
+                        .get(&run.id)
+                {
+                    token.cancel();
+                }
+                Ok(*result)
+            }
             CommandOutcome::ExecuteWorkspaceRun(run_id) => self
                 .execute_workspace_agent(&run_id)
                 .await
@@ -500,6 +564,7 @@ impl LocalControlService {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
+            check_session_admission(&state, &command)?;
             let git_commit = user_message_git_commit(&state, &command)?;
             let (result, events) =
                 apply_command(&mut state, command.clone(), git_commit.as_deref())?;
@@ -555,39 +620,33 @@ fn apply_command(
             project_id,
             agent_id,
         } => set_project_default_agent(state, &project_id, &agent_id),
-        Command::RegisterAgent {
-            id,
-            name,
-            model,
-            mode,
-        } => register_agent(state, id, name, model, mode),
+        Command::RegisterAgent { id, name, config } => register_agent(state, id, name, config),
+        Command::UpdateAgent { id, name, config } => update_agent(state, &id, name, config),
+        Command::SetSessionConfig { session_id, config } => {
+            set_session_config(state, &session_id, config)
+        }
+        Command::SaveAgentProvider { .. } | Command::RefreshProviderModels { .. } => {
+            unreachable!("provider command uses credential boundary")
+        }
         Command::CreateSession {
             id,
             project_id,
             agent_id,
             at_message_id,
-        } => create_session(state, id, project_id, agent_id, at_message_id),
+        } => create_session(state, id, project_id, &agent_id, at_message_id),
         Command::SetSessionAgent {
             session_id,
             agent_id,
-            expected_version,
-        } => set_session_agent(state, &session_id, &agent_id, expected_version),
+        } => set_session_agent(state, &session_id, &agent_id),
         Command::RenameSession { session_id, name } => rename_session(state, &session_id, &name),
         Command::SetSessionTitle { session_id, title } => {
             set_session_title(state, &session_id, &title)
         }
-        Command::SendMessage {
-            session_id,
-            text,
-            expected_version,
-            reasoning_effort,
-        } => {
+        Command::SendMessage { session_id, text } => {
             return send_message(
                 state,
                 session_id,
                 text,
-                expected_version,
-                reasoning_effort,
                 require_user_git_commit(user_git_commit)?,
             );
         }
@@ -597,7 +656,6 @@ fn apply_command(
             agent_id,
             at_message_id,
             text,
-            reasoning_effort,
         } => {
             return fork_session(
                 state,
@@ -607,7 +665,6 @@ fn apply_command(
                     agent_id,
                     at_message_id,
                     text,
-                    reasoning_effort,
                 },
                 require_user_git_commit(user_git_commit)?,
             );
@@ -655,7 +712,7 @@ fn set_project_default_agent(
     project_id: &str,
     agent_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    require_agent(state, agent_id)?;
+    require_named_agent(state, agent_id)?;
     let project = state
         .projects
         .iter_mut()
@@ -683,17 +740,10 @@ fn fork_session(
         state,
         input.id.clone(),
         input.project_id,
-        input.agent_id,
+        &input.agent_id,
         Some(input.at_message_id),
     )?;
-    let (result, mut run_events) = send_message(
-        state,
-        input.id,
-        input.text,
-        Some(1),
-        input.reasoning_effort,
-        git_commit,
-    )?;
+    let (result, mut run_events) = send_message(state, input.id, input.text, git_commit)?;
     events.append(&mut run_events);
     Ok((result, events))
 }
@@ -866,47 +916,11 @@ fn register_project(
     ))
 }
 
-fn register_agent(
-    state: &mut State,
-    id: String,
-    name: String,
-    model: String,
-    mode: AgentMode,
-) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if id.trim().is_empty() || name.trim().is_empty() || model.trim().is_empty() {
-        return Err(error(
-            ErrorCode::InvalidAgentConfiguration,
-            "agent id, name, and model are required",
-            false,
-        ));
-    }
-    if state.agents.iter().any(|agent| agent.id == id) {
-        return Err(error(
-            ErrorCode::InvalidAgentConfiguration,
-            "agent id already exists",
-            false,
-        ));
-    }
-    let agent = AgentView {
-        id: id.clone(),
-        name,
-        model,
-        mode,
-        revision: 1,
-        enabled: true,
-    };
-    state.agents.push(agent.clone());
-    Ok((
-        CommandResult::Agent(agent.clone()),
-        vec![pending("agent.registered", Some(id), &agent)],
-    ))
-}
-
 fn create_session(
     state: &mut State,
     id: String,
     project_id: String,
-    agent_id: String,
+    agent_id: &str,
     at_message_id: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     if id.trim().is_empty() || state.sessions.iter().any(|session| session.id == id) {
@@ -921,7 +935,7 @@ fn create_session(
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-    require_agent(state, &agent_id)?;
+    require_agent(state, agent_id)?;
     let head = at_message_id.unwrap_or_else(|| project.root_message_id.clone());
     let target = state
         .messages
@@ -941,6 +955,7 @@ fn create_session(
             false,
         ));
     }
+    let agent_id = agent_for_session(state, agent_id, &id)?;
     let session = SessionView {
         id: id.clone(),
         project_id,
@@ -1069,21 +1084,13 @@ fn set_session_agent(
     state: &mut State,
     session_id: &str,
     agent_id: &str,
-    expected_version: Option<u64>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    require_agent(state, agent_id)?;
+    let agent_id = agent_for_session(state, agent_id, session_id)?;
     let session = state
         .sessions
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-    if expected_version.is_some_and(|version| version != session.version) {
-        return Err(error(
-            ErrorCode::SessionPointerConflict,
-            "session version changed",
-            false,
-        ));
-    }
     if session.active_run_id.is_some() {
         return Err(error(
             ErrorCode::SessionBusy,
@@ -1094,7 +1101,7 @@ fn set_session_agent(
     if session.agent_id == agent_id {
         return Ok((CommandResult::Session(session.clone()), Vec::new()));
     }
-    agent_id.clone_into(&mut session.agent_id);
+    session.agent_id = agent_id;
     session.version = session.version.saturating_add(1);
     let session = session.clone();
     Ok((
@@ -1111,8 +1118,6 @@ fn send_message(
     state: &mut State,
     session_id: String,
     text: String,
-    expected_version: Option<u64>,
-    reasoning_effort: Option<ReasoningEffort>,
     git_commit: &str,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     if text.trim().is_empty() {
@@ -1128,13 +1133,6 @@ fn send_message(
         .position(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
     let session = state.sessions[index].clone();
-    if expected_version.is_some_and(|version| version != session.version) {
-        return Err(error(
-            ErrorCode::SessionPointerConflict,
-            "session version changed",
-            false,
-        ));
-    }
     if session.active_run_id.is_some() {
         return Err(error(
             ErrorCode::SessionBusy,
@@ -1143,7 +1141,7 @@ fn send_message(
         ));
     }
     let agent = require_agent(state, &session.agent_id)?.clone();
-    validate_reasoning_effort(&agent, reasoning_effort)?;
+    let provider = validate_config(state, &agent.config)?.clone();
     let user = message(
         &session.project_id,
         Some(&session.current_message_id),
@@ -1168,41 +1166,26 @@ fn send_message(
         session_id: Some(session_id),
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
-        reasoning_effort,
+        config: agent.config.clone(),
+        provider,
         trigger: "manual".into(),
         cron_id: None,
         scheduled_at: None,
         status: "queued".into(),
         error: None,
     };
+    if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
+        state
+            .run_credentials
+            .insert(run_id.clone(), reference.clone());
+    }
     state.runs.push(run);
     let run = apply_run_mode(state, &run_id, &agent);
     let event = pending("run.updated", Some(run_id), &run);
-    Ok((CommandOutcome::for_new_run(run, agent.mode), vec![event]))
-}
-
-fn validate_reasoning_effort(
-    agent: &AgentView,
-    reasoning_effort: Option<ReasoningEffort>,
-) -> Result<(), ApiError> {
-    if reasoning_effort.is_none() {
-        return Ok(());
-    }
-    if agent.mode != AgentMode::Codex {
-        return Err(error(
-            ErrorCode::InvalidAgentConfiguration,
-            "reasoning effort is only supported by Codex Agents",
-            false,
-        ));
-    }
-    if !matches!(agent.model.as_str(), "gpt-5.6-sol" | "gpt-5.6-codex") {
-        return Err(error(
-            ErrorCode::InvalidAgentConfiguration,
-            "the selected Codex model does not advertise reasoning effort options",
-            false,
-        ));
-    }
-    Ok(())
+    Ok((
+        CommandOutcome::for_new_run(run, provider_kind(state, &agent.config)?),
+        vec![event],
+    ))
 }
 
 /// Applies the local mode's state changes without invoking an external Agent.
@@ -1213,8 +1196,8 @@ fn apply_run_mode(state: &mut State, run_id: &str, agent: &AgentView) -> RunView
         .position(|run| run.id == run_id)
         .expect("new run exists");
     let mut run = state.runs[index].clone();
-    match agent.mode {
-        AgentMode::Codex | AgentMode::Manual => {}
+    match provider_kind(state, &agent.config).expect("validated provider") {
+        AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Manual => {}
         AgentMode::ProviderFailure => {
             run.status = "failed".into();
             run.error = Some(error(
@@ -1410,7 +1393,7 @@ fn create_cron(
             false,
         ));
     }
-    require_agent(state, &agent_id).map_err(|_| {
+    require_named_agent(state, &agent_id).map_err(|_| {
         error(
             ErrorCode::CronAgentUnavailable,
             "cron agent unavailable",
@@ -1500,6 +1483,11 @@ fn trigger_cron(
         .ok_or_else(|| error(ErrorCode::InvalidCron, "enabled cron not found", false))?;
     let agent = require_agent(state, &cron.agent_id)?.clone();
     let run_id = Uuid::new_v4().to_string();
+    if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
+        state
+            .run_credentials
+            .insert(run_id.clone(), reference.clone());
+    }
     state.runs.push(RunView {
         id: run_id.clone(),
         project_id: cron.project_id,
@@ -1508,7 +1496,8 @@ fn trigger_cron(
         session_id: None,
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
-        reasoning_effort: None,
+        config: agent.config.clone(),
+        provider: validate_config(state, &agent.config)?.clone(),
         trigger: "cron".into(),
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),
@@ -1517,7 +1506,10 @@ fn trigger_cron(
     });
     let run = apply_run_mode(state, &run_id, &agent);
     let event = pending("cron.run_triggered", Some(run_id), &run);
-    Ok((CommandOutcome::for_new_run(run, agent.mode), vec![event]))
+    Ok((
+        CommandOutcome::for_new_run(run, provider_kind(state, &agent.config)?),
+        vec![event],
+    ))
 }
 
 fn export_project(
@@ -1556,15 +1548,22 @@ fn export_project(
     if let Some(default_agent_id) = project.default_agent_id.as_deref() {
         referenced_agents.insert(default_agent_id);
     }
-    let agents = state
+    let agents: Vec<_> = state
         .agents
         .iter()
         .filter(|agent| referenced_agents.contains(agent.id.as_str()))
         .cloned()
         .collect();
+    let providers = state
+        .providers
+        .iter()
+        .filter(|p| agents.iter().any(|a| a.config.provider_id == p.provider.id))
+        .map(|p| p.provider.clone())
+        .collect();
     let archive = ProjectExport {
         format_version: PROJECT_EXPORT_VERSION,
         source_revision,
+        providers,
         project,
         agents,
         sessions,
@@ -1623,6 +1622,18 @@ fn import_project(
         }
     }
 
+    for provider in &archive.providers {
+        if let Some(existing) = state
+            .providers
+            .iter()
+            .find(|p| p.provider.id == provider.id)
+            && existing.provider != *provider
+        {
+            return Err(invalid_archive(
+                "archive provider conflicts with an existing connection",
+            ));
+        }
+    }
     let canonical = prepare_git_root(Path::new(workdir))?;
     let canonical_text = canonical.to_string_lossy().into_owned();
     if state
@@ -1643,6 +1654,14 @@ fn import_project(
     for agent in archive.agents {
         if !state.agents.iter().any(|existing| existing.id == agent.id) {
             state.agents.push(agent);
+        }
+    }
+    for provider in archive.providers {
+        if !state.providers.iter().any(|p| p.provider.id == provider.id) {
+            state.providers.push(AgentProviderView {
+                provider,
+                has_secret: false,
+            });
         }
     }
     state.messages.extend(archive.messages);
@@ -1720,6 +1739,7 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
         }
     }
 
+    validate_archive_catalog(archive)?;
     let mut agent_ids = HashSet::with_capacity(archive.agents.len());
     if archive.agents.iter().any(|agent| {
         agent.id.trim().is_empty() || agent.revision == 0 || !agent_ids.insert(agent.id.as_str())
@@ -2058,6 +2078,70 @@ fn decode_state(value: Value) -> Result<State, ApiError> {
     if value.is_null() {
         Ok(State::default())
     } else {
-        serde_json::from_value(value).map_err(serialization_error)
+        let mut state: State =
+            serde_json::from_value(migrate_state(value)?).map_err(serialization_error)?;
+        state.settings.0.retain(|id, _| !id.starts_with("models."));
+        Ok(state)
     }
+}
+
+fn validate_archive_catalog(archive: &ProjectExport) -> Result<(), ApiError> {
+    let mut provider_ids = HashSet::new();
+    for provider in &archive.providers {
+        validate_provider(provider)?;
+        if !provider_ids.insert(&provider.id) {
+            return Err(invalid_archive("duplicate provider"));
+        }
+    }
+    for agent in &archive.agents {
+        // Archives preserve configuration even when a provider has delisted its model.
+        // Availability is checked when starting new work, not when copying history.
+        if !provider_ids.contains(&agent.config.provider_id)
+            || agent.config.model.trim().is_empty()
+            || agent
+                .config
+                .reasoning_effort
+                .as_ref()
+                .is_some_and(|effort| effort.trim().is_empty())
+        {
+            return Err(invalid_archive(
+                "invalid archived Agent configuration or provider reference",
+            ));
+        }
+        if let Some(owner) = &agent.owner_session_id {
+            if !agent.name.is_empty()
+                || !archive
+                    .sessions
+                    .iter()
+                    .any(|s| &s.id == owner && s.agent_id == agent.id)
+            {
+                return Err(invalid_archive("invalid anonymous Agent owner"));
+            }
+        } else if agent.name.trim().is_empty() {
+            return Err(invalid_archive("named Agent requires a name"));
+        }
+    }
+    if archive.project.default_agent_id.as_ref().is_some_and(|id| {
+        archive
+            .agents
+            .iter()
+            .any(|a| &a.id == id && a.owner_session_id.is_some())
+    }) {
+        return Err(invalid_archive(
+            "Project default Agent must be a named preset",
+        ));
+    }
+    for session in &archive.sessions {
+        if archive.agents.iter().any(|a| {
+            a.id == session.agent_id
+                && a.owner_session_id
+                    .as_ref()
+                    .is_some_and(|owner| owner != &session.id)
+        }) {
+            return Err(invalid_archive(
+                "anonymous Agent cannot be shared between Sessions",
+            ));
+        }
+    }
+    Ok(())
 }

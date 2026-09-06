@@ -39,6 +39,10 @@ pub struct AgentSummary {
     pub name: String,
     /// Provider-independent model label.
     pub model: String,
+    /// Current Agent configuration.
+    pub config: crate::AgentConfiguration,
+    /// Session owning an anonymous Agent, absent for a named preset.
+    pub owner_session_id: Option<String>,
     /// Whether new Runs may be started.
     pub enabled: bool,
 }
@@ -61,7 +65,7 @@ pub struct DesktopSession {
     pub current_message_id: String,
     /// Fixed Agent binding.
     pub agent_id: String,
-    /// Optimistic-lock version.
+    /// Change sequence for display and internal persistence; never an input precondition.
     pub version: u64,
     /// Whether a Run currently follows this Session.
     pub active: bool,
@@ -229,6 +233,8 @@ pub struct DesktopSnapshot {
     pub projects: Vec<DesktopProject>,
     /// Configured Agents safe to display.
     pub agents: Vec<AgentSummary>,
+    /// Shared provider catalog without credential material.
+    pub providers: Vec<crate::AgentProviderView>,
     /// Session references.
     pub sessions: Vec<DesktopSession>,
     /// Immutable Message forest.
@@ -357,57 +363,13 @@ pub struct SaveSettingsRequest {
 /// Returns the authoritative settings schema for the current core revision.
 #[must_use]
 pub fn settings_schema() -> SettingsSchema {
-    let mut definitions = model_settings();
-    definitions.extend(execution_settings());
+    let mut definitions = execution_settings();
     definitions.extend(environment_settings());
     definitions.extend(interface_settings());
     SettingsSchema {
-        revision: 1,
+        revision: 2,
         definitions,
     }
-}
-
-fn model_settings() -> Vec<SettingDefinition> {
-    vec![
-        setting(
-            "models.default",
-            SettingCategory::Models,
-            "Default model",
-            "Model used when a new Agent does not override it.",
-            SettingKind::Text,
-            json!("gpt-5.6-codex"),
-            false,
-        ),
-        setting(
-            "models.provider",
-            SettingCategory::Models,
-            "Provider",
-            "Provider adapter used for new Agents.",
-            SettingKind::Select {
-                options: vec!["openai".into(), "openai_compatible".into(), "local".into()],
-            },
-            json!("openai"),
-            true,
-        ),
-        setting(
-            "models.endpoint",
-            SettingCategory::Models,
-            "Provider endpoint",
-            "Optional OpenAI-compatible API endpoint.",
-            SettingKind::Text,
-            json!(""),
-            true,
-        ),
-        setting(
-            "models.credential_ref",
-            SettingCategory::Models,
-            "Credential reference",
-            "Name of a host credential entry. Secret material is never returned to the renderer.",
-            SettingKind::CredentialReference,
-            json!(""),
-            true,
-        ),
-    ]
 }
 
 fn execution_settings() -> Vec<SettingDefinition> {
@@ -615,13 +577,12 @@ mod tests {
     }
 
     #[test]
-    fn credential_setting_is_a_reference_not_secret_material() {
-        let credential = settings_schema()
-            .definitions
-            .into_iter()
-            .find(|item| item.id == "models.credential_ref")
-            .unwrap();
-        assert_eq!(credential.kind, SettingKind::CredentialReference);
-        assert_eq!(credential.default_value, json!(""));
+    fn provider_settings_have_a_single_authoritative_catalog() {
+        assert!(
+            settings_schema()
+                .definitions
+                .iter()
+                .all(|item| !item.id.starts_with("models."))
+        );
     }
 }

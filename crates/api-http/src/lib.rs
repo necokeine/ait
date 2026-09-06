@@ -12,8 +12,8 @@ use std::{
 
 use ait_application::LocalControlService;
 use ait_contracts::{
-    AgentMode, ApiError, Command, CommandResult, Event as ControlEvent, ProjectExport,
-    ReasoningEffort, Response, SettingsDocument,
+    AgentConfiguration, AgentProvider, ApiError, Command, CommandResult, Event as ControlEvent,
+    ProjectExport, ProviderSecret, Response, SettingsDocument,
 };
 use ait_domain::ErrorCode;
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
@@ -42,6 +42,13 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/project/export", post(export_project))
         .route("/v1/project/import", post(import_project))
         .route("/v1/agent/register", post(register_agent))
+        .route("/v1/agent/update", post(update_agent))
+        .route("/v1/agent-provider/save", post(save_agent_provider))
+        .route(
+            "/v1/agent-provider/refresh-models",
+            post(refresh_provider_models),
+        )
+        .route("/v1/session/set-config", post(set_session_config))
         .route("/v1/session/create", post(create_session))
         .route("/v1/session/set-agent", post(set_session_agent))
         .route("/v1/session/rename", post(rename_session))
@@ -161,13 +168,7 @@ async fn import_project(
 struct RegisterAgentRequest {
     id: String,
     name: String,
-    model: String,
-    #[serde(default = "default_agent_mode")]
-    mode: AgentMode,
-}
-
-const fn default_agent_mode() -> AgentMode {
-    AgentMode::Echo
+    config: AgentConfiguration,
 }
 
 async fn register_agent(
@@ -179,8 +180,7 @@ async fn register_agent(
         Command::RegisterAgent {
             id: request.id,
             name: request.name,
-            model: request.model,
-            mode: request.mode,
+            config: request.config,
         },
     )
     .await
@@ -217,8 +217,6 @@ async fn create_session(
 struct SetSessionAgentRequest {
     session_id: String,
     agent_id: String,
-    #[serde(default)]
-    expected_version: Option<u64>,
 }
 
 async fn set_session_agent(
@@ -230,7 +228,6 @@ async fn set_session_agent(
         Command::SetSessionAgent {
             session_id: request.session_id,
             agent_id: request.agent_id,
-            expected_version: request.expected_version,
         },
     )
     .await
@@ -302,10 +299,6 @@ async fn generate_session_title(
 struct SendMessageRequest {
     session_id: String,
     text: String,
-    #[serde(default)]
-    expected_version: Option<u64>,
-    #[serde(default)]
-    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn send_message(
@@ -317,8 +310,6 @@ async fn send_message(
         Command::SendMessage {
             session_id: request.session_id,
             text: request.text,
-            expected_version: request.expected_version,
-            reasoning_effort: request.reasoning_effort,
         },
     )
     .await
@@ -332,8 +323,6 @@ struct ForkSessionRequest {
     agent_id: String,
     at_message_id: String,
     text: String,
-    #[serde(default)]
-    reasoning_effort: Option<ReasoningEffort>,
 }
 
 async fn fork_session(
@@ -348,7 +337,6 @@ async fn fork_session(
             agent_id: request.agent_id,
             at_message_id: request.at_message_id,
             text: request.text,
-            reasoning_effort: request.reasoning_effort,
         },
     )
     .await
@@ -578,7 +566,8 @@ fn correlation_for_command(command: &Command) -> Correlation {
             correlation.project_id = Some(project_id.clone());
             correlation.session_id = Some(id.clone());
         }
-        Command::SetSessionAgent { session_id, .. }
+        Command::SetSessionConfig { session_id, .. }
+        | Command::SetSessionAgent { session_id, .. }
         | Command::RenameSession { session_id, .. }
         | Command::SetSessionTitle { session_id, .. }
         | Command::SendMessage { session_id, .. } => {
@@ -595,7 +584,10 @@ fn correlation_for_command(command: &Command) -> Correlation {
         Command::ImportProject { archive, .. } => {
             correlation.project_id = Some(archive.project.id.clone());
         }
-        Command::RegisterAgent { .. }
+        Command::UpdateAgent { .. }
+        | Command::SaveAgentProvider { .. }
+        | Command::RefreshProviderModels { .. }
+        | Command::RegisterAgent { .. }
         | Command::SetCronEnabled { .. }
         | Command::TriggerCron { .. }
         | Command::GetSettings
@@ -638,7 +630,8 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
                 .get_or_insert_with(|| archive.project.id.clone());
         }
         Some(
-            CommandResult::Agent(_)
+            CommandResult::AgentProvider(_)
+            | CommandResult::Agent(_)
             | CommandResult::Cron(_)
             | CommandResult::Settings(_)
             | CommandResult::Workspace(_),
@@ -652,6 +645,10 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::RegisterProject { .. } => "register_project",
         Command::SetProjectDefaultAgent { .. } => "set_project_default_agent",
         Command::RegisterAgent { .. } => "register_agent",
+        Command::UpdateAgent { .. } => "update_agent",
+        Command::SaveAgentProvider { .. } => "save_agent_provider",
+        Command::RefreshProviderModels { .. } => "refresh_provider_models",
+        Command::SetSessionConfig { .. } => "set_session_config",
         Command::CreateSession { .. } => "create_session",
         Command::SetSessionAgent { .. } => "set_session_agent",
         Command::RenameSession { .. } => "rename_session",
@@ -701,4 +698,74 @@ pub fn malformed_request(message: impl Into<String>) -> Response {
         message: message.into(),
         retryable: false,
     })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveAgentProviderRequest {
+    provider: AgentProvider,
+    secret: Option<ProviderSecret>,
+}
+async fn save_agent_provider(
+    State(state): State<ApiState>,
+    Json(request): Json<SaveAgentProviderRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SaveAgentProvider {
+            provider: request.provider,
+            secret: request.secret,
+        },
+    )
+    .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RefreshProviderModelsRequest {
+    provider_id: String,
+}
+async fn refresh_provider_models(
+    State(state): State<ApiState>,
+    Json(request): Json<RefreshProviderModelsRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::RefreshProviderModels {
+            provider_id: request.provider_id,
+        },
+    )
+    .await
+}
+async fn update_agent(
+    State(state): State<ApiState>,
+    Json(request): Json<RegisterAgentRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::UpdateAgent {
+            id: request.id,
+            name: request.name,
+            config: request.config,
+        },
+    )
+    .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSessionConfigRequest {
+    session_id: String,
+    config: AgentConfiguration,
+}
+async fn set_session_config(
+    State(state): State<ApiState>,
+    Json(request): Json<SetSessionConfigRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SetSessionConfig {
+            session_id: request.session_id,
+            config: request.config,
+        },
+    )
+    .await
 }

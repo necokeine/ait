@@ -82,6 +82,10 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/project/export",
         "/v1/project/import",
         "/v1/agent/register",
+        "/v1/agent/update",
+        "/v1/agent-provider/save",
+        "/v1/agent-provider/refresh-models",
+        "/v1/session/set-config",
         "/v1/session/create",
         "/v1/session/set-agent",
         "/v1/session/rename",
@@ -138,4 +142,31 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn removed_message_overrides_are_rejected_at_the_transport_boundary() {
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
+        SqliteControlStore::in_memory().unwrap(),
+    ))));
+    for extra in [
+        serde_json::json!({"expected_version": 1}),
+        serde_json::json!({"reasoning_effort": "high"}),
+    ] {
+        let mut body = serde_json::json!({"session_id": "session", "text": "hello"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/session/send-message")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
 }

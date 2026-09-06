@@ -226,7 +226,7 @@ async fn wf10_create_project_with_real_codex_and_commit() {
             "agent",
             json!({
                 "type": "register_agent", "id": "codex", "name": "Codex",
-                "model": model, "mode": "codex",
+                "config": { "provider_id": "builtin-codex", "model": model, "reasoning_effort": "high" },
             }),
             20,
         )
@@ -249,8 +249,7 @@ async fn wf10_create_project_with_real_codex_and_commit() {
         .command(
             "run",
             json!({
-                "type": "send_message", "session_id": session["id"],
-                "expected_version": session["version"], "text": PROMPT,
+                "type": "send_message", "session_id": session["id"], "text": PROMPT,
             }),
             600,
         )

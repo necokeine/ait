@@ -32,6 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
     let service = Arc::new(
         LocalControlService::with_workspace_agent(store, codex)
+            .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
             .with_session_title_generator(titles),
     );
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;

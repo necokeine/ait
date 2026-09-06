@@ -1,24 +1,16 @@
-import type { AgentSummary, ReasoningEffort } from "./types.js";
+import type { AgentSummary, AgentView, AgentProvider } from "./types.js";
 
 export const builtInCodexAgentId = "codex-app-server";
 export const legacyBuiltInCodexAgentId = "codex-local";
 export const builtInCodexModel = "gpt-5.6-sol";
 
-const legacyBuiltInCodexModel = "gpt-5.6-codex";
-const builtInReasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
-
-export function normalizedBuiltInAgent(agent: AgentSummary): AgentSummary {
-  if (
-    agent.id === builtInCodexAgentId
-    && agent.mode === "codex"
-    && (agent.model === legacyBuiltInCodexModel || agent.model === builtInCodexModel)
-  ) {
-    return {
-      ...agent,
-      model: builtInCodexModel,
-      supportedReasoningEfforts: [...builtInReasoningEfforts],
-      defaultReasoningEffort: "low",
-    };
-  }
-  return agent;
+export function projectAgent(agent: AgentView, providers: AgentProvider[]): AgentSummary {
+  const provider = providers.find((item) => item.id === agent.config.provider_id);
+  const model = provider?.models.find((item) => item.id === agent.config.model);
+  return {
+    id: agent.id, name: agent.name, enabled: agent.enabled,
+    config: agent.config, ownerSessionId: agent.owner_session_id,
+    model: agent.config.model, mode: provider?.kind ?? "unavailable",
+    supportedReasoningEfforts: model?.reasoning_efforts ?? [],
+  };
 }

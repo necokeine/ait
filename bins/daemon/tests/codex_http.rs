@@ -100,8 +100,6 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
         &json!({
             "session_id": "daemon-codex-session",
             "text": "Generate a response through Codex.",
-            "expected_version": 1,
-            "reasoning_effort": "high",
         }),
     )
     .await;
@@ -183,8 +181,7 @@ async fn register_test_entities(client: &Client, base_url: &str, project: &Path)
             json!({
                 "id": "daemon-codex-agent",
                 "name": "Codex",
-                "model": "gpt-5.6-codex",
-                "mode": "codex",
+                "config": { "provider_id": "builtin-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high" },
             }),
         ),
         (

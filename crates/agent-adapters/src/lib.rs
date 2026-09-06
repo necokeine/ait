@@ -11,6 +11,8 @@ pub mod codex;
 pub mod error;
 pub mod llm;
 pub mod protocol;
+pub mod provider_gateway;
+pub use provider_gateway::RigProviderGateway;
 
 pub use error::{AdapterError, AdapterErrorKind};
 pub use llm::{LLMClient, LLMClientConfig, LLMProvider};

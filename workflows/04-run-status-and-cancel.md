@@ -6,21 +6,17 @@
 ## 操作
 
 ```bash
-ait command '{"type":"register_agent","id":"agent-manual","name":"手动运行演练","model":"deterministic-v1","mode":"manual"}'
+ait command '{"type":"register_agent","id":"agent-manual","name":"手动运行演练","config":{"provider_id":"builtin-manual","model":"default"}}'
 ait command '{"type":"create_session","id":"s-manual","project_id":"p1","agent_id":"agent-manual"}'
-ait command '{"type":"send_message","session_id":"s-manual","text":"启动一次可取消运行","expected_version":1}' \
+ait command '{"type":"send_message","session_id":"s-manual","text":"启动一次可取消运行"}' \
   | tee "$WF_ROOT/manual-run.json"
 RUN_ID="$(jq -r '.result.value.id' "$WF_ROOT/manual-run.json")"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"cancel_run",run_id:$id}')"
 
-SESSION_VERSION="$(ait snapshot | jq -r '.result.value.sessions[] | select(.id=="s-manual") | .version')"
-ait command "$(jq -nc --argjson version "$SESSION_VERSION" \
-  '{type:"set_session_agent",session_id:"s-manual",agent_id:"agent-echo",expected_version:$version}')" \
-  | tee "$WF_ROOT/rebound.json"
-SESSION_VERSION="$(jq -r '.result.value.version' "$WF_ROOT/rebound.json")"
-ait command "$(jq -nc --argjson version "$SESSION_VERSION" \
-  '{type:"send_message",session_id:"s-manual",text:"继续处理",expected_version:$version}')"
+ait command '{"type":"set_session_agent","session_id":"s-manual","agent_id":"agent-echo"}'
+ait command '{"type":"send_message","session_id":"s-manual","text":"继续处理"}'
+
 ```
 
 ## 验收与恢复

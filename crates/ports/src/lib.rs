@@ -3,6 +3,7 @@
 mod control;
 mod message;
 mod project;
+mod provider;
 mod run;
 mod scheduler;
 mod session;
@@ -13,6 +14,7 @@ pub use project::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
     StoreError,
 };
+pub use provider::{AgentProviderGateway, ProviderMessage};
 pub use run::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult,
     GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator, RunStore,

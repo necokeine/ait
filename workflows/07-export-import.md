@@ -32,7 +32,7 @@ target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.
 ## 验收与失败恢复
 
 - `export` 成功退出码 0，stdout 为空，目标文件是 archive JSON 而非 Response 信封。
-  当前 `format_version=2`，保存 Project、引用到的 Agents、Messages 和 Sessions。
+  当前 `format_version=3`，保存 Project、引用到的 Agents 和无凭证 Providers、Messages 和 Sessions；兼容导入格式 2。
 - 导入保留 Message ID、parent 边、内容、Session 指针和版本、Agent revision，以及默认 Agent。
   `workdir` 改为目标规范化目录，Project `base_commit` 取目标仓库 HEAD。
   历史 user Message 的 `git_commit` 仍保持原值。
