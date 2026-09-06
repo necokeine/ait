@@ -1,12 +1,20 @@
 //! Real CLI processes talking to an isolated production HTTP router and `SQLite` store.
 
-use std::{path::PathBuf, process::Output, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    process::{Output, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 use ait_application::LocalControlService;
 use ait_storage_sqlite::SqliteControlStore;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::{net::TcpListener, process::Command, sync::oneshot, task::JoinHandle, time::timeout};
+use tokio::{
+    io::AsyncWriteExt, net::TcpListener, process::Command, sync::oneshot, task::JoinHandle,
+    time::timeout,
+};
 
 pub struct Workspace {
     pub directory: TempDir,
@@ -84,6 +92,28 @@ impl Workspace {
 
     pub async fn command(&self, command: Value) -> Value {
         success(&self.cli(&["command", &command.to_string()]).await)
+    }
+
+    pub async fn cli_stdin(&self, input: &str) -> Output {
+        let mut process = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
+            .args(["--endpoint", &self.endpoint, "command", "-"])
+            .current_dir(self.directory.path())
+            .env("NO_PROXY", "*")
+            .env("no_proxy", "*")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        timeout(Duration::from_secs(20), async {
+            let mut stdin = process.stdin.take().unwrap();
+            stdin.write_all(input.as_bytes()).await.unwrap();
+            drop(stdin);
+            process.wait_with_output().await.unwrap()
+        })
+        .await
+        .expect("CLI stdin exceeded 20s")
     }
 
     pub async fn reject(&self, command: Value, code: &str) {

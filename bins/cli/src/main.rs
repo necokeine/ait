@@ -1,6 +1,6 @@
 //! AIT command-line client entry point.
 
-use std::{fs, path::PathBuf};
+use std::{fs, io, path::PathBuf};
 
 use ait_contracts::{Command, CommandResult, ProjectExport, Response};
 use clap::{Parser, Subcommand};
@@ -16,7 +16,7 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Execute any version-one command encoded as JSON.
+    /// Execute JSON, or use `-` to read it from stdin without exposing secrets in argv.
     Command { json: String },
     /// Print the complete durable workspace projection.
     Snapshot,
@@ -47,7 +47,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     match arguments.command {
         CliCommand::Command { json } => {
-            let command: Command = serde_json::from_str(&json)?;
+            let input = if json == "-" {
+                io::read_to_string(io::stdin())?
+            } else {
+                json
+            };
+            // Deserialization errors can quote unknown variants/fields, including a secret.
+            let command: Command = serde_json::from_str(&input).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid command JSON at line {}, column {}",
+                        error.line(),
+                        error.column()
+                    ),
+                )
+            })?;
             print_response(&send(&client, &arguments.endpoint, &command).await?);
         }
         CliCommand::Snapshot => {

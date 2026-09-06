@@ -1,4 +1,4 @@
-//! WF-11: real `DeepSeek` through the existing Codex harness, with independent Python checks.
+//! WF-11: native `DeepSeek` Provider, CLI stdin credentials, and independent Python checks.
 
 #![cfg(unix)]
 
@@ -12,16 +12,17 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use tokio::{process::Command, time::timeout};
+use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
 const MODEL: &str = "deepseek-v4-flash";
 const VERIFY_LOGIC: &str = include_str!("fixtures/verify_hello.py");
-const PROMPT: &str = "Create exactly one file, hello.py, in the repository root. \
+const PROMPT: &str = "Generate the complete source of one Python file named hello.py. \
+    Return only raw Python code, without Markdown fences or explanations. \
     Define a zero-argument main() that only calls print with the literal Hello, world! \
     and implicitly returns None. Call main() only under if __name__ == \"__main__\". \
-    No imports, dependencies, other files, or extra behavior. Running python3 -I -B hello.py \
-    must print exactly Hello, world! followed by a newline. Verify it. \
-    Do not create a Git commit; AIT will commit your changes.";
+    No imports, dependencies, or extra behavior. Running python3 -I -B hello.py \
+    must print exactly Hello, world! followed by a newline. The caller will save your \
+    exact response as hello.py and independently inspect and execute it.";
 
 // Deliberately not Debug: neither command diagnostics nor dotenv parse errors may expose it.
 struct Credential(String);
@@ -88,7 +89,7 @@ struct Daemon(Child);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        // Only the new daemon's process group, including any remaining app-server child.
+        // Only the new daemon's process group; never a pre-existing service.
         let _ = ProcessCommand::new("kill")
             .args(["-KILL", "--", &format!("-{}", self.0.id())])
             .stdout(Stdio::null())
@@ -106,36 +107,8 @@ struct Workflow {
     daemon: Option<Daemon>,
 }
 
-fn config(model: &str) -> String {
-    format!(
-        r#"model = {model:?}
-model_provider = "deepseek"
-model_reasoning_effort = "low"
-model_reasoning_summary = "none"
-model_supports_reasoning_summaries = false
-web_search = "disabled"
-
-[model_providers.deepseek]
-name = "DeepSeek"
-base_url = "https://api.deepseek.com"
-wire_api = "responses"
-env_key = "DEEPSEEK_API_KEY"
-requires_openai_auth = false
-request_max_retries = 0
-stream_max_retries = 0
-stream_idle_timeout_ms = 120000
-
-[shell_environment_policy]
-include_only = ["PATH", "HOME", "TMPDIR", "USER", "LOGNAME"]
-
-[history]
-persistence = "none"
-"#
-    )
-}
-
 impl Workflow {
-    async fn start(credential: Credential, model: &str) -> Self {
+    async fn start(credential: Credential) -> Self {
         let binary = env::var_os("AIT_WORKFLOW_DAEMON_BIN")
             .map_or_else(
                 || Path::new(env!("CARGO_BIN_EXE_ait-cli")).with_file_name("ait-daemon"),
@@ -155,9 +128,6 @@ impl Workflow {
             "WF-11 artifacts (retained on success/failure): {}",
             root.display()
         );
-        let codex_config_dir = root.join("codex");
-        fs::create_dir(&codex_config_dir).unwrap();
-        fs::write(codex_config_dir.join("config.toml"), config(model)).unwrap();
         let log_path = root.join("daemon.log");
         let log = File::create(&log_path).unwrap();
         let mut command = ProcessCommand::new(binary);
@@ -169,6 +139,8 @@ impl Workflow {
             "TMPDIR",
             "USER",
             "LOGNAME",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "XDG_RUNTIME_DIR",
             "HTTPS_PROXY",
             "https_proxy",
             "HTTP_PROXY",
@@ -186,8 +158,6 @@ impl Workflow {
             command
                 .args(["--database", "ait.sqlite3", "--listen", "127.0.0.1:0"])
                 .current_dir(&root)
-                .env("CODEX_HOME", &codex_config_dir)
-                .env("DEEPSEEK_API_KEY", &credential.0)
                 .process_group(0)
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(log.try_clone().unwrap()))
@@ -232,6 +202,10 @@ impl Workflow {
         .await
         .expect("workflow command timed out")
         .expect("could not start workflow command");
+        self.checked_output(output)
+    }
+
+    fn checked_output(&self, output: std::process::Output) -> String {
         self.credential.assert_absent(&output.stdout);
         self.credential.assert_absent(&output.stderr);
         assert!(
@@ -269,8 +243,36 @@ impl Workflow {
     }
 
     async fn command(&self, name: &str, body: Value, seconds: u64) -> Value {
-        self.cli(name, &["command", &body.to_string()], seconds)
-            .await
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
+            .args(["--endpoint", &self.endpoint, "command", "-"])
+            .current_dir(&self.root)
+            .env_remove("DEEPSEEK_API_KEY")
+            .env("NO_PROXY", "*")
+            .env("no_proxy", "*")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("start CLI with piped stdin");
+        let output = timeout(Duration::from_secs(seconds), async {
+            let mut input = child.stdin.take().unwrap();
+            input
+                .write_all(&serde_json::to_vec(&body).unwrap())
+                .await
+                .unwrap();
+            drop(input);
+            child.wait_with_output().await
+        })
+        .await
+        .expect("CLI command timed out")
+        .expect("CLI command failed to start");
+        let output = self.checked_output(output);
+        fs::write(self.root.join(format!("{name}.json")), &output).unwrap();
+        let response: Value = serde_json::from_str(&output).expect("CLI JSON envelope");
+        assert_eq!(response["api_version"], 1);
+        assert_eq!(response["ok"], true, "{response}");
+        response["result"]["value"].clone()
     }
 
     async fn git(&self, args: &[&str]) -> String {
@@ -295,7 +297,7 @@ fn entity<'a>(snapshot: &'a Value, collection: &str, id: &Value) -> &'a Value {
 }
 
 #[tokio::test]
-#[ignore = "uses real DeepSeek API credits, Codex and Python; run ./test_with_deepseek.sh"]
+#[ignore = "uses real DeepSeek API credits, OS credential storage and Python; run ./test_with_deepseek.sh"]
 async fn wf11_real_deepseek_python_hello_world() {
     let env_path = env::var_os("AIT_DEEPSEEK_ENV_FILE").map_or_else(
         || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env"),
@@ -310,7 +312,7 @@ async fn wf11_real_deepseek_python_hello_world() {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-'),
         "AIT_DEEPSEEK_MODEL must name a DeepSeek model"
     );
-    let mut workflow = Workflow::start(credential, &model).await;
+    let mut workflow = Workflow::start(credential).await;
     let initial = workflow.cli("initial-snapshot", &["snapshot"], 20).await;
     for collection in ["projects", "agents", "sessions", "messages", "runs"] {
         assert_eq!(initial[collection], json!([]));
@@ -331,11 +333,32 @@ async fn wf11_real_deepseek_python_hello_world() {
             .await
             .is_empty()
     );
-    let agent = workflow.command("agent", json!({
-        "type": "register_agent", "id": "deepseek", "name": "DeepSeek", "model": model, "mode": "codex",
-    }), 20).await;
-    assert_eq!(agent["model"], model);
-    assert_eq!(agent["mode"], "codex");
+    let provider = workflow
+        .command(
+            "provider",
+            json!({
+                "type": "save_agent_provider",
+                "provider": {"id": "deepseek", "name": "DeepSeek", "kind": "deepseek",
+                    "url": "https://api.deepseek.com",
+                    "models": [{"id": model, "name": model, "reasoning_efforts": []}]},
+                "secret": workflow.credential.0,
+            }),
+            20,
+        )
+        .await;
+    assert_eq!(provider["has_secret"], true);
+    let agent = workflow
+        .command(
+            "agent",
+            json!({
+                "type": "register_agent", "id": "deepseek", "name": "DeepSeek",
+                "config": {"provider_id": "deepseek", "model": model, "reasoning_effort": null},
+            }),
+            20,
+        )
+        .await;
+    assert_eq!(agent["config"]["model"], model);
+    assert_eq!(agent["config"]["provider_id"], "deepseek");
     let default = workflow.command("default-agent", json!({
         "type": "set_project_default_agent", "project_id": project["id"], "agent_id": agent["id"],
     }), 20).await;
@@ -357,13 +380,12 @@ async fn wf11_real_deepseek_python_hello_world() {
     }), 20).await;
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["current_message_id"], project["root_message_id"]);
-    eprintln!("WF-11: asking real DeepSeek ({model}) via Codex; deadline 600s");
+    eprintln!("WF-11: asking the native DeepSeek Provider ({model}); deadline 600s");
     let run = workflow
         .command(
             "run",
             json!({
-                "type": "send_message", "session_id": session["id"],
-                "expected_version": session["version"], "text": PROMPT,
+                "type": "send_message", "session_id": session["id"], "text": PROMPT,
             }),
             600,
         )
@@ -384,6 +406,8 @@ async fn verify_run(
     assert!(run["error"].is_null(), "{run}");
     assert_eq!(run["agent_id"], agent["id"]);
     assert_eq!(run["agent_revision"], agent["revision"]);
+    assert_eq!(run["provider"]["kind"], "deepseek");
+    assert_eq!(run["config"], agent["config"]);
     let snapshot = workflow.cli("final-snapshot", &["snapshot"], 20).await;
     assert_eq!(
         entity(&snapshot, "projects", &project["id"])["default_agent_id"],
@@ -400,23 +424,29 @@ async fn verify_run(
     let final_session = entity(&snapshot, "sessions", &session["id"]);
     assert!(final_session["active_run_id"].is_null());
     assert_eq!(final_session["current_message_id"], assistant["id"]);
-    assert_eq!(
+    assert!(
         workflow
             .git(&["ls-tree", "-r", "--name-only", "HEAD"])
-            .await,
-        "hello.py\n"
+            .await
+            .is_empty()
     );
     assert_eq!(
         workflow.git(&["rev-list", "--count", "HEAD"]).await.trim(),
-        "2"
+        "1"
     );
     assert_eq!(
-        workflow.git(&["rev-parse", "HEAD^"]).await.trim(),
+        workflow.git(&["rev-parse", "HEAD"]).await.trim(),
         project["base_commit"].as_str().unwrap()
     );
-    let head = workflow.git(&["rev-parse", "HEAD"]).await.trim().to_owned();
-    assert_eq!(assistant["data"]["codex"]["commit_id"], head);
     assert!(workflow.git(&["status", "--porcelain=v1"]).await.is_empty());
+    // Native remote Providers currently return text, not workspace tool effects.
+    // Save the exact model response; never strip fences, repair code or substitute a fixture.
+    let source = assistant["text"].as_str().unwrap();
+    fs::write(directory.join("hello.py"), source).unwrap();
+    assert_eq!(
+        fs::read_to_string(directory.join("hello.py")).unwrap(),
+        source
+    );
     let files = fs::read_dir(&directory)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -448,7 +478,21 @@ async fn verify_run(
         )
         .await;
     assert_eq!(stdout, "Hello, world!\n");
-    assert!(workflow.git(&["status", "--porcelain=v1"]).await.is_empty());
+    assert_eq!(
+        workflow.git(&["status", "--porcelain=v1"]).await,
+        "?? hello.py\n"
+    );
+    finish_report(workflow, project, agent, run, model, &stdout);
+}
+
+fn finish_report(
+    workflow: &mut Workflow,
+    project: &Value,
+    agent: &Value,
+    run: &Value,
+    model: &str,
+    stdout: &str,
+) {
     drop(workflow.daemon.take());
     // Scan durable AIT state and output only after stopping the writer.
     for entry in fs::read_dir(&workflow.root).unwrap() {
@@ -458,10 +502,11 @@ async fn verify_run(
         }
     }
     let report = json!({
-        "workflow": "WF-11", "result": "passed", "provider": "deepseek", "harness": "codex",
+        "workflow": "WF-11", "result": "passed", "provider": "deepseek",
         "model": model, "project_id": project["id"], "default_agent_id": agent["id"],
-        "run_id": run["id"], "run_status": run["status"], "commit": head,
-        "files": ["hello.py"], "stdout": stdout, "logic_verified": true, "worktree_clean": true,
+        "run_id": run["id"], "run_status": run["status"], "base_commit": project["base_commit"],
+        "files": ["hello.py"], "stdout": stdout, "logic_verified": true,
+        "source": "exact assistant response saved by workflow", "git_status": "?? hello.py",
     });
     fs::write(
         workflow.root.join("verification.json"),
