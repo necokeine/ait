@@ -27,6 +27,7 @@
 ## 运维手册
 
 - `operations/reliability-security-observability.md`：数据保留、附件 mark-and-sweep、数据库备份/恢复、可靠性测试矩阵与性能基线。
+- [CLI 用户流程](../workflows/README.md)：逐个用户目标的可执行步骤、可观察结果、失败恢复、当前差距与 CLI 集成测试映射。
 
 配套设计仍保留各自原始评审状态；实现前若与 ADR-001 v4 冲突，以 v4 为准。同号 ADR 来自不同设计 issue，因此目录包含 issue 编号以避免歧义。
 
