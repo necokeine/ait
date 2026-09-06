@@ -1,7 +1,7 @@
 //! OS credential storage and Rig-backed provider operations.
 use crate::{
     LLMClient, LLMClientConfig, LLMProvider,
-    llm::{AssistantContent, Message},
+    llm::{AssistantContent, CompletionRequest, Message},
 };
 use ait_domain::{
     AgentConfiguration, AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderModel,
@@ -67,6 +67,27 @@ async fn discover_models(client: LLMClient) -> Result<Vec<ProviderModel>, Domain
         .collect())
 }
 
+fn text_request(
+    client: &LLMClient,
+    config: &AgentConfiguration,
+    messages: Vec<ProviderMessage>,
+) -> Result<CompletionRequest, DomainError> {
+    let mut history: Vec<_> = messages
+        .into_iter()
+        .map(|message| match message.role.as_str() {
+            "system" => Message::system(message.text),
+            "assistant" => Message::assistant(message.text),
+            _ => Message::user(message.text),
+        })
+        .collect();
+    let current = history.pop().ok_or_else(provider_error)?;
+    let mut request = client.completion_request_with_history(&config.model, history, current);
+    // This port returns text only. A persisted host tool loop must precede any
+    // exposure of function definitions through the gateway.
+    request.tools.clear();
+    Ok(request)
+}
+
 #[async_trait]
 impl AgentProviderGateway for RigProviderGateway {
     async fn store_secret(&self, reference: &str, secret: &str) -> Result<(), DomainError> {
@@ -116,15 +137,7 @@ impl AgentProviderGateway for RigProviderGateway {
         messages: Vec<ProviderMessage>,
     ) -> Result<String, DomainError> {
         let client = client(provider, credential_ref).await?;
-        let mut request = client.completion_request(&config.model, "Continue");
-        request.chat_history = messages
-            .into_iter()
-            .map(|message| match message.role.as_str() {
-                "system" => Message::system(message.text),
-                "assistant" => Message::assistant(message.text),
-                _ => Message::user(message.text),
-            })
-            .collect();
+        let mut request = text_request(&client, config, messages)?;
         if let Some(effort) = &config.reasoning_effort {
             request.additional_params = Some(match provider.kind {
                 ProviderKind::OpenAI => serde_json::json!({"reasoning": {"effort": effort}}),
@@ -147,5 +160,47 @@ impl AgentProviderGateway for RigProviderGateway {
             return Err(provider_error());
         }
         Ok(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ait_tools::DEFAULT_SYSTEM_PROMPT;
+
+    #[test]
+    fn gateway_preserves_history_after_default_system_without_advertising_tools() {
+        let config = AgentConfiguration {
+            model: "fixture-model".into(),
+            ..Default::default()
+        };
+        for provider in [LLMProvider::DeepSeek, LLMProvider::OpenAI] {
+            let client = LLMClient::new(LLMClientConfig::new(provider, "fixture-key")).unwrap();
+            let messages = [
+                ("system", "Project instructions"),
+                ("user", "First"),
+                ("assistant", "Answer"),
+                ("user", "Current {{literal}}"),
+            ]
+            .into_iter()
+            .map(|(role, text)| ProviderMessage {
+                role: role.into(),
+                text: text.into(),
+            })
+            .collect();
+            let request = text_request(&client, &config, messages).unwrap();
+            assert!(request.tools.is_empty());
+            assert_eq!(
+                request.chat_history,
+                vec![
+                    Message::system(DEFAULT_SYSTEM_PROMPT),
+                    Message::system("Project instructions"),
+                    Message::user("First"),
+                    Message::assistant("Answer"),
+                    Message::user("Current {{literal}}"),
+                ]
+            );
+            assert!(text_request(&client, &config, vec![]).is_err());
+        }
     }
 }

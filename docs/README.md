@@ -13,6 +13,8 @@
 
 ## 配套设计
 
+- `decisions/adr-011-default-api-tool-set.md`：默认 System Prompt、参考 DeepSeek Harness 的工具定义、模型覆盖与 API 请求组装；工具执行仍归宿主。
+
 - `decisions/NEC-148/adr-001-reliability-portability-baseline.md`：结构化可观测性、无凭证归档、SQLite 备份与性能基线。
 - `decisions/NEC-152/local-api-cli-vertical-slice.md`：本地 HTTP/CLI 纵向切片、SSE cursor 重连、SQLite 恢复与可执行验收说明。
 - `decisions/NEC-147/adr-001-message-session-store-boundaries.md`：MessageStore 初始化与 append-only 边界、独立 SessionStore，以及 append 后 CAS 的失败保留语义。

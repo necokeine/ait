@@ -5,6 +5,7 @@
 
 use std::{fmt, time::Duration};
 
+use ait_tools::ToolSetRegistry;
 use rig::{
     client::{CompletionClient, ModelListingClient},
     completion::{CompletionError, CompletionModel},
@@ -18,6 +19,9 @@ pub use rig::{
 };
 
 use crate::{AdapterError, AdapterErrorKind};
+
+mod deepseek_http;
+use deepseek_http::DeepSeekHttp;
 
 /// Provider selected explicitly when constructing a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +42,8 @@ pub struct LLMClientConfig {
     pub base_url: Option<String>,
     /// Total HTTP request timeout, including reading the response body.
     pub timeout: Duration,
+    /// Shared default prompt/tools and exact provider/model overrides.
+    pub tool_sets: ToolSetRegistry,
 }
 
 impl LLMClientConfig {
@@ -49,6 +55,7 @@ impl LLMClientConfig {
             api_key: api_key.into(),
             base_url: None,
             timeout: Duration::from_mins(2),
+            tool_sets: ToolSetRegistry::default(),
         }
     }
 }
@@ -61,6 +68,7 @@ impl fmt::Debug for LLMClientConfig {
             .field("api_key", &"[REDACTED]")
             .field("base_url", &self.base_url.as_ref().map(|_| "[CONFIGURED]"))
             .field("timeout", &self.timeout)
+            .field("tool_sets", &"[CONFIGURED]")
             .finish()
     }
 }
@@ -68,7 +76,7 @@ impl fmt::Debug for LLMClientConfig {
 #[derive(Clone)]
 enum RigClient {
     OpenAI(openai::Client),
-    DeepSeek(deepseek::Client),
+    DeepSeek(deepseek::Client<DeepSeekHttp>),
 }
 
 /// A reusable Rig client for either `OpenAI` or `DeepSeek`.
@@ -95,6 +103,7 @@ enum RigClient {
 #[derive(Clone)]
 pub struct LLMClient {
     inner: RigClient,
+    tool_sets: ToolSetRegistry,
 }
 
 impl fmt::Debug for LLMClient {
@@ -160,12 +169,15 @@ impl LLMClient {
                 deepseek::Client::builder()
                     .api_key(config.api_key)
                     .base_url(base_url)
-                    .http_client(http)
+                    .http_client(DeepSeekHttp(http))
                     .build()
                     .map_err(|_| invalid("could not build DeepSeek client"))?,
             ),
         };
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            tool_sets: config.tool_sets,
+        })
     }
 
     /// Returns the provider selected at construction.
@@ -197,12 +209,35 @@ impl LLMClient {
         })
     }
 
-    /// Builds a Rig request without sending it. Callers may edit its history,
-    /// tools, token limit and provider parameters before passing it to `complete`.
+    /// Builds a request with the selected system prompt first, followed by the
+    /// supplied message, and a separate default function catalog. Nothing runs.
+    /// Callers may edit the request before passing it to `complete`; a tool loop
+    /// must provide executors for the tools it exposes. Use `text_request` when
+    /// the caller can consume only text.
     #[must_use]
     pub fn completion_request(&self, model: &str, prompt: impl Into<Message>) -> CompletionRequest {
+        self.completion_request_with_history(model, Vec::new(), prompt)
+    }
+
+    /// Assembles system instructions, existing history, then the current message.
+    /// History is moved verbatim and user text is never interpolated into the
+    /// system prompt. Existing project system snapshots remain in history.
+    #[must_use]
+    pub fn completion_request_with_history(
+        &self,
+        model: &str,
+        history: Vec<Message>,
+        prompt: impl Into<Message>,
+    ) -> CompletionRequest {
         let prompt = prompt.into();
-        match &self.inner {
+        let profile = self.tool_sets.resolve(
+            match self.provider() {
+                LLMProvider::OpenAI => "openai",
+                LLMProvider::DeepSeek => "deepseek",
+            },
+            model,
+        );
+        let mut request = match &self.inner {
             RigClient::OpenAI(client) => client
                 .completion_model(model)
                 .completion_request(prompt)
@@ -213,7 +248,30 @@ impl LLMClient {
                 .completion_request(prompt)
                 .model(model)
                 .build(),
-        }
+        };
+        request.chat_history.splice(
+            0..0,
+            std::iter::once(Message::system(profile.system_prompt())).chain(history),
+        );
+        request.tools = profile
+            .tools()
+            .iter()
+            .map(|tool| rig::completion::ToolDefinition {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+            })
+            .collect();
+        request
+    }
+
+    /// Builds a text-only request with the same system prompt and no tools.
+    /// Used by hosts that do not yet implement tool execution or rich results.
+    #[must_use]
+    pub fn text_request(&self, model: &str, prompt: impl Into<Message>) -> CompletionRequest {
+        let mut request = self.completion_request(model, prompt);
+        request.tools.clear();
+        request
     }
 
     /// Sends one non-streaming API call and preserves Rig content, usage and metadata.
@@ -246,9 +304,7 @@ impl LLMClient {
     /// # Errors
     /// Returns a completion error or a protocol error when no text was returned.
     pub async fn prompt(&self, model: &str, prompt: &str) -> Result<String, AdapterError> {
-        let response = self
-            .complete(self.completion_request(model, prompt))
-            .await?;
+        let response = self.complete(self.text_request(model, prompt)).await?;
         let mut text = String::new();
         let mut has_text = false;
         for content in response.choice {
