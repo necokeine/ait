@@ -224,6 +224,9 @@ pub struct MessageView {
     pub data: Option<Value>,
 }
 
+/// Run result or query snapshot; this DTO never requests execution.
+/// New actively executed Runs return their final state. Queries and deferred
+/// Manual/approval modes can expose an intermediate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunView {
     pub id: String,

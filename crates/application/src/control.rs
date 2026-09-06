@@ -50,6 +50,23 @@ struct ForkSessionInput {
     reasoning_effort: Option<ReasoningEffort>,
 }
 
+/// Internal continuation produced by a command, consumed only after its state
+/// is committed. A public `RunView` is a result snapshot, never an execution signal.
+enum CommandOutcome {
+    Ready(Box<CommandResult>),
+    ExecuteWorkspaceRun(String),
+}
+
+impl CommandOutcome {
+    fn for_new_run(run: RunView, mode: AgentMode) -> Self {
+        if mode == AgentMode::Codex {
+            Self::ExecuteWorkspaceRun(run.id)
+        } else {
+            Self::Ready(Box::new(CommandResult::Run(run)))
+        }
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -125,12 +142,6 @@ impl LocalControlService {
     /// Executes one versioned command and returns a stable response envelope.
     pub async fn execute(&self, command: Command) -> Response {
         match self.try_execute(command).await {
-            Ok(CommandResult::Run(run)) if run.status == "queued" => {
-                match self.execute_workspace_agent(run).await {
-                    Ok(result) => Response::success(CommandResult::Run(result)),
-                    Err(error) => Response::failure(error),
-                }
-            }
             Ok(result) => Response::success(result),
             Err(error) => Response::failure(error),
         }
@@ -282,13 +293,15 @@ impl LocalControlService {
         ))
     }
 
-    async fn execute_workspace_agent(&self, run: RunView) -> Result<RunView, ApiError> {
+    async fn execute_workspace_agent(&self, run_id: &str) -> Result<RunView, ApiError> {
         let snapshot = self.store.load().await.map_err(store_error)?;
         let state = decode_state(snapshot.value)?;
+        let run = state
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let agent = require_agent(&state, &run.agent_id)?.clone();
-        if agent.mode != AgentMode::Codex {
-            return Ok(run);
-        }
         let project = state
             .projects
             .iter()
@@ -472,6 +485,18 @@ impl LocalControlService {
             return read_command(state, snapshot.revision, command);
         }
 
+        // Commit retries may reapply state changes, but never repeat an external
+        // Agent invocation. Only the command that created the Run can request it.
+        match self.commit_command(command).await? {
+            CommandOutcome::Ready(result) => Ok(*result),
+            CommandOutcome::ExecuteWorkspaceRun(run_id) => self
+                .execute_workspace_agent(&run_id)
+                .await
+                .map(CommandResult::Run),
+        }
+    }
+
+    async fn commit_command(&self, command: Command) -> Result<CommandOutcome, ApiError> {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
@@ -510,12 +535,16 @@ fn read_command(state: State, revision: u64, command: Command) -> Result<Command
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep exhaustive command dispatch together"
+)]
 fn apply_command(
     state: &mut State,
     command: Command,
     user_git_commit: Option<&str>,
-) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    match command {
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
+    let (result, events) = match command {
         Command::RegisterProject {
             id,
             name,
@@ -552,14 +581,16 @@ fn apply_command(
             text,
             expected_version,
             reasoning_effort,
-        } => send_message(
-            state,
-            session_id,
-            text,
-            expected_version,
-            reasoning_effort,
-            require_user_git_commit(user_git_commit)?,
-        ),
+        } => {
+            return send_message(
+                state,
+                session_id,
+                text,
+                expected_version,
+                reasoning_effort,
+                require_user_git_commit(user_git_commit)?,
+            );
+        }
         Command::ForkSession {
             id,
             project_id,
@@ -567,18 +598,20 @@ fn apply_command(
             at_message_id,
             text,
             reasoning_effort,
-        } => fork_session(
-            state,
-            ForkSessionInput {
-                id,
-                project_id,
-                agent_id,
-                at_message_id,
-                text,
-                reasoning_effort,
-            },
-            require_user_git_commit(user_git_commit)?,
-        ),
+        } => {
+            return fork_session(
+                state,
+                ForkSessionInput {
+                    id,
+                    project_id,
+                    agent_id,
+                    at_message_id,
+                    text,
+                    reasoning_effort,
+                },
+                require_user_git_commit(user_git_commit)?,
+            );
+        }
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
         Command::CreateCron {
             id,
@@ -602,7 +635,7 @@ fn apply_command(
         Command::TriggerCron {
             cron_id,
             scheduled_at,
-        } => trigger_cron(state, &cron_id, scheduled_at),
+        } => return trigger_cron(state, &cron_id, scheduled_at),
         Command::ImportProject { archive, workdir } => import_project(state, archive, &workdir),
         Command::SaveSettings {
             expected_revision,
@@ -613,7 +646,8 @@ fn apply_command(
         | Command::GetRun { .. }
         | Command::ExportProject { .. }
         | Command::GetSettings => unreachable!("read command routed to write path"),
-    }
+    }?;
+    Ok((CommandOutcome::Ready(Box::new(result)), events))
 }
 
 fn set_project_default_agent(
@@ -644,7 +678,7 @@ fn fork_session(
     state: &mut State,
     input: ForkSessionInput,
     git_commit: &str,
-) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     let (_, mut events) = create_session(
         state,
         input.id.clone(),
@@ -1080,7 +1114,7 @@ fn send_message(
     expected_version: Option<u64>,
     reasoning_effort: Option<ReasoningEffort>,
     git_commit: &str,
-) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     if text.trim().is_empty() {
         return Err(error(
             ErrorCode::InvalidMessageRole,
@@ -1142,11 +1176,9 @@ fn send_message(
         error: None,
     };
     state.runs.push(run);
-    let run = execute_run(state, &run_id, &agent);
-    Ok((
-        CommandResult::Run(run.clone()),
-        vec![pending("run.updated", Some(run_id), &run)],
-    ))
+    let run = apply_run_mode(state, &run_id, &agent);
+    let event = pending("run.updated", Some(run_id), &run);
+    Ok((CommandOutcome::for_new_run(run, agent.mode), vec![event]))
 }
 
 fn validate_reasoning_effort(
@@ -1173,7 +1205,8 @@ fn validate_reasoning_effort(
     Ok(())
 }
 
-fn execute_run(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
+/// Applies the local mode's state changes without invoking an external Agent.
+fn apply_run_mode(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
     let index = state
         .runs
         .iter()
@@ -1450,11 +1483,14 @@ fn trigger_cron(
     state: &mut State,
     cron_id: &str,
     scheduled_at: i64,
-) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     if let Some(existing) = state.runs.iter().find(|run| {
         run.cron_id.as_deref() == Some(cron_id) && run.scheduled_at == Some(scheduled_at)
     }) {
-        return Ok((CommandResult::Run(existing.clone()), Vec::new()));
+        return Ok((
+            CommandOutcome::Ready(Box::new(CommandResult::Run(existing.clone()))),
+            Vec::new(),
+        ));
     }
     let cron = state
         .crons
@@ -1479,11 +1515,9 @@ fn trigger_cron(
         status: "queued".into(),
         error: None,
     });
-    let run = execute_run(state, &run_id, &agent);
-    Ok((
-        CommandResult::Run(run.clone()),
-        vec![pending("cron.run_triggered", Some(run_id), &run)],
-    ))
+    let run = apply_run_mode(state, &run_id, &agent);
+    let event = pending("cron.run_triggered", Some(run_id), &run);
+    Ok((CommandOutcome::for_new_run(run, agent.mode), vec![event]))
 }
 
 fn export_project(

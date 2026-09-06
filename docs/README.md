@@ -23,6 +23,8 @@
 - `decisions/NEC-174/adr-002-codex-run-reasoning-effort.md`：Codex 推理强度作为 Run 级固定覆盖值的传递、校验与桌面能力投影边界。
 - `decisions/NEC-176/adr-005-session-naming-and-generated-metadata.md`：Session 手工命名、首次交互临时标题与只读 AI 检索元数据生成。
 - `decisions/adr-006-project-git-provenance.md`：Project 初始 Git 基线、可选远端仓库地址，以及 human user Message 的干净 HEAD 快照约束。
+- `decisions/adr-007-rig-llm-client.md`：agent-adapters 内 Rig LLMClient 的配置、模型查询、单次调用和凭证/SDK 类型边界。
+- `decisions/adr-008-control-command-execution.md`：Control 命令内部完成 Run 执行，结果 DTO 与执行指令分离，以及查询/Cron 重放的无执行副作用边界。
 
 ## 运维手册
 
