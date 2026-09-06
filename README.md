@@ -28,6 +28,9 @@ daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/regist
 同一组 API 调用 application service。完整路由表见
 `docs/decisions/NEC-166/entity-operation-http-api.md`。
 
+按用户目标组织的操作步骤、失败恢复和当前行为差距见 [CLI 用户流程](workflows/README.md)。
+对应验收测试运行 `cargo test -p ait-cli --test workflows`，覆盖真实 CLI 到 HTTP/SQLite 的完整路径。
+
 Project 的无凭证 JSON 归档使用 `ait-cli export` / `ait-cli import`；结构化指标位于
 `GET /v1/metric/list`。备份恢复、数据保留、附件清理与性能基准见
 `docs/operations/reliability-security-observability.md`。
