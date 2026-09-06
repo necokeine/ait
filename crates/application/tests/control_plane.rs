@@ -403,6 +403,10 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
 
 #[tokio::test]
 async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     let temporary = TempDir::new().unwrap();
     let database = temporary.path().join("ait.sqlite3");
     let project_dir = temporary.path().join("project");
@@ -527,6 +531,20 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
     assert!(!remainder.is_empty());
     assert!(remainder[0].cursor > first_page.last().unwrap().cursor);
 
+    let CommandResult::Workspace(before_restart) = run(&service, Command::Snapshot).await else {
+        panic!()
+    };
+    let finished_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    assert!(
+        before_restart
+            .messages
+            .iter()
+            .all(|message| { (started_at..=finished_at).contains(&message.created_at) })
+    );
+
     drop(service);
     let recovered =
         LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
@@ -535,6 +553,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
         _ => panic!(),
     };
     assert_eq!(workspace.runs.len(), 2);
+    assert_eq!(workspace.messages, before_restart.messages);
     assert_eq!(workspace.sessions.len(), 2);
     assert!(
         workspace
@@ -755,6 +774,12 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     assert_eq!(archive.sessions[0].version, 2);
     assert!(archive.sessions[0].active_run_id.is_none());
     assert_eq!(archive.messages.len(), 2);
+    assert!(
+        archive
+            .messages
+            .iter()
+            .all(|message| message.created_at > 0)
+    );
 
     let target = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
     run(

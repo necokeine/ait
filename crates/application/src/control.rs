@@ -924,6 +924,7 @@ fn register_project(
         role: "system".into(),
         kind: "standard".into(),
         text: Some("AIT project instructions".into()),
+        created_at: now(),
         git_commit: None,
         data: None,
     });
@@ -1813,6 +1814,7 @@ fn message(
         text,
         git_commit: git_commit.map(str::to_owned),
         data,
+        created_at: now(),
     }
 }
 

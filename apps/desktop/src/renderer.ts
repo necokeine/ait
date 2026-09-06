@@ -1,6 +1,6 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
-import { messageAuthor } from "./messages.js";
+import { bindCodeBlockActions, renderMessage, renderMessageTime } from "./message-renderer.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
 import { sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
@@ -95,6 +95,7 @@ async function initialize(): Promise<void> {
 }
 
 function bindInteractions(): void {
+  bindCodeBlockActions(conversation, showToast);
   $("#sidebar-toggle").addEventListener("click", () => appShell.classList.toggle("sidebar-collapsed"));
   $("#tree-toggle").addEventListener("click", toggleTree);
   $("#tree-close").addEventListener("click", () => appShell.classList.add("tree-collapsed"));
@@ -322,10 +323,14 @@ function renderConversation(): void {
     snapshot.messages.filter((message) => message.projectId === session.projectId),
     session.currentMessageId,
   );
-  conversation.innerHTML = messages.map(renderMessage).join("");
+  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("");
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
-    item.addEventListener("click", () => selectTreeNode(item.dataset.messageId, false));
+    item.addEventListener("click", (event) => {
+      if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
+      selectTreeNode(item.dataset.messageId, false);
+    });
     item.addEventListener("keydown", (event) => {
+      if (event.target !== item) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         selectTreeNode(item.dataset.messageId, false);
@@ -335,22 +340,6 @@ function renderConversation(): void {
   requestAnimationFrame(() => {
     conversationScroll.scrollTop = conversationScroll.scrollHeight;
   });
-}
-
-function renderMessage(message: DesktopMessage): string {
-  const author = messageAuthor(message, snapshot?.agents ?? []);
-  const icon = message.role === "assistant" ? author.slice(0, 2).toUpperCase() : message.role === "user" ? "U" : "S";
-  const content = message.parts.map((part) => {
-    if (part.type === "text") return `<div class="message-content">${escapeHtml(part.text)}</div>`;
-    if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
-    if (part.type === "file") return `<div class="tool-card"><header><span>＋</span><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
-    if (part.type === "structured") return `<div class="tool-card"><header><span>{ }</span><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(part.value)}</pre></div>`;
-    return '<div class="message-content">Content redacted</div>';
-  }).join("");
-  return `<article class="message ${message.role}${message.id === selectedNodeId ? " is-selected" : ""}" data-message-id="${escapeAttribute(message.id)}" role="button" tabindex="0" aria-pressed="${message.id === selectedNodeId}">
-    <div class="message-avatar">${escapeHtml(icon)}</div>
-    <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong><time>${formatTime(message.createdAt)}</time></div>${content}</div>
-  </article>`;
 }
 
 function renderTree(): void {
@@ -374,7 +363,7 @@ function renderTree(): void {
       <div class="tree-node${node.selected ? " is-selected" : ""}${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" aria-selected="${node.selected}" tabindex="${node.selected ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}">
         <span class="tree-marker" aria-hidden="true"></span>
         <span class="tree-role">${roleLetter(node.message.role)}</span>
-        <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${formatTime(node.message.createdAt)}</small></span>
+        <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${renderMessageTime(node.message.createdAt)}</small></span>
         ${node.branches.length > 0 ? `<button class="tree-branch-trigger" type="button" aria-label="Choose branch after this message" aria-expanded="${pickerOpen}">⑂ ${node.branches.length}</button>` : ""}
       </div>
       ${branchPicker}
@@ -422,7 +411,7 @@ function syncMessageSelection(): void {
   conversation.querySelectorAll<HTMLElement>(".message").forEach((message) => {
     const selected = message.dataset.messageId === selectedNodeId;
     message.classList.toggle("is-selected", selected);
-    message.setAttribute("aria-pressed", String(selected));
+    message.setAttribute("aria-current", String(selected));
   });
 }
 
@@ -1058,16 +1047,6 @@ function relativeTime(timestamp: number): string {
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`;
   return `${Math.floor(delta / 86_400_000)}d`;
-}
-
-function formatTime(timestamp: number): string {
-  if (timestamp <= 0) return "—";
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(timestamp);
-}
-
-function prettyJson(value: string): string {
-  try { return JSON.stringify(JSON.parse(value), null, 2); }
-  catch { return value; }
 }
 
 function humanize(value: string): string {

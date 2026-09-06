@@ -350,7 +350,7 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
                         kind,
                         url: Some("https://example.com/v1".into()),
                         models: vec![ProviderModel {
-                            id: "gpt-5.6-codex".into(),
+                            id: "codex-named-test-model".into(),
                             name: "Codex".into(),
                             reasoning_efforts: vec![],
                         }],
@@ -361,7 +361,7 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
             .await;
             AgentConfiguration {
                 provider_id: "api".into(),
-                model: "gpt-5.6-codex".into(),
+                model: "codex-named-test-model".into(),
                 reasoning_effort: None,
             }
         };
