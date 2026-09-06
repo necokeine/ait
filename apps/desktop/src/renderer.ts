@@ -26,6 +26,8 @@ const treeList = $("#tree-list");
 const treeScroll = $<HTMLElement>("#tree-scroll");
 const nodeDetails = $("#node-details");
 const messageInput = $<HTMLTextAreaElement>("#message-input");
+const composerConfigTrigger = $<HTMLButtonElement>("#composer-config-trigger");
+const composerConfigPanel = $<HTMLElement>("#composer-config-panel");
 const composerAgent = $<HTMLSelectElement>("#composer-agent");
 const composerProvider = $<HTMLSelectElement>("#composer-provider");
 const composerModel = $<HTMLSelectElement>("#composer-model");
@@ -47,6 +49,7 @@ let configuringProjectId: string | undefined;
 let renamingSessionId: string | undefined;
 let viewedTreeHeadId: string | undefined;
 let branchPickerNodeId: string | undefined;
+let configuringSessionId: string | undefined;
 let timeline: TimelineNode[] = [];
 const pendingSessions = new Set<string>();
 let settings: SettingsResponse | undefined;
@@ -98,6 +101,17 @@ function bindInteractions(): void {
   $("#rename-session-cancel").addEventListener("click", closeRenameSessionDialog);
   $("#session-rename-action").addEventListener("click", openRenameSessionDialog);
   $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
+  composerConfigTrigger.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleComposerConfig();
+  });
+  $("#composer-config-close").addEventListener("click", () => composerConfigPanel.hidePopover());
+  composerConfigPanel.addEventListener("beforetoggle", (event) => {
+    const open = (event as ToggleEvent).newState === "open";
+    composerConfigTrigger.setAttribute("aria-expanded", String(open));
+    if (!open) configuringSessionId = undefined;
+  });
+  window.addEventListener("resize", () => composerConfigPanel.hidePopover());
   composerAgent.addEventListener("change", () => void changeSessionAgent());
   composerReasoning.addEventListener("change", () => void changeSessionConfig(false));
   composerModel.addEventListener("change", () => void changeSessionConfig(true));
@@ -245,18 +259,21 @@ function renderAgents(): void {
   const current = currentSession();
   composerAgent.innerHTML = snapshot.agents
     .filter((agent) => agent.enabled && (!agent.ownerSessionId || agent.id === current?.agentId))
-    .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agentLabel(agent))}</option>`)
+    .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agent.ownerSessionId ? "Custom configuration" : agentLabel(agent))}</option>`)
     .join("");
   composerAgent.disabled = !current || current.active;
   const agent = snapshot.agents.find((candidate) => candidate.id === current?.agentId);
-  $("#agent-chip").textContent = agent ? agentLabel(agent) : "No Agent";
+  const label = agent ? agentLabel(agent) : "No Agent";
+  $("#agent-chip").textContent = label;
+  $("#composer-config-label").textContent = label;
+  composerConfigTrigger.title = `Configure Agent: ${label}`;
   composerProvider.innerHTML = snapshot.providers.filter((p) => providerChoices([p]).length > 0 || p.id === agent?.config.provider_id).map((p) => `<option value="${escapeAttribute(p.id)}"${p.id === agent?.config.provider_id ? " selected" : ""}>${escapeHtml(p.name)}</option>`).join("");
   const provider = snapshot.providers.find((item) => item.id === agent?.config.provider_id);
   composerModel.innerHTML = provider?.models.map((model) => `<option value="${escapeAttribute(model.id)}"${model.id === agent?.config.model ? " selected" : ""}>${escapeHtml(model.name)}</option>`).join("") ?? "";
   const efforts = agent?.supportedReasoningEfforts ?? [];
   composerReasoning.innerHTML = `<option value="">Reasoning: Default</option>` + efforts
     .map((effort) => `<option value="${escapeAttribute(effort)}"${effort === agent?.config.reasoning_effort ? " selected" : ""}>Reasoning: ${escapeHtml(humanize(effort))}</option>`).join("");
-  composerReasoning.classList.toggle("is-hidden", efforts.length === 0);
+  $("#composer-reasoning-control").classList.toggle("is-hidden", efforts.length === 0);
   updateComposerState();
 }
 
@@ -524,6 +541,21 @@ async function renameSession(): Promise<void> {
   }
 }
 
+function toggleComposerConfig(): void {
+  if (composerConfigPanel.matches(":popover-open")) {
+    composerConfigPanel.hidePopover();
+    return;
+  }
+  if (composerConfigTrigger.disabled) return;
+  configuringSessionId = currentSession()?.id;
+  composerConfigPanel.showPopover();
+  const trigger = composerConfigTrigger.getBoundingClientRect();
+  const panel = composerConfigPanel.getBoundingClientRect();
+  composerConfigPanel.style.left = `${Math.max(16, Math.min(trigger.left, window.innerWidth - panel.width - 16))}px`;
+  composerConfigPanel.style.top = `${Math.max(16, trigger.top - panel.height - 8)}px`;
+  composerAgent.focus();
+}
+
 async function changeSessionAgent(): Promise<void> {
   const session = currentSession();
   const agentId = composerAgent.value;
@@ -549,8 +581,12 @@ async function changeSessionAgent(): Promise<void> {
 function updateComposerState(): void {
   const session = currentSession();
   const busy = !!session && (session.active || pendingSessions.has(session.id));
+  if (!session || session.active || (configuringSessionId && configuringSessionId !== session.id)) {
+    composerConfigPanel.hidePopover();
+  }
   sendButton.disabled = !session || messageInput.value.trim().length === 0 || busy;
   messageInput.disabled = !session || busy;
+  composerConfigTrigger.disabled = !session || busy;
   composerAgent.disabled = !session || busy;
   composerModel.disabled = !session || busy;
   composerProvider.disabled = !session || busy;

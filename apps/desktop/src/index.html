@@ -74,11 +74,28 @@
               <div class="composer-toolbar">
                 <div class="composer-tools">
                   <button class="tool-button" type="button" aria-label="Attach file">＋</button>
-                  <button class="mode-button" type="button">Local <span>⌄</span></button>
-                  <select id="composer-agent" class="agent-select" aria-label="Agent"></select>
-                  <select id="composer-provider" aria-label="Provider"></select>
-                <select id="composer-model" aria-label="Model"></select>
-                <select id="composer-reasoning" class="agent-select reasoning-select is-hidden" aria-label="Reasoning effort"></select>
+                  <button id="composer-config-trigger" class="composer-config-trigger" type="button" popovertarget="composer-config-panel" aria-haspopup="dialog" aria-expanded="false" aria-controls="composer-config-panel" disabled>
+                    <span id="composer-config-label">No Agent</span><span class="select-chevron" aria-hidden="true"></span>
+                  </button>
+                  <div id="composer-config-panel" class="composer-config-panel" popover="auto" role="dialog" aria-labelledby="composer-config-title">
+                    <header>
+                      <strong id="composer-config-title">Agent configuration</strong>
+                      <button id="composer-config-close" class="small-icon-button" type="button" aria-label="Close Agent configuration">×</button>
+                    </header>
+                    <label class="composer-config-field">Saved Agent
+                      <span class="composer-select-wrap"><select id="composer-agent"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
+                    <label class="composer-config-field">Provider
+                      <span class="composer-select-wrap"><select id="composer-provider"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
+                    <label class="composer-config-field">Model
+                      <span class="composer-select-wrap"><select id="composer-model"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
+                    <p>Choose a saved Agent or customize this Session.</p>
+                  </div>
+                  <span id="composer-reasoning-control" class="composer-select-wrap reasoning-control is-hidden">
+                    <select id="composer-reasoning" class="reasoning-select" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span>
+                  </span>
                 </div>
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>
