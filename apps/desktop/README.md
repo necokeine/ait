@@ -18,8 +18,6 @@ The sidebar keeps every Project and its isolated Session list visible at once. U
 The composer Agent selector is available for every idle Session. Selecting a
 different Agent immediately rebinds that Session with a version check; an
 active Session remains locked to the Agent revision already pinned by its Run.
-Legacy echo-mode profiles are displayed as `Echo · echo` so they cannot be
-confused with the real Codex app-server profile.
 
 ## Packaging
 

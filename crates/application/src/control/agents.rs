@@ -11,7 +11,6 @@ use ait_contracts::ProviderSecret;
 pub(super) fn builtin_providers() -> Vec<AgentProviderView> {
     [
         AgentMode::Codex,
-        AgentMode::Echo,
         AgentMode::Tool,
         AgentMode::Manual,
         AgentMode::ProviderFailure,
@@ -589,6 +588,7 @@ fn domain_error(failure: DomainError) -> ApiError {
 /// Upgrade legacy JSON snapshots in memory; the next atomic commit stores v3.
 pub(super) fn migrate_state(mut value: Value) -> Result<Value, ApiError> {
     if value.get("providers").is_some() {
+        remove_unused_retired_builtins(&mut value);
         return Ok(value);
     }
     let mut providers = builtin_providers();
@@ -640,6 +640,43 @@ pub(super) fn migrate_state(mut value: Value) -> Result<Value, ApiError> {
     }
     value["providers"] = serde_json::to_value(providers).map_err(serialization_error)?;
     Ok(value)
+}
+
+/// Older snapshots persist the whole builtin catalog, including unused adapters.
+/// Retire only unreferenced entries; referenced or custom providers must still
+/// decode normally so unsupported history is never silently dropped or rebound.
+fn remove_unused_retired_builtins(value: &mut Value) {
+    let mut referenced = HashSet::<String>::new();
+    for collection in ["agents", "runs"] {
+        for item in value[collection].as_array().into_iter().flatten() {
+            for id in [
+                item["config"]["provider_id"].as_str(),
+                item["provider"]["id"].as_str(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                referenced.insert(id.into());
+            }
+        }
+    }
+    if let Some(credentials) = value["provider_credentials"].as_object() {
+        referenced.extend(credentials.keys().cloned());
+    }
+    if let Some(providers) = value["providers"].as_array_mut() {
+        providers.retain(|view| {
+            let provider = &view["provider"];
+            let (Some(id), Some(kind)) = (provider["id"].as_str(), provider["kind"].as_str())
+            else {
+                return true;
+            };
+            id != format!("builtin-{kind}")
+                || referenced.contains(id)
+                || provider["url"] != Value::Null
+                || view["has_secret"] != false
+                || serde_json::from_value::<AgentMode>(provider["kind"].clone()).is_ok()
+        });
+    }
 }
 
 pub(super) struct InvocationGuard<'a> {

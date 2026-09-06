@@ -1233,20 +1233,6 @@ fn apply_run_mode(state: &mut State, run_id: &str, agent: &AgentView) -> RunView
                 false,
             ));
         }
-        AgentMode::Echo => {
-            let reply = message(
-                &run.project_id,
-                Some(&run.base_message_id),
-                "assistant",
-                "standard",
-                Some("echo: completed".into()),
-                None,
-                None,
-            );
-            append_output(state, &mut run, reply);
-            run.status = "completed".into();
-            release_session(state, &run);
-        }
         AgentMode::Tool => {
             let tool = message(
                 &run.project_id,

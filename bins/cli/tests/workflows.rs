@@ -9,7 +9,7 @@ use support::{Workspace, entity, events, failure, success};
 async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
     let mut workspace = Workspace::new().await;
     let input = json!({"type": "register_agent", "id": "stdin-agent", "name": "中文\nAgent",
-        "config": {"provider_id": "builtin-echo", "model": "default", "reasoning_effort": null}});
+        "config": {"provider_id": "builtin-tool", "model": "default", "reasoning_effort": null}});
     let agent = success(
         &workspace
             .cli_stdin(&serde_json::to_string_pretty(&input).unwrap())
@@ -94,26 +94,26 @@ async fn wf01_register_project_and_agent() {
     workspace
         .reject(
             json!({
-                "type": "register_agent", "id": "bad", "name": "", "config": { "provider_id": "builtin-echo", "model": "default" }
+                "type": "register_agent", "id": "bad", "name": "", "config": { "provider_id": "builtin-tool", "model": "default" }
             }),
             "INVALID_AGENT_CONFIGURATION",
         )
         .await;
     assert_eq!(workspace.snapshot().await, before);
 
-    let agent = workspace.agent("echo", "echo").await;
+    let agent = workspace.agent("primary", "tool").await;
     let default = workspace
         .command(json!({
-            "type": "set_project_default_agent", "project_id": project["id"], "agent_id": "echo"
+            "type": "set_project_default_agent", "project_id": project["id"], "agent_id": "primary"
         }))
         .await;
-    assert_eq!(default["default_agent_id"], "echo");
+    assert_eq!(default["default_agent_id"], "primary");
     assert_eq!(
         default["revision"],
         project["revision"].as_u64().unwrap() + 1
     );
     let session = workspace
-        .session("main", project["id"].as_str().unwrap(), "echo")
+        .session("main", project["id"].as_str().unwrap(), "primary")
         .await;
     assert_eq!(session["current_message_id"], project["root_message_id"]);
     assert_eq!(session["agent_id"], agent["id"]);
@@ -207,16 +207,16 @@ async fn wf02_send_message_and_inspect_tool_history() {
 async fn wf03_branch_rename_and_rebind_session() {
     let mut workspace = Workspace::new().await;
     let project = workspace.project("project").await;
-    workspace.agent("echo", "echo").await;
+    workspace.agent("primary", "tool").await;
     workspace.agent("tool", "tool").await;
-    workspace.session("main", "project", "echo").await;
+    workspace.session("main", "project", "primary").await;
     let run = workspace.send("main", 1, "original").await;
     let before = workspace.snapshot().await;
     let original = entity(&before, "sessions", &json!("main")).clone();
     let branch = workspace
         .command(json!({
             "type": "create_session", "id": "branch", "project_id": "project",
-            "agent_id": "echo", "at_message_id": run["last_message_id"]
+            "agent_id": "primary", "at_message_id": run["last_message_id"]
         }))
         .await;
     assert_eq!(branch["current_message_id"], run["last_message_id"]);
@@ -244,7 +244,7 @@ async fn wf03_branch_rename_and_rebind_session() {
 
     let fork = workspace
         .command(json!({
-            "type": "fork_session", "id": "fork", "project_id": "project", "agent_id": "echo",
+            "type": "fork_session", "id": "fork", "project_id": "project", "agent_id": "primary",
             "at_message_id": project["root_message_id"], "text": "new direction"
         }))
         .await;
@@ -261,7 +261,7 @@ async fn wf03_branch_rename_and_rebind_session() {
     let other = workspace.project("other").await;
     let before_rejection = workspace.snapshot().await;
     workspace.reject(json!({
-        "type": "fork_session", "id": "invalid-fork", "project_id": "project", "agent_id": "echo",
+        "type": "fork_session", "id": "invalid-fork", "project_id": "project", "agent_id": "primary",
         "at_message_id": other["root_message_id"], "text": "cross-project input"
     }), "SESSION_MESSAGE_PROJECT_MISMATCH").await;
     assert_eq!(workspace.snapshot().await, before_rejection);
@@ -273,7 +273,7 @@ async fn wf03_branch_rename_and_rebind_session() {
 async fn wf04_observe_failure_and_cancel_active_run() {
     let mut workspace = Workspace::new().await;
     workspace.project("project").await;
-    workspace.agent("echo", "echo").await;
+    workspace.agent("primary", "tool").await;
     for (mode, status, code) in [
         ("provider_failure", "failed", "PROVIDER_FAILED"),
         (
@@ -301,7 +301,7 @@ async fn wf04_observe_failure_and_cancel_active_run() {
         workspace
             .reject(
                 json!({
-                    "type": "set_session_agent", "session_id": mode, "agent_id": "echo",
+                    "type": "set_session_agent", "session_id": mode, "agent_id": "primary",
                 }),
                 "SESSION_BUSY",
             )
@@ -332,7 +332,7 @@ async fn wf04_observe_failure_and_cancel_active_run() {
         assert_eq!(workspace.snapshot().await, after);
         let rebound = workspace
             .command(json!({
-                "type": "set_session_agent", "session_id": mode, "agent_id": "echo",
+                "type": "set_session_agent", "session_id": mode, "agent_id": "primary",
             }))
             .await;
         assert_eq!(
@@ -350,13 +350,13 @@ async fn wf04_observe_failure_and_cancel_active_run() {
 async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     let mut workspace = Workspace::new().await;
     let project = workspace.project("project").await;
-    workspace.agent("echo", "echo").await;
-    workspace.session("main", "project", "echo").await;
+    workspace.agent("primary", "tool").await;
+    workspace.session("main", "project", "primary").await;
     let sessions = workspace.snapshot().await["sessions"].clone();
     workspace
         .command(json!({
             "type": "create_cron", "id": "daily", "name": "Daily summary", "project_id": "project",
-            "base_message_id": project["root_message_id"], "agent_id": "echo",
+            "base_message_id": project["root_message_id"], "agent_id": "primary",
             "schedule": "0 9 * * *", "timezone": "Asia/Shanghai"
         }))
         .await;
@@ -390,7 +390,7 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     let after = workspace.snapshot().await;
     assert_eq!(after["sessions"], sessions);
     assert_eq!(after["runs"].as_array().unwrap().len(), 2);
-    assert_eq!(after["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(after["messages"].as_array().unwrap().len(), 7);
     workspace.stop().await;
 }
 
@@ -400,7 +400,7 @@ async fn wf06_replay_events_and_reopen_workspace() {
     let mut workspace = Workspace::new().await;
     assert!(events(&workspace.cli(&["events"]).await).is_empty());
     workspace.project("project").await;
-    workspace.agent("echo", "echo").await;
+    workspace.agent("primary", "tool").await;
     let first = events(&workspace.cli(&["events"]).await);
     assert!(
         first
@@ -408,7 +408,7 @@ async fn wf06_replay_events_and_reopen_workspace() {
             .any(|(_, event)| event["kind"] == "project.registered")
     );
     let cursor = first.last().unwrap().0;
-    workspace.session("main", "project", "echo").await;
+    workspace.session("main", "project", "primary").await;
     let run = workspace.send("main", 1, "persist this").await;
     let all = events(&workspace.cli(&["events", "--after", "0"]).await);
     assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));

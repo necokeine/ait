@@ -7,7 +7,7 @@
 
 ```bash
 ait command "$(jq -nc --arg base "$ROOT_ID" \
-  '{type:"create_cron",id:"cron-daily",name:"每日总结",project_id:"p1",base_message_id:$base,agent_id:"agent-echo",schedule:"0 9 * * *",timezone:"Asia/Shanghai"}')"
+  '{type:"create_cron",id:"cron-daily",name:"每日总结",project_id:"p1",base_message_id:$base,agent_id:"agent-demo",schedule:"0 9 * * *",timezone:"Asia/Shanghai"}')"
 ait command '{"type":"set_cron_enabled","cron_id":"cron-daily","enabled":false}'
 # 预期拒绝：当前未启用
 ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788480000000}'

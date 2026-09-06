@@ -8,7 +8,7 @@
 ```bash
 ait events --after 0 | tee "$WF_ROOT/events.sse"
 CURSOR="$(awk '/^id:/ { cursor=$2 } END { print cursor+0 }' "$WF_ROOT/events.sse")"
-ait command '{"type":"create_session","id":"s-events","project_id":"p1","agent_id":"agent-echo"}'
+ait command '{"type":"create_session","id":"s-events","project_id":"p1","agent_id":"agent-demo"}'
 ait command '{"type":"send_message","session_id":"s-events","text":"保存重启前的状态"}'
 ait events --after "$CURSOR" | tee "$WF_ROOT/events-after.sse"
 ait snapshot > "$WF_ROOT/before-restart.json"

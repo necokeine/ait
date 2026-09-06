@@ -726,6 +726,96 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
 }
 
 #[tokio::test]
+async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let service = LocalControlService::new(store.clone());
+    let _directory = setup(&service, config("high")).await;
+    ok(&service, send("one")).await;
+    let before = view(&service).await;
+    let mut snapshot = store.load().await.unwrap();
+    snapshot.value["providers"]
+        .as_array_mut()
+        .unwrap()
+        .push(retired_builtin());
+    store
+        .commit(snapshot.revision, snapshot.value, vec![])
+        .await
+        .unwrap();
+
+    let reopened = LocalControlService::new(store.clone());
+    let after = view(&reopened).await;
+    assert_eq!(after.providers, before.providers);
+    assert_eq!(after.agents, before.agents);
+    assert_eq!(after.sessions, before.sessions);
+    assert_eq!(after.messages, before.messages);
+    assert_eq!(after.runs, before.runs);
+    ok(
+        &reopened,
+        Command::RenameSession {
+            session_id: "one".into(),
+            name: "Reopened".into(),
+        },
+    )
+    .await;
+    let saved = store.load().await.unwrap();
+    assert_eq!(
+        saved.value["providers"].as_array().unwrap().len(),
+        before.providers.len()
+    );
+    assert_eq!(
+        view(&LocalControlService::new(store)).await.messages,
+        before.messages
+    );
+}
+
+#[tokio::test]
+async fn retired_provider_references_and_custom_connections_are_never_silently_removed() {
+    for reference in ["agent", "run", "credential", "custom", "url"] {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let service = LocalControlService::new(store.clone());
+        let _directory = setup(&service, config("high")).await;
+        ok(&service, send("one")).await;
+        let mut snapshot = store.load().await.unwrap();
+        let mut retired = retired_builtin();
+        match reference {
+            "agent" => {
+                snapshot.value["agents"][0]["config"]["provider_id"] =
+                    serde_json::json!("builtin-retired")
+            }
+            "run" => snapshot.value["runs"][0]["provider"] = retired["provider"].clone(),
+            "credential" => {
+                snapshot.value["provider_credentials"]["builtin-retired"] =
+                    serde_json::json!("opaque-reference")
+            }
+            "custom" => retired["provider"]["id"] = serde_json::json!("custom-retired"),
+            "url" => retired["provider"]["url"] = serde_json::json!("http://localhost:1234"),
+            _ => unreachable!(),
+        }
+        snapshot.value["providers"]
+            .as_array_mut()
+            .unwrap()
+            .push(retired);
+        let saved = store
+            .commit(snapshot.revision, snapshot.value, vec![])
+            .await
+            .unwrap();
+        let rejected = LocalControlService::new(store.clone())
+            .execute(Command::Snapshot)
+            .await;
+        assert_eq!(rejected.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+        assert_eq!(store.load().await.unwrap().value, saved.value);
+    }
+}
+
+fn retired_builtin() -> serde_json::Value {
+    serde_json::json!({
+        "provider": {"id": "builtin-retired", "name": "retired", "kind": "retired",
+            "url": null, "models": [{"id": "default", "name": "Default", "reasoning_efforts": []}]},
+        "has_secret": false,
+    })
+}
+
+#[tokio::test]
 async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(store.clone());
@@ -854,7 +944,7 @@ async fn pessimistic_admission_rejects_a_competing_send_before_the_first_run_is_
     let _directory = setup(
         &service,
         AgentConfiguration {
-            provider_id: "builtin-echo".into(),
+            provider_id: "builtin-manual".into(),
             model: "default".into(),
             reasoning_effort: None,
         },
