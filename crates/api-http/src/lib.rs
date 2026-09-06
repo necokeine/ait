@@ -45,6 +45,10 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/agent/update", post(update_agent))
         .route("/v1/agent-provider/save", post(save_agent_provider))
         .route(
+            "/v1/agent-provider/discover-models",
+            post(discover_provider_models),
+        )
+        .route(
             "/v1/agent-provider/refresh-models",
             post(refresh_provider_models),
         )
@@ -586,6 +590,7 @@ fn correlation_for_command(command: &Command) -> Correlation {
         }
         Command::UpdateAgent { .. }
         | Command::SaveAgentProvider { .. }
+        | Command::DiscoverProviderModels { .. }
         | Command::RefreshProviderModels { .. }
         | Command::RegisterAgent { .. }
         | Command::SetCronEnabled { .. }
@@ -631,6 +636,7 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
         }
         Some(
             CommandResult::AgentProvider(_)
+            | CommandResult::ProviderModels(_)
             | CommandResult::Agent(_)
             | CommandResult::Cron(_)
             | CommandResult::Settings(_)
@@ -647,6 +653,7 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::RegisterAgent { .. } => "register_agent",
         Command::UpdateAgent { .. } => "update_agent",
         Command::SaveAgentProvider { .. } => "save_agent_provider",
+        Command::DiscoverProviderModels { .. } => "discover_provider_models",
         Command::RefreshProviderModels { .. } => "refresh_provider_models",
         Command::SetSessionConfig { .. } => "set_session_config",
         Command::CreateSession { .. } => "create_session",
@@ -723,6 +730,19 @@ async fn save_agent_provider(
 #[serde(deny_unknown_fields)]
 struct RefreshProviderModelsRequest {
     provider_id: String,
+}
+async fn discover_provider_models(
+    State(state): State<ApiState>,
+    Json(request): Json<SaveAgentProviderRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::DiscoverProviderModels {
+            provider: request.provider,
+            secret: request.secret,
+        },
+    )
+    .await
 }
 async fn refresh_provider_models(
     State(state): State<ApiState>,

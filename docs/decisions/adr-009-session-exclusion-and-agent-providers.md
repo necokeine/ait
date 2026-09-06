@@ -45,6 +45,8 @@ Codex 沿用主机登录，不接受 API secret。远程 URL 必须为不含用�
 
 ## API 与桌面端
 
+桌面入口与发现/保存分离流程现由 [ADR-010](adr-010-provider-discovery-and-agents-page.md) 修订；下文保留最初实现记录。
+
 | 操作 | 请求字段 |
 | --- | --- |
 | `POST /v1/agent-provider/save` | `provider: {id,name,kind,url,models}`, `secret?` |

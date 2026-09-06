@@ -16,6 +16,12 @@ pub trait AgentProviderGateway: Send + Sync {
         provider: &AgentProvider,
         credential_ref: &str,
     ) -> Result<Vec<ProviderModel>, DomainError>;
+    /// Preview models using an unsaved credential, without writing it to storage.
+    async fn list_models_with_secret(
+        &self,
+        provider: &AgentProvider,
+        secret: &str,
+    ) -> Result<Vec<ProviderModel>, DomainError>;
     /// Invoke one LLM turn against the fixed Agent configuration.
     async fn complete(
         &self,

@@ -38,6 +38,11 @@ pub enum Command {
         #[serde(default)]
         secret: Option<ProviderSecret>,
     },
+    DiscoverProviderModels {
+        provider: AgentProvider,
+        #[serde(default)]
+        secret: Option<ProviderSecret>,
+    },
     RefreshProviderModels {
         provider_id: String,
     },
@@ -262,6 +267,7 @@ pub enum CommandResult {
     Project(ProjectView),
     Agent(AgentView),
     AgentProvider(AgentProviderView),
+    ProviderModels(Vec<ProviderModel>),
     Session(SessionView),
     Run(RunView),
     Cron(CronView),

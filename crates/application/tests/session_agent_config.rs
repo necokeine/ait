@@ -347,6 +347,31 @@ impl AgentProviderGateway for Gateway {
             },
         ])
     }
+    async fn list_models_with_secret(
+        &self,
+        _: &AgentProvider,
+        secret: &str,
+    ) -> Result<Vec<ProviderModel>, DomainError> {
+        if secret == "invalid-preview-secret" {
+            return Err(DomainError::invariant(
+                ErrorCode::ProviderFailed,
+                "model discovery failed",
+            ));
+        }
+        assert!(!secret.is_empty());
+        Ok(vec![
+            ProviderModel {
+                id: "chat".into(),
+                name: "Chat".into(),
+                reasoning_efforts: Vec::new(),
+            },
+            ProviderModel {
+                id: "new".into(),
+                name: "New".into(),
+                reasoning_efforts: Vec::new(),
+            },
+        ])
+    }
     async fn complete(
         &self,
         _: &AgentProvider,
@@ -361,6 +386,122 @@ impl AgentProviderGateway for Gateway {
         ));
         Ok("API response".into())
     }
+}
+
+#[tokio::test]
+async fn discovery_previews_draft_credentials_without_saving_or_enabling_models() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let gateway = Arc::new(Gateway::default());
+    let service = LocalControlService::new(store.clone()).with_provider_gateway(gateway.clone());
+    let mut provider = AgentProvider {
+        id: "preview".into(),
+        name: "Preview".into(),
+        kind: AgentMode::OpenAI,
+        url: Some("https://example.com/v1".into()),
+        models: Vec::new(),
+    };
+    let secret = "draft-only-secret-marker";
+    let before = store.load().await.unwrap();
+    let command = Command::DiscoverProviderModels {
+        provider: provider.clone(),
+        secret: Some(ProviderSecret(secret.into())),
+    };
+    assert!(!format!("{command:?}").contains(secret));
+    let result = ok(&service, command).await;
+    assert!(!serde_json::to_string(&result).unwrap().contains(secret));
+    let CommandResult::ProviderModels(models) = result else {
+        panic!()
+    };
+    assert_eq!(
+        models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        ["chat", "new"]
+    );
+    let after = store.load().await.unwrap();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.value, before.value);
+    assert!(gateway.secrets.lock().unwrap().is_empty());
+    assert!(service.replay_events(0, 100).await.unwrap().is_empty());
+
+    // Saving a chosen subset is a separate operation, and later previews use the
+    // stored credential without changing that subset or its declared capabilities.
+    provider.models = vec![ProviderModel {
+        reasoning_efforts: vec!["high".into()],
+        ..models[0].clone()
+    }];
+    ok(
+        &service,
+        Command::SaveAgentProvider {
+            provider: provider.clone(),
+            secret: Some(ProviderSecret(secret.into())),
+        },
+    )
+    .await;
+    let before = store.load().await.unwrap();
+    let events = service.replay_events(0, 100).await.unwrap();
+    let CommandResult::ProviderModels(models) = ok(
+        &service,
+        Command::DiscoverProviderModels {
+            provider: provider.clone(),
+            secret: None,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].reasoning_efforts, ["high"]);
+    assert_eq!(store.load().await.unwrap().value, before.value);
+    assert_eq!(store.load().await.unwrap().revision, before.revision);
+    assert_eq!(service.replay_events(0, 100).await.unwrap(), events);
+    assert_eq!(gateway.secrets.lock().unwrap().len(), 1);
+    let saved = view(&service)
+        .await
+        .providers
+        .into_iter()
+        .find(|p| p.provider.id == "preview")
+        .unwrap();
+    assert_eq!(saved.provider.models, provider.models);
+}
+
+#[tokio::test]
+async fn failed_or_invalid_discovery_has_no_partial_configuration() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let gateway = Arc::new(Gateway::default());
+    let service = LocalControlService::new(store.clone()).with_provider_gateway(gateway.clone());
+    let provider = AgentProvider {
+        id: "preview".into(),
+        name: "Preview".into(),
+        kind: AgentMode::DeepSeek,
+        url: None,
+        models: Vec::new(),
+    };
+    let before = store.load().await.unwrap();
+    for secret in [None, Some(""), Some("invalid-preview-secret")] {
+        let response = service
+            .execute(Command::DiscoverProviderModels {
+                provider: provider.clone(),
+                secret: secret.map(|value| ProviderSecret(value.into())),
+            })
+            .await;
+        assert!(!response.ok);
+        assert_eq!(store.load().await.unwrap().value, before.value);
+        assert_eq!(store.load().await.unwrap().revision, before.revision);
+    }
+    let mut invalid = provider;
+    invalid.url = Some("https://example.com/v1?api_key=not-allowed".into());
+    let response = service
+        .execute(Command::DiscoverProviderModels {
+            provider: invalid,
+            secret: Some(ProviderSecret("test-secret".into())),
+        })
+        .await;
+    assert_eq!(
+        response.error.unwrap().code,
+        ErrorCode::InvalidAgentConfiguration
+    );
+    assert!(gateway.secrets.lock().unwrap().is_empty());
+    assert!(service.replay_events(0, 100).await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@ export type ReasoningEffort = string;
 export interface AgentConfiguration { provider_id: string; model: string; reasoning_effort: string | null }
 export interface ProviderModel { id: string; name: string; reasoning_efforts: string[] }
 export interface AgentProvider { id: string; name: string; kind: string; url: string | null; models: ProviderModel[]; has_secret: boolean }
+export interface ProviderInput { provider: Omit<AgentProvider, "has_secret">; secret?: string }
 export interface AgentView { id: string; name: string; config: AgentConfiguration; owner_session_id: string | null; revision: number; enabled: boolean }
 
 export type MessagePart =
@@ -113,7 +114,8 @@ export interface BridgeErrorShape {
 
 export interface AitDesktopApi {
   snapshot(): Promise<DesktopSnapshot>;
-  saveProvider(input: { provider: Omit<AgentProvider, "has_secret">; secret?: string }): Promise<DesktopSnapshot>;
+  saveProvider(input: ProviderInput): Promise<DesktopSnapshot>;
+  discoverProviderModels(input: ProviderInput): Promise<ProviderModel[]>;
   refreshProviderModels(providerId: string): Promise<DesktopSnapshot>;
   saveAgent(input: { id?: string; name: string; config: AgentConfiguration }): Promise<DesktopSnapshot>;
   setSessionConfig(input: { sessionId: string; config: AgentConfiguration }): Promise<DesktopSnapshot>;

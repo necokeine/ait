@@ -84,6 +84,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/agent/register",
         "/v1/agent/update",
         "/v1/agent-provider/save",
+        "/v1/agent-provider/discover-models",
         "/v1/agent-provider/refresh-models",
         "/v1/session/set-config",
         "/v1/session/create",

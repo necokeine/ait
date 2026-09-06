@@ -534,6 +534,9 @@ impl LocalControlService {
         if let Command::SaveAgentProvider { provider, secret } = command {
             return self.save_provider(provider, secret).await;
         }
+        if let Command::DiscoverProviderModels { provider, secret } = command {
+            return self.discover_provider_models(provider, secret).await;
+        }
         if let Command::RefreshProviderModels { provider_id } = command {
             return self.refresh_provider(&provider_id).await;
         }
@@ -625,7 +628,9 @@ fn apply_command(
         Command::SetSessionConfig { session_id, config } => {
             set_session_config(state, &session_id, config)
         }
-        Command::SaveAgentProvider { .. } | Command::RefreshProviderModels { .. } => {
+        Command::SaveAgentProvider { .. }
+        | Command::DiscoverProviderModels { .. }
+        | Command::RefreshProviderModels { .. } => {
             unreachable!("provider command uses credential boundary")
         }
         Command::CreateSession {

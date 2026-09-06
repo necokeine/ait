@@ -35,6 +35,10 @@ async fn client(provider: &AgentProvider, reference: &str) -> Result<LLMClient, 
     .await
     .map_err(|_| credential_error())?
     .map_err(|_| credential_error())?;
+    client_with_secret(provider, secret)
+}
+
+fn client_with_secret(provider: &AgentProvider, secret: String) -> Result<LLMClient, DomainError> {
     let kind = match provider.kind {
         ProviderKind::OpenAI => LLMProvider::OpenAI,
         ProviderKind::DeepSeek => LLMProvider::DeepSeek,
@@ -48,6 +52,19 @@ async fn client(provider: &AgentProvider, reference: &str) -> Result<LLMClient, 
     let mut config = LLMClientConfig::new(kind, secret);
     config.base_url.clone_from(&provider.url);
     LLMClient::new(config).map_err(|_| provider_error())
+}
+
+async fn discover_models(client: LLMClient) -> Result<Vec<ProviderModel>, DomainError> {
+    let models = client.list_models().await.map_err(|_| provider_error())?;
+    Ok(models
+        .data
+        .into_iter()
+        .map(|model| ProviderModel {
+            name: model.name.unwrap_or_else(|| model.id.clone()),
+            id: model.id,
+            reasoning_efforts: Vec::new(),
+        })
+        .collect())
 }
 
 #[async_trait]
@@ -80,20 +97,15 @@ impl AgentProviderGateway for RigProviderGateway {
         provider: &AgentProvider,
         credential_ref: &str,
     ) -> Result<Vec<ProviderModel>, DomainError> {
-        let models = client(provider, credential_ref)
-            .await?
-            .list_models()
-            .await
-            .map_err(|_| provider_error())?;
-        Ok(models
-            .data
-            .into_iter()
-            .map(|model| ProviderModel {
-                name: model.name.unwrap_or_else(|| model.id.clone()),
-                id: model.id,
-                reasoning_efforts: Vec::new(),
-            })
-            .collect())
+        discover_models(client(provider, credential_ref).await?).await
+    }
+
+    async fn list_models_with_secret(
+        &self,
+        provider: &AgentProvider,
+        secret: &str,
+    ) -> Result<Vec<ProviderModel>, DomainError> {
+        discover_models(client_with_secret(provider, secret.to_owned())?).await
     }
 
     async fn complete(

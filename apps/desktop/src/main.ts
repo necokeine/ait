@@ -17,7 +17,7 @@ import { sessionDisplayTitle } from "./session-titles.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
-  "provider.save", "provider.refresh-models", "agent.save", "session.set-config",
+  "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
@@ -71,6 +71,11 @@ class DaemonClient {
     if (method === "provider.save") {
       await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
       return this.snapshot();
+    }
+    if (method === "provider.discover-models") {
+      return this.post("/v1/agent-provider/discover-models", "provider_models", {
+        provider: params.provider, secret: params.secret,
+      });
     }
     if (method === "provider.refresh-models") {
       await this.post("/v1/agent-provider/refresh-models", "agent_provider", { provider_id: params.providerId });

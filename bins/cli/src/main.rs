@@ -133,6 +133,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::RegisterAgent { .. } => "/v1/agent/register",
         Command::UpdateAgent { .. } => "/v1/agent/update",
         Command::SaveAgentProvider { .. } => "/v1/agent-provider/save",
+        Command::DiscoverProviderModels { .. } => "/v1/agent-provider/discover-models",
         Command::RefreshProviderModels { .. } => "/v1/agent-provider/refresh-models",
         Command::SetSessionConfig { .. } => "/v1/session/set-config",
         Command::CreateSession { .. } => "/v1/session/create",

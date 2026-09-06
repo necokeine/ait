@@ -1,4 +1,5 @@
-import { renderAgentSettings, providerChoices } from "./agent-settings.js";
+import { renderProviderSettings, providerChoices } from "./agent-settings.js";
+import { createAgentsPage } from "./agents-page.js";
 import { messageAuthor } from "./messages.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
@@ -55,7 +56,15 @@ const pendingSessions = new Set<string>();
 let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let settingsCategory: SettingCategory = "models";
+let activePage: "sessions" | "agents" = "sessions";
+let initialProviderId: string | undefined;
+let disposeProviderSettings: (() => void) | undefined;
 let toastTimer: number | undefined;
+const agentsPage = createAgentsPage($("#agents-page"), {
+  update: (updated) => { snapshot = updated; renderAll(); },
+  notify: showToast,
+  configureProvider: openProviderSettings,
+});
 
 void initialize();
 
@@ -90,6 +99,8 @@ function bindInteractions(): void {
   $("#tree-toggle").addEventListener("click", toggleTree);
   $("#tree-close").addEventListener("click", () => appShell.classList.add("tree-collapsed"));
   $("#settings-trigger").addEventListener("click", openSettings);
+  $("#sessions-nav").addEventListener("click", () => showPage("sessions"));
+  $("#agents-nav").addEventListener("click", () => showPage("agents"));
   $("#project-create-trigger").addEventListener("click", openProjectDialog);
   $("#project-close").addEventListener("click", closeProjectDialog);
   $("#project-cancel").addEventListener("click", closeProjectDialog);
@@ -182,6 +193,23 @@ function renderAll(): void {
   renderConversation();
   renderTree();
   updateComposerState();
+  agentsPage.render(snapshot);
+}
+
+function showPage(page: "sessions" | "agents"): void {
+  activePage = page;
+  composerConfigPanel.hidePopover();
+  closeSessionContextMenu();
+  $("#sessions-page").classList.toggle("is-hidden", page !== "sessions");
+  $("#agents-page").classList.toggle("is-hidden", page !== "agents");
+  $("#tree-toggle").classList.toggle("is-hidden", page !== "sessions");
+  for (const name of ["sessions", "agents"] as const) {
+    const button = $(`#${name}-nav`);
+    button.classList.toggle("is-active", page === name);
+    if (page === name) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  if (page === "agents") $<HTMLElement>("#agents-page-title").focus();
 }
 
 function currentSession(): DesktopSession | undefined {
@@ -239,6 +267,7 @@ function renderProjects(): void {
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
       resetTreeView();
+      showPage("sessions");
       renderAll();
     });
     button.addEventListener("contextmenu", (event) => {
@@ -644,6 +673,10 @@ function handleTreeKeyboard(event: KeyboardEvent): void {
 }
 
 function handleGlobalKeyboard(event: KeyboardEvent): void {
+  if ((event.metaKey || event.ctrlKey) && event.key === "1") {
+    event.preventDefault();
+    showPage("sessions");
+  }
   if ((event.metaKey || event.ctrlKey) && event.key === ",") {
     event.preventDefault();
     openSettings();
@@ -702,6 +735,7 @@ function selectProject(projectId: string | undefined): void {
     .filter((session) => session.projectId === projectId)
     .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
   resetTreeView();
+  showPage("sessions");
   renderAll();
 }
 
@@ -731,6 +765,7 @@ async function createProject(): Promise<void> {
     $<HTMLInputElement>("#project-create-name").value = "";
     $<HTMLInputElement>("#project-create-path").value = "";
     closeProjectDialog();
+    showPage("sessions");
     renderAll();
     showToast(`${name} created with the selected backend.`);
   } catch (error) {
@@ -786,6 +821,7 @@ async function createSession(): Promise<void> {
     selectedSessionId = result.selectedSessionId;
     resetTreeView();
     closeSessionDialog();
+    showPage("sessions");
     renderAll();
     messageInput.focus();
     showToast("Session created.");
@@ -806,6 +842,17 @@ function agentOptions(): string {
 
 function openSettings(): void {
   if (!settings) return;
+  initialProviderId = undefined;
+  composerConfigPanel.hidePopover();
+  settingsDraft = structuredClone(settings.values);
+  settingsDialog.classList.remove("is-hidden");
+  renderSettings();
+}
+
+function openProviderSettings(id: string): void {
+  if (!settings) return;
+  initialProviderId = id;
+  settingsCategory = "models";
   settingsDraft = structuredClone(settings.values);
   settingsDialog.classList.remove("is-hidden");
   renderSettings();
@@ -813,13 +860,19 @@ function openSettings(): void {
 
 function closeSettings(): void {
   settingsDialog.classList.add("is-hidden");
+  disposeProviderSettings?.();
+  disposeProviderSettings = undefined;
+  initialProviderId = undefined;
 }
 
 function renderSettings(): void {
   if (!settings) return;
-  const categories = [...new Set<SettingCategory>(["models", "agents", ...settings.schema.definitions.map((definition) => definition.category)])];
+  disposeProviderSettings?.();
+  disposeProviderSettings = undefined;
+  const categories = [...new Set<SettingCategory>(["models", ...settings.schema.definitions.map((definition) => definition.category)])];
+  const categoryLabel = (category: SettingCategory): string => category === "models" ? "Providers" : category === "agents" ? "Execution" : category;
   $("#settings-nav").innerHTML = categories.map((category) =>
-    `<button type="button" data-category="${category}" class="${category === settingsCategory ? "is-active" : ""}">${category}</button>`,
+    `<button type="button" data-category="${category}" class="${category === settingsCategory ? "is-active" : ""}">${categoryLabel(category)}</button>`,
   ).join("");
   $("#settings-nav").querySelectorAll<HTMLElement>("[data-category]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -828,21 +881,25 @@ function renderSettings(): void {
     });
   });
   const definitions = settings.schema.definitions.filter((definition) => definition.category === settingsCategory);
-  $("#settings-fields").innerHTML = definitions.length ? `<header class="settings-section-header"><h3>${settingsCategory} preferences</h3></header>${definitions.map(renderSetting).join("")}` : "";
+  $("#settings-fields").innerHTML = definitions.length ? `<header class="settings-section-header"><h3>${categoryLabel(settingsCategory)} preferences</h3></header>${definitions.map(renderSetting).join("")}` : "";
   $("#settings-save").classList.toggle("is-hidden", definitions.length === 0);
   $("#settings-reset").classList.toggle("is-hidden", definitions.length === 0);
+  $("#settings-cancel").textContent = settingsCategory === "models" ? "Close" : "Cancel";
   $("#settings-fields").querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-setting-id]").forEach((control) => {
     control.addEventListener("change", () => readSettingControl(control));
     control.addEventListener("input", () => readSettingControl(control));
   });
-  if (snapshot && (settingsCategory === "models" || settingsCategory === "agents")) {
-    renderAgentSettings($("#settings-fields"), snapshot, settingsCategory, (updated) => {
+  if (snapshot && settingsCategory === "models") {
+    disposeProviderSettings = renderProviderSettings($("#settings-fields"), snapshot, (updated, refreshSettings) => {
       snapshot = updated;
       renderAll();
-      renderSettings();
-    }, showToast);
+      if (refreshSettings && !settingsDialog.classList.contains("is-hidden")) renderSettings();
+    }, showToast, initialProviderId);
+    initialProviderId = undefined;
   }
-  $("#settings-state").textContent = `Schema ${settings.schema.revision} · state ${settings.revision}`;
+  $("#settings-state").textContent = settingsCategory === "models"
+    ? "Connections are saved with your selected models."
+    : `Schema ${settings.schema.revision} · state ${settings.revision}`;
 }
 
 function renderSetting(definition: SettingDefinition): string {
@@ -937,8 +994,9 @@ function renderCommandResults(): void {
     { id: "new-project", title: "Create Project", hint: "" },
     { id: "new-session", title: "Create Session", hint: "" },
     { id: "settings", title: "Open Settings", hint: "⌘," },
+    { id: "agents", title: "Open Agents", hint: "" },
     { id: "tree", title: "Toggle Session Tree", hint: "" },
-  ].filter((command) => command.title.toLowerCase().includes(query));
+  ].filter((command) => command.title.toLowerCase().includes(query) && (command.id !== "tree" || activePage === "sessions"));
   $("#command-results").innerHTML = [
     ...sessions.map((session) => `<button class="command-result" type="button" data-session="${escapeAttribute(session.id)}"><span>⑂</span>${escapeHtml(session.title)}<small>Session</small></button>`),
     ...commands.map((command) => `<button class="command-result" type="button" data-command="${command.id}"><span>›</span>${command.title}<small>${command.hint}</small></button>`),
@@ -950,6 +1008,7 @@ function renderCommandResults(): void {
       selectedSessionId = session?.id;
       resetTreeView();
       closeCommandPalette();
+      showPage("sessions");
       renderAll();
     });
   });
@@ -959,6 +1018,7 @@ function renderCommandResults(): void {
       if (button.dataset.command === "new-project") openProjectDialog();
       if (button.dataset.command === "new-session") openSessionDialog();
       if (button.dataset.command === "settings") openSettings();
+      if (button.dataset.command === "agents") showPage("agents");
       if (button.dataset.command === "tree") toggleTree();
     });
   });

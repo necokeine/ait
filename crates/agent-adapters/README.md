@@ -125,3 +125,5 @@ store, lists models through `LLMClient`, and executes a text-history completion
 using the Run's fixed Agent configuration. Secrets are never written into the
 control snapshot, events or Project export. Model reasoning levels are catalog
 metadata configured by the user; model discovery preserves existing levels.
+Draft discovery can use `list_models_with_secret` without storing the credential;
+persisting the selected catalog and credential remains a separate application operation.

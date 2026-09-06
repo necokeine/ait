@@ -423,6 +423,52 @@ impl LocalControlService {
         ))
     }
 
+    pub(super) async fn discover_provider_models(
+        &self,
+        mut provider: AgentProvider,
+        secret: Option<ProviderSecret>,
+    ) -> Result<CommandResult, ApiError> {
+        validate_provider(&provider)?;
+        if !matches!(provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+            return Err(invalid("this provider does not expose model discovery"));
+        }
+        let state = decode_state(self.store.load().await.map_err(store_error)?.value)?;
+        let existing = state
+            .providers
+            .iter()
+            .find(|p| p.provider.id == provider.id);
+        if existing.is_some_and(|p| p.provider.kind != provider.kind) {
+            return Err(invalid(
+                "provider kind cannot change; create another provider",
+            ));
+        }
+        let mut models = if let Some(secret) = secret {
+            if secret.0.trim().is_empty() {
+                return Err(invalid("provider secret cannot be empty"));
+            }
+            self.gateway()?
+                .list_models_with_secret(&provider, &secret.0)
+                .await
+        } else {
+            let reference = state
+                .provider_credentials
+                .get(&provider.id)
+                .ok_or_else(|| invalid("provider secret is not configured"))?;
+            self.gateway()?.list_models(&provider, reference).await
+        }
+        .map_err(domain_error)?;
+        for model in &mut models {
+            if let Some(old) =
+                existing.and_then(|p| p.provider.models.iter().find(|m| m.id == model.id))
+            {
+                model.reasoning_efforts.clone_from(&old.reasoning_efforts);
+            }
+        }
+        provider.models = models;
+        validate_provider(&provider)?;
+        Ok(CommandResult::ProviderModels(provider.models))
+    }
+
     pub(super) async fn refresh_provider(
         &self,
         provider_id: &str,

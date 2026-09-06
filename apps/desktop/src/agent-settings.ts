@@ -1,111 +1,174 @@
-import type { AgentConfiguration, AgentProvider, DesktopSnapshot, ProviderModel } from "./types.js";
+import { modelChoices, selectedModels, type ModelChoice } from "./provider-models.js";
+import type { AgentProvider, DesktopSnapshot, ProviderInput } from "./types.js";
 
-const escape = (value: string): string => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-const option = (id: string, name: string, selected = ""): string => `<option value="${escape(id)}"${id === selected ? " selected" : ""}>${escape(name)}</option>`;
+export const escapeCatalog = (value: string): string => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+export const catalogOption = (id: string, name: string, selected = ""): string => `<option value="${escapeCatalog(id)}"${id === selected ? " selected" : ""}>${escapeCatalog(name)}</option>`;
 const field = (label: string, control: string): string => `<label class="catalog-field"><span>${label}</span>${control}</label>`;
-
-let selectedProviderId: string | null = null;
-let selectedPresetId = "";
 
 export function providerChoices(providers: AgentProvider[]): AgentProvider[] {
   return providers.filter((provider) => ["codex", "openai", "deepseek"].includes(provider.kind));
 }
 
-export function renderAgentSettings(
+export function renderProviderSettings(
   container: Element,
   snapshot: DesktopSnapshot,
-  category: "models" | "agents",
-  update: (snapshot: DesktopSnapshot) => void,
+  update: (snapshot: DesktopSnapshot, refreshSettings: boolean) => void,
   notify: (message: string, failure?: boolean) => void,
-): void {
+  initialProviderId?: string,
+): () => void {
   const panel = document.createElement("section");
   panel.className = "catalog-editor";
   container.prepend(panel);
-  const input = (id: string): HTMLInputElement => panel.querySelector<HTMLInputElement>(`#${id}`)!;
-  const select = (id: string): HTMLSelectElement => panel.querySelector<HTMLSelectElement>(`#${id}`)!;
-  const providers = providerChoices(snapshot.providers);
-
-  const perform = async (action: () => Promise<DesktopSnapshot>): Promise<void> => {
-    const controls = Array.from(panel.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"));
-    const disabled = controls.map((control) => control.disabled);
-    controls.forEach((control) => { control.disabled = true; });
-    try { update(await action()); notify("Configuration saved."); }
-    catch (error) {
-      notify(error instanceof Error ? error.message : "Could not save configuration.", true);
-      controls.forEach((control, index) => { control.disabled = disabled[index] ?? false; });
-    }
+  const get = <T extends Element>(selector: string): T => panel.querySelector<T>(selector)!;
+  let generation = 0;
+  let disposed = false;
+  let secret = "";
+  const scrollToTop = (): void => {
+    const scroll = panel.closest(".settings-form");
+    if (scroll) scroll.scrollTop = 0;
   };
 
-  if (category === "models") {
-    const draw = (provider?: AgentProvider): void => {
-      selectedProviderId = provider?.id ?? "";
-      const remote = provider?.kind !== "codex";
-      panel.innerHTML = `<h3>Agent providers</h3><p>Share a connection across Agent presets and Sessions. API keys are saved in your operating system credential store.</p>
-        ${field("Connection", `<select id="provider-pick">${option("", "New provider")}${providers.map((p) => option(p.id, p.name, provider?.id)).join("")}</select>`)}
-        ${field("Name", `<input id="provider-name" value="${escape(provider?.name ?? "")}" placeholder="My provider"/>`)}
-        ${field("API", `<select id="provider-kind"${provider ? " disabled" : ""}>${option("openai", "OpenAI", provider?.kind ?? "openai")}${option("deepseek", "DeepSeek", provider?.kind)}${provider?.kind === "codex" ? option("codex", "Codex", "codex") : ""}</select>`)}
-        ${remote ? field("API URL", `<input id="provider-url" value="${escape(provider?.url ?? "")}" placeholder="Leave blank for the official endpoint"/>`) + field("API key", `<input id="provider-secret" type="password" autocomplete="new-password" placeholder="${provider?.has_secret ? "Saved · leave blank to keep" : "Enter API key"}"/>`) : "<p>Codex uses the host's existing sign-in.</p>"}
-        <h4>Models and reasoning levels</h4><p>Use the exact model ID and levels supported by this API. Leave reasoning levels empty when unsupported. Discovery preserves levels you have configured.</p>
-        <div id="provider-models"></div><div class="catalog-actions"><button type="button" id="model-add">Add model</button><button type="button" id="provider-save">Save provider</button>${provider && remote ? '<button type="button" id="provider-refresh">Discover models</button>' : ""}</div>`;
-      const rows = panel.querySelector("#provider-models")!;
-      const addModel = (model: ProviderModel = { id: "", name: "", reasoning_efforts: [] }): void => {
-        const row = document.createElement("div");
-        row.className = "catalog-model";
-        row.innerHTML = `${field("Model ID", `<input data-model-id value="${escape(model.id)}"/>`)}${field("Display name", `<input data-model-name value="${escape(model.name)}"/>`)}${field("Reasoning levels (comma separated)", `<input data-model-efforts value="${escape(model.reasoning_efforts.join(", "))}" placeholder="low, medium, high"/>`)}<button type="button" aria-label="Remove model">Remove</button>`;
-        row.querySelector("button")!.addEventListener("click", () => row.remove());
-        rows.append(row);
-      };
-      provider?.models.forEach(addModel);
-      select("provider-pick").addEventListener("change", () => draw(providers.find((p) => p.id === select("provider-pick").value)));
-      panel.querySelector("#model-add")!.addEventListener("click", () => addModel());
-      panel.querySelector("#provider-save")!.addEventListener("click", () => {
-        const models = Array.from(rows.querySelectorAll(".catalog-model")).map((row) => {
-          const read = (selector: string): string => row.querySelector<HTMLInputElement>(selector)!.value.trim();
-          return { id: read("[data-model-id]"), name: read("[data-model-name]"), reasoning_efforts: read("[data-model-efforts]").split(",").map((item) => item.trim()).filter(Boolean) };
-        });
-        const secret = remote ? input("provider-secret").value : "";
-        const value = { id: provider?.id ?? crypto.randomUUID(), name: input("provider-name").value.trim(), kind: select("provider-kind").value, url: remote ? input("provider-url").value.trim() || null : null, models };
-        selectedProviderId = value.id;
-        if (remote) input("provider-secret").value = "";
-        void perform(() => window.ait.saveProvider({ provider: value, ...(secret ? { secret } : {}) }));
-      });
-      panel.querySelector("#provider-refresh")?.addEventListener("click", () => void perform(() => window.ait.refreshProviderModels(provider!.id)));
-    };
-    draw(selectedProviderId === null ? providers[0] : providers.find((p) => p.id === selectedProviderId));
-    return;
-  }
-
-  const presets = snapshot.agents.filter((agent) => !agent.ownerSessionId);
-  const draw = (id = ""): void => {
-    selectedPresetId = id;
-    const agent = presets.find((item) => item.id === id);
-    const initial = agent?.config;
-    panel.innerHTML = `<h3>Named Agent presets</h3><p>Reuse these presets in Projects and Sessions. Session model and reasoning changes create a private configuration.</p>
-      ${field("Preset", `<select id="preset-pick">${option("", "New preset")}${presets.map((item) => option(item.id, item.name, id)).join("")}</select>`)}
-      ${field("Name", `<input id="preset-name" value="${escape(agent?.name ?? "")}" placeholder="Code review"/>`)}
-      ${field("Provider", `<select id="preset-provider">${snapshot.providers.map((p) => option(p.id, p.name, initial?.provider_id)).join("")}</select>`)}
-      ${field("Model", '<select id="preset-model"></select>')}
-      ${field("Reasoning", '<select id="preset-effort"></select>')}
-      <div class="catalog-actions"><button type="button" id="preset-save">Save preset</button></div>`;
-    const efforts = (selected: string | null = null): void => {
-      const model = snapshot.providers.find((p) => p.id === select("preset-provider").value)?.models.find((m) => m.id === select("preset-model").value);
-      select("preset-effort").innerHTML = option("", "Provider default") + (model?.reasoning_efforts.map((effort) => option(effort, effort, selected ?? "")).join("") ?? "");
-    };
-    const models = (model = ""): void => {
-      const provider = snapshot.providers.find((p) => p.id === select("preset-provider").value);
-      select("preset-model").innerHTML = provider?.models.map((m) => option(m.id, m.name, model)).join("") ?? "";
-      efforts();
-    };
-    models(initial?.model);
-    efforts(initial?.reasoning_effort);
-    select("preset-pick").addEventListener("change", () => draw(select("preset-pick").value));
-    select("preset-provider").addEventListener("change", () => models());
-    select("preset-model").addEventListener("change", () => efforts());
-    panel.querySelector("#preset-save")!.addEventListener("click", () => {
-      const config: AgentConfiguration = { provider_id: select("preset-provider").value, model: select("preset-model").value, reasoning_effort: select("preset-effort").value || null };
-      const name = input("preset-name").value.trim();
-      void perform(() => window.ait.saveAgent({ ...(id ? { id } : {}), name, config }));
+  const overview = (): void => {
+    generation++;
+    secret = "";
+    panel.innerHTML = `<header class="catalog-heading"><div><h3>Agent providers</h3><p>Connect an API, then choose the models available to your Agents.</p></div><button id="provider-add" class="primary-button" type="button">Add provider</button></header>
+      <div class="provider-settings-list">${snapshot.providers.map((provider) => `<button class="provider-settings-item" type="button" data-provider="${escapeCatalog(provider.id)}"><span><strong>${escapeCatalog(provider.name)}</strong><small>${escapeCatalog(provider.url ?? (provider.kind === "codex" ? "Host sign-in" : provider.kind))}</small></span><span>${provider.models.length} models <span aria-hidden="true">›</span></span></button>`).join("") || '<p>No providers yet. Add a connection to get started.</p>'}</div>`;
+    get("#provider-add").addEventListener("click", () => edit());
+    scrollToTop();
+    panel.querySelectorAll<HTMLElement>("[data-provider]").forEach((button) => {
+      button.addEventListener("click", () => edit(snapshot.providers.find((provider) => provider.id === button.dataset.provider)));
     });
   };
-  draw(selectedPresetId);
+
+  const edit = (existing?: AgentProvider): void => {
+    const version = ++generation;
+    secret = "";
+    let provider = {
+      id: existing?.id ?? crypto.randomUUID(), name: existing?.name ?? "",
+      kind: existing?.kind ?? "openai", url: existing?.url ?? null,
+      models: existing?.models ?? [],
+    };
+    const remote = !existing || ["openai", "deepseek"].includes(existing.kind);
+    let choices: ModelChoice[] = [];
+    let query = "";
+    const live = (): boolean => !disposed && generation === version;
+    const request = (): ProviderInput => ({ provider, ...(secret ? { secret } : {}) });
+    const error = (message: string): void => {
+      const element = get<HTMLElement>("#provider-error");
+      element.textContent = message;
+      element.classList.remove("is-hidden");
+    };
+    const steps = (step: number): string => `<div class="provider-steps" aria-label="Provider setup steps"><span${step === 1 ? ' aria-current="step"' : ""}>1 <strong>Connection</strong></span><span aria-hidden="true">›</span><span${step === 2 ? ' aria-current="step"' : ""}>2 <strong>Choose models</strong></span></div>`;
+
+    const connection = (): void => {
+      panel.innerHTML = `<button id="provider-back-list" class="catalog-back" type="button">‹ All providers</button><h3>${existing ? "Configure provider" : "Add provider"}</h3>${steps(1)}
+        <form id="provider-connection">
+          ${field("Name", `<input id="provider-name" value="${escapeCatalog(provider.name)}" required placeholder="My provider" autocomplete="off"/>`)}
+          ${field("API", `<select id="provider-kind"${existing ? " disabled" : ""}>${remote ? catalogOption("openai", "OpenAI", provider.kind) + catalogOption("deepseek", "DeepSeek", provider.kind) : catalogOption(provider.kind, existing!.name, provider.kind)}</select>`)}
+          ${remote ? field("API URL", `<input id="provider-url" type="url" value="${escapeCatalog(provider.url ?? "")}" placeholder="Leave blank for the official endpoint" autocomplete="url"/>`)
+            + field("Secret", `<input id="provider-secret" type="password" autocomplete="new-password"${existing?.has_secret ? "" : " required"} placeholder="${existing?.has_secret ? "Saved · leave blank to keep" : "Enter API key"}"/>`)
+            + '<p class="catalog-help">The next step connects to this API and loads its model list. The connection is saved after you choose models.</p>'
+            : `<p>${provider.kind === "codex" ? "Codex uses your existing sign-in on this machine." : "This built-in provider uses its configured model catalog."}</p>`}
+          <p id="provider-error" class="catalog-error is-hidden" role="alert"></p>
+          <div class="catalog-actions"><button class="secondary-button" id="provider-cancel" type="button">Cancel</button><button class="primary-button" id="provider-next" type="submit">Next: choose models</button></div>
+        </form>`;
+      get("#provider-back-list").addEventListener("click", overview);
+      get("#provider-cancel").addEventListener("click", overview);
+      if (remote) get<HTMLInputElement>("#provider-secret").value = secret;
+      get<HTMLFormElement>("#provider-connection").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const next = { ...provider, name: get<HTMLInputElement>("#provider-name").value.trim(), kind: get<HTMLSelectElement>("#provider-kind").value, url: remote ? get<HTMLInputElement>("#provider-url").value.trim() || null : null };
+        const nextSecret = remote ? get<HTMLInputElement>("#provider-secret").value.trim() : "";
+        if (next.kind !== provider.kind || next.url !== provider.url || nextSecret !== secret) choices = [];
+        provider = next;
+        if (!provider.name) { error("Enter a provider name."); return; }
+        secret = nextSecret;
+        void discover();
+      });
+      scrollToTop();
+      get<HTMLInputElement>("#provider-name").focus({ preventScroll: true });
+    };
+
+    const discover = async (): Promise<void> => {
+      const controls = Array.from(panel.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("#provider-connection input, #provider-connection select, #provider-next"));
+      const disabled = controls.map((control) => control.disabled);
+      controls.forEach((control) => { control.disabled = true; });
+      get("#provider-next").textContent = "Loading models…";
+      get("#provider-error").classList.add("is-hidden");
+      try {
+        const discovered = remote ? await window.ait.discoverProviderModels(request()) : provider.models;
+        if (!live()) return;
+        choices = modelChoices(discovered, existing?.models ?? [], snapshot.agents.filter((agent) => agent.config.provider_id === provider.id).map((agent) => agent.config), choices);
+        selection(discovered.length);
+      } catch (failure) {
+        if (!live()) return;
+        error(`${failure instanceof Error ? failure.message : "Could not load models."} Check the API URL and secret, then try again.`);
+        controls.forEach((control, index) => { control.disabled = disabled[index] ?? false; });
+        get("#provider-next").textContent = "Retry: load models";
+      }
+    };
+
+    const selection = (discoveredCount: number): void => {
+      panel.innerHTML = `<h3>${escapeCatalog(provider.name)}</h3>${steps(2)}<p>${discoveredCount ? `${discoveredCount} models found. Choose which ones to make available to Agents.` : "This API returned no models. Go back to check the connection or try again."}</p>
+        <div class="model-selection-toolbar"><input id="model-search" type="search" aria-label="Search models" placeholder="Search models…"/><button id="models-all" class="secondary-button" type="button">Select all</button><button id="models-clear" class="secondary-button" type="button">Clear</button></div>
+        <div id="provider-model-choices" class="model-choices" role="group" aria-label="Available models"></div>
+        <p id="model-selection-count" class="catalog-help" aria-live="polite"></p>
+        <p id="provider-error" class="catalog-error is-hidden" role="alert"></p>
+        <div class="catalog-actions"><button id="provider-back" class="secondary-button" type="button">Back</button><button id="provider-save" class="primary-button" type="button">Save provider</button></div>`;
+      const status = (): void => {
+        const count = selectedModels(choices).length;
+        get("#model-selection-count").textContent = `${count} selected · Only selected models appear in Agent configuration.`;
+        get<HTMLButtonElement>("#provider-save").disabled = count === 0;
+      };
+      const list = (): void => {
+        const visible = choices.filter((choice) => `${choice.id} ${choice.name}`.toLowerCase().includes(query));
+        get("#provider-model-choices").innerHTML = visible.map((choice) => `<div class="model-choice" data-model="${escapeCatalog(choice.id)}">
+          <label><input type="checkbox"${choice.selected ? " checked" : ""}${choice.required ? " disabled" : ""}/><span><strong>${escapeCatalog(choice.name)}</strong><small>${escapeCatalog(choice.id)}</small></span></label>
+          ${choice.required ? '<small class="model-note">Used by an Agent</small>' : ""}${!choice.available ? '<small class="model-note">Saved model · not returned by this API</small>' : ""}
+          <details><summary>Reasoning levels${choice.reasoning_efforts.length ? ` · ${escapeCatalog(choice.reasoning_efforts.join(", "))}` : " (optional)"}</summary>${field(`Levels for ${escapeCatalog(choice.name)}`, `<input class="model-efforts" value="${escapeCatalog(choice.reasoning_efforts.join(", "))}" placeholder="e.g. low, medium, high"/>`)}<p class="catalog-help">Use levels supported by this model. Leave empty when unavailable.</p></details>
+        </div>`).join("") || '<p class="catalog-empty">No matching models.</p>';
+        get("#provider-model-choices").querySelectorAll<HTMLElement>("[data-model]").forEach((row) => {
+          const choice = choices.find((model) => model.id === row.dataset.model)!;
+          row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.addEventListener("change", (event) => { choice.selected = (event.target as HTMLInputElement).checked; status(); });
+          row.querySelector<HTMLInputElement>(".model-efforts")!.addEventListener("input", (event) => {
+            choice.reasoning_efforts = [...new Set((event.target as HTMLInputElement).value.split(",").map((value) => value.trim()).filter(Boolean))];
+          });
+        });
+        status();
+      };
+      get<HTMLInputElement>("#model-search").value = query;
+      get("#model-search").addEventListener("input", (event) => { query = (event.target as HTMLInputElement).value.toLowerCase(); list(); });
+      get("#models-all").addEventListener("click", () => { choices.forEach((choice) => { choice.selected = true; }); list(); });
+      get("#models-clear").addEventListener("click", () => { choices.forEach((choice) => { choice.selected = choice.required; }); list(); });
+      get("#provider-back").addEventListener("click", connection);
+      get("#provider-save").addEventListener("click", () => void save());
+      list();
+      scrollToTop();
+      get<HTMLInputElement>("#model-search").focus({ preventScroll: true });
+    };
+
+    const save = async (): Promise<void> => {
+      const controls = Array.from(panel.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button"));
+      const disabled = controls.map((control) => control.disabled);
+      controls.forEach((control) => { control.disabled = true; });
+      get("#provider-save").textContent = "Saving…";
+      provider = { ...provider, models: selectedModels(choices) };
+      try {
+        const updated = await window.ait.saveProvider(request());
+        secret = "";
+        update(updated, live());
+        notify("Provider and selected models saved.");
+      } catch (failure) {
+        if (!live()) return;
+        error(failure instanceof Error ? failure.message : "Could not save provider.");
+        controls.forEach((control, index) => { control.disabled = disabled[index] ?? false; });
+        get("#provider-save").textContent = "Save provider";
+      }
+    };
+    connection();
+  };
+
+  if (initialProviderId !== undefined) edit(snapshot.providers.find((provider) => provider.id === initialProviderId));
+  else overview();
+  return () => { disposed = true; generation++; secret = ""; panel.remove(); };
 }
