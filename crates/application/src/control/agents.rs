@@ -25,7 +25,7 @@ pub(super) fn builtin_providers() -> Vec<AgentProviderView> {
             .expect("string")
             .to_owned();
         let models = if kind == AgentMode::Codex {
-            ["gpt-5.6-sol", "gpt-5.6-codex"]
+            ["gpt-5.6-sol"]
                 .into_iter()
                 .map(|id| ProviderModel {
                     id: id.into(),

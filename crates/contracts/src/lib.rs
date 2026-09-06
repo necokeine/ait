@@ -191,6 +191,9 @@ pub struct MessageView {
     pub role: String,
     pub kind: String,
     pub text: Option<String>,
+    /// Creation time in Unix milliseconds; zero means an older record has no timestamp.
+    #[serde(default)]
+    pub created_at: i64,
     /// Clean repository HEAD captured with interactive human input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_commit: Option<String>,
