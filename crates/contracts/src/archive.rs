@@ -64,15 +64,14 @@ impl TryFrom<ArchiveInput> for ProjectExport {
                 .find(|provider| provider.id == id)
                 .expect("inserted provider");
             if !provider.models.iter().any(|model| model.id == legacy.model) {
-                let reasoning_efforts = if legacy.mode == AgentMode::Codex
-                    && matches!(legacy.model.as_str(), "gpt-5.6-sol" | "gpt-5.6-codex")
-                {
-                    ["low", "medium", "high", "xhigh", "max", "ultra"]
-                        .map(str::to_owned)
-                        .to_vec()
-                } else {
-                    Vec::new()
-                };
+                let reasoning_efforts =
+                    if legacy.mode == AgentMode::Codex && legacy.model == "gpt-5.6-sol" {
+                        ["low", "medium", "high", "xhigh", "max", "ultra"]
+                            .map(str::to_owned)
+                            .to_vec()
+                    } else {
+                        Vec::new()
+                    };
                 provider.models.push(ProviderModel {
                     id: legacy.model.clone(),
                     name: legacy.model.clone(),

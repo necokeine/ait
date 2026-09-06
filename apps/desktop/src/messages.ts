@@ -1,4 +1,41 @@
-import type { AgentSummary, DesktopMessage } from "./types.js";
+import type { AgentSummary, DesktopMessage, MessagePart } from "./types.js";
+
+export interface WorkspaceMessage {
+  id: string;
+  project_id: string;
+  parent_message_id: string | null;
+  role: DesktopMessage["role"];
+  kind: DesktopMessage["kind"];
+  text: string | null;
+  created_at?: number;
+  git_commit?: string | null;
+  data?: unknown;
+}
+
+export function projectMessage(message: WorkspaceMessage, agentId: string | null): DesktopMessage {
+  return {
+    id: message.id, projectId: message.project_id, parentMessageId: message.parent_message_id,
+    role: message.role, kind: message.kind, parts: messageParts(message),
+    createdAt: message.created_at ?? 0, agentId,
+    ...(message.git_commit ? { gitCommit: message.git_commit } : {}),
+  };
+}
+
+function messageParts(message: WorkspaceMessage): MessagePart[] {
+  if (message.text !== null) return [{ type: "text", text: message.text }];
+  const data = objectValue(message.data);
+  const toolUse = objectValue(data.tool_use);
+  if (Object.keys(toolUse).length > 0) return [{
+    type: "tool_use", call_id: String(toolUse.call_id ?? ""), tool_name: String(toolUse.tool_name ?? "tool"),
+    arguments: JSON.stringify(toolUse.arguments ?? {}),
+  }];
+  return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+}
 
 export function messageAuthor(message: DesktopMessage, agents: AgentSummary[]): string {
   if (message.role === "user") return "You";

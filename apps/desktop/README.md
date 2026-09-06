@@ -21,6 +21,13 @@ active Session remains locked to the Agent revision already pinned by its Run.
 Legacy echo-mode profiles are displayed as `Echo · echo` so they cannot be
 confused with the real Codex app-server profile.
 
+Conversation code fences render as rounded cards with a language label, a wrap
+toggle, and a copy button that copies the code itself. User input stays literal
+inside a single right-aligned bubble. Messages show their persisted creation
+date and time in the local timezone, including system and tool messages. Older
+records that never stored a timestamp display `Time unavailable`; loading them
+does not invent or rewrite historical times.
+
 ## Packaging
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.

@@ -11,7 +11,7 @@ import {
   projectAgent,
 } from "./agents.js";
 import { runFailure } from "./runs.js";
-import { messageAgentIds } from "./messages.js";
+import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -41,10 +41,7 @@ interface WorkspaceView {
     title_generation_started?: boolean; agent_id: string; current_message_id: string;
     active_run_id: string | null; version: number;
   }>;
-  messages: Array<{
-    id: string; project_id: string; parent_message_id: string | null; role: string;
-    kind: string; text: string | null; git_commit?: string | null; data?: unknown;
-  }>;
+  messages: WorkspaceMessage[];
   runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
 }
 
@@ -262,12 +259,7 @@ class DaemonClient {
         currentMessageId: session.current_message_id, agentId: session.agent_id,
         version: session.version, active: session.active_run_id !== null, updatedAt: 0,
       })),
-      messages: workspace.messages.map((message) => ({
-        id: message.id, projectId: message.project_id, parentMessageId: message.parent_message_id,
-        role: message.role, kind: message.kind, parts: messageParts(message), createdAt: 0,
-        gitCommit: message.git_commit ?? undefined,
-        agentId: messageAgents.get(message.id) ?? null,
-      })),
+      messages: workspace.messages.map((message) => projectMessage(message, messageAgents.get(message.id) ?? null)),
     };
   }
 }
@@ -275,17 +267,6 @@ class DaemonClient {
 function objectParams(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
-}
-
-function messageParts(message: WorkspaceView["messages"][number]): unknown[] {
-  if (message.text !== null) return [{ type: "text", text: message.text }];
-  const data = objectParams(message.data);
-  const toolUse = objectParams(data.tool_use);
-  if (Object.keys(toolUse).length > 0) return [{
-    type: "tool_use", call_id: String(toolUse.call_id ?? ""), tool_name: String(toolUse.tool_name ?? "tool"),
-    arguments: JSON.stringify(toolUse.arguments ?? {}),
-  }];
-  return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
 }
 
 const daemon = new DaemonClient();
