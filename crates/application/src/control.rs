@@ -347,7 +347,6 @@ impl LocalControlService {
             .find(|message| message.id == run.base_message_id)
             .and_then(|message| message.text.clone())
             .ok_or_else(|| error(ErrorCode::MessageNotFound, "run input not found", false))?;
-        let prompt = codex_prompt(&state, &run.base_message_id)?;
         let workdir = Path::new(&project.workdir).to_path_buf();
         let cancellation = tokio_util::sync::CancellationToken::new();
         let _invocation = InvocationGuard::new(&self.cancellations, &run.id, cancellation.clone());
@@ -361,16 +360,26 @@ impl LocalControlService {
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false));
         }
         let call = async {
-            if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
-                self.invoke_provider(&state, run).await
-            } else {
-                match &self.workspace_agent {
+            match run.provider.kind {
+                AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, run).await,
+                AgentMode::Codex => match &self.workspace_agent {
                     Some(executor) => {
+                        let (project_instructions, prompt) =
+                            codex_prompt(&state, &run.base_message_id).map_err(|error| {
+                                DomainError {
+                                    code: error.code,
+                                    message: error.message,
+                                    retryable: error.retryable,
+                                    details: None,
+                                    cause_id: None,
+                                }
+                            })?;
                         executor
                             .invoke(WorkspaceAgentInvocation {
                                 request_id: run.id.clone(),
                                 model: run.config.model.clone(),
                                 reasoning_effort: run.config.reasoning_effort.clone(),
+                                project_instructions,
                                 prompt,
                                 commit_subject: user_text,
                                 cwd: workdir,
@@ -382,7 +391,11 @@ impl LocalControlService {
                         ErrorCode::InvalidConfiguration,
                         "Codex workspace executor is not configured",
                     )),
-                }
+                },
+                _ => Err(DomainError::invariant(
+                    ErrorCode::AgentCapabilityUnsupported,
+                    "workspace execution requires a Codex or supported API provider",
+                )),
             }
         };
         let result = tokio::select! {
@@ -1277,7 +1290,7 @@ fn apply_run_mode(state: &mut State, run_id: &str, agent: &AgentView) -> RunView
     run
 }
 
-fn codex_prompt(state: &State, head_id: &str) -> Result<String, ApiError> {
+fn codex_prompt(state: &State, head_id: &str) -> Result<(Option<String>, String), ApiError> {
     let mut path = Vec::new();
     let mut current = Some(head_id);
     while let Some(id) = current {
@@ -1296,15 +1309,21 @@ fn codex_prompt(state: &State, head_id: &str) -> Result<String, ApiError> {
         current = message.parent_message_id.as_deref();
     }
     path.reverse();
-    let mut prompt = String::from(
-        "Work on the user's latest request in this repository. Make the requested code changes and verify them. Do not create a Git commit; the host will commit successful workspace changes.\n\nConversation:\n",
-    );
+    let mut instructions = Vec::new();
+    let mut prompt = String::from("Conversation:\n");
     for message in path {
         if let Some(text) = &message.text {
-            let _ = writeln!(prompt, "{}: {text}", message.role);
+            if message.role == "system" {
+                instructions.push(text.as_str());
+            } else {
+                let _ = writeln!(prompt, "{}: {text}", message.role);
+            }
         }
     }
-    Ok(prompt)
+    Ok((
+        (!instructions.is_empty()).then(|| instructions.join("\n\n")),
+        prompt,
+    ))
 }
 
 fn append_output(state: &mut State, run: &mut RunView, output: MessageView) {

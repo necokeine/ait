@@ -145,7 +145,9 @@ pub struct WorkspaceAgentInvocation {
     pub model: String,
     /// Optional model-supported reasoning effort fixed for this Run.
     pub reasoning_effort: Option<String>,
-    /// Fully assembled immutable Message path and current user task.
+    /// Immutable Project system instructions, separate from conversation text.
+    pub project_instructions: Option<String>,
+    /// Conversation path and current user task, excluding system instructions.
     pub prompt: String,
     /// Short subject used when the harness produced a Git commit.
     pub commit_subject: String,

@@ -25,6 +25,14 @@ never fold pre-existing user changes into the generated commit.
 Codex authentication remains owned by the local Codex installation. The
 adapter does not accept, persist, or log an API key or ChatGPT token.
 
+Codex alone uses `ait_tools::codex::CodexToolSet`. The installed core provides
+native tools and their executors. Start and resume send Ait instructions plus
+the Project system snapshot in `developerInstructions`, leaving the base prompt
+and native tool catalog to Codex. The conversation remains separate user input.
+See [ADR-012](../../docs/decisions/adr-012-codex-native-tool-set.md) for the
+construction contract and an opt-in Python Hello World test that checks actual
+patch/command events and resumes the thread for a second edit and verification.
+
 ## Rig LLM client
 
 `LLMClient` wraps Rig 0.42's native OpenAI or DeepSeek client. OpenAI uses
@@ -108,11 +116,13 @@ let stream = adapter.run(AgentRunRequest {
     request_id: "run-message-1".into(),
     model: None, // use the local Codex default
     reasoning_effort: None, // use the model's advertised default
+    project_instructions: None, // optional immutable Project instruction snapshot
     prompt: "Inspect this project and summarize its architecture.".into(),
     cwd: PathBuf::from("/absolute/path/to/project"),
     resume_thread_id: None,
     sandbox: SandboxMode::ReadOnly,
     approval_policy: ApprovalPolicy::Never,
+    output_schema: None,
     cancellation: CancellationToken::new(),
 }).await?;
 # drop(stream);
