@@ -24,3 +24,11 @@ confused with the real Codex app-server profile.
 ## Packaging
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
+
+## Providers and Agent presets
+
+Settings → Models manages shared Codex/OpenAI/DeepSeek provider connections, API
+keys, model discovery and per-model reasoning levels. Settings → Agents saves
+named presets for Projects and Sessions. Changing Provider, Model or Reasoning
+in a Session immediately saves a private Agent configuration. Running Sessions
+reject new messages and configuration changes; no client version is sent.

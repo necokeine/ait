@@ -2,6 +2,7 @@
 
 /// Agent catalog entries, immutable revisions, capabilities, and tool policy.
 pub mod agent;
+pub mod agent_provider;
 /// Shared serialization-safe domain value objects.
 pub mod common;
 /// Scheduled Run configuration and policies.
@@ -20,6 +21,7 @@ pub mod tool;
 pub use agent::{
     Agent, AgentCapability, AgentConfigSnapshot, AgentId, AgentRevision, ToolPermission, ToolPolicy,
 };
+pub use agent_provider::{AgentConfiguration, AgentProvider, ProviderKind, ProviderModel};
 pub use common::{CostMicros, DomainMetadata, DurationMs, TimestampMs};
 pub use cron::{Cron, CronConcurrencyPolicy, CronFire, CronFireState, CronId, CronMisfirePolicy};
 pub use error::{DomainError, ErrorCode};

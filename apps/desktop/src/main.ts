@@ -1,3 +1,4 @@
+import type { AgentProvider, AgentView } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -7,7 +8,7 @@ import {
   builtInCodexAgentId,
   builtInCodexModel,
   legacyBuiltInCodexAgentId,
-  normalizedBuiltInAgent,
+  projectAgent,
 } from "./agents.js";
 import { runFailure } from "./runs.js";
 import { messageAgentIds } from "./messages.js";
@@ -16,6 +17,7 @@ import { sessionDisplayTitle } from "./session-titles.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
+  "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
@@ -32,7 +34,8 @@ interface WorkspaceView {
     id: string; name: string; workdir: string; repo_url?: string | null;
     base_commit: string; default_agent_id?: string | null;
   }>;
-  agents: Array<{ id: string; name: string; model: string; mode: string; enabled: boolean }>;
+  agents: AgentView[];
+  providers: AgentProvider[];
   sessions: Array<{
     id: string; project_id: string; name?: string; title?: string | null; description?: string;
     title_generation_started?: boolean; agent_id: string; current_message_id: string;
@@ -65,6 +68,29 @@ class DaemonClient {
       expected_revision: params.expectedRevision, values: params.values,
     });
     if (method === "settings.reset") return this.post("/v1/settings/reset", "settings", {});
+    if (method === "provider.save") {
+      await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
+      return this.snapshot();
+    }
+    if (method === "provider.discover-models") {
+      return this.post("/v1/agent-provider/discover-models", "provider_models", {
+        provider: params.provider, secret: params.secret,
+      });
+    }
+    if (method === "provider.refresh-models") {
+      await this.post("/v1/agent-provider/refresh-models", "agent_provider", { provider_id: params.providerId });
+      return this.snapshot();
+    }
+    if (method === "agent.save") {
+      await this.post(params.id ? "/v1/agent/update" : "/v1/agent/register", "agent", {
+        id: params.id || randomUUID(), name: params.name, config: params.config,
+      });
+      return this.snapshot();
+    }
+    if (method === "session.set-config") {
+      await this.post("/v1/session/set-config", "session", { session_id: params.sessionId, config: params.config });
+      return this.snapshot();
+    }
     if (method === "project.choose-directory") {
       const result = await dialog.showOpenDialog({
         title: "Choose a Project directory",
@@ -98,7 +124,6 @@ class DaemonClient {
     if (method === "session.set-agent") {
       await this.post("/v1/session/set-agent", "session", {
         session_id: params.sessionId, agent_id: params.agentId,
-        expected_version: params.expectedVersion,
       });
       return this.snapshot();
     }
@@ -123,8 +148,6 @@ class DaemonClient {
     if (method === "session.send-message") {
       const run = await this.post("/v1/session/send-message", "run", {
         session_id: params.sessionId, text: params.content,
-        expected_version: params.expectedVersion,
-        reasoning_effort: params.reasoningEffort,
       });
       const failure = runFailure(run);
       if (failure) {
@@ -139,7 +162,6 @@ class DaemonClient {
     await this.post("/v1/session/fork", "run", {
       id, project_id: params.projectId, agent_id: params.agentId,
       at_message_id: params.sourceMessageId, text: params.content,
-      reasoning_effort: params.reasoningEffort,
     });
     return { snapshot: await this.snapshot(), selectedSessionId: id };
   }
@@ -180,8 +202,7 @@ class DaemonClient {
       await this.post("/v1/agent/register", "agent", {
         id: builtInCodexAgentId,
         name: "Codex",
-        model: builtInCodexModel,
-        mode: "codex",
+        config: { provider_id: "builtin-codex", model: builtInCodexModel, reasoning_effort: "low" },
       });
     }
     await Promise.all(workspace.projects
@@ -232,7 +253,8 @@ class DaemonClient {
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map(normalizedBuiltInAgent),
+      agents: workspace.agents.map((agent) => projectAgent(agent, workspace.providers)),
+      providers: workspace.providers,
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, name: session.name ?? "",
         title: sessionDisplayTitle(session), description: session.description ?? "",

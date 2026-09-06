@@ -10,9 +10,9 @@ ait command "$(jq -nc --arg at "$ROOT_ID" \
   '{type:"create_session",id:"s-open",project_id:"p1",agent_id:"agent-echo",at_message_id:$at}')"
 ait command '{"type":"set_session_title","session_id":"s-open","title":"临时分支标题"}'
 ait command '{"type":"rename_session","session_id":"s-open","name":"  我的   分支  "}'
-ait command '{"type":"register_agent","id":"agent-alternate","name":"另一个执行者","model":"deterministic-v1","mode":"echo"}'
-ait command '{"type":"set_session_agent","session_id":"s-open","agent_id":"agent-alternate","expected_version":1}'
-ait command '{"type":"send_message","session_id":"s-open","text":"沿这个方向继续","expected_version":2}'
+ait command '{"type":"register_agent","id":"agent-alternate","name":"另一个执行者","config":{"provider_id":"builtin-echo","model":"default"}}'
+ait command '{"type":"set_session_agent","session_id":"s-open","agent_id":"agent-alternate"}'
+ait command '{"type":"send_message","session_id":"s-open","text":"沿这个方向继续"}'
 
 ait command "$(jq -nc --arg at "$ROOT_ID" \
   '{type:"fork_session",id:"s-fork",project_id:"p1",agent_id:"agent-echo",at_message_id:$at,text:"从这里提出另一个方案"}')"

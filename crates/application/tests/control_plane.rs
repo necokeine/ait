@@ -7,7 +7,7 @@ use std::sync::{
 };
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentMode, Command, CommandResult, ReasoningEffort, default_settings};
+use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
@@ -53,8 +53,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         Command::RegisterAgent {
             id: "echo".into(),
             name: "Echo".into(),
-            model: "echo".into(),
-            mode: AgentMode::Echo,
+            config: config(AgentMode::Echo),
         },
     )
     .await;
@@ -75,8 +74,6 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         .execute(Command::SendMessage {
             session_id: "git-session".into(),
             text: "must not append".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         })
         .await;
     assert_eq!(rejected.error.unwrap().code, ErrorCode::ProjectGitDirty);
@@ -87,8 +84,6 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         Command::SendMessage {
             session_id: "git-session".into(),
             text: "append clean input".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await;
@@ -175,8 +170,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         Command::RegisterAgent {
             id: "echo-agent".into(),
             name: "Echo".into(),
-            model: "echo".into(),
-            mode: AgentMode::Echo,
+            config: config(AgentMode::Echo),
         },
     )
     .await;
@@ -203,8 +197,6 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         Command::SendMessage {
             session_id: "named-session".into(),
             text: "first interaction".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await;
@@ -276,8 +268,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Command::RegisterAgent {
             id: "codex-agent".into(),
             name: "Codex".into(),
-            model: "gpt-5.6-sol".into(),
-            mode: AgentMode::Codex,
+            config: config(AgentMode::Codex),
         },
     )
     .await;
@@ -296,8 +287,6 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Command::SendMessage {
             session_id: "codex-session".into(),
             text: "implement the feature".into(),
-            expected_version: Some(1),
-            reasoning_effort: Some(ReasoningEffort::High),
         },
     )
     .await
@@ -306,7 +295,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         _ => panic!(),
     };
     assert_eq!(completed.status, "completed");
-    assert_eq!(completed.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(completed.config.reasoning_effort.as_deref(), Some("high"));
 
     let workspace = match run(&service, Command::Snapshot).await {
         CommandResult::Workspace(value) => value,
@@ -331,7 +320,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
 }
 
 #[tokio::test]
-async fn idle_session_can_rebind_agent_with_version_cas() {
+async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
@@ -356,12 +345,11 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
             Command::RegisterAgent {
                 id: id.into(),
                 name: id.into(),
-                model: id.into(),
-                mode: if id == "echo-agent" {
+                config: config(if id == "echo-agent" {
                     AgentMode::Echo
                 } else {
                     AgentMode::Manual
-                },
+                }),
             },
         )
         .await;
@@ -381,7 +369,6 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
         Command::SetSessionAgent {
             session_id: "rebind-session".into(),
             agent_id: "manual-agent".into(),
-            expected_version: Some(1),
         },
     )
     .await
@@ -392,21 +379,11 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
     assert_eq!(rebound.agent_id, "manual-agent");
     assert_eq!(rebound.version, 2);
 
-    let stale = service
-        .execute(Command::SetSessionAgent {
-            session_id: "rebind-session".into(),
-            agent_id: "echo-agent".into(),
-            expected_version: Some(1),
-        })
-        .await;
-    assert_eq!(stale.error.unwrap().code, ErrorCode::SessionPointerConflict);
     let queued = match run(
         &service,
         Command::SendMessage {
             session_id: "rebind-session".into(),
             text: "keep this run queued".into(),
-            expected_version: Some(2),
-            reasoning_effort: None,
         },
     )
     .await
@@ -419,7 +396,6 @@ async fn idle_session_can_rebind_agent_with_version_cas() {
         .execute(Command::SetSessionAgent {
             session_id: "rebind-session".into(),
             agent_id: "echo-agent".into(),
-            expected_version: Some(3),
         })
         .await;
     assert_eq!(busy.error.unwrap().code, ErrorCode::SessionBusy);
@@ -452,8 +428,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
         Command::RegisterAgent {
             id: "agent-tool".into(),
             name: "Tool agent".into(),
-            model: "deterministic-v1".into(),
-            mode: AgentMode::Tool,
+            config: config(AgentMode::Tool),
         },
     )
     .await;
@@ -472,8 +447,6 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
         Command::SendMessage {
             session_id: "session-main".into(),
             text: "use the echo tool".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await
@@ -583,7 +556,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
 }
 
 #[tokio::test]
-async fn stable_failures_cover_configuration_provider_approval_conflict_and_cancel() {
+async fn stable_failures_cover_configuration_provider_approval_busy_and_cancel() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
@@ -592,8 +565,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
         .execute(Command::RegisterAgent {
             id: "bad".into(),
             name: "".into(),
-            model: "m".into(),
-            mode: AgentMode::Echo,
+            config: config(AgentMode::Echo),
         })
         .await;
     assert_eq!(
@@ -625,8 +597,7 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
             Command::RegisterAgent {
                 id: id.into(),
                 name: id.into(),
-                model: "m".into(),
-                mode,
+                config: config(mode),
             },
         )
         .await;
@@ -646,8 +617,6 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
         Command::SendMessage {
             session_id: "s-provider".into(),
             text: "go".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await
@@ -661,8 +630,6 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
         Command::SendMessage {
             session_id: "s-approval".into(),
             text: "go".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await
@@ -676,37 +643,23 @@ async fn stable_failures_cover_configuration_provider_approval_conflict_and_canc
     );
 
     let unsupported_effort = service
-        .execute(Command::SendMessage {
+        .execute(Command::SetSessionConfig {
             session_id: "s-manual".into(),
-            text: "go".into(),
-            expected_version: Some(1),
-            reasoning_effort: Some(ReasoningEffort::High),
+            config: ait_contracts::AgentConfiguration {
+                reasoning_effort: Some("high".into()),
+                ..config(AgentMode::Manual)
+            },
         })
         .await;
     assert_eq!(
         unsupported_effort.error.unwrap().code,
         ErrorCode::InvalidAgentConfiguration
     );
-
-    let conflict = service
-        .execute(Command::SendMessage {
-            session_id: "s-manual".into(),
-            text: "go".into(),
-            expected_version: Some(99),
-            reasoning_effort: None,
-        })
-        .await;
-    assert_eq!(
-        conflict.error.unwrap().code,
-        ErrorCode::SessionPointerConflict
-    );
     let queued = match run(
         &service,
         Command::SendMessage {
             session_id: "s-manual".into(),
             text: "go".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await
@@ -748,8 +701,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         Command::RegisterAgent {
             id: "portable-agent".into(),
             name: "Portable agent".into(),
-            model: "local-model".into(),
-            mode: AgentMode::Manual,
+            config: config(AgentMode::Manual),
         },
     )
     .await;
@@ -776,8 +728,6 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         Command::SendMessage {
             session_id: "portable-session".into(),
             text: "preserve this branch".into(),
-            expected_version: Some(1),
-            reasoning_effort: None,
         },
     )
     .await;
@@ -861,8 +811,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         Command::RegisterAgent {
             id: "desktop-agent".into(),
             name: "Desktop agent".into(),
-            model: "echo".into(),
-            mode: AgentMode::Echo,
+            config: config(AgentMode::Echo),
         },
     )
     .await;
@@ -874,7 +823,6 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
             agent_id: "desktop-agent".into(),
             at_message_id: project.root_message_id,
             text: "first branch message".into(),
-            reasoning_effort: None,
         },
     )
     .await;
@@ -930,8 +878,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
         Command::RegisterAgent {
             id: "codex-local".into(),
             name: "Codex".into(),
-            model: "gpt-5.6-codex".into(),
-            mode: AgentMode::Echo,
+            config: config(AgentMode::Echo),
         },
     )
     .await;
@@ -985,8 +932,6 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             Command::SendMessage {
                 session_id: session_id.into(),
                 text: input.into(),
-                expected_version: Some(1),
-                reasoning_effort: None,
             },
         )
         .await
@@ -1034,5 +979,23 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
                 .any(|message| message.role == "assistant"
                     && message.id == session.current_message_id)
         );
+    }
+}
+
+fn config(mode: AgentMode) -> ait_contracts::AgentConfiguration {
+    let key = serde_json::to_value(mode).unwrap();
+    ait_contracts::AgentConfiguration {
+        provider_id: format!("builtin-{}", key.as_str().unwrap()),
+        model: if mode == AgentMode::Codex {
+            "gpt-5.6-sol"
+        } else {
+            "default"
+        }
+        .into(),
+        reasoning_effort: if mode == AgentMode::Codex {
+            Some("high".into())
+        } else {
+            None
+        },
     }
 }

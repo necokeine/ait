@@ -97,7 +97,7 @@ impl Workspace {
     pub async fn agent(&self, id: &str, mode: &str) -> Value {
         self.command(json!({
             "type": "register_agent", "id": id, "name": id,
-            "model": "deterministic-v1", "mode": mode,
+            "config": { "provider_id": format!("builtin-{mode}"), "model": "default" },
         }))
         .await
     }
@@ -120,10 +120,10 @@ impl Workspace {
         .await
     }
 
-    pub async fn send(&self, session: &str, version: u64, text: &str) -> Value {
+    pub async fn send(&self, session: &str, _version: u64, text: &str) -> Value {
         self.command(json!({
             "type": "send_message", "session_id": session,
-            "expected_version": version, "text": text,
+            "text": text,
         }))
         .await
     }

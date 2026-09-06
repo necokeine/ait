@@ -103,11 +103,11 @@ jq -e --arg initial "$INITIAL_COMMIT" \
 
 ```bash
 ait command "$(jq -nc --arg model "${AIT_WORKFLOW_MODEL:-gpt-5.6-sol}" \
-  '{type:"register_agent",id:"codex",name:"Codex",model:$model,mode:"codex"}')"
+  '{type:"register_agent",id:"codex",name:"Codex",config:{provider_id:"builtin-codex",model:$model,reasoning_effort:"high"}}')"
 ait command '{"type":"create_session","id":"hello-world","project_id":"example-project","agent_id":"codex"}' \
   | tee "$WF_ROOT/session.json"
-ait command "$(jq -nc --argjson version "$(jq -r '.result.value.version' "$WF_ROOT/session.json")" \
-  '{type:"send_message",session_id:"hello-world",expected_version:$version,
+ait command "$(jq -nc \
+  '{type:"send_message",session_id:"hello-world",
     text:"Create a minimal Rust binary package named example-project at the repository root, with Cargo.toml, Cargo.lock, src/main.rs and .gitignore ignoring /target/. Use no external dependencies. cargo run --offline --quiet must print exactly Hello, world! followed by a newline. Verify it. Do not create a Git commit; AIT will commit your changes."}')" \
   | tee "$WF_ROOT/run.json"
 jq -e '.ok == true and .result.value.status == "completed" and .result.value.error == null' "$WF_ROOT/run.json"

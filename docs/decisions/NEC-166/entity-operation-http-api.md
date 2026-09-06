@@ -18,6 +18,11 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/project/export` | `ExportProject` |
 | `POST` | `/v1/project/import` | `ImportProject` |
 | `POST` | `/v1/agent/register` | `RegisterAgent` |
+| `POST` | `/v1/agent/update` | `UpdateAgent` |
+| `POST` | `/v1/agent-provider/save` | `SaveAgentProvider` |
+| `POST` | `/v1/agent-provider/refresh-models` | `RefreshProviderModels` |
+| `POST` | `/v1/session/set-agent` | `SetSessionAgent` |
+| `POST` | `/v1/session/set-config` | `SetSessionConfig` |
 | `POST` | `/v1/session/create` | `CreateSession` |
 | `POST` | `/v1/session/send-message` | `SendMessage` |
 | `POST` | `/v1/session/fork` | `ForkSession` |
@@ -60,3 +65,5 @@ command，因此领域规则和事务逻辑不会在路由中复制。CLI 仍可
 为避免继续暴露“单一 command 入口”的概念，HTTP 指标改名为
 `api_operations_total`、`api_operation_duration_ms_total`、`api_operation_errors_total`，
 完成日志事件改为 `operation.completed`；关联 ID 与 operation 名仍按原语义记录。
+
+AgentProvider 与 Agent config 请求结构、旧参数移除规则见 [ADR-009](../adr-009-session-exclusion-and-agent-providers.md)。

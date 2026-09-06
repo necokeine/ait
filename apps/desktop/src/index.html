@@ -38,16 +38,16 @@
         <div id="project-list" class="project-list" aria-label="Projects"></div>
         <div class="sidebar-footer">
           <nav class="primary-nav" aria-label="Workspace">
-            <button class="nav-item is-active" type="button"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
+            <button id="sessions-nav" class="nav-item is-active" type="button" aria-current="page"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
             <button class="nav-item" type="button"><span>⌁</span>Runs</button>
-            <button class="nav-item" type="button"><span>◇</span>Agents</button>
+            <button id="agents-nav" class="nav-item" type="button"><span>◇</span>Agents</button>
             <button id="settings-trigger" class="nav-item" type="button"><span>⚙</span>Settings <kbd>⌘,</kbd></button>
           </nav>
           <div class="profile-row"><span class="profile-avatar">MK</span><span><strong>Local profile</strong><small>Private on this machine</small></span></div>
         </div>
       </aside>
 
-      <main class="workspace">
+      <main id="sessions-page" class="workspace">
         <section class="conversation-pane">
           <header class="conversation-header">
             <div>
@@ -74,9 +74,28 @@
               <div class="composer-toolbar">
                 <div class="composer-tools">
                   <button class="tool-button" type="button" aria-label="Attach file">＋</button>
-                  <button class="mode-button" type="button">Local <span>⌄</span></button>
-                  <select id="composer-agent" class="agent-select" aria-label="Agent"></select>
-                  <select id="composer-reasoning" class="agent-select reasoning-select is-hidden" aria-label="Reasoning effort"></select>
+                  <button id="composer-config-trigger" class="composer-config-trigger" type="button" popovertarget="composer-config-panel" aria-haspopup="dialog" aria-expanded="false" aria-controls="composer-config-panel" disabled>
+                    <span id="composer-config-label">No Agent</span><span class="select-chevron" aria-hidden="true"></span>
+                  </button>
+                  <div id="composer-config-panel" class="composer-config-panel" popover="auto" role="dialog" aria-labelledby="composer-config-title">
+                    <header>
+                      <strong id="composer-config-title">Agent configuration</strong>
+                      <button id="composer-config-close" class="small-icon-button" type="button" aria-label="Close Agent configuration">×</button>
+                    </header>
+                    <label class="composer-config-field">Saved Agent
+                      <span class="composer-select-wrap"><select id="composer-agent"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
+                    <label class="composer-config-field">Provider
+                      <span class="composer-select-wrap"><select id="composer-provider"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
+                    <label class="composer-config-field">Model
+                      <span class="composer-select-wrap"><select id="composer-model"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
+                    <p>Choose a saved Agent or customize this Session.</p>
+                  </div>
+                  <span id="composer-reasoning-control" class="composer-select-wrap reasoning-control is-hidden">
+                    <select id="composer-reasoning" class="reasoning-select" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span>
+                  </span>
                 </div>
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>
@@ -100,6 +119,8 @@
         </aside>
       </main>
 
+      <main id="agents-page" class="agents-page is-hidden" aria-labelledby="agents-page-title"></main>
+
       <div id="settings-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <section class="settings-window">
           <header class="settings-header">
@@ -108,9 +129,9 @@
           </header>
           <div class="settings-body">
             <nav id="settings-nav" class="settings-nav" aria-label="Settings categories"></nav>
-            <form id="settings-form" class="settings-form">
+            <div id="settings-form" class="settings-form">
               <div id="settings-fields"></div>
-            </form>
+            </div>
           </div>
           <footer class="settings-footer">
             <button id="settings-reset" class="secondary-button" type="button">Restore defaults</button>

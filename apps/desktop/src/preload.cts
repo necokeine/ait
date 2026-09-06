@@ -6,6 +6,11 @@ const invoke = <T,>(method: string, params: unknown = {}): Promise<T> =>
 
 const api: AitDesktopApi = {
   snapshot: () => invoke("workspace.snapshot"),
+  saveProvider: (input) => invoke("provider.save", input),
+  discoverProviderModels: (input) => invoke("provider.discover-models", input),
+  refreshProviderModels: (providerId) => invoke("provider.refresh-models", { providerId }),
+  saveAgent: (input) => invoke("agent.save", input),
+  setSessionConfig: (input) => invoke("session.set-config", input),
   settings: () => invoke("settings.get"),
   saveSettings: (expectedRevision, values) =>
     invoke("settings.save", { expectedRevision, values }),

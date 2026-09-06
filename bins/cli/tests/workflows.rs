@@ -54,7 +54,7 @@ async fn wf01_register_project_and_agent() {
     workspace
         .reject(
             json!({
-                "type": "register_agent", "id": "bad", "name": "", "model": "echo"
+                "type": "register_agent", "id": "bad", "name": "", "config": { "provider_id": "builtin-echo", "model": "default" }
             }),
             "INVALID_AGENT_CONFIGURATION",
         )
@@ -99,28 +99,17 @@ async fn wf02_send_message_and_inspect_tool_history() {
     let agent = workspace.agent("tool", "tool").await;
     workspace.session("main", "project", "tool").await;
     let before = workspace.snapshot().await;
-    for (extra, code) in [
-        (json!({"expected_version": 99}), "SESSION_POINTER_CONFLICT"),
-        (
-            json!({"reasoning_effort": "high"}),
-            "INVALID_AGENT_CONFIGURATION",
-        ),
-    ] {
-        let mut command = json!({"type": "send_message", "session_id": "main", "text": "hello"});
-        command
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        workspace.reject(command, code).await;
-        assert_eq!(workspace.snapshot().await, before);
-    }
+    workspace.reject(json!({
+        "type": "set_session_config", "session_id": "main",
+        "config": {"provider_id": "builtin-tool", "model": "default", "reasoning_effort": "high"}
+    }), "INVALID_AGENT_CONFIGURATION").await;
+    assert_eq!(workspace.snapshot().await, before);
     let dirty = workspace.path("project/untracked.txt");
     std::fs::write(&dirty, "unsaved work").unwrap();
     workspace
         .reject(
             json!({
                 "type": "send_message", "session_id": "main", "text": "must not append",
-                "expected_version": 1
             }),
             "PROJECT_GIT_DIRTY",
         )
@@ -203,16 +192,13 @@ async fn wf03_branch_rename_and_rebind_session() {
     assert_eq!(renamed["name"], "我的 分支");
     assert_eq!(renamed["title"], titled["title"]);
     assert_eq!(renamed["version"], branch["version"]);
-    let rebound = workspace.command(json!({
-        "type": "set_session_agent", "session_id": "branch", "agent_id": "tool", "expected_version": 1
-    })).await;
+    let rebound = workspace
+        .command(json!({
+            "type": "set_session_agent", "session_id": "branch", "agent_id": "tool",
+        }))
+        .await;
     assert_eq!(rebound["version"], 2);
     assert_eq!(rebound["current_message_id"], branch["current_message_id"]);
-    let changed = workspace.snapshot().await;
-    workspace.reject(json!({
-        "type": "set_session_agent", "session_id": "branch", "agent_id": "echo", "expected_version": 1
-    }), "SESSION_POINTER_CONFLICT").await;
-    assert_eq!(workspace.snapshot().await, changed);
     let continued = workspace.send("branch", 2, "continue independently").await;
     assert_eq!(continued["agent_id"], "tool");
 
@@ -276,7 +262,6 @@ async fn wf04_observe_failure_and_cancel_active_run() {
             .reject(
                 json!({
                     "type": "set_session_agent", "session_id": mode, "agent_id": "echo",
-                    "expected_version": session["version"]
                 }),
                 "SESSION_BUSY",
             )
@@ -285,7 +270,6 @@ async fn wf04_observe_failure_and_cancel_active_run() {
             .reject(
                 json!({
                     "type": "send_message", "session_id": mode, "text": "second input",
-                    "expected_version": session["version"]
                 }),
                 "SESSION_BUSY",
             )
@@ -309,7 +293,6 @@ async fn wf04_observe_failure_and_cancel_active_run() {
         let rebound = workspace
             .command(json!({
                 "type": "set_session_agent", "session_id": mode, "agent_id": "echo",
-                "expected_version": entity(&after, "sessions", &json!(mode))["version"]
             }))
             .await;
         assert_eq!(
@@ -453,7 +436,7 @@ async fn wf07_export_and_import_project_archive() {
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
     let path = source.path("archive with spaces.json");
     let archive: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(archive["format_version"], 2);
+    assert_eq!(archive["format_version"], 3);
     assert_eq!(archive["sessions"].as_array().unwrap().len(), 2);
     assert!(
         archive["sessions"]

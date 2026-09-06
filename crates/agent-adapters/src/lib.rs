@@ -1,4 +1,4 @@
-//! Agent-level adapters for complete external harnesses.
+//! Agent-level adapters and Rig-backed LLM clients.
 //!
 //! Unlike a model provider, an agent harness may own a conversation protocol,
 //! execute commands, edit files, request approvals, and emit rich progress
@@ -9,7 +9,11 @@
 
 pub mod codex;
 pub mod error;
+pub mod llm;
 pub mod protocol;
+pub mod provider_gateway;
+pub use provider_gateway::RigProviderGateway;
 
 pub use error::{AdapterError, AdapterErrorKind};
+pub use llm::{LLMClient, LLMClientConfig, LLMProvider};
 pub use protocol::*;

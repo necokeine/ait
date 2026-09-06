@@ -12,7 +12,7 @@ ait command "$(jq -nc --arg workdir "$WF_ROOT/project" \
   | tee "$WF_ROOT/project.json"
 export ROOT_ID="$(jq -r '.result.value.root_message_id' "$WF_ROOT/project.json")"
 
-ait command '{"type":"register_agent","id":"agent-echo","name":"本地回声","model":"deterministic-v1","mode":"echo"}'
+ait command '{"type":"register_agent","id":"agent-echo","name":"本地回声","config":{"provider_id":"builtin-echo","model":"default"}}'
 ait command '{"type":"set_project_default_agent","project_id":"p1","agent_id":"agent-echo"}'
 ait command '{"type":"create_session","id":"s-main","project_id":"p1","agent_id":"agent-echo"}'
 ait snapshot
