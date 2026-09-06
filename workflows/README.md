@@ -19,6 +19,7 @@
 | [WF-08](08-settings.md) | 修改设置、处理并发覆盖、恢复默认值 | `wf08_save_reset_and_recover_settings` |
 | [WF-09](09-errors-and-scripting.md) | 在脚本中判断命令结果并处理输入错误 | `wf09_cli_diagnostics_do_not_mutate_workspace` |
 | [WF-10](10-create-project-with-codex.md) | 空目录启动 daemon、接入项目、真实 Codex 生成 Rust Hello World 并提交 | `project_creation.rs::wf10_create_project_with_real_codex_and_commit`（手动启用） |
+| [WF-11](11-deepseek-python-hello-world.md) | 从 .env 配置 DeepSeek 默认 Agent，生成并独立验证单文件 Python Hello World | `deepseek_workflow.rs::wf11_real_deepseek_python_hello_world`（手动启用） |
 
 ```bash
 cargo test -p ait-cli --test workflows
@@ -38,6 +39,10 @@ CLI 子进程有 20 秒测试超时，服务显式停止并等待退出，断言
 WF-10 单独覆盖真实 daemon 启动、Codex 生成、Cargo 运行和 Git 提交，
 通过根目录的 [`./test_with_codex.sh`](../test_with_codex.sh) 一键构建并运行；
 默认 CI 编译但跳过这项依赖模型凭据的测试。
+WF-11 使用 DeepSeek 模型和现有 Codex 执行器，由
+[`./test_with_deepseek.sh`](../test_with_deepseek.sh) 读取本机 `.env` 并运行；
+凭据解析和 Python 逻辑校验器测试默认执行，真实 DeepSeek 调用只在手动启用时执行。
+运行 WF-11 的逻辑校验器测试需要 Python 3。
 
 ## 手工演练准备
 
@@ -99,6 +104,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | Cron 配置和手动 occurrence 可用，daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
 | `manual` 停在 queued；等待审批没有 CLI approve/resume 入口 | 当前可查询和取消；实现审批/恢复后需验证同一 Run 继续 |
 | 启用真实 Codex 和 AI 标题生成需要外部执行环境 | WF-01～09 使用确定性 Agent；WF-10 提供明确 opt-in 的真实执行测试 |
+| provider 凭据仍由执行器进程配置，AIT Agent 注册没有 endpoint/credential_ref 入口 | WF-11 使用独立 daemon 的 DeepSeek 配置；同一 daemon 内多 provider 的 Agent 配置需后续实现 |
 
 修改流程时同步修改表中的测试，注明哪些行为是已实现契约、哪些是待校正差距。
 添加新流程使用下一个 WF 编号，保持一篇 Markdown 对应一个用户目标；不要只记录命令清单。
