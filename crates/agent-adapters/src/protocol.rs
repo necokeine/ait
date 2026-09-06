@@ -52,6 +52,8 @@ pub struct AgentRunRequest {
     pub request_id: String,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    /// Project instruction snapshot; never assembled from user message text.
+    pub project_instructions: Option<String>,
     pub prompt: String,
     pub cwd: PathBuf,
     pub resume_thread_id: Option<String>,

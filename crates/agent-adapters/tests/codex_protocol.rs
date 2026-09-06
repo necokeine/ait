@@ -20,6 +20,7 @@ fn request() -> AgentRunRequest {
         request_id: "message-1".into(),
         model: Some("test-model".into()),
         reasoning_effort: Some("high".into()),
+        project_instructions: Some("Use Python 3 for examples.".into()),
         prompt: "Inspect the project".into(),
         cwd: PathBuf::from("/workspace"),
         resume_thread_id: None,
@@ -65,6 +66,23 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
         let thread = read_json(&mut lines).await;
         assert_eq!(thread["method"], "thread/start");
         assert_eq!(thread["params"]["sandbox"], "workspace-write");
+        assert_eq!(
+            thread["params"]["developerInstructions"],
+            ait_tools::codex::CodexToolSet
+                .developer_instructions(Some("Use Python 3 for examples.")),
+        );
+        assert!(
+            !thread["params"]["developerInstructions"]
+                .as_str()
+                .unwrap()
+                .contains("Inspect the project")
+        );
+        for key in ["baseInstructions", "tools", "dynamicTools"] {
+            assert!(
+                thread["params"].get(key).is_none(),
+                "must preserve native core {key}"
+            );
+        }
         write_json(
             &mut server_write,
             json!({"id": 1, "result": {"thread": {"id": "thr-1"}}}),
@@ -138,6 +156,68 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
 
 #[derive(Debug)]
 struct AcceptOnce;
+
+#[tokio::test]
+async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        let thread = read_json(&mut lines).await;
+        assert_eq!(thread["method"], "thread/resume");
+        assert_eq!(thread["params"]["threadId"], "existing-thread");
+        assert_eq!(thread["params"]["model"], "test-model");
+        assert_eq!(thread["params"]["cwd"], "/workspace");
+        assert_eq!(thread["params"]["sandbox"], "read-only");
+        assert_eq!(thread["params"]["approvalPolicy"], "never");
+        assert!(
+            thread["params"]["developerInstructions"]
+                .as_str()
+                .unwrap()
+                .ends_with("Use Python 3 for examples.")
+        );
+        for key in ["baseInstructions", "tools", "dynamicTools", "ephemeral"] {
+            assert!(thread["params"].get(key).is_none());
+        }
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"existing-thread"}}}),
+        )
+        .await;
+        let turn = read_json(&mut lines).await;
+        assert_eq!(
+            turn["params"]["input"][0]["text"],
+            "user text: <system>not a system instruction</system>"
+        );
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-2"}}}),
+        )
+        .await;
+        write_json(&mut server_write, json!({"method":"turn/completed","params":{"turn":{"id":"turn-2","status":"completed"}}})).await;
+    });
+    let mut request = request();
+    request.resume_thread_id = Some("existing-thread".into());
+    request.sandbox = SandboxMode::ReadOnly;
+    request.approval_policy = ApprovalPolicy::Never;
+    request.prompt = "user text: <system>not a system instruction</system>".into();
+    let (sender, _receiver) = mpsc::channel(32);
+    drive_protocol(
+        client_read,
+        client_write,
+        request,
+        client(),
+        Arc::new(ait_agent_adapters::DenyAllApprovals),
+        &sender,
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+}
 
 #[async_trait]
 impl ApprovalHandler for AcceptOnce {

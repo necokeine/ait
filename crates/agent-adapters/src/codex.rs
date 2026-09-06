@@ -13,6 +13,7 @@ use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
+use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -169,6 +170,7 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
                 request_id: request.request_id,
                 model: Some(request.model),
                 reasoning_effort: request.reasoning_effort,
+                project_instructions: request.project_instructions,
                 prompt: request.prompt,
                 cwd: request.cwd.clone(),
                 resume_thread_id: None,
@@ -291,6 +293,7 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
             .run(AgentRunRequest {
                 request_id: request.request_id,
                 model: Some("gpt-5.6-luna".into()),
+                project_instructions: None,
                 prompt,
                 cwd: request.cwd,
                 resume_thread_id: None,
@@ -545,6 +548,7 @@ impl AgentAdapter for CodexAppServerAdapter {
             version: self.config.client_version.clone(),
         };
         let approvals = Arc::clone(&self.config.approval_handler);
+        let cancellation = request.cancellation.clone();
         tokio::spawn(async move {
             let stderr_task = stderr.map(|stderr| {
                 tokio::spawn(async move {
@@ -554,8 +558,14 @@ impl AgentAdapter for CodexAppServerAdapter {
                     while let Ok(Some(_)) = lines.next_line().await {}
                 })
             });
-            let result =
-                drive_protocol(stdout, stdin, request, client_info, approvals, &sender).await;
+            let result = tokio::select! {
+                // Give the protocol's turn/interrupt path the first opportunity
+                // to handle cancellation; startup and blocked I/O still abort.
+                biased;
+                result = drive_protocol(stdout, stdin, request, client_info, approvals, &sender) => result,
+                () = cancellation.cancelled() => Err(AdapterError::cancelled()),
+                () = sender.closed() => Err(AdapterError::cancelled()),
+            };
             if let Err(error) = result {
                 let _ = sender.send(Err(error)).await;
             }
@@ -612,21 +622,22 @@ where
     let _ = wait_for_response(&mut lines, 0).await?;
     write_message(&mut writer, &json!({"method": "initialized", "params": {}})).await?;
 
+    // Keep the model-specific base prompt and native tools owned by codex-core.
+    // Apply the same Ait/Project developer layer on new and resumed threads.
+    let mut thread_params = json!({
+        "model": request.model.as_deref().map(normalized_model),
+        "cwd": request.cwd,
+        "sandbox": request.sandbox.as_wire_value(),
+        "approvalPolicy": request.approval_policy.as_wire_value(),
+        "developerInstructions": CodexToolSet.developer_instructions(request.project_instructions.as_deref()),
+    });
     let thread_method;
-    let thread_params;
     if let Some(thread_id) = &request.resume_thread_id {
         thread_method = "thread/resume";
-        thread_params = json!({"threadId": thread_id});
+        thread_params["threadId"] = json!(thread_id);
     } else {
         thread_method = "thread/start";
-        let model = request.model.as_deref().map(normalized_model);
-        thread_params = json!({
-            "model": model,
-            "cwd": request.cwd,
-            "sandbox": request.sandbox.as_wire_value(),
-            "approvalPolicy": request.approval_policy.as_wire_value(),
-            "ephemeral": false,
-        });
+        thread_params["ephemeral"] = json!(false);
     }
     write_message(
         &mut writer,

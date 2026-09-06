@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Codex-native tools and layered instructions, separate from API catalogs.
+pub mod codex;
+
 /// Version of Ait's bundled prompt and tool contracts.
 pub const DEFAULT_TOOL_SET_REVISION: &str = "ait-default-v1";
 /// Pinned upstream used for the Standard catalog and Minimal editor contract.

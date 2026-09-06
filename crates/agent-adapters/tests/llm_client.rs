@@ -401,7 +401,7 @@ async fn default_catalog_and_ordered_prompt_reach_both_provider_apis() {
         let mut fixture = Fixture::new(vec![(StatusCode::OK, completion(provider))]).await;
         let client = fixture.client(provider);
         let request = client.completion_request_with_history(
-            "fixture-model",
+            "codex-model-over-api",
             vec![
                 Message::system("Project instructions"),
                 Message::user("Earlier question"),

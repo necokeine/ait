@@ -1,5 +1,8 @@
 # Default API tool set
 
+Codex uses a separate native profile described below; none of its instructions
+or tools are added to this API catalog.
+
 `ait-tools` owns provider-neutral function definitions and the Ait system prompt.
 `ToolSet::default()` supplies 28 functions on each host; Windows selects `pwsh`,
 other hosts select `bash`. Definitions are sorted by name for stable requests.
@@ -102,3 +105,20 @@ environment and incurs API usage; it is ignored by default. Never commit them.
 ```bash
 cargo test -p ait-agent-adapters --test llm_client deepseek_live_default_catalog -- --ignored --exact
 ```
+
+## Codex native profile
+
+`codex::CodexToolSet` uses the installed codex-core through app-server. It has no
+conversion to the API `ToolSet`: core owns both tool definitions and execution,
+including native patches, shell/exec sessions, planning, images, and configured
+MCP/hosted tools. Availability depends on the actual model, platform, and local
+Codex configuration; this profile does not enable optional capabilities.
+
+`prompts/codex.md` supplies the Ait host layer. The adapter sends it followed by
+the Project instruction snapshot as `developerInstructions`, on both start and
+resume, leaving core's base prompt intact. User content stays in the turn input.
+Only a Codex Provider invokes this adapter, regardless of model names used by API
+providers. `ToolSet::default()` and all existing model overrides are unchanged.
+
+See [ADR-012](../../docs/decisions/adr-012-codex-native-tool-set.md) for pinned
+upstream references, boundaries, and the real two-turn Python smoke test.
