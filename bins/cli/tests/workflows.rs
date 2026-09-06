@@ -5,6 +5,46 @@ mod support;
 use serde_json::{Value, json};
 use support::{Workspace, entity, events, failure, success};
 
+#[tokio::test]
+async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
+    let mut workspace = Workspace::new().await;
+    let input = json!({"type": "register_agent", "id": "stdin-agent", "name": "中文\nAgent",
+        "config": {"provider_id": "builtin-echo", "model": "default", "reasoning_effort": null}});
+    let agent = success(
+        &workspace
+            .cli_stdin(&serde_json::to_string_pretty(&input).unwrap())
+            .await,
+    );
+    assert_eq!(agent["name"], "中文\nAgent");
+    let before = workspace.snapshot().await;
+    for input in [
+        "",
+        "{",
+        "{\"type\":\"sk-must-stay-private\"}",
+        "{\"type\":\"get_run\",\"run_id\":\"unused\",\"sk-must-stay-private\":true}",
+    ] {
+        let output = workspace.cli_stdin(input).await;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8(output.stderr).unwrap();
+        assert!(diagnostic.contains("invalid command JSON"));
+        assert!(!diagnostic.contains("sk-must-stay-private"));
+    }
+    let request = json!({"type": "save_agent_provider", "secret": "sk-must-stay-private",
+        "provider": {"id": "deepseek", "name": "DeepSeek", "kind": "deepseek",
+            "url": "https://api.deepseek.com", "models": [{"id": "deepseek-v4-flash", "name": "Flash"}]}});
+    let output = workspace.cli_stdin(&request.to_string()).await;
+    // This service has no credential gateway; failure must not echo the write-only secret.
+    failure(&output, "INVALID_AGENT_CONFIGURATION");
+    assert!(
+        !String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("sk-must-stay-private")
+    );
+    assert_eq!(workspace.snapshot().await, before);
+    workspace.stop().await;
+}
+
 // WF-01: Register a real directory and choose an Agent before opening a Session.
 #[tokio::test]
 async fn wf01_register_project_and_agent() {
