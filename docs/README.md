@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-204/adr-001-codex-phased-output-timeline.md`：按 Codex item 聚合并持久化阶段化输出时间线，桌面端以折叠过程和独立最终答复收尾。
+
 - `decisions/NEC-203/adr-001-remove-test-provider-identities.md`：移除 Tool、Manual、ProviderFailure 与 ApprovalRequired 的生产 Provider 身份，保留 seam 测试与旧快照引用保护。
 
 - `decisions/NEC-201/adr-001-codex-provider-model-discovery.md`：Codex Provider 通过 app-server `model/list` 动态发现 picker 可见模型及逐模型推理等级。

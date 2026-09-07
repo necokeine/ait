@@ -45,6 +45,7 @@ impl WorkspaceAgent for FixtureCodex {
             assistant_text: format!("Completed: {}", request.commit_subject),
             commit_id: None,
             operations: Vec::new(),
+            output_items: Vec::new(),
         })
     }
 }

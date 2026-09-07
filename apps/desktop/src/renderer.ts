@@ -342,7 +342,9 @@ function renderConversation(): void {
     });
   });
   requestAnimationFrame(() => {
-    conversationScroll.scrollTop = conversationScroll.scrollHeight;
+    const finalAnswer = conversation.querySelector<HTMLElement>(".message:last-child [data-codex-final-answer]");
+    if (finalAnswer) finalAnswer.scrollIntoView({ block: "start" });
+    else conversationScroll.scrollTop = conversationScroll.scrollHeight;
   });
 }
 

@@ -22,7 +22,7 @@ use ait_domain::{
 use ait_ports::{
     AgentProviderGateway, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
     ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOutputItem,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -473,10 +473,30 @@ impl LocalControlService {
                             })
                         })
                         .collect::<Vec<_>>();
-                    let data = (output.commit_id.is_some() || !operations.is_empty()).then(|| {
+                    let output_items = output
+                        .output_items
+                        .iter()
+                        .map(|item| match item {
+                            WorkspaceOutputItem::Message { id, phase, text } => json!({
+                                "type": "message",
+                                "id": id,
+                                "phase": phase,
+                                "text": text,
+                            }),
+                            WorkspaceOutputItem::Operation { id } => json!({
+                                "type": "operation",
+                                "id": id,
+                            }),
+                        })
+                        .collect::<Vec<_>>();
+                    let data = (output.commit_id.is_some()
+                        || !operations.is_empty()
+                        || !output_items.is_empty())
+                    .then(|| {
                         json!({"codex":{
                             "commit_id": output.commit_id,
                             "operations": operations,
+                            "output_items": output_items,
                         }})
                     });
                     let parent = run

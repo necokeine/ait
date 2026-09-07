@@ -22,11 +22,69 @@ export function projectMessage(message: WorkspaceMessage, agentId: string | null
 }
 
 function messageParts(message: WorkspaceMessage): MessagePart[] {
-  const parts: MessagePart[] = [];
-  if (message.text !== null) parts.push({ type: "text", text: message.text });
   const data = objectValue(message.data);
   const codex = objectValue(data.codex);
-  const operations = Array.isArray(codex.operations) ? codex.operations : [];
+  const operations = operationParts(codex.operations);
+  const outputItems = Array.isArray(codex.output_items) ? codex.output_items : [];
+  if (outputItems.length > 0) {
+    const operationsById = new Map(operations.map((operation) => [operation.id, operation]));
+    const projected: MessagePart[] = [];
+    for (const value of outputItems) {
+      const item = objectValue(value);
+      const id = stringValue(item.id);
+      if (item.type === "message" && id) {
+        const text = stringValue(item.text);
+        if (text) projected.push({
+          type: "codex_message",
+          id,
+          phase: stringValue(item.phase) ?? "",
+          text,
+        });
+      } else if (item.type === "operation" && id) {
+        const operation = operationsById.get(id);
+        if (operation) projected.push(operation);
+      }
+    }
+    let messageIndexes = projected
+      .map((part, index) => part.type === "codex_message" ? index : -1)
+      .filter((index) => index >= 0);
+    if (messageIndexes.length === 0 && message.text !== null) {
+      projected.push({ type: "codex_message", id: message.id, phase: "final_answer", text: message.text });
+      messageIndexes = [projected.length - 1];
+    }
+    if (!messageIndexes.some((index) => projected[index]?.type === "codex_message"
+      && projected[index].phase === "final_answer")) {
+      const finalIndex = messageIndexes.at(-1);
+      const finalMessage = finalIndex === undefined ? undefined : projected[finalIndex];
+      if (finalIndex !== undefined && finalMessage?.type === "codex_message") {
+        projected[finalIndex] = { ...finalMessage, phase: "final_answer" };
+      }
+    }
+    if (projected.length > 0) return projected;
+  }
+
+  if (operations.length > 0 && message.text !== null) {
+    return [
+      ...operations,
+      { type: "codex_message", id: message.id, phase: "final_answer", text: message.text },
+    ];
+  }
+
+  const parts: MessagePart[] = [];
+  if (message.text !== null) parts.push({ type: "text", text: message.text });
+  parts.push(...operations);
+  if (parts.length > 0) return parts;
+  const toolUse = objectValue(data.tool_use);
+  if (Object.keys(toolUse).length > 0) return [{
+    type: "tool_use", call_id: String(toolUse.call_id ?? ""), tool_name: String(toolUse.tool_name ?? "tool"),
+    arguments: JSON.stringify(toolUse.arguments ?? {}),
+  }];
+  return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
+}
+
+function operationParts(value: unknown): Extract<MessagePart, { type: "operation" }>[] {
+  const parts: Extract<MessagePart, { type: "operation" }>[] = [];
+  const operations = Array.isArray(value) ? value : [];
   for (const value of operations.slice(0, 200)) {
     const operation = objectValue(value);
     const title = stringValue(operation.title);
@@ -46,13 +104,7 @@ function messageParts(message: WorkspaceMessage): MessagePart[] {
       ...(detail ? { detail } : {}),
     });
   }
-  if (parts.length > 0) return parts;
-  const toolUse = objectValue(data.tool_use);
-  if (Object.keys(toolUse).length > 0) return [{
-    type: "tool_use", call_id: String(toolUse.call_id ?? ""), tool_name: String(toolUse.tool_name ?? "tool"),
-    arguments: JSON.stringify(toolUse.arguments ?? {}),
-  }];
-  return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
+  return parts;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

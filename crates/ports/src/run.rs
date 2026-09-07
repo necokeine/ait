@@ -170,6 +170,31 @@ pub struct WorkspaceAgentResponse {
     /// that harness-owned tools were executed through Ait's `ToolExecution`
     /// lifecycle.
     pub operations: Vec<WorkspaceOperation>,
+    /// Ordered, display-only projection of harness messages and operations.
+    ///
+    /// Message entries retain provider message boundaries and phases. Operation
+    /// entries reference `operations` by their harness-stable identity so the
+    /// audit records stay separate from Ait's host tool lifecycle.
+    pub output_items: Vec<WorkspaceOutputItem>,
+}
+
+/// One ordered item in a workspace harness' durable display projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceOutputItem {
+    /// A provider-authored progress or final-answer message.
+    Message {
+        /// Harness-stable message item identity.
+        id: String,
+        /// Provider phase such as `commentary` or `final_answer`.
+        phase: Option<String>,
+        /// Reconciled full text for this one message item.
+        text: String,
+    },
+    /// A native harness operation, referenced by `WorkspaceOperation::id`.
+    Operation {
+        /// Harness-stable operation item identity.
+        id: String,
+    },
 }
 
 /// Safe projection of one operation performed inside a workspace Agent harness.

@@ -13,8 +13,12 @@ export interface TimelineNode {
 }
 
 export function messageText(message: DesktopMessage): string {
+  const final = message.parts.find((part) =>
+    part.type === "codex_message" && part.phase === "final_answer");
+  if (final?.type === "codex_message") return final.text;
   for (const part of message.parts) {
     if (part.type === "text") return part.text;
+    if (part.type === "codex_message") return part.text;
     if (part.type === "tool_use") return `${part.tool_name} ${part.arguments}`;
     if (part.type === "file") return part.name;
     if (part.type === "redacted") return "Redacted message";

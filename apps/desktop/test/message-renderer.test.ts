@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { messageTextBlocks, parseFileReference, renderMessage, renderMessageText, renderMessageTime } from "../src/message-renderer.js";
 import { projectMessage, type WorkspaceMessage } from "../src/messages.js";
+import { messageText } from "../src/tree.js";
 
 test("separates prose and multiple code fences while preserving code whitespace", () => {
   assert.deepEqual(messageTextBlocks("Before\n```rust\nfn main() {\n\tprintln!(\"你好\");\n}\n```\nBetween\n~~~\nx < y\n~~~\nAfter"), [
@@ -115,13 +116,63 @@ test("projects and renders persisted Codex operation records with expandable det
     },
   }, "agent");
   assert.equal(message.parts.length, 2);
-  assert.equal(message.parts[1]?.type, "operation");
+  assert.equal(message.parts[0]?.type, "operation");
+  assert.equal(message.parts[1]?.type, "codex_message");
   const html = renderMessage(message, []);
+  assert.ok(html.includes('<details class="codex-process">'));
+  assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
+  assert.ok(html.indexOf("Read file") < html.indexOf("Done."));
   assert.ok(html.includes('class="operation-record"'));
   assert.ok(html.includes("<summary>"));
   assert.ok(html.includes("Read file"));
   assert.ok(html.includes('data-file-path="src/main.rs"'));
   assert.ok(html.includes("fn main() {}"));
+});
+
+test("renders ordered Codex progress collapsed before an independent final answer", () => {
+  const message = projectMessage({
+    ...input,
+    role: "assistant",
+    text: "Implemented and verified.",
+    data: {
+      codex: {
+        operations: [{
+          id: "operation-1", kind: "read", status: "completed", title: "Read file",
+          paths: ["src/main.rs"],
+        }],
+        output_items: [
+          { type: "message", id: "commentary-1", phase: "commentary", text: "Inspecting the repository." },
+          { type: "operation", id: "operation-1" },
+          { type: "message", id: "final-1", phase: "final_answer", text: "Implemented and verified." },
+        ],
+      },
+    },
+  }, "agent");
+
+  assert.deepEqual(message.parts.map((part) => part.type), ["codex_message", "operation", "codex_message"]);
+  assert.equal(messageText(message), "Implemented and verified.");
+  const html = renderMessage(message, []);
+  assert.ok(html.includes('<details class="codex-process">'));
+  assert.ok(!html.includes('<details class="codex-process" open'));
+  assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
+  assert.ok(html.indexOf("Inspecting the repository.") < html.indexOf("Read file"));
+  assert.ok(html.indexOf("Read file") < html.indexOf("Implemented and verified."));
+});
+
+test("uses the last phased Codex message as the final answer for compatible snapshots", () => {
+  const message = projectMessage({
+    ...input,
+    role: "assistant",
+    text: "Final text",
+    data: { codex: { output_items: [
+      { type: "message", id: "message-1", phase: "commentary", text: "Progress" },
+      { type: "message", id: "message-2", text: "Final text" },
+    ] } },
+  }, "agent");
+
+  assert.equal(message.parts[1]?.type, "codex_message");
+  if (message.parts[1]?.type === "codex_message") assert.equal(message.parts[1].phase, "final_answer");
+  assert.equal(messageText(message), "Final text");
 });
 
 test("does not invent dates for missing or invalid historical timestamps", () => {

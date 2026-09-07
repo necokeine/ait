@@ -1,7 +1,7 @@
 //! Codex adapter backed by `codex app-server` over stdio JSONL.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
@@ -13,6 +13,7 @@ use ait_domain::{AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderMo
 use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
     WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
+    WorkspaceOutputItem,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -249,28 +250,15 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
             })
             .await
             .map_err(adapter_domain_error)?;
-        let mut assistant_text = String::new();
-        let mut completed_text = None;
         let mut completed = false;
-        let mut operations = Vec::new();
-        let mut operation_chars: usize = 0;
+        let mut output = CodexOutputCollector::default();
         while let Some(event) = stream.next().await {
             match event.map_err(adapter_domain_error)? {
-                AgentEvent::MessageDelta { delta, .. } => assistant_text.push_str(&delta),
-                AgentEvent::ItemCompleted { item } => {
-                    if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                        completed_text =
-                            item.get("text").and_then(Value::as_str).map(str::to_owned);
-                    } else if operations.len() < MAX_OPERATION_COUNT
-                        && let Some(operation) = codex_operation(&item)
-                    {
-                        let size = operation_char_count(&operation);
-                        if operation_chars.saturating_add(size) <= MAX_OPERATION_TOTAL_CHARS {
-                            operation_chars += size;
-                            operations.push(operation);
-                        }
-                    }
+                AgentEvent::MessageDelta { item_id, delta } => {
+                    output.message_delta(item_id, &delta);
                 }
+                AgentEvent::ItemStarted { item } => output.item_started(&item),
+                AgentEvent::ItemCompleted { item } => output.item_completed(&item),
                 AgentEvent::Completed { status, error, .. } => {
                     if status != AgentRunStatus::Completed {
                         return Err(domain_error(
@@ -291,9 +279,7 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
                 true,
             ));
         }
-        if assistant_text.trim().is_empty() {
-            assistant_text = completed_text.unwrap_or_default();
-        }
+        let (assistant_text, operations, output_items) = output.finish();
         if assistant_text.trim().is_empty() {
             return Err(domain_error(
                 ErrorCode::ProviderFailed,
@@ -310,8 +296,170 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
             assistant_text,
             commit_id,
             operations,
+            output_items,
         })
     }
+}
+
+#[derive(Default)]
+struct CodexOutputCollector {
+    item_order: Vec<String>,
+    seen_item_ids: HashSet<String>,
+    messages: HashMap<String, CodexMessageBuffer>,
+    operation_by_item: HashMap<String, WorkspaceOperation>,
+    operation_chars: usize,
+}
+
+impl CodexOutputCollector {
+    fn message_delta(&mut self, item_id: String, delta: &str) {
+        self.remember(&item_id);
+        self.messages
+            .entry(item_id)
+            .or_default()
+            .streamed
+            .push_str(delta);
+    }
+
+    fn item_started(&mut self, item: &Value) {
+        let Some(item_id) = codex_item_id(item) else {
+            return;
+        };
+        self.remember(&item_id);
+        if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+            update_message_buffer(self.messages.entry(item_id).or_default(), item, false);
+        }
+    }
+
+    fn item_completed(&mut self, item: &Value) {
+        let item_id =
+            codex_item_id(item).unwrap_or_else(|| format!("item-{}", self.item_order.len() + 1));
+        self.remember(&item_id);
+        if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+            update_message_buffer(self.messages.entry(item_id).or_default(), item, true);
+            return;
+        }
+        if self.operation_by_item.len() >= MAX_OPERATION_COUNT
+            || self.operation_by_item.contains_key(&item_id)
+        {
+            return;
+        }
+        let Some(operation) = codex_operation(item) else {
+            return;
+        };
+        let size = operation_char_count(&operation);
+        if self.operation_chars.saturating_add(size) <= MAX_OPERATION_TOTAL_CHARS {
+            self.operation_chars += size;
+            self.operation_by_item.insert(item_id, operation);
+        }
+    }
+
+    fn remember(&mut self, item_id: &str) {
+        if self.seen_item_ids.insert(item_id.to_owned()) {
+            self.item_order.push(item_id.to_owned());
+        }
+    }
+
+    fn finish(mut self) -> (String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>) {
+        let mut operations = Vec::new();
+        let mut output_items = Vec::new();
+        for item_id in self.item_order {
+            if let Some(message) = self.messages.remove(&item_id) {
+                let text = message.reconciled_text();
+                if !text.trim().is_empty() {
+                    output_items.push(WorkspaceOutputItem::Message {
+                        id: item_id,
+                        phase: message.phase,
+                        text,
+                    });
+                }
+            } else if let Some(operation) = self.operation_by_item.remove(&item_id) {
+                output_items.push(WorkspaceOutputItem::Operation {
+                    id: operation.id.clone(),
+                });
+                operations.push(operation);
+            }
+        }
+        let assistant_text = final_assistant_text(&output_items);
+        (assistant_text, operations, output_items)
+    }
+}
+
+#[derive(Default)]
+struct CodexMessageBuffer {
+    phase: Option<String>,
+    started: Option<String>,
+    streamed: String,
+    completed: Option<String>,
+}
+
+impl CodexMessageBuffer {
+    fn reconciled_text(&self) -> String {
+        let streamed = self.streamed.as_str();
+        if let Some(completed) = self.completed.as_deref().filter(|text| !text.is_empty()) {
+            if streamed.is_empty() || completed.contains(streamed) {
+                return completed.to_owned();
+            }
+            if streamed.contains(completed) {
+                return streamed.to_owned();
+            }
+            // `item/completed.text` is the protocol's authoritative full value.
+            // A non-overlapping delta stream must not be appended and duplicated.
+            return completed.to_owned();
+        }
+        if !streamed.is_empty() {
+            return streamed.to_owned();
+        }
+        self.started.clone().unwrap_or_default()
+    }
+}
+
+fn codex_item_id(item: &Value) -> Option<String> {
+    item.get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+fn update_message_buffer(buffer: &mut CodexMessageBuffer, item: &Value, completed: bool) {
+    if let Some(phase) = item
+        .get("phase")
+        .and_then(Value::as_str)
+        .filter(|phase| !phase.is_empty())
+    {
+        buffer.phase = Some(phase.to_owned());
+    }
+    if let Some(text) = item.get("text").and_then(Value::as_str) {
+        if completed {
+            buffer.completed = Some(text.to_owned());
+        } else if !text.is_empty() {
+            buffer.started = Some(text.to_owned());
+        }
+    }
+}
+
+fn final_assistant_text(items: &[WorkspaceOutputItem]) -> String {
+    let final_messages = items
+        .iter()
+        .filter_map(|item| match item {
+            WorkspaceOutputItem::Message {
+                phase: Some(phase),
+                text,
+                ..
+            } if phase == "final_answer" => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !final_messages.is_empty() {
+        return final_messages.join("\n\n");
+    }
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            WorkspaceOutputItem::Message { text, .. } => Some(text.clone()),
+            WorkspaceOutputItem::Operation { .. } => None,
+        })
+        .unwrap_or_default()
 }
 
 const MAX_OPERATION_COUNT: usize = 200;

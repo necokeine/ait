@@ -186,6 +186,21 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .operation-chevron { margin-left: auto; color: var(--text-muted); transition: transform 120ms ease; }
 .operation-record[open] .operation-chevron { transform: rotate(180deg); }
 .operation-record > pre { margin: 2px 8px 8px 24px; max-height: 240px; overflow: auto; border-left: 1px solid var(--line); padding: 7px 10px; color: var(--text-muted); background: transparent; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.codex-process { margin: 2px 0 16px; border: 1px solid var(--line-soft); border-radius: 9px; color: var(--text-soft); }
+.codex-process > summary { min-height: 38px; display: flex; align-items: center; gap: 10px; padding: 7px 10px; list-style: none; cursor: pointer; }
+.codex-process > summary::-webkit-details-marker { display: none; }
+.codex-process > summary:hover { background: var(--surface-hover); }
+.codex-process > summary > span:nth-child(2) { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 8px; }
+.codex-process > summary strong { color: var(--text-soft); font-size: 10.5px; font-weight: 590; }
+.codex-process > summary small { color: var(--text-muted); font-size: 10px; }
+.codex-process-status { color: var(--accent); font-size: 12px; }
+.codex-process[open] > summary { border-bottom: 1px solid var(--line-soft); }
+.codex-process[open] > summary .operation-chevron { transform: rotate(180deg); }
+.codex-process-events { padding: 7px 10px 10px; }
+.codex-process-events .codex-output-message { margin: 5px 7px 9px; padding-left: 11px; border-left: 1px solid var(--line); color: var(--text-soft); }
+.codex-process-events .codex-output-message:last-child { margin-bottom: 5px; }
+.codex-process-events .codex-output-message .message-content { color: var(--text-soft); font-size: 11.5px; }
+.codex-final-answer { min-width: 0; }
 .composer-wrap { padding: 0 24px 15px; background: linear-gradient(transparent, var(--bg) 18px); }
 .composer, .branch-context, .composer-hint { width: min(790px, 100%); margin-left: auto; margin-right: auto; }
 .composer { border: 1px solid #393d33; background: var(--surface-raised); border-radius: 13px; box-shadow: 0 8px 30px rgba(0,0,0,.2), inset 0 1px rgba(255,255,255,.025); transition: border-color 120ms ease; }
