@@ -650,16 +650,14 @@ fn remove_unused_retired_builtins(value: &mut Value) {
     }
     if let Some(providers) = value["providers"].as_array_mut() {
         providers.retain(|view| {
-            let provider = &view["provider"];
-            let (Some(id), Some(kind)) = (provider["id"].as_str(), provider["kind"].as_str())
-            else {
+            let (Some(id), Some(kind)) = (view["id"].as_str(), view["kind"].as_str()) else {
                 return true;
             };
             id != format!("builtin-{kind}")
                 || referenced.contains(id)
-                || provider["url"] != Value::Null
+                || view["url"] != Value::Null
                 || view["has_secret"] != false
-                || serde_json::from_value::<AgentMode>(provider["kind"].clone()).is_ok()
+                || serde_json::from_value::<AgentMode>(view["kind"].clone()).is_ok()
         });
     }
 }
