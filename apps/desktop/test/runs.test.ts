@@ -20,3 +20,16 @@ test("accepts completed and still-running runs", () => {
   assert.equal(runFailure({ status: "completed" }), undefined);
   assert.equal(runFailure({ status: "running" }), undefined);
 });
+
+test("surfaces interrupted Runs that need workspace review", () => {
+  assert.deepEqual(runFailure({
+    status: "interrupted",
+    error: {
+      code: "RUN_RECOVERY_FAILED",
+      message: "Workspace changes were preserved for review.",
+    },
+  }), {
+    code: "RUN_RECOVERY_FAILED",
+    message: "Workspace changes were preserved for review.",
+  });
+});

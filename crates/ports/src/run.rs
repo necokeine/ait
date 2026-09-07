@@ -5,6 +5,7 @@ use ait_domain::{
     RunUsage, TimestampMs, ToolExecution, ToolExecutionId,
 };
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -149,7 +150,7 @@ pub struct WorkspaceAgentInvocation {
     pub project_instructions: Option<String>,
     /// Conversation path and current user task, excluding system instructions.
     pub prompt: String,
-    /// Short subject used when the harness produced a Git commit.
+    /// Short subject used when the application settles workspace changes.
     pub commit_subject: String,
     /// Canonical Project Git root and sandbox boundary.
     pub cwd: PathBuf,
@@ -158,7 +159,7 @@ pub struct WorkspaceAgentInvocation {
 }
 
 /// Durable-facing result of one workspace Agent turn.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceAgentResponse {
     /// Final assistant result shown in the Session.
     pub assistant_text: String,
@@ -179,7 +180,8 @@ pub struct WorkspaceAgentResponse {
 }
 
 /// One ordered item in a workspace harness' durable display projection.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkspaceOutputItem {
     /// A provider-authored progress or final-answer message.
     Message {
@@ -198,7 +200,7 @@ pub enum WorkspaceOutputItem {
 }
 
 /// Safe projection of one operation performed inside a workspace Agent harness.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceOperation {
     /// Harness-stable item identity when one was supplied.
     pub id: String,
@@ -248,14 +250,33 @@ pub trait SessionTitleGenerator: Send + Sync {
     ) -> Result<GeneratedSessionTitle, DomainError>;
 }
 
+/// Durable callback used before a completed workspace result crosses Git.
+#[async_trait]
+pub trait WorkspaceResultSink: Send + Sync {
+    /// Durably checkpoints a completed harness result before Git settlement.
+    async fn checkpoint(&self, result: WorkspaceAgentResponse) -> Result<(), DomainError>;
+}
+
 /// Complete coding-harness boundary used by the local control-plane slice.
 #[async_trait]
 pub trait WorkspaceAgent: Send + Sync {
-    /// Runs the selected harness and commits any generated workspace changes.
+    /// Runs the selected harness and returns its normalized result.
     async fn invoke(
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError>;
+
+    /// Invokes the harness and checkpoints its completed result before this
+    /// future can return success to the application coordinator.
+    async fn invoke_and_checkpoint(
+        &self,
+        request: WorkspaceAgentInvocation,
+        result_sink: &dyn WorkspaceResultSink,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let result = self.invoke(request).await?;
+        result_sink.checkpoint(result.clone()).await?;
+        Ok(result)
+    }
 }
 
 /// A tool invocation with stable host-assigned idempotency identity.

@@ -37,6 +37,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
     );
+    let recovered = service
+        .recover_interrupted_runs()
+        .await
+        .map_err(|failure| {
+            std::io::Error::other(format!(
+                "failed to reconcile interrupted Runs ({}): {}",
+                failure.code, failure.message
+            ))
+        })?;
+    if !recovered.is_empty() {
+        eprintln!("reconciled {} Run(s) during startup", recovered.len());
+    }
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
     eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
     axum::serve(listener, ait_api_http::router(service)).await?;

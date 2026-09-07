@@ -17,7 +17,8 @@ export function runFailure(value: unknown): RunFailure | undefined {
 }
 
 function isTerminalFailure(status: unknown): boolean {
-  return status === "failed" || status === "cancelled" || status === "limit_exceeded";
+  return status === "failed" || status === "cancelled" || status === "limit_exceeded"
+    || status === "interrupted";
 }
 
 function record(value: unknown): Record<string, unknown> {

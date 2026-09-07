@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-212/adr-001-workspace-run-recovery-and-git-settlement.md`：daemon 启动对账、Run lease fencing，以及 Codex 结果先持久化再幂等结算 Git/Message 的恢复边界。
+
 - `decisions/NEC-204/adr-001-codex-phased-output-timeline.md`：按 Codex item 聚合并持久化阶段化输出时间线，桌面端以折叠过程和独立最终答复收尾。
 
 - `decisions/NEC-203/adr-001-remove-test-provider-identities.md`：移除 Tool、Manual、ProviderFailure 与 ApprovalRequired 的生产 Provider 身份，保留 seam 测试与旧快照引用保护。

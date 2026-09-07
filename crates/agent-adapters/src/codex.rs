@@ -194,8 +194,10 @@ impl HostProviderModelCatalog for CodexAppServerAdapter {
     }
 }
 
-/// Workspace-level Codex runner that turns app-server events into an assistant
-/// result and commits file changes as one Git record.
+/// Workspace-level Codex runner that turns app-server events into a result.
+///
+/// Git settlement belongs to the application coordinator so the complete
+/// result can be durably checkpointed before a commit is attempted.
 #[derive(Clone)]
 pub struct CodexWorkspaceAgent {
     adapter: Arc<dyn AgentAdapter>,
@@ -232,7 +234,7 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let head_before = ensure_clean_worktree(&request.cwd)?;
+        ensure_clean_worktree(&request.cwd)?;
         let mut stream = self
             .adapter
             .run(AgentRunRequest {
@@ -287,14 +289,11 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
                 false,
             ));
         }
-        let commit_id = commit_workspace_changes(
-            &request.cwd,
-            &request.commit_subject,
-            head_before.as_deref(),
-        )?;
         Ok(WorkspaceAgentResponse {
             assistant_text,
-            commit_id,
+            // The application persists this result before crossing the Git
+            // side-effect boundary, then commits with a durable operation id.
+            commit_id: None,
             operations,
             output_items,
         })
@@ -897,7 +896,7 @@ fn validate_generated_title(title: &str, description: &str) -> Result<(), Domain
     Ok(())
 }
 
-fn ensure_clean_worktree(cwd: &Path) -> Result<Option<String>, DomainError> {
+fn ensure_clean_worktree(cwd: &Path) -> Result<(), DomainError> {
     let output = git(cwd, &["status", "--porcelain=v1"])?;
     if !output.stdout.is_empty() {
         return Err(domain_error(
@@ -906,63 +905,7 @@ fn ensure_clean_worktree(cwd: &Path) -> Result<Option<String>, DomainError> {
             false,
         ));
     }
-    Ok(git_head(cwd))
-}
-
-fn commit_workspace_changes(
-    cwd: &Path,
-    subject: &str,
-    head_before: Option<&str>,
-) -> Result<Option<String>, DomainError> {
-    let status = git(cwd, &["status", "--porcelain=v1"])?;
-    if status.stdout.is_empty() {
-        let head_after = git_head(cwd);
-        return Ok((head_after.as_deref() != head_before)
-            .then_some(head_after)
-            .flatten());
-    }
-    git(cwd, &["add", "--all"])?;
-    let subject = normalized_commit_subject(subject);
-    git(
-        cwd,
-        &[
-            "-c",
-            "user.name=Ait Codex",
-            "-c",
-            "user.email=ait-codex@localhost",
-            "commit",
-            "--no-gpg-sign",
-            "-m",
-            &subject,
-        ],
-    )?;
-    let revision = git(cwd, &["rev-parse", "HEAD"])?;
-    Ok(Some(
-        String::from_utf8_lossy(&revision.stdout).trim().to_owned(),
-    ))
-}
-
-fn git_head(cwd: &Path) -> Option<String> {
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-fn normalized_commit_subject(subject: &str) -> String {
-    let one_line = subject.split_whitespace().collect::<Vec<_>>().join(" ");
-    let shortened = one_line.chars().take(60).collect::<String>();
-    if shortened.is_empty() {
-        "ait: apply Codex changes".to_owned()
-    } else {
-        format!("ait: {shortened}")
-    }
+    Ok(())
 }
 
 fn git(cwd: &Path, arguments: &[&str]) -> Result<std::process::Output, DomainError> {

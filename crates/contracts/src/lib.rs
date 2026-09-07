@@ -219,6 +219,15 @@ pub struct RunView {
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
     pub status: String,
+    /// Fine-grained durable phase used to explain and recover non-terminal work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Box<str>>,
+    /// Stable identity of the workspace side-effect operation for this Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Box<str>>,
+    /// Monotonic execution lease; late writers holding an older value are fenced.
+    #[serde(default)]
+    pub lease_epoch: u64,
     pub error: Option<ApiError>,
 }
 
