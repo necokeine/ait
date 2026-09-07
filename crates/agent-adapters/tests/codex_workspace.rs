@@ -228,6 +228,28 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
         .unwrap()
 }
 
+async fn generate_title_script(
+    events: Vec<AgentEvent>,
+) -> Result<ait_ports::GeneratedSessionTitle, ait_domain::DomainError> {
+    let project = TempDir::new().unwrap();
+    CodexSessionTitleGenerator::new(Arc::new(ScriptedAdapter { events }))
+        .generate(SessionTitleRequest {
+            request_id: "scripted-title".into(),
+            user_prompt: "Summarize the task".into(),
+            cwd: project.path().to_path_buf(),
+            cancellation: CancellationToken::new(),
+        })
+        .await
+}
+
+fn title_payload(title: &str) -> String {
+    json!({
+        "title": title,
+        "description": format!("Search summary for {title}")
+    })
+    .to_string()
+}
+
 #[tokio::test]
 async fn generates_structured_session_metadata_with_the_small_read_only_model() {
     let project = TempDir::new().unwrap();
@@ -244,6 +266,172 @@ async fn generates_structured_session_metadata_with_the_small_read_only_model() 
 
     assert_eq!(generated.title, "修复 ABC-123 登录");
     assert_eq!(generated.description, "修复登录流程中的工单问题");
+}
+
+#[tokio::test]
+async fn title_generation_selects_final_phase_and_reconciles_completed_text() {
+    let payload = title_payload("Fix title aggregation");
+    let cases = [
+        vec![
+            AgentEvent::MessageDelta {
+                item_id: "commentary".into(),
+                delta: "Inspecting title events.".into(),
+            },
+            AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "commentary",
+                    "phase": "commentary",
+                    "text": "Inspecting title events."
+                }),
+            },
+            AgentEvent::ItemStarted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final",
+                    "phase": "final_answer",
+                    "text": ""
+                }),
+            },
+            AgentEvent::MessageDelta {
+                item_id: "final".into(),
+                delta: payload.clone(),
+            },
+            AgentEvent::Completed {
+                turn_id: "commentary-final".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            },
+        ],
+        vec![
+            AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final",
+                    "phase": "final_answer",
+                    "text": payload
+                }),
+            },
+            AgentEvent::Completed {
+                turn_id: "completed-only".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            },
+        ],
+        vec![
+            AgentEvent::MessageDelta {
+                item_id: "final".into(),
+                delta: "{\"title\":\"Fix title".into(),
+            },
+            AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final",
+                    "phase": "final_answer",
+                    "text": title_payload("Fix title aggregation")
+                }),
+            },
+            AgentEvent::Completed {
+                turn_id: "partial-then-completed".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            },
+        ],
+        vec![
+            AgentEvent::MessageDelta {
+                item_id: "final".into(),
+                delta: title_payload("Fix title aggregation"),
+            },
+            AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final",
+                    "phase": "final_answer",
+                    "text": title_payload("Fix title aggregation")
+                }),
+            },
+            AgentEvent::Completed {
+                turn_id: "duplicate-completed".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            },
+        ],
+    ];
+
+    for events in cases {
+        let generated = generate_title_script(events).await.unwrap();
+        assert_eq!(generated.title, "Fix title aggregation");
+        assert_eq!(
+            generated.description,
+            "Search summary for Fix title aggregation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn title_generation_uses_the_last_message_when_phase_is_missing() {
+    let generated = generate_title_script(vec![
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "legacy-commentary",
+                "text": "Preparing metadata."
+            }),
+        },
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "legacy-final",
+                "text": title_payload("Support legacy titles")
+            }),
+        },
+        AgentEvent::Completed {
+            turn_id: "legacy-title".into(),
+            status: AgentRunStatus::Completed,
+            error: None,
+        },
+    ])
+    .await
+    .unwrap();
+
+    assert_eq!(generated.title, "Support legacy titles");
+}
+
+#[tokio::test]
+async fn title_generation_rejects_non_json_final_text_without_salvaging_braces() {
+    let valid_commentary = title_payload("Ignore commentary metadata");
+    let invalid_final = format!(
+        "Here is the metadata: {}",
+        title_payload("Do not salvage embedded JSON")
+    );
+    let error = generate_title_script(vec![
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "commentary",
+                "phase": "commentary",
+                "text": valid_commentary
+            }),
+        },
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "final",
+                "phase": "final_answer",
+                "text": invalid_final
+            }),
+        },
+        AgentEvent::Completed {
+            turn_id: "invalid-final".into(),
+            status: AgentRunStatus::Completed,
+            error: None,
+        },
+    ])
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, ait_domain::ErrorCode::ProviderFailed);
+    assert!(error.message.contains("invalid Session metadata"));
 }
 
 #[tokio::test]

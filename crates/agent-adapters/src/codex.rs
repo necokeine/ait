@@ -812,18 +812,15 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
             })
             .await
             .map_err(adapter_domain_error)?;
-        let mut assistant_text = String::new();
-        let mut completed_text = None;
+        let mut output = CodexOutputCollector::default();
         let mut completed = false;
         while let Some(event) = stream.next().await {
             match event.map_err(adapter_domain_error)? {
-                AgentEvent::MessageDelta { delta, .. } => assistant_text.push_str(&delta),
-                AgentEvent::ItemCompleted { item } => {
-                    if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                        completed_text =
-                            item.get("text").and_then(Value::as_str).map(str::to_owned);
-                    }
+                AgentEvent::MessageDelta { item_id, delta } => {
+                    output.message_delta(item_id, &delta);
                 }
+                AgentEvent::ItemStarted { item } => output.item_started(&item),
+                AgentEvent::ItemCompleted { item } => output.item_completed(&item),
                 AgentEvent::Completed { status, error, .. } => {
                     if status != AgentRunStatus::Completed {
                         return Err(domain_error(
@@ -846,9 +843,7 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
                 true,
             ));
         }
-        if assistant_text.trim().is_empty() {
-            assistant_text = completed_text.unwrap_or_default();
-        }
+        let (assistant_text, _, _) = output.finish();
         let payload: GeneratedTitlePayload =
             serde_json::from_str(assistant_text.trim()).map_err(|error| {
                 domain_error(

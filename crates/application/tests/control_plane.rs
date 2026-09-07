@@ -192,6 +192,19 @@ impl SessionTitleGenerator for SuccessfulTitleGenerator {
     }
 }
 
+#[derive(Debug)]
+struct FailingTitleGenerator;
+
+#[async_trait]
+impl SessionTitleGenerator for FailingTitleGenerator {
+    async fn generate(&self, _: SessionTitleRequest) -> Result<GeneratedSessionTitle, DomainError> {
+        Err(DomainError::invariant(
+            ErrorCode::ProviderFailed,
+            "invalid Session metadata",
+        ))
+    }
+}
+
 #[tokio::test]
 async fn first_interaction_generates_session_metadata_once_and_preserves_manual_name() {
     let temporary = TempDir::new().unwrap();
@@ -289,6 +302,104 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         renamed.version, pointer_version,
         "metadata updates must not move the pointer version"
     );
+}
+
+#[tokio::test]
+async fn failed_title_generation_keeps_temporary_title_without_conversation_or_git_changes() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()))
+        .with_session_title_generator(Arc::new(FailingTitleGenerator));
+    let project = match run(
+        &service,
+        Command::RegisterProject {
+            id: "failed-title-project".into(),
+            name: "Failed Title Project".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    {
+        CommandResult::Project(value) => value,
+        _ => panic!(),
+    };
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "failed-title-agent".into(),
+            name: "Codex".into(),
+            config: config(),
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "failed-title-session".into(),
+            project_id: project.id,
+            agent_id: "failed-title-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SetSessionTitle {
+            session_id: "failed-title-session".into(),
+            title: "Temporary prompt title".into(),
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::SendMessage {
+            session_id: "failed-title-session".into(),
+            text: "first interaction".into(),
+        },
+    )
+    .await;
+
+    let before = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    let head_before = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&project_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let response = service
+        .generate_session_title("failed-title-session".into(), "first interaction".into())
+        .await;
+
+    assert!(!response.ok);
+    assert_eq!(response.error.unwrap().code, ErrorCode::ProviderFailed);
+    let after = match run(&service, Command::Snapshot).await {
+        CommandResult::Workspace(value) => value,
+        _ => panic!(),
+    };
+    let session = after
+        .sessions
+        .iter()
+        .find(|session| session.id == "failed-title-session")
+        .unwrap();
+    assert_eq!(session.title.as_deref(), Some("Temporary prompt title"));
+    assert!(session.description.is_empty());
+    assert!(session.title_generation_started);
+    assert_eq!(after.messages, before.messages);
+    assert_eq!(after.runs, before.runs);
+    let head_after = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&project_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(head_after, head_before);
 }
 
 #[tokio::test]
