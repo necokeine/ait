@@ -274,7 +274,6 @@ async fn returns_assistant_result_without_crossing_the_git_commit_boundary() {
         .unwrap();
 
     assert_eq!(result.assistant_text, "Implemented the requested change.");
-    assert!(result.commit_id.is_none());
     assert_eq!(result.operations.len(), 1);
     assert_eq!(result.operations[0].kind, "read");
     assert_eq!(result.operations[0].title, "Read file");

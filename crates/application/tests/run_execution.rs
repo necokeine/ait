@@ -20,6 +20,7 @@ use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::sync::Notify;
 
 struct ConflictingStore {
     inner: SqliteControlStore,
@@ -83,6 +84,76 @@ struct RecordingAgent {
     stop_after_checkpoint: AtomicBool,
 }
 
+struct SerialAgent {
+    calls: AtomicUsize,
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    first_started: Notify,
+    release_first: Notify,
+}
+
+#[async_trait]
+impl WorkspaceAgent for SerialAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        if call == 0 {
+            self.first_started.notify_one();
+            self.release_first.notified().await;
+        }
+        std::fs::write(
+            request.cwd.join(format!("serial-{call}.txt")),
+            format!("call {call}\n"),
+        )
+        .unwrap();
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Ok(WorkspaceAgentResponse {
+            assistant_text: format!("serial output {call}"),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+struct FencingAgent {
+    checkpointed: Notify,
+    release: Notify,
+    late_error: Mutex<Option<DomainError>>,
+}
+
+#[async_trait]
+impl WorkspaceAgent for FencingAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        unreachable!("fencing fixture uses invoke_and_checkpoint")
+    }
+
+    async fn invoke_and_checkpoint(
+        &self,
+        request: WorkspaceAgentInvocation,
+        result_sink: &dyn WorkspaceResultSink,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        std::fs::write(request.cwd.join("fenced.txt"), "must not commit\n").unwrap();
+        let result = WorkspaceAgentResponse {
+            assistant_text: "checkpointed output".into(),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        };
+        result_sink.checkpoint(result.clone()).await?;
+        self.checkpointed.notify_one();
+        self.release.notified().await;
+        let failure = result_sink.checkpoint(result.clone()).await.unwrap_err();
+        *self.late_error.lock().unwrap() = Some(failure.clone());
+        Err(failure)
+    }
+}
+
 #[async_trait]
 impl WorkspaceAgent for RecordingAgent {
     async fn invoke(
@@ -117,7 +188,6 @@ impl WorkspaceAgent for RecordingAgent {
         }
         Ok(WorkspaceAgentResponse {
             assistant_text: "fixture output".into(),
-            commit_id: None,
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -141,7 +211,7 @@ impl WorkspaceAgent for RecordingAgent {
 }
 
 struct Fixture {
-    _temporary: TempDir,
+    temporary: TempDir,
     store: Arc<ConflictingStore>,
     agent: Arc<RecordingAgent>,
     service: LocalControlService,
@@ -233,7 +303,7 @@ impl Fixture {
         )
         .await;
         Self {
-            _temporary: temporary,
+            temporary,
             store,
             agent,
             service,
@@ -434,7 +504,7 @@ async fn resume_safe_starts_a_durable_queued_run_but_queries_do_not() {
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].status, "completed");
     assert_eq!(recovered[0].operation_id, queued.operation_id);
-    assert_eq!(recovered[0].lease_epoch, 1);
+    assert_eq!(recovered[0].lease_epoch, 2);
     assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 1);
     assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
 }
@@ -702,6 +772,427 @@ async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
             fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null()
         );
     }
+}
+
+#[tokio::test]
+async fn startup_scan_becomes_query_ready_before_a_blocked_recovered_agent_finishes() {
+    let fixture = Fixture::new().await;
+    *fixture.store.checkpoints.lock().unwrap() =
+        VecDeque::from(["running", "running", "running", "running"]);
+    let response = fixture.service.execute(send_message()).await;
+    assert_eq!(response.error.unwrap().code, ErrorCode::RunQueueConflict);
+
+    let agent = Arc::new(SerialAgent {
+        calls: AtomicUsize::new(0),
+        active: AtomicUsize::new(0),
+        max_active: AtomicUsize::new(0),
+        first_started: Notify::new(),
+        release_first: Notify::new(),
+    });
+    let restarted = Arc::new(LocalControlService::with_workspace_agent(
+        fixture.store.clone(),
+        agent.clone(),
+    ));
+    let plan = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        restarted.prepare_startup_recovery(),
+    )
+    .await
+    .expect("startup scan must not wait for Agent execution")
+    .unwrap();
+    assert_eq!(plan.len(), 1);
+    assert_eq!(agent.calls.load(Ordering::SeqCst), 0);
+
+    let supervisor = {
+        let restarted = restarted.clone();
+        tokio::spawn(async move { restarted.run_startup_recovery(plan).await })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.first_started.notified(),
+    )
+    .await
+    .expect("recovery supervisor should start the queued Run");
+    let running = run(
+        &restarted,
+        Command::GetRun {
+            run_id: fixture.store.load().await.unwrap().value["runs"][0]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        },
+    )
+    .await;
+    assert_eq!(running.status, "running");
+    assert!(!supervisor.is_finished());
+    agent.release_first.notify_one();
+    let recovered = supervisor.await.unwrap().unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, "completed");
+    assert_eq!(agent.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        restarted
+            .recover_interrupted_runs()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn checkpointed_operation_rejects_later_user_worktree_and_index_changes_without_committing() {
+    let fixture = Fixture::new().await;
+    fixture.agent.edit_workspace.store(true, Ordering::Relaxed);
+    fixture
+        .agent
+        .stop_after_checkpoint
+        .store(true, Ordering::Relaxed);
+    let response = fixture.service.execute(send_message()).await;
+    assert_eq!(response.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+
+    std::fs::write(
+        std::path::Path::new(&fixture.project.workdir).join("user.txt"),
+        "user-owned change\n",
+    )
+    .unwrap();
+    git(&fixture.project.workdir, &["add", "user.txt"]);
+    let head = git(&fixture.project.workdir, &["rev-parse", "HEAD"]);
+
+    let recovered = fixture
+        .restarted_service()
+        .recover_interrupted_runs()
+        .await
+        .unwrap();
+    assert_eq!(recovered[0].status, "interrupted");
+    assert_eq!(git(&fixture.project.workdir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git(
+            &fixture.project.workdir,
+            &["diff", "--cached", "--name-only"]
+        ),
+        "user.txt"
+    );
+    assert!(
+        git(&fixture.project.workdir, &["status", "--porcelain=v1"])
+            .lines()
+            .any(|line| line.ends_with("answer.txt")),
+        "Ait must not stage the checkpointed Agent file after a mismatch"
+    );
+}
+
+#[tokio::test]
+async fn same_project_workspace_runs_are_serialized_from_git_snapshot_through_commit() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(SerialAgent {
+        calls: AtomicUsize::new(0),
+        active: AtomicUsize::new(0),
+        max_active: AtomicUsize::new(0),
+        first_started: Notify::new(),
+        release_first: Notify::new(),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "project".into(),
+            name: "Project".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project");
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "agent".into(),
+            name: "Agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    for session_id in ["session-1", "session-2"] {
+        command(
+            &service,
+            Command::CreateSession {
+                id: session_id.into(),
+                project_id: project.id.clone(),
+                agent_id: "agent".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+    }
+
+    let first = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            service
+                .execute(Command::SendMessage {
+                    session_id: "session-1".into(),
+                    text: "first".into(),
+                })
+                .await
+        })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.first_started.notified(),
+    )
+    .await
+    .unwrap();
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            service
+                .execute(Command::SendMessage {
+                    session_id: "session-2".into(),
+                    text: "second".into(),
+                })
+                .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(agent.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(agent.max_active.load(Ordering::SeqCst), 1);
+    agent.release_first.notify_one();
+    for response in [first.await.unwrap(), second.await.unwrap()] {
+        assert!(response.ok, "{:?}", response.error);
+        let CommandResult::Run(run) = response.result.unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(run.status, "completed");
+    }
+    assert_eq!(agent.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(agent.max_active.load(Ordering::SeqCst), 1);
+    assert_eq!(git(&project.workdir, &["rev-list", "--count", "HEAD"]), "3");
+    assert!(git(&project.workdir, &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[tokio::test]
+async fn startup_recovery_interrupts_missing_and_invalid_repositories_then_continues() {
+    let fixture = Fixture::new().await;
+    fixture.agent.edit_workspace.store(true, Ordering::Relaxed);
+    fixture
+        .agent
+        .stop_after_checkpoint
+        .store(true, Ordering::Relaxed);
+    let mut projects = vec![fixture.project.clone()];
+    for number in 2..=3 {
+        let path = fixture.temporary.path().join(format!("project-{number}"));
+        std::fs::create_dir(&path).unwrap();
+        let CommandResult::Project(project) = command(
+            &fixture.service,
+            Command::RegisterProject {
+                id: format!("project-{number}"),
+                name: format!("Project {number}"),
+                workdir: path.display().to_string(),
+                repo_url: None,
+            },
+        )
+        .await
+        else {
+            panic!("expected Project");
+        };
+        command(
+            &fixture.service,
+            Command::CreateSession {
+                id: format!("session-{number}"),
+                project_id: project.id.clone(),
+                agent_id: "agent".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+        projects.push(project);
+    }
+    for session_id in ["session", "session-2", "session-3"] {
+        let response = fixture
+            .service
+            .execute(Command::SendMessage {
+                session_id: session_id.into(),
+                text: format!("recover {session_id}"),
+            })
+            .await;
+        assert_eq!(response.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+    }
+    std::fs::remove_dir_all(&projects[0].workdir).unwrap();
+    std::fs::remove_dir_all(std::path::Path::new(&projects[1].workdir).join(".git")).unwrap();
+
+    let recovered = fixture
+        .restarted_service()
+        .recover_interrupted_runs()
+        .await
+        .unwrap();
+    assert_eq!(recovered.len(), 3);
+    assert_eq!(
+        recovered
+            .iter()
+            .filter(|run| run.status == "interrupted")
+            .count(),
+        2
+    );
+    assert_eq!(
+        recovered
+            .iter()
+            .filter(|run| run.status == "completed")
+            .count(),
+        1
+    );
+    let snapshot = fixture.store.load().await.unwrap();
+    assert!(
+        snapshot.value["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["active_run_id"].is_null())
+    );
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 3);
+}
+
+#[tokio::test]
+async fn nonterminal_journals_reject_stale_and_nonexistent_adapter_commit_ids() {
+    for commit_id in ["current", "ffffffffffffffffffffffffffffffffffffffff"] {
+        let fixture = Fixture::new().await;
+        fixture.agent.edit_workspace.store(true, Ordering::Relaxed);
+        fixture
+            .agent
+            .stop_after_checkpoint
+            .store(true, Ordering::Relaxed);
+        let response = fixture.service.execute(send_message()).await;
+        assert_eq!(response.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+        let snapshot = fixture.store.load().await.unwrap();
+        let mut value = snapshot.value;
+        let run_id = value["runs"][0]["id"].as_str().unwrap().to_owned();
+        let injected = if commit_id == "current" {
+            fixture.project.base_commit.clone()
+        } else {
+            commit_id.to_owned()
+        };
+        value["workspace_run_journals"][&run_id]["commit_id"] = serde_json::json!(injected);
+        fixture
+            .store
+            .commit(snapshot.revision, value, Vec::new())
+            .await
+            .unwrap();
+
+        let recovered = fixture
+            .restarted_service()
+            .recover_interrupted_runs()
+            .await
+            .unwrap();
+        assert_eq!(recovered[0].status, "interrupted");
+        assert_eq!(
+            git(&fixture.project.workdir, &["rev-parse", "HEAD"]),
+            fixture.project.base_commit
+        );
+        assert!(
+            git(
+                &fixture.project.workdir,
+                &["diff", "--cached", "--name-only"]
+            )
+            .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn stale_result_sink_is_fenced_after_terminal_lease_handoff_without_git_side_effects() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(ConflictingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        checkpoints: Mutex::default(),
+        failures: Mutex::default(),
+        reject_runs: AtomicBool::new(false),
+    });
+    let agent = Arc::new(FencingAgent {
+        checkpointed: Notify::new(),
+        release: Notify::new(),
+        late_error: Mutex::new(None),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "project".into(),
+            name: "Project".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project");
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "agent".into(),
+            name: "Agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "session".into(),
+            project_id: project.id.clone(),
+            agent_id: "agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let execution = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send_message()).await })
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.checkpointed.notified(),
+    )
+    .await
+    .unwrap();
+
+    let snapshot = store.load().await.unwrap();
+    let mut value = snapshot.value;
+    let run_id = value["runs"][0]["id"].as_str().unwrap().to_owned();
+    let next_epoch = value["runs"][0]["lease_epoch"].as_u64().unwrap() + 1;
+    value["runs"][0]["lease_epoch"] = serde_json::json!(next_epoch);
+    value["runs"][0]["status"] = serde_json::json!("cancelled");
+    value["runs"][0]["phase"] = serde_json::json!("terminal");
+    value["workspace_run_journals"][&run_id]["lease_epoch"] = serde_json::json!(next_epoch);
+    value["sessions"][0]["active_run_id"] = serde_json::Value::Null;
+    store
+        .commit(snapshot.revision, value, Vec::new())
+        .await
+        .unwrap();
+    agent.release.notify_one();
+    let response = execution.await.unwrap();
+    assert_eq!(response.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+    let stale = agent.late_error.lock().unwrap().clone().unwrap();
+    assert_eq!(stale.code, ErrorCode::RunRecoveryFailed);
+    assert_eq!(stale.message, "stale workspace execution lease");
+    let snapshot = store.load().await.unwrap();
+    assert_eq!(snapshot.value["runs"][0]["status"], "cancelled");
+    assert_eq!(
+        git(&project.workdir, &["rev-parse", "HEAD"]),
+        project.base_commit
+    );
+    assert!(git(&project.workdir, &["diff", "--cached", "--name-only"]).is_empty());
 }
 
 fn git(workdir: &str, arguments: &[&str]) -> String {

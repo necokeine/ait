@@ -81,6 +81,15 @@ export interface DesktopSnapshot {
   providers: AgentProvider[];
   sessions: DesktopSession[];
   messages: DesktopMessage[];
+  recoveryNotices?: Array<{
+    projectId: string;
+    projectName: string;
+    sessionId?: string;
+    sessionTitle?: string;
+    runId: string;
+    code?: string;
+    message: string;
+  }>;
 }
 
 export type SettingCategory =

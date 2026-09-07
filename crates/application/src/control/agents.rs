@@ -560,7 +560,6 @@ impl LocalControlService {
             .await?;
         Ok(WorkspaceAgentResponse {
             assistant_text,
-            commit_id: None,
             operations: Vec::new(),
             output_items: Vec::new(),
         })

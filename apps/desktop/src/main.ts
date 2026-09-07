@@ -10,7 +10,7 @@ import {
   legacyBuiltInCodexAgentId,
   projectAgent,
 } from "./agents.js";
-import { runFailure } from "./runs.js";
+import { runFailure, startupRecoveryNotices } from "./runs.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
@@ -43,7 +43,11 @@ interface WorkspaceView {
     active_run_id: string | null; version: number;
   }>;
   messages: WorkspaceMessage[];
-  runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
+  runs: Array<{
+    id: string; project_id: string; session_id: string | null; agent_id: string;
+    base_message_id: string; last_message_id: string | null; status: string;
+    error: { code: string; message: string } | null;
+  }>;
 }
 
 class DaemonClient {
@@ -274,6 +278,7 @@ class DaemonClient {
       })),
       agents: workspace.agents.map((agent) => projectAgent(agent, workspace.providers)),
       providers: workspace.providers,
+      recoveryNotices: startupRecoveryNotices(workspace),
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, name: session.name ?? "",
         title: sessionDisplayTitle(session), description: session.description ?? "",

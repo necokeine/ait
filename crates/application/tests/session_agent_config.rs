@@ -118,7 +118,6 @@ impl WorkspaceAgent for BlockingAgent {
         self.release.acquire().await.unwrap().forget();
         Ok(WorkspaceAgentResponse {
             assistant_text: "done".into(),
-            commit_id: None,
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -126,7 +125,7 @@ impl WorkspaceAgent for BlockingAgent {
 }
 
 #[tokio::test]
-async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_execute() {
+async fn active_session_rejects_changes_while_same_project_sessions_serialize() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
@@ -174,6 +173,17 @@ async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_e
         let service = service.clone();
         tokio::spawn(async move { ok(&service, send("two")).await })
     };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(view(&service).await.runs.len(), 1);
+    assert_eq!(
+        *agent.requests.lock().unwrap(),
+        vec![("gpt-5.6-sol".into(), Some("high".into()))]
+    );
+    agent.release.add_permits(1);
+    let CommandResult::Run(first) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(first.status, "completed");
     agent.started().await;
     assert_eq!(view(&service).await.runs.len(), 2);
     assert_eq!(
@@ -183,13 +193,11 @@ async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_e
             ("gpt-5.6-sol".into(), Some("low".into()))
         ]
     );
-    agent.release.add_permits(2);
-    for task in [running, second] {
-        let CommandResult::Run(run) = task.await.unwrap() else {
-            panic!()
-        };
-        assert_eq!(run.status, "completed");
-    }
+    agent.release.add_permits(1);
+    let CommandResult::Run(second) = second.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(second.status, "completed");
     let finished = view(&service).await;
     assert!(
         finished
@@ -352,7 +360,6 @@ impl WorkspaceAgent for CapturingWorkspaceAgent {
         self.0.lock().unwrap().push(request);
         Ok(WorkspaceAgentResponse {
             assistant_text: "native result".into(),
-            commit_id: None,
             operations: Vec::new(),
             output_items: Vec::new(),
         })

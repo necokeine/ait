@@ -291,9 +291,6 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         }
         Ok(WorkspaceAgentResponse {
             assistant_text,
-            // The application persists this result before crossing the Git
-            // side-effect boundary, then commits with a durable operation id.
-            commit_id: None,
             operations,
             output_items,
         })

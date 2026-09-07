@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["macros", "sync"] }
 ait-storage-sqlite = { path = "../storage-sqlite" }
 criterion = "0.7"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [[bench]]
 name = "message_path"

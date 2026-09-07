@@ -35,7 +35,6 @@ impl WorkspaceAgent for FixtureCodex {
         let assistant_text = format!("Completed: {}", request.commit_subject);
         Ok(WorkspaceAgentResponse {
             assistant_text: assistant_text.clone(),
-            commit_id: None,
             operations: Vec::new(),
             output_items: vec![WorkspaceOutputItem::Message {
                 id: format!("message-{}", request.request_id),
@@ -143,7 +142,6 @@ impl WorkspaceAgent for SuccessfulCodex {
         assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
         Ok(WorkspaceAgentResponse {
             assistant_text: "Implemented and verified the feature.".into(),
-            commit_id: Some("0123456789abcdef".into()),
             operations: vec![WorkspaceOperation {
                 id: "operation-1".into(),
                 kind: "read".into(),
@@ -366,7 +364,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
     );
     assert_eq!(
         assistant.data.as_ref().unwrap()["codex"]["commit_id"],
-        serde_json::json!("0123456789abcdef")
+        serde_json::Value::Null
     );
     assert_eq!(
         assistant.data.as_ref().unwrap()["codex"]["operations"][0]["paths"][0],

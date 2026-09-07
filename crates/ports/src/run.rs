@@ -163,8 +163,6 @@ pub struct WorkspaceAgentInvocation {
 pub struct WorkspaceAgentResponse {
     /// Final assistant result shown in the Session.
     pub assistant_text: String,
-    /// Commit created for workspace changes, when the turn changed files.
-    pub commit_id: Option<String>,
     /// Bounded, display-only records for native harness operations.
     ///
     /// These records preserve user-visible audit context without pretending
