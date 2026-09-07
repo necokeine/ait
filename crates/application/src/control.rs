@@ -3,7 +3,8 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
-    path::Path,
+    fs::{File, OpenOptions},
+    path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::{Arc, Mutex, Weak},
     time::{SystemTime, UNIX_EPOCH},
@@ -70,6 +71,13 @@ enum CommandOutcome {
     ExecuteWorkspaceRun(String),
 }
 
+/// Owns both the async in-process queue position and the process-wide advisory
+/// lock for one canonical Project Git worktree.
+struct WorkspaceWriteLease {
+    _process_guard: tokio::sync::OwnedMutexGuard<()>,
+    _file: File,
+}
+
 impl CommandOutcome {
     fn for_new_run(run: RunView) -> Self {
         Self::ExecuteWorkspaceRun(run.id)
@@ -116,6 +124,7 @@ impl From<State> for WorkspaceView {
 pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
     session_leases: Mutex<HashMap<String, Weak<()>>>,
+    workspace_leases: Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>,
     cancellations: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
@@ -129,6 +138,7 @@ impl LocalControlService {
         Self {
             store,
             session_leases: Mutex::new(HashMap::new()),
+            workspace_leases: Mutex::new(HashMap::new()),
             cancellations: Mutex::new(HashMap::new()),
             provider_gateway: None,
             host_provider_catalog: None,
@@ -146,6 +156,7 @@ impl LocalControlService {
         Self {
             store,
             session_leases: Mutex::new(HashMap::new()),
+            workspace_leases: Mutex::new(HashMap::new()),
             cancellations: Mutex::new(HashMap::new()),
             provider_gateway: None,
             host_provider_catalog: None,
@@ -353,6 +364,11 @@ impl LocalControlService {
             .find(|message| message.id == run.base_message_id)
             .and_then(|message| message.text.clone())
             .ok_or_else(|| error(ErrorCode::MessageNotFound, "run input not found", false))?;
+        let message_baseline = state
+            .messages
+            .iter()
+            .find(|message| message.id == run.base_message_id)
+            .and_then(|message| message.git_commit.clone());
         let workdir = Path::new(&project.workdir).to_path_buf();
         let cancellation = tokio_util::sync::CancellationToken::new();
         let _invocation = InvocationGuard::new(&self.cancellations, &run.id, cancellation.clone());
@@ -365,21 +381,30 @@ impl LocalControlService {
                 .find(|candidate| candidate.id == run.id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false));
         }
+        let workspace_write_call = run.provider.kind == AgentMode::Codex;
         let call = async {
             match run.provider.kind {
                 AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, run).await,
                 AgentMode::Codex => match &self.workspace_agent {
                     Some(executor) => {
+                        let baseline_commit =
+                            match run
+                                .workspace_base_commit
+                                .as_ref()
+                                .or(message_baseline.as_ref())
+                            {
+                                Some(commit) => commit.clone(),
+                                None => git_head(&workdir).map_err(api_domain_error)?.ok_or_else(
+                                    || {
+                                        DomainError::invariant(
+                                            ErrorCode::ProjectGitHeadUnavailable,
+                                            "project repository has no HEAD commit",
+                                        )
+                                    },
+                                )?,
+                            };
                         let (project_instructions, prompt) =
-                            codex_prompt(&state, &run.base_message_id).map_err(|error| {
-                                DomainError {
-                                    code: error.code,
-                                    message: error.message,
-                                    retryable: error.retryable,
-                                    details: None,
-                                    cause_id: None,
-                                }
-                            })?;
+                            codex_prompt(&state, &run.base_message_id).map_err(api_domain_error)?;
                         executor
                             .invoke(WorkspaceAgentInvocation {
                                 request_id: run.id.clone(),
@@ -389,6 +414,7 @@ impl LocalControlService {
                                 prompt,
                                 commit_subject: user_text,
                                 cwd: workdir,
+                                baseline_commit,
                                 cancellation: cancellation.clone(),
                             })
                             .await
@@ -400,9 +426,19 @@ impl LocalControlService {
                 },
             }
         };
+        tokio::pin!(call);
         let result = tokio::select! {
-            result = call => result,
-            () = cancellation.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled")),
+            biased;
+            () = cancellation.cancelled() => {
+                // A workspace-writing adapter must finish child reaping and
+                // worktree settlement before the Project lease is released.
+                // Text-only providers have no workspace side effect to settle.
+                if workspace_write_call {
+                    let _ = (&mut call).await;
+                }
+                Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled"))
+            },
+            result = &mut call => result,
         };
         self.finish_workspace_run(&run.id, result).await
     }
@@ -592,9 +628,14 @@ impl LocalControlService {
         if let Command::RefreshProviderModels { provider_id } = command {
             return self.refresh_provider(&provider_id).await;
         }
+        // Workspace-writing Codex requests for the same canonical Git root are
+        // serialized before the user Message captures HEAD. Unrelated Projects
+        // and read-only operations do not share this lease.
+        let workspace_lease = self.acquire_workspace_write(&command).await?;
+        let has_workspace_lease = workspace_lease.is_some();
         // Commit retries may reapply state changes, but never repeat an external
         // Agent invocation. Only the command that created the Run can request it.
-        match self.commit_command(command).await? {
+        let result = match self.commit_command(command, has_workspace_lease).await? {
             CommandOutcome::Ready(result) => {
                 if let CommandResult::Run(run) = result.as_ref()
                     && run.status == "cancelled"
@@ -612,15 +653,28 @@ impl LocalControlService {
                 .execute_workspace_agent(&run_id)
                 .await
                 .map(CommandResult::Run),
-        }
+        };
+        drop(workspace_lease);
+        result
     }
 
-    async fn commit_command(&self, command: Command) -> Result<CommandOutcome, ApiError> {
+    async fn commit_command(
+        &self,
+        command: Command,
+        has_workspace_lease: bool,
+    ) -> Result<CommandOutcome, ApiError> {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
             check_session_admission(&state, &command)?;
-            let git_commit = user_message_git_commit(&state, &command)?;
+            if !has_workspace_lease && workspace_write_path(&state, &command)?.is_some() {
+                return Err(error(
+                    ErrorCode::ProjectWorkspaceBusy,
+                    "Agent configuration changed to a workspace-writing provider during admission; retry the request",
+                    true,
+                ));
+            }
+            let git_commit = command_git_baseline(&state, &command)?;
             let (result, events) =
                 apply_command(&mut state, command.clone(), git_commit.as_deref())?;
             let value = serde_json::to_value(&state).map_err(serialization_error)?;
@@ -635,6 +689,170 @@ impl LocalControlService {
             "concurrent state update did not settle",
             true,
         ))
+    }
+
+    async fn acquire_workspace_write(
+        &self,
+        command: &Command,
+    ) -> Result<Option<WorkspaceWriteLease>, ApiError> {
+        let snapshot = self.store.load().await.map_err(store_error)?;
+        let state = decode_state(snapshot.value)?;
+        check_session_admission(&state, command)?;
+        let Some(workdir) = workspace_write_path(&state, command)? else {
+            return Ok(None);
+        };
+        let canonical = workdir.canonicalize().map_err(|failure| {
+            error(
+                ErrorCode::ProjectPathNotFound,
+                format!("cannot resolve Project workdir for write admission: {failure}"),
+                false,
+            )
+        })?;
+        let process_lock = {
+            let mut leases = self.workspace_leases.lock().map_err(|_| {
+                error(
+                    ErrorCode::ProjectWorkspaceBusy,
+                    "workspace write lease registry is unavailable",
+                    true,
+                )
+            })?;
+            leases.retain(|_, lease| lease.strong_count() > 0);
+            if let Some(existing) = leases.get(&canonical).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let lease = Arc::new(tokio::sync::Mutex::new(()));
+                leases.insert(canonical.clone(), Arc::downgrade(&lease));
+                lease
+            }
+        };
+        let process_guard = process_lock.lock_owned().await;
+        let git_dir = absolute_git_dir(&canonical)?;
+        let lock_dir = git_dir.join("ait").join("locks");
+        std::fs::create_dir_all(&lock_dir).map_err(|failure| {
+            error(
+                ErrorCode::ProjectWorkspaceBusy,
+                format!("cannot create workspace lease directory: {failure}"),
+                true,
+            )
+        })?;
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_dir.join("workspace-write.lock"))
+            .map_err(|failure| {
+                error(
+                    ErrorCode::ProjectWorkspaceBusy,
+                    format!("cannot open workspace write lease: {failure}"),
+                    true,
+                )
+            })?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(WorkspaceWriteLease {
+                _process_guard: process_guard,
+                _file: file,
+            })),
+            Err(std::fs::TryLockError::WouldBlock) => Err(error(
+                ErrorCode::ProjectWorkspaceBusy,
+                "another Ait process owns this Project workspace write lease",
+                true,
+            )),
+            Err(std::fs::TryLockError::Error(failure)) => Err(error(
+                ErrorCode::ProjectWorkspaceBusy,
+                format!("cannot acquire Project workspace write lease: {failure}"),
+                true,
+            )),
+        }
+    }
+}
+
+fn workspace_write_path(state: &State, command: &Command) -> Result<Option<PathBuf>, ApiError> {
+    let target = match command {
+        Command::SendMessage { session_id, .. } => {
+            let session = state
+                .sessions
+                .iter()
+                .find(|session| session.id == *session_id)
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            Some((session.project_id.as_str(), session.agent_id.as_str()))
+        }
+        Command::ForkSession {
+            project_id,
+            agent_id,
+            ..
+        } => Some((project_id.as_str(), agent_id.as_str())),
+        Command::TriggerCron {
+            cron_id,
+            scheduled_at,
+        } => {
+            if state.runs.iter().any(|run| {
+                run.cron_id.as_deref() == Some(cron_id.as_str())
+                    && run.scheduled_at == Some(*scheduled_at)
+            }) {
+                return Ok(None);
+            }
+            state
+                .crons
+                .iter()
+                .find(|cron| cron.id == *cron_id && cron.enabled)
+                .map(|cron| (cron.project_id.as_str(), cron.agent_id.as_str()))
+        }
+        _ => None,
+    };
+    let Some((project_id, agent_id)) = target else {
+        return Ok(None);
+    };
+    let agent = require_agent(state, agent_id)?;
+    if validate_config(state, &agent.config)?.kind != AgentMode::Codex {
+        return Ok(None);
+    }
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    Ok(Some(PathBuf::from(&project.workdir)))
+}
+
+fn absolute_git_dir(workdir: &Path) -> Result<PathBuf, ApiError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot locate Project Git directory: {failure}"),
+                false,
+            )
+        })?;
+    if !output.status.success() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            false,
+        ));
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if !path.is_absolute() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Git returned a non-absolute metadata directory",
+            false,
+        ));
+    }
+    Ok(path)
+}
+
+fn api_domain_error(error: ApiError) -> DomainError {
+    DomainError {
+        code: error.code,
+        message: error.message,
+        retryable: error.retryable,
+        details: None,
+        cause_id: None,
     }
 }
 
@@ -749,7 +967,7 @@ fn apply_command(
         Command::TriggerCron {
             cron_id,
             scheduled_at,
-        } => return trigger_cron(state, &cron_id, scheduled_at),
+        } => return trigger_cron(state, &cron_id, scheduled_at, user_git_commit),
         Command::ImportProject { archive, workdir } => import_project(state, archive, &workdir),
         Command::SaveSettings {
             expected_revision,
@@ -1216,6 +1434,7 @@ fn send_message(
         .clone_from(&user.id);
     state.sessions[index].version += 1;
     state.sessions[index].active_run_id = Some(run_id.clone());
+    let workspace_base_commit = (provider.kind == AgentMode::Codex).then(|| git_commit.to_owned());
     let run = RunView {
         id: run_id.clone(),
         project_id: session.project_id,
@@ -1229,6 +1448,7 @@ fn send_message(
         trigger: "manual".into(),
         cron_id: None,
         scheduled_at: None,
+        workspace_base_commit,
         status: "queued".into(),
         error: None,
     };
@@ -1443,6 +1663,7 @@ fn trigger_cron(
     state: &mut State,
     cron_id: &str,
     scheduled_at: i64,
+    workspace_base_commit: Option<&str>,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     if let Some(existing) = state.runs.iter().find(|run| {
         run.cron_id.as_deref() == Some(cron_id) && run.scheduled_at == Some(scheduled_at)
@@ -1459,6 +1680,14 @@ fn trigger_cron(
         .cloned()
         .ok_or_else(|| error(ErrorCode::InvalidCron, "enabled cron not found", false))?;
     let agent = require_agent(state, &cron.agent_id)?.clone();
+    let provider = validate_config(state, &agent.config)?.clone();
+    if provider.kind == AgentMode::Codex && workspace_base_commit.is_none() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Codex Cron Run requires a Git baseline captured under the workspace lease",
+            true,
+        ));
+    }
     let run_id = Uuid::new_v4().to_string();
     if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
         state
@@ -1474,10 +1703,11 @@ fn trigger_cron(
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
         config: agent.config.clone(),
-        provider: validate_config(state, &agent.config)?.clone(),
+        provider,
         trigger: "cron".into(),
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),
+        workspace_base_commit: workspace_base_commit.map(str::to_owned),
         status: "queued".into(),
         error: None,
     });
@@ -1890,7 +2120,7 @@ fn ensure_git_head(path: &Path) -> Result<String, ApiError> {
     })
 }
 
-fn user_message_git_commit(state: &State, command: &Command) -> Result<Option<String>, ApiError> {
+fn command_git_baseline(state: &State, command: &Command) -> Result<Option<String>, ApiError> {
     let project_id = match command {
         Command::SendMessage { session_id, .. } => Some(
             state
@@ -1902,6 +2132,29 @@ fn user_message_git_commit(state: &State, command: &Command) -> Result<Option<St
                 .as_str(),
         ),
         Command::ForkSession { project_id, .. } => Some(project_id.as_str()),
+        Command::TriggerCron {
+            cron_id,
+            scheduled_at,
+        } => {
+            if state.runs.iter().any(|run| {
+                run.cron_id.as_deref() == Some(cron_id.as_str())
+                    && run.scheduled_at == Some(*scheduled_at)
+            }) {
+                return Ok(None);
+            }
+            let Some(cron) = state
+                .crons
+                .iter()
+                .find(|cron| cron.id == *cron_id && cron.enabled)
+            else {
+                return Ok(None);
+            };
+            let agent = require_agent(state, &cron.agent_id)?;
+            if validate_config(state, &agent.config)?.kind != AgentMode::Codex {
+                return Ok(None);
+            }
+            Some(cron.project_id.as_str())
+        }
         _ => return Ok(None),
     };
     let Some(project_id) = project_id else {

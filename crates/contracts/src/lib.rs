@@ -218,6 +218,9 @@ pub struct RunView {
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
+    /// Git baseline authorized for a workspace-writing Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_base_commit: Option<String>,
     pub status: String,
     pub error: Option<ApiError>,
 }

@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::Arc,
@@ -19,6 +20,7 @@ use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -232,72 +234,302 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let head_before = ensure_clean_worktree(&request.cwd)?;
-        let mut stream = self
-            .adapter
-            .run(AgentRunRequest {
-                request_id: request.request_id,
-                model: Some(request.model),
-                reasoning_effort: request.reasoning_effort,
-                project_instructions: request.project_instructions,
-                prompt: request.prompt,
-                cwd: request.cwd.clone(),
-                resume_thread_id: None,
-                sandbox: crate::SandboxMode::WorkspaceWrite,
-                approval_policy: crate::ApprovalPolicy::Never,
-                output_schema: None,
-                cancellation: request.cancellation,
-            })
+        let adapter = Arc::clone(&self.adapter);
+        tokio::spawn(async move { invoke_isolated_workspace(adapter, request).await })
             .await
-            .map_err(adapter_domain_error)?;
-        let mut completed = false;
-        let mut output = CodexOutputCollector::default();
-        while let Some(event) = stream.next().await {
-            match event.map_err(adapter_domain_error)? {
-                AgentEvent::MessageDelta { item_id, delta } => {
-                    output.message_delta(item_id, &delta);
-                }
-                AgentEvent::ItemStarted { item } => output.item_started(&item),
-                AgentEvent::ItemCompleted { item } => output.item_completed(&item),
-                AgentEvent::Completed { status, error, .. } => {
-                    if status != AgentRunStatus::Completed {
-                        return Err(domain_error(
-                            ErrorCode::ProviderFailed,
-                            error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
-                            status == AgentRunStatus::Unknown,
-                        ));
-                    }
-                    completed = true;
-                }
-                _ => {}
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::ProviderFailed,
+                    format!("Codex workspace task failed: {failure}"),
+                    true,
+                )
+            })?
+    }
+}
+
+async fn invoke_isolated_workspace(
+    adapter: Arc<dyn AgentAdapter>,
+    request: WorkspaceAgentInvocation,
+) -> Result<WorkspaceAgentResponse, DomainError> {
+    if request.cancellation.is_cancelled() {
+        return Err(domain_error(
+            ErrorCode::RunCancelled,
+            "run was cancelled before Codex workspace setup",
+            false,
+        ));
+    }
+    let mut workspace =
+        IsolatedWorkspace::create(&request.cwd, &request.request_id, &request.baseline_commit)?;
+    let cancellation = request.cancellation.clone();
+    let commit_subject = request.commit_subject;
+    let stream = adapter
+        .run(AgentRunRequest {
+            request_id: request.request_id,
+            model: Some(request.model),
+            reasoning_effort: request.reasoning_effort,
+            project_instructions: request.project_instructions,
+            prompt: request.prompt,
+            cwd: workspace.path().to_path_buf(),
+            resume_thread_id: None,
+            sandbox: crate::SandboxMode::WorkspaceWrite,
+            approval_policy: crate::ApprovalPolicy::Never,
+            output_schema: None,
+            cancellation: cancellation.clone(),
+        })
+        .await;
+    let stream = match stream {
+        Ok(stream) => stream,
+        Err(failure) => {
+            return Err(workspace.settle_failure(adapter_domain_error(failure)));
+        }
+    };
+    let (assistant_text, operations, output_items) =
+        collect_workspace_output(stream, &mut workspace).await?;
+    if cancellation.is_cancelled() {
+        return Err(workspace.settle_failure(domain_error(
+            ErrorCode::RunCancelled,
+            "run was cancelled before isolated changes were committed",
+            false,
+        )));
+    }
+    let commit_id = match commit_workspace_changes(
+        workspace.path(),
+        &commit_subject,
+        Some(workspace.baseline()),
+    ) {
+        Ok(commit_id) => commit_id,
+        Err(failure) => return Err(workspace.settle_failure(failure)),
+    };
+    if let Some(commit_id) = commit_id.as_deref()
+        && let Err(failure) = workspace.pin_commit(commit_id)
+    {
+        return Err(workspace.settle_failure(failure));
+    }
+    if cancellation.is_cancelled() {
+        return Err(workspace.settle_failure(domain_error(
+            ErrorCode::RunCancelled,
+            "run was cancelled before isolated changes were integrated",
+            false,
+        )));
+    }
+    if let Err(failure) = workspace.integrate(commit_id.as_deref()) {
+        return Err(workspace.retain(failure));
+    }
+    Ok(WorkspaceAgentResponse {
+        assistant_text,
+        commit_id,
+        operations,
+        output_items,
+    })
+}
+
+async fn collect_workspace_output(
+    mut stream: AgentStream,
+    workspace: &mut IsolatedWorkspace,
+) -> Result<(String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>), DomainError> {
+    let mut completed = false;
+    let mut output = CodexOutputCollector::default();
+    while let Some(event) = stream.next().await {
+        let event = match event {
+            Ok(event) => event,
+            Err(failure) => {
+                // Wait for the adapter-owned task to close the stream after
+                // reaping its child before deciding whether cleanup is safe.
+                while stream.next().await.is_some() {}
+                return Err(workspace.settle_failure(adapter_domain_error(failure)));
             }
+        };
+        match event {
+            AgentEvent::MessageDelta { item_id, delta } => {
+                output.message_delta(item_id, &delta);
+            }
+            AgentEvent::ItemStarted { item } => output.item_started(&item),
+            AgentEvent::ItemCompleted { item } => output.item_completed(&item),
+            AgentEvent::Completed { status, error, .. } => {
+                if status != AgentRunStatus::Completed {
+                    let failure = domain_error(
+                        ErrorCode::ProviderFailed,
+                        error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
+                        status == AgentRunStatus::Unknown,
+                    );
+                    while stream.next().await.is_some() {}
+                    return Err(workspace.settle_failure(failure));
+                }
+                completed = true;
+            }
+            _ => {}
         }
-        if !completed {
+    }
+    if !completed {
+        return Err(workspace.settle_failure(domain_error(
+            ErrorCode::ProviderFailed,
+            "Codex stream ended before turn completion",
+            true,
+        )));
+    }
+    let (assistant_text, operations, output_items) = output.finish();
+    if assistant_text.trim().is_empty() {
+        return Err(workspace.settle_failure(domain_error(
+            ErrorCode::ProviderFailed,
+            "Codex returned an empty assistant result",
+            false,
+        )));
+    }
+    Ok((assistant_text, operations, output_items))
+}
+
+struct IsolatedWorkspace {
+    primary: PathBuf,
+    worktree: PathBuf,
+    run_ref: String,
+    baseline: String,
+    primary_head_ref: Option<String>,
+}
+
+impl IsolatedWorkspace {
+    fn create(primary: &Path, request_id: &str, baseline: &str) -> Result<Self, DomainError> {
+        let primary = fs::canonicalize(primary).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectPathNotFound,
+                format!("cannot resolve Project workdir: {failure}"),
+                false,
+            )
+        })?;
+        let primary_head_ref = ensure_primary_baseline(&primary, baseline, None)?;
+        let git_dir = absolute_git_dir(&primary)?;
+        let identity = format!("{:x}", Sha256::digest(request_id.as_bytes()));
+        let worktree_root = git_dir.join("ait").join("workspaces");
+        fs::create_dir_all(&worktree_root).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitInitFailed,
+                format!("cannot create isolated workspace directory: {failure}"),
+                false,
+            )
+        })?;
+        let worktree = worktree_root.join(&identity);
+        let run_ref = format!("refs/ait/runs/{identity}");
+        if worktree.exists() || git_ref_exists(&primary, &run_ref)? {
             return Err(domain_error(
-                ErrorCode::ProviderFailed,
-                "Codex stream ended before turn completion",
-                true,
-            ));
-        }
-        let (assistant_text, operations, output_items) = output.finish();
-        if assistant_text.trim().is_empty() {
-            return Err(domain_error(
-                ErrorCode::ProviderFailed,
-                "Codex returned an empty assistant result",
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "an isolated workspace already exists for this Run at {}; recover or remove {run_ref} before retrying",
+                    worktree.display()
+                ),
                 false,
             ));
         }
-        let commit_id = commit_workspace_changes(
-            &request.cwd,
-            &request.commit_subject,
-            head_before.as_deref(),
-        )?;
-        Ok(WorkspaceAgentResponse {
-            assistant_text,
-            commit_id,
-            operations,
-            output_items,
+        git(&primary, &["update-ref", &run_ref, baseline])?;
+        let worktree_text = worktree.to_string_lossy().into_owned();
+        if let Err(failure) = git(
+            &primary,
+            &["worktree", "add", "--detach", &worktree_text, baseline],
+        ) {
+            let _ = delete_git_ref(&primary, &run_ref);
+            return Err(failure);
+        }
+        Ok(Self {
+            primary,
+            worktree,
+            run_ref,
+            baseline: baseline.to_owned(),
+            primary_head_ref,
         })
+    }
+
+    fn path(&self) -> &Path {
+        &self.worktree
+    }
+
+    fn baseline(&self) -> &str {
+        &self.baseline
+    }
+
+    fn integrate(&mut self, commit_id: Option<&str>) -> Result<(), DomainError> {
+        if let Some(commit_id) = commit_id {
+            ensure_descendant(&self.primary, &self.baseline, commit_id)?;
+        }
+        ensure_primary_baseline(&self.primary, &self.baseline, Some(&self.primary_head_ref))?;
+        self.remove_clean_worktree()?;
+        if let Some(commit_id) = commit_id {
+            git(
+                &self.primary,
+                &["merge", "--ff-only", "--no-edit", commit_id],
+            )?;
+            let integrated = git_head(&self.primary).ok_or_else(|| {
+                domain_error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    "Project HEAD disappeared while integrating isolated changes",
+                    true,
+                )
+            })?;
+            if integrated != commit_id {
+                return Err(domain_error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    "Project HEAD did not reach the isolated Run commit",
+                    true,
+                ));
+            }
+        }
+        // Ref cleanup is housekeeping after the externally visible commit has
+        // already integrated; a stale audit ref must not turn that success into
+        // a failed Run whose side effect nevertheless landed.
+        let _ = delete_git_ref(&self.primary, &self.run_ref);
+        Ok(())
+    }
+
+    fn pin_commit(&self, commit_id: &str) -> Result<(), DomainError> {
+        ensure_descendant(&self.primary, &self.baseline, commit_id)?;
+        git(&self.primary, &["update-ref", &self.run_ref, commit_id])?;
+        Ok(())
+    }
+
+    fn remove_clean_worktree(&self) -> Result<(), DomainError> {
+        let status = git(&self.worktree, &["status", "--porcelain=v1"])?;
+        if !status.stdout.is_empty() {
+            return Err(domain_error(
+                ErrorCode::ProjectGitDirty,
+                "isolated Codex worktree is dirty and was retained",
+                false,
+            ));
+        }
+        let worktree = self.worktree.to_string_lossy().into_owned();
+        git(&self.primary, &["worktree", "remove", &worktree])?;
+        Ok(())
+    }
+
+    fn settle_failure(&mut self, failure: DomainError) -> DomainError {
+        let changed = git_head(&self.worktree).as_deref() != Some(self.baseline.as_str())
+            || git(&self.worktree, &["status", "--porcelain=v1"])
+                .map_or(true, |status| !status.stdout.is_empty());
+        if !changed && self.remove_clean_worktree().is_ok() {
+            let _ = delete_git_ref(&self.primary, &self.run_ref);
+            failure
+        } else {
+            if let Some(head) = git_head(&self.worktree)
+                && head != self.baseline
+                && ensure_descendant(&self.primary, &self.baseline, &head).is_ok()
+            {
+                let _ = git(&self.primary, &["update-ref", &self.run_ref, &head]);
+            }
+            self.retain(failure)
+        }
+    }
+
+    fn retain(&self, mut failure: DomainError) -> DomainError {
+        failure.message = if self.worktree.exists() {
+            format!(
+                "{}; isolated Run changes were retained at {} under {}",
+                failure.message,
+                self.worktree.display(),
+                self.run_ref
+            )
+        } else {
+            format!(
+                "{}; the isolated Run commit was retained under {}",
+                failure.message, self.run_ref
+            )
+        };
+        failure
     }
 }
 
@@ -901,12 +1133,141 @@ fn ensure_clean_worktree(cwd: &Path) -> Result<Option<String>, DomainError> {
     let output = git(cwd, &["status", "--porcelain=v1"])?;
     if !output.stdout.is_empty() {
         return Err(domain_error(
-            ErrorCode::InvalidConfiguration,
-            "Codex requires a clean Project worktree so existing user changes are never committed",
+            ErrorCode::ProjectGitDirty,
+            "Project Git worktree and index must be clean before a Codex Run",
             false,
         ));
     }
     Ok(git_head(cwd))
+}
+
+fn ensure_primary_baseline(
+    primary: &Path,
+    baseline: &str,
+    expected_head_ref: Option<&Option<String>>,
+) -> Result<Option<String>, DomainError> {
+    let head = ensure_clean_worktree(primary)?.ok_or_else(|| {
+        domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Project repository has no readable HEAD commit",
+            false,
+        )
+    })?;
+    if head != baseline {
+        return Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            format!(
+                "Project HEAD changed during the Codex Run (expected {baseline}, found {head}); isolated changes were not integrated"
+            ),
+            true,
+        ));
+    }
+    let head_ref = symbolic_head(primary)?;
+    if expected_head_ref.is_some_and(|expected| *expected != head_ref) {
+        return Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Project branch changed during the Codex Run; isolated changes were not integrated",
+            true,
+        ));
+    }
+    Ok(head_ref)
+}
+
+fn symbolic_head(cwd: &Path) -> Result<Option<String>, DomainError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot inspect Project branch: {failure}"),
+                false,
+            )
+        })?;
+    if output.status.success() {
+        return Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ));
+    }
+    if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            false,
+        ))
+    }
+}
+
+fn absolute_git_dir(cwd: &Path) -> Result<PathBuf, DomainError> {
+    let output = git(cwd, &["rev-parse", "--absolute-git-dir"])?;
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Git returned a non-absolute metadata directory",
+            false,
+        ))
+    }
+}
+
+fn git_ref_exists(cwd: &Path, reference: &str) -> Result<bool, DomainError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["show-ref", "--verify", "--quiet", reference])
+        .output()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot inspect isolated Run reference: {failure}"),
+                false,
+            )
+        })?;
+    if output.status.success() {
+        Ok(true)
+    } else if output.status.code() == Some(1) {
+        Ok(false)
+    } else {
+        Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            false,
+        ))
+    }
+}
+
+fn delete_git_ref(cwd: &Path, reference: &str) -> Result<(), DomainError> {
+    git(cwd, &["update-ref", "-d", reference]).map(|_| ())
+}
+
+fn ensure_descendant(cwd: &Path, baseline: &str, commit: &str) -> Result<(), DomainError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["merge-base", "--is-ancestor", baseline, commit])
+        .output()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot validate isolated Run ancestry: {failure}"),
+                false,
+            )
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "isolated Run HEAD is not a descendant of its authorized baseline",
+            false,
+        ))
+    }
 }
 
 fn commit_workspace_changes(
@@ -986,7 +1347,12 @@ fn git(cwd: &Path, arguments: &[&str]) -> Result<std::process::Output, DomainErr
 }
 
 fn adapter_domain_error(error: AdapterError) -> DomainError {
-    domain_error(ErrorCode::ProviderFailed, error.message, error.retryable)
+    let code = if error.kind == AdapterErrorKind::Cancelled {
+        ErrorCode::RunCancelled
+    } else {
+        ErrorCode::ProviderFailed
+    };
+    domain_error(code, error.message, error.retryable)
 }
 
 fn domain_error(code: ErrorCode, message: impl Into<String>, retryable: bool) -> DomainError {

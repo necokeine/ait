@@ -1,6 +1,6 @@
 //! Workspace execution and Git commit coverage for the Codex adapter.
 
-use std::{process::Command, sync::Arc};
+use std::{path::Path, process::Command, sync::Arc};
 
 use ait_agent_adapters::{
     AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
@@ -14,6 +14,7 @@ use ait_ports::{
 use async_trait::async_trait;
 use serde_json::json;
 use tempfile::TempDir;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
@@ -125,6 +126,67 @@ impl AgentAdapter for EditingAdapter {
 }
 
 #[derive(Debug)]
+struct PausingEditingAdapter {
+    entered: Semaphore,
+    release: Semaphore,
+}
+
+impl PausingEditingAdapter {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            release: Semaphore::new(0),
+        }
+    }
+
+    async fn started(&self) {
+        self.entered.acquire().await.unwrap().forget();
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for PausingEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "pausing_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("agent-owned.txt"), "agent change\n").unwrap();
+        self.entered.add_permits(1);
+        tokio::select! {
+            permit = self.release.acquire() => permit.unwrap().forget(),
+            () = request.cancellation.cancelled() => return Err(AdapterError::cancelled()),
+        }
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final-paused",
+                    "phase": "final_answer",
+                    "text": "Finished isolated edit."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "turn-paused".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
+
+#[derive(Debug)]
 struct TitleAdapter;
 
 #[async_trait]
@@ -208,7 +270,62 @@ fn initialized_project() -> TempDir {
             .unwrap()
             .success()
     );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
     project
+}
+
+fn head(project: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn run_ref(project: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["for-each-ref", "--format=%(refname)", "refs/ait/runs"])
+        .output()
+        .unwrap();
+    let references = String::from_utf8(output.stdout).unwrap();
+    let references = references.lines().collect::<Vec<_>>();
+    assert_eq!(references.len(), 1);
+    references[0].to_owned()
+}
+
+fn paused_request(project: &Path, request_id: &str) -> WorkspaceAgentInvocation {
+    WorkspaceAgentInvocation {
+        request_id: request_id.into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Make an isolated edit".into(),
+        project_instructions: None,
+        commit_subject: "Make an isolated edit".into(),
+        cwd: project.to_path_buf(),
+        baseline_commit: head(project),
+        cancellation: CancellationToken::new(),
+    }
 }
 
 async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResponse {
@@ -222,6 +339,7 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
             project_instructions: None,
             commit_subject: "Return a result".into(),
             cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
             cancellation: CancellationToken::new(),
         })
         .await
@@ -248,16 +366,7 @@ async fn generates_structured_session_metadata_with_the_small_read_only_model() 
 
 #[tokio::test]
 async fn returns_assistant_result_and_commits_generated_changes() {
-    let project = TempDir::new().unwrap();
-    assert!(
-        Command::new("git")
-            .arg("-C")
-            .arg(project.path())
-            .arg("init")
-            .status()
-            .unwrap()
-            .success()
-    );
+    let project = initialized_project();
     let agent = CodexWorkspaceAgent::new(Arc::new(EditingAdapter));
     let result = agent
         .invoke(WorkspaceAgentInvocation {
@@ -268,6 +377,7 @@ async fn returns_assistant_result_and_commits_generated_changes() {
             project_instructions: Some("Keep generated files small.".into()),
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
             cancellation: CancellationToken::new(),
         })
         .await
@@ -330,6 +440,27 @@ async fn returns_assistant_result_and_commits_generated_changes() {
         .output()
         .unwrap();
     assert!(status.stdout.is_empty());
+    let worktrees = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(worktrees.stdout)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        1
+    );
+    let refs = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["for-each-ref", "refs/ait/runs"])
+        .output()
+        .unwrap();
+    assert!(refs.stdout.is_empty());
 }
 
 #[tokio::test]
@@ -444,13 +575,7 @@ async fn keeps_messages_from_legacy_streams_without_phase() {
 
 #[tokio::test]
 async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
-    let project = TempDir::new().unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(project.path())
-        .arg("init")
-        .status()
-        .unwrap();
+    let project = initialized_project();
     std::fs::write(project.path().join("user-work.txt"), "keep me\n").unwrap();
     let agent = CodexWorkspaceAgent::new(Arc::new(EditingAdapter));
     let error = agent
@@ -462,11 +587,176 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
             project_instructions: None,
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
             cancellation: CancellationToken::new(),
         })
         .await
         .unwrap_err();
 
-    assert_eq!(error.code, ait_domain::ErrorCode::InvalidConfiguration);
+    assert_eq!(error.code, ait_domain::ErrorCode::ProjectGitDirty);
     assert!(!project.path().join("answer.txt").exists());
+}
+
+#[tokio::test]
+async fn running_user_edit_is_not_mixed_and_the_agent_commit_is_retained() {
+    let project = initialized_project();
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "user-edit-race");
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    assert!(!project.path().join("agent-owned.txt").exists());
+    std::fs::write(project.path().join("user-owned.txt"), "user change\n").unwrap();
+    adapter.release.add_permits(1);
+
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert!(
+        failure
+            .message
+            .contains("isolated Run changes were retained")
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("user-owned.txt")).unwrap(),
+        "user change\n"
+    );
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let reference = run_ref(project.path());
+    let changed = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["show", "--pretty=format:", "--name-only", &reference])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(changed.stdout).unwrap().trim(),
+        "agent-owned.txt"
+    );
+}
+
+#[tokio::test]
+async fn head_advance_rejects_integration_without_overwriting_either_change() {
+    let project = initialized_project();
+    let baseline = head(project.path());
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "head-race");
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    std::fs::write(project.path().join("external.txt"), "external commit\n").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["add", "external.txt"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args([
+                "-c",
+                "user.name=External",
+                "-c",
+                "user.email=external@example.invalid",
+                "commit",
+                "-m",
+                "external",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    adapter.release.add_permits(1);
+
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_ne!(head(project.path()), baseline);
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let reference = run_ref(project.path());
+    let merge_base = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["merge-base", &reference, "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(merge_base.stdout).unwrap().trim(),
+        baseline
+    );
+}
+
+#[tokio::test]
+async fn index_change_rejects_integration_and_leaves_the_index_intact() {
+    let project = initialized_project();
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "index-race");
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    std::fs::write(project.path().join("staged.txt"), "staged user change\n").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["add", "staged.txt"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    adapter.release.add_permits(1);
+
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    let staged = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(staged.stdout).unwrap().trim(),
+        "staged.txt"
+    );
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let _reference = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn cancellation_never_integrates_partial_changes_and_blocks_implicit_recovery() {
+    let project = initialized_project();
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "cancelled-race");
+    let mut retry = request.clone();
+    retry.cancellation = CancellationToken::new();
+    let cancellation = request.cancellation.clone();
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    cancellation.cancel();
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::RunCancelled);
+    assert!(
+        failure
+            .message
+            .contains("isolated Run changes were retained")
+    );
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let _reference = run_ref(project.path());
+
+    let retried = CodexWorkspaceAgent::new(adapter)
+        .invoke(retry)
+        .await
+        .unwrap_err();
+    assert_eq!(retried.code, ait_domain::ErrorCode::RunRecoveryFailed);
 }

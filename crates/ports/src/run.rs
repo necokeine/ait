@@ -153,6 +153,12 @@ pub struct WorkspaceAgentInvocation {
     pub commit_subject: String,
     /// Canonical Project Git root and sandbox boundary.
     pub cwd: PathBuf,
+    /// Full Git HEAD captured while the workspace write lease was held.
+    ///
+    /// A workspace-writing adapter must run from this immutable baseline and
+    /// refuse to integrate its result if the Project worktree moves away from
+    /// it during the invocation.
+    pub baseline_commit: String,
     /// Cooperative cancellation shared with the caller.
     pub cancellation: CancellationToken,
 }
