@@ -237,6 +237,11 @@ pub struct RunView {
     /// Failed Run whose explicitly adopted workspace this Run continues.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_of_run_id: Option<ait_domain::RunId>,
+    /// Git commit produced during workspace settlement, including a commit
+    /// that finished after cancellation was requested. Such a commit remains
+    /// auditable even though no successful assistant Message is appended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_commit_id: Option<String>,
 }
 
 pub use ait_domain::{RunPartialOutput, RunWorktreeChange, RunWorktreeState};

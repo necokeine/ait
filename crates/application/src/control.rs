@@ -2064,6 +2064,7 @@ fn send_message(
         workspace_base_index_tree,
         status: "queued".into(),
         error: None,
+        workspace_commit_id: None,
         partial_output: None,
         recovery_of_run_id: None,
     };
@@ -2343,6 +2344,7 @@ fn continue_run(
         workspace_base_index_tree: Some(workspace_baseline.index_tree.clone().into_boxed_str()),
         status: "queued".into(),
         error: None,
+        workspace_commit_id: None,
         partial_output: None,
         recovery_of_run_id: Some(RunId::new(source_run_id)),
     };
@@ -2514,6 +2516,7 @@ fn trigger_cron(
             .map(|baseline| baseline.index_tree.clone().into_boxed_str()),
         status: "queued".into(),
         error: None,
+        workspace_commit_id: None,
         partial_output: None,
         recovery_of_run_id: None,
     });

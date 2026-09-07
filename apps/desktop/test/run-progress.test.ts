@@ -101,6 +101,16 @@ test("renders failure and cancellation as terminal states rather than connection
   assert.ok(!failed.includes("Connection interrupted"));
   const cancelled = renderRunTerminal("cancelled", undefined, "Codex");
   assert.ok(cancelled.includes("Run cancelled"));
+  const cancelledAfterCommit = renderRunTerminal("cancelled", undefined, "Codex", "abc123");
+  assert.ok(cancelledAfterCommit.includes("abc123"));
+  assert.ok(cancelledAfterCommit.includes("completed during settlement"));
+});
+
+test("renders cancellation request as stopping until settlement completes", () => {
+  const html = renderRunProgress(undefined, "Codex", true, "cancelling");
+  assert.ok(html.includes("Stopping Codex"));
+  assert.ok(html.includes("workspace settlement"));
+  assert.ok(!html.includes("Run cancelled"));
 });
 
 test("keeps live commentary in process instead of presenting it as a final answer", () => {

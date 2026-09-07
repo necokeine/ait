@@ -1,11 +1,13 @@
 //! In-memory protocol conformance tests for the Codex app-server adapter.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use ait_agent_adapters::{
     AgentEvent, AgentRunRequest, AgentRunStatus, ApprovalDecision, ApprovalHandler, ApprovalPolicy,
     ApprovalRequest, SandboxMode,
-    codex::{ClientInfo, drive_model_list_protocol, drive_protocol},
+    codex::{
+        ClientInfo, drive_model_list_protocol, drive_protocol, drive_protocol_with_interrupt_grace,
+    },
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -342,4 +344,140 @@ async fn routes_command_approvals_through_handler() {
     drive.await.unwrap().unwrap();
     server.await.unwrap();
     assert!(saw_approval);
+}
+
+#[tokio::test]
+async fn cancellation_waits_for_the_target_turn_to_report_interrupted() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let (turn_started, start_cancellation) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-cancel"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-cancel"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"method":"item/started","params":{"item":{"id":"command-1","type":"commandExecution","status":"inProgress","command":"cargo test"}}}),
+        )
+        .await;
+        turn_started.send(()).unwrap();
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["turnId"], "turn-cancel");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        write_json(&mut server_write, json!({"id":3,"result":{}})).await;
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-cancel","status":"interrupted"}}}),
+        )
+        .await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    let (sender, mut receiver) = mpsc::channel(32);
+    let drive = tokio::spawn(async move {
+        drive_protocol_with_interrupt_grace(
+            client_read,
+            client_write,
+            request,
+            client(),
+            Arc::new(ait_agent_adapters::DenyAllApprovals),
+            &sender,
+            Duration::from_secs(1),
+        )
+        .await
+    });
+    start_cancellation.await.unwrap();
+    let started = tokio::time::Instant::now();
+    cancellation.cancel();
+    let error = drive.await.unwrap().unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    assert!(started.elapsed() >= Duration::from_millis(40));
+    server.await.unwrap();
+    let mut interrupted = false;
+    let mut saw_running_command = false;
+    while let Ok(event) = receiver.try_recv() {
+        match event.unwrap() {
+            AgentEvent::Completed {
+                status: AgentRunStatus::Interrupted,
+                ..
+            } => interrupted = true,
+            AgentEvent::ItemStarted { item }
+                if item.get("type").and_then(Value::as_str) == Some("commandExecution") =>
+            {
+                saw_running_command = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(interrupted);
+    assert!(saw_running_command);
+}
+
+#[tokio::test]
+async fn missing_interrupt_ack_hits_the_grace_deadline() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let (turn_started, start_cancellation) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-timeout"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-timeout"}}}),
+        )
+        .await;
+        turn_started.send(()).unwrap();
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        std::future::pending::<()>().await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    let (sender, _receiver) = mpsc::channel(32);
+    let drive = tokio::spawn(async move {
+        drive_protocol_with_interrupt_grace(
+            client_read,
+            client_write,
+            request,
+            client(),
+            Arc::new(ait_agent_adapters::DenyAllApprovals),
+            &sender,
+            Duration::from_millis(40),
+        )
+        .await
+    });
+    start_cancellation.await.unwrap();
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(1), drive)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    server.abort();
 }

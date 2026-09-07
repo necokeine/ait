@@ -24,7 +24,7 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
-  "run.continue",
+  "run.continue", "run.cancel",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -48,6 +48,7 @@ interface WorkspaceView {
   runs: Array<{
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
+    workspace_commit_id?: string | null;
     error?: { code?: string; message?: string } | null;
     partial_output?: {
       progress?: unknown; progress_error?: unknown; worktree?: unknown; worktree_error?: unknown;
@@ -194,6 +195,10 @@ class DaemonClient {
         expected_worktree_fingerprint: params.expectedWorktreeFingerprint,
       }) as { id: string };
       return { snapshot: await this.snapshot(), runId: run.id };
+    }
+    if (method === "run.cancel") {
+      await this.post("/v1/run/cancel", "run", { run_id: params.runId });
+      return this.snapshot();
     }
 
     const id = randomUUID();
@@ -428,6 +433,7 @@ class DaemonClient {
         baseMessageId: run.base_message_id,
         lastMessageId: run.last_message_id,
         status: run.status,
+        ...(run.workspace_commit_id ? { workspaceCommitId: run.workspace_commit_id } : {}),
         ...(run.error?.message ? {
           error: { message: run.error.message, ...(run.error.code ? { code: run.error.code } : {}) },
         } : {}),

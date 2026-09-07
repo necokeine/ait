@@ -4,6 +4,8 @@
 
 - `decisions/NEC-210/adr-001-terminal-partial-output-and-worktree-recovery.md`：失败、EOF、取消或提交失败后的部分输出与工作区状态归档，以及需精确确认工作区指纹的显式继续执行。
 
+- `decisions/NEC-211/adr-001-codex-cancellation-and-settlement-barrier.md`：Codex 有界 interrupt、Run-owned 进程树退出、Session 延迟释放与不可丢弃的 Git 结算屏障。
+
 - `decisions/NEC-205/adr-001-live-run-progress-and-recovery.md`：daemon 异步 Run、Codex 统一进度事件、
   有界 checkpoint、cursor 回放后持续监听，以及桌面端增量展示与断线状态同步。
 

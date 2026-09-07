@@ -95,6 +95,7 @@ export interface DesktopRun {
   baseMessageId: string;
   lastMessageId: string | null;
   status: string;
+  workspaceCommitId?: string;
   error?: { code?: string; message: string };
   partialOutput?: {
     progress?: RunProgress;
@@ -234,6 +235,7 @@ export interface AitDesktopApi {
     sessionId: string;
     content: string;
   }): Promise<RunSubmission>;
+  cancelRun(runId: string): Promise<DesktopSnapshot>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   continueRun(input: {
     runId: string;

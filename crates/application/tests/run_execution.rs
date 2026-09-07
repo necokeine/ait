@@ -48,6 +48,101 @@ impl ConflictingStore {
     }
 }
 
+struct FinalCommitBarrierStore {
+    inner: SqliteControlStore,
+    block_completed: AtomicBool,
+    completed_entered: Semaphore,
+    completed_release: Semaphore,
+}
+
+#[async_trait]
+impl ControlStore for FinalCommitBarrierStore {
+    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
+        self.inner.load().await
+    }
+
+    async fn commit(
+        &self,
+        revision: u64,
+        value: Value,
+        events: Vec<PendingEvent>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let completed = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .is_some_and(|run| run["status"] == "completed");
+        if completed && self.block_completed.swap(false, Ordering::SeqCst) {
+            self.completed_entered.add_permits(1);
+            self.completed_release.acquire().await.unwrap().forget();
+        }
+        self.inner.commit(revision, value, events).await
+    }
+
+    async fn commit_terminal(
+        &self,
+        revision: u64,
+        value: Value,
+        events: Vec<PendingEvent>,
+        run_id: &str,
+        output: Option<RunOutputArchive>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let completed = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .is_some_and(|run| run["status"] == "completed");
+        if completed && self.block_completed.swap(false, Ordering::SeqCst) {
+            self.completed_entered.add_permits(1);
+            self.completed_release.acquire().await.unwrap().forget();
+        }
+        self.inner
+            .commit_terminal(revision, value, events, run_id, output)
+            .await
+    }
+
+    async fn replay(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<DurableEvent>, ControlStoreError> {
+        self.inner.replay(after, limit).await
+    }
+
+    async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<DurableEventPage, ControlStoreError> {
+        self.inner.replay_page(after, limit).await
+    }
+
+    async fn save_progress(
+        &self,
+        checkpoint: ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        self.inner.save_progress(checkpoint, events).await
+    }
+
+    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress().await
+    }
+
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<RunOutputArchive>, ControlStoreError> {
+        self.inner.load_run_outputs(run_ids).await
+    }
+
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
+        self.inner.clear_progress(run_id).await
+    }
+}
+
 #[async_trait]
 impl ControlStore for ConflictingStore {
     async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
@@ -631,6 +726,107 @@ async fn post_admission_failures_queries_and_duplicate_cron_triggers_never_start
     let recovered = run(&fixture.service, Command::GetRun { run_id: cron.id }).await;
     assert_eq!(recovered.status, "failed");
     assert_eq!(recovered.error.unwrap().code, ErrorCode::RunQueueConflict);
+}
+
+#[derive(Debug)]
+struct ImmediateCommitAgent;
+
+#[async_trait]
+impl WorkspaceAgent for ImmediateCommitAgent {
+    async fn invoke(
+        &self,
+        _: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "must lose the cancellation race".into(),
+            commit_id: Some("commit-before-final-store".into()),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn cancellation_before_the_final_store_wins_without_orphaning_the_commit() {
+    let directory = TempDir::new().unwrap();
+    let store = Arc::new(FinalCommitBarrierStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        block_completed: AtomicBool::new(true),
+        completed_entered: Semaphore::new(0),
+        completed_release: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        Arc::new(ImmediateCommitAgent),
+    ));
+    command(
+        &service,
+        Command::RegisterProject {
+            id: "barrier-project".into(),
+            name: "Barrier".into(),
+            workdir: directory.path().display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "barrier-agent".into(),
+            name: "Barrier Agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "barrier-session".into(),
+            project_id: "barrier-project".into(),
+            agent_id: "barrier-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let execution = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            run(
+                &service,
+                Command::SendMessage {
+                    session_id: "barrier-session".into(),
+                    text: "race final persistence".into(),
+                },
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(3), store.completed_entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let snapshot = store.load().await.unwrap();
+    let run_id = snapshot.value["runs"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(snapshot.value["runs"][0]["status"], "settling");
+    let stopping = run(
+        &service,
+        Command::CancelRun {
+            run_id: run_id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(stopping.status, "cancelling");
+    store.completed_release.add_permits(1);
+    let cancelled = execution.await.unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(
+        cancelled.workspace_commit_id.as_deref(),
+        Some("commit-before-final-store")
+    );
+    let snapshot = store.load().await.unwrap();
+    assert_eq!(snapshot.value["messages"].as_array().unwrap().len(), 2);
+    assert!(snapshot.value["sessions"][0]["active_run_id"].is_null());
 }
 
 fn config() -> ait_contracts::AgentConfiguration {
