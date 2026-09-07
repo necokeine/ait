@@ -23,7 +23,8 @@ pub use run::{
     GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator, RunStore,
     RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
     ToolOutcome, ToolRecovery, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-    WorkspaceOperation, WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
+    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,

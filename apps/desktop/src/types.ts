@@ -113,6 +113,7 @@ export type RunStreamUpdate =
   | { type: "resync"; cursor: number };
 
 export interface RunStreamFrame {
+  generation: string;
   id: number;
   updates: RunStreamUpdate[];
 }

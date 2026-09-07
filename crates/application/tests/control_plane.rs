@@ -522,6 +522,10 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
         _ => panic!(),
     };
     assert_eq!(interactive.status, "completed");
+    assert_eq!(
+        interactive.workspace_base_commit.as_deref(),
+        Some(project.base_commit.as_str())
+    );
 
     run(
         &service,
@@ -584,6 +588,10 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     assert_eq!(scheduled.trigger, "cron");
     assert_eq!(scheduled.status, "completed");
     assert!(scheduled.session_id.is_none());
+    assert_eq!(
+        scheduled.workspace_base_commit.as_deref(),
+        Some(project.base_commit.as_str())
+    );
 
     let first_page = service.replay_events(0, 3).await.unwrap();
     assert_eq!(first_page.len(), 3);

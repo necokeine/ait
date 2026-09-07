@@ -1,6 +1,12 @@
 //! Workspace execution and Git commit coverage for the Codex adapter.
 
-use std::{process::Command, sync::Arc};
+use std::{
+    fs::{File, OpenOptions},
+    io::Write as _,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use ait_agent_adapters::{
     AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
@@ -9,11 +15,12 @@ use ait_agent_adapters::{
 };
 use ait_ports::{
     SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceOutputItem,
+    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOutputItem,
 };
 use async_trait::async_trait;
 use serde_json::json;
 use tempfile::TempDir;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug)]
@@ -125,6 +132,894 @@ impl AgentAdapter for EditingAdapter {
 }
 
 #[derive(Debug)]
+struct PausingEditingAdapter {
+    entered: Semaphore,
+    release: Semaphore,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FinalValidationInjection {
+    Branch,
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
+#[derive(Debug)]
+struct InjectingIntegrationGate {
+    project: PathBuf,
+    injection: FinalValidationInjection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransactionInjection {
+    StagedBeforeIndexLock,
+    UntrackedAfterWorktreeUpdate,
+    SamePathAfterWorktreeUpdate,
+    BranchSwitchAfterRefPublish,
+    TargetSymrefAfterRefPublish,
+    RefConfirmationFailure,
+    FailureAfterRefPublish,
+    UntrackedBeforeIndexPublish,
+    IgnoredBeforeWorktreeMutation,
+    SamePathBeforeRollback,
+    DirectoryBeforeRollback,
+    BaselineRefAdvanceBeforeLock,
+    EarlyRootCollision,
+}
+
+#[derive(Debug)]
+struct TransactionInjectingGate {
+    project: PathBuf,
+    injection: TransactionInjection,
+}
+
+impl TransactionInjectingGate {
+    fn switch_branch_after_publication(&self) {
+        let candidate = git_output(&self.project, &["rev-parse", "HEAD"]);
+        let baseline = git_output(&self.project, &["rev-parse", &format!("{candidate}^")]);
+        assert_git_success(
+            &self.project,
+            &[
+                "update-ref",
+                "refs/heads/injected-after-publication",
+                &baseline,
+            ],
+        );
+        assert_git_success(
+            &self.project,
+            &[
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/injected-after-publication",
+            ],
+        );
+        std::fs::write(
+            self.project.join("tracked.txt"),
+            "external branch-switch value\n",
+        )
+        .unwrap();
+    }
+
+    fn replace_target_with_symref(&self) {
+        let target_ref = git_output(&self.project, &["symbolic-ref", "HEAD"]);
+        let candidate = head(&self.project);
+        assert_git_success(
+            &self.project,
+            &["update-ref", "refs/heads/injected-ref-target", &candidate],
+        );
+        assert_git_success(
+            &self.project,
+            &[
+                "symbolic-ref",
+                &target_ref,
+                "refs/heads/injected-ref-target",
+            ],
+        );
+    }
+
+    fn advance_baseline_ref(&self) {
+        let target_ref = git_output(&self.project, &["symbolic-ref", "HEAD"]);
+        let current = head(&self.project);
+        let replacement = git_output(&self.project, &["rev-parse", &format!("{current}^")]);
+        assert_git_success(
+            &self.project,
+            &[
+                "update-ref",
+                "--no-deref",
+                &target_ref,
+                &replacement,
+                &current,
+            ],
+        );
+    }
+
+    fn injected_failure(message: &str) -> Result<(), ait_domain::DomainError> {
+        Err(ait_domain::DomainError::transient(
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+            message,
+        ))
+    }
+
+    fn inject(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        match self.injection {
+            TransactionInjection::StagedBeforeIndexLock => {
+                std::fs::write(
+                    self.project.join("external-staged.txt"),
+                    "external staged\n",
+                )
+                .unwrap();
+                assert_git_success(&self.project, &["add", "external-staged.txt"]);
+            }
+            TransactionInjection::UntrackedAfterWorktreeUpdate
+            | TransactionInjection::UntrackedBeforeIndexPublish => {
+                std::fs::write(
+                    self.project.join("external-untracked.txt"),
+                    "external untracked\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::SamePathAfterWorktreeUpdate => {
+                std::fs::write(
+                    self.project.join("tracked.txt"),
+                    "external same-path value\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::BranchSwitchAfterRefPublish => {
+                self.switch_branch_after_publication();
+            }
+            TransactionInjection::TargetSymrefAfterRefPublish => {
+                self.replace_target_with_symref();
+            }
+            TransactionInjection::RefConfirmationFailure => {
+                return Self::injected_failure("injected ref confirmation read failure");
+            }
+            TransactionInjection::FailureAfterRefPublish => {
+                return Self::injected_failure("injected ref publication failure");
+            }
+            TransactionInjection::IgnoredBeforeWorktreeMutation => {
+                let path = if self.project.join("shape").is_dir() {
+                    self.project.join("shape/ignored.bin")
+                } else {
+                    self.project.join("generated.txt")
+                };
+                std::fs::write(path, b"external ignored race\0with bytes\n").unwrap();
+            }
+            TransactionInjection::SamePathBeforeRollback
+                if checkpoint == WorkspaceIntegrationCheckpoint::AfterRefPublish =>
+            {
+                return Self::injected_failure("injected failure before same-path rollback race");
+            }
+            TransactionInjection::SamePathBeforeRollback => {
+                std::fs::write(
+                    self.project.join("tracked.txt"),
+                    "external value before rollback isolation\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::DirectoryBeforeRollback
+                if checkpoint == WorkspaceIntegrationCheckpoint::AfterRefPublish =>
+            {
+                return Self::injected_failure("injected failure before directory rollback race");
+            }
+            TransactionInjection::DirectoryBeforeRollback => {
+                std::fs::remove_file(self.project.join("tracked.txt")).unwrap();
+                std::fs::create_dir(self.project.join("tracked.txt")).unwrap();
+                std::fs::write(
+                    self.project.join("tracked.txt/external.bin"),
+                    b"external directory race\0with bytes\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::BaselineRefAdvanceBeforeLock => {
+                self.advance_baseline_ref();
+            }
+            TransactionInjection::EarlyRootCollision => {
+                std::fs::write(
+                    self.project.join("a-new.txt"),
+                    b"external early collision\0bytes\n",
+                )
+                .unwrap();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for TransactionInjectingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        let matches = matches!(
+            (self.injection, checkpoint),
+            (
+                TransactionInjection::StagedBeforeIndexLock,
+                WorkspaceIntegrationCheckpoint::BeforeIndexLock
+            ) | (
+                TransactionInjection::UntrackedAfterWorktreeUpdate
+                    | TransactionInjection::SamePathAfterWorktreeUpdate,
+                WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate
+            ) | (
+                TransactionInjection::RefConfirmationFailure,
+                WorkspaceIntegrationCheckpoint::BeforeRefCommitConfirmation
+            ) | (
+                TransactionInjection::BranchSwitchAfterRefPublish
+                    | TransactionInjection::TargetSymrefAfterRefPublish
+                    | TransactionInjection::FailureAfterRefPublish,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+            ) | (
+                TransactionInjection::UntrackedBeforeIndexPublish,
+                WorkspaceIntegrationCheckpoint::BeforeIndexPublish
+            ) | (
+                TransactionInjection::IgnoredBeforeWorktreeMutation
+                    | TransactionInjection::EarlyRootCollision,
+                WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation
+            ) | (
+                TransactionInjection::SamePathBeforeRollback
+                    | TransactionInjection::DirectoryBeforeRollback,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+                    | WorkspaceIntegrationCheckpoint::BeforeWorktreeRollback
+            ) | (
+                TransactionInjection::BaselineRefAdvanceBeforeLock,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+                    | WorkspaceIntegrationCheckpoint::BeforeBaselineRefReconciliationLock
+            )
+        );
+        if !matches {
+            return Ok(());
+        }
+        self.inject(checkpoint)
+    }
+}
+
+#[derive(Debug)]
+enum OpenHandleWriter {
+    File(Mutex<File>),
+    #[cfg(unix)]
+    Directory(File),
+}
+
+#[derive(Debug)]
+struct OpenHandleWritingGate {
+    writer: OpenHandleWriter,
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for OpenHandleWritingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        if checkpoint != WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate {
+            return Ok(());
+        }
+        match &self.writer {
+            OpenHandleWriter::File(file) => {
+                let mut file = file.lock().unwrap();
+                file.set_len(0).unwrap();
+                file.write_all(b"external open-file write\0bytes\n")
+                    .unwrap();
+                file.sync_all().unwrap();
+            }
+            #[cfg(unix)]
+            OpenHandleWriter::Directory(directory) => {
+                write_through_directory_handle(
+                    directory,
+                    "external-open-dir.bin",
+                    b"external open-directory write\0bytes\n",
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RollbackOpenHandleKind {
+    File,
+    #[cfg(unix)]
+    Directory,
+}
+
+#[derive(Debug)]
+struct RollbackOpenHandleWritingGate {
+    candidate: PathBuf,
+    kind: RollbackOpenHandleKind,
+    writer: Mutex<Option<OpenHandleWriter>>,
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for RollbackOpenHandleWritingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        match checkpoint {
+            WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate => {
+                let opened = match self.kind {
+                    RollbackOpenHandleKind::File => OpenHandleWriter::File(Mutex::new(
+                        OpenOptions::new()
+                            .write(true)
+                            .open(&self.candidate)
+                            .unwrap(),
+                    )),
+                    #[cfg(unix)]
+                    RollbackOpenHandleKind::Directory => {
+                        OpenHandleWriter::Directory(File::open(&self.candidate).unwrap())
+                    }
+                };
+                let previous = self.writer.lock().unwrap().replace(opened);
+                assert!(previous.is_none(), "candidate handle was opened twice");
+                Ok(())
+            }
+            WorkspaceIntegrationCheckpoint::AfterRefPublish => {
+                TransactionInjectingGate::injected_failure(
+                    "injected failure with an open candidate handle",
+                )
+            }
+            WorkspaceIntegrationCheckpoint::AfterRollbackCandidateQuarantine => {
+                let writer = self
+                    .writer
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("candidate handle was not opened before rollback");
+                match writer {
+                    OpenHandleWriter::File(file) => {
+                        let mut file = file.into_inner().unwrap();
+                        file.set_len(0).unwrap();
+                        file.write_all(b"external rollback open-file write\0bytes\n")
+                            .unwrap();
+                        file.sync_all().unwrap();
+                    }
+                    #[cfg(unix)]
+                    OpenHandleWriter::Directory(directory) => {
+                        write_through_directory_handle(
+                            &directory,
+                            "external-rollback-open-dir.bin",
+                            b"external rollback open-directory write\0bytes\n",
+                        );
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn write_through_directory_handle(directory: &File, name: &str, bytes: &[u8]) {
+    let opened = rustix::fs::openat(
+        directory,
+        name,
+        rustix::fs::OFlags::CREATE | rustix::fs::OFlags::TRUNC | rustix::fs::OFlags::WRONLY,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    let mut file = File::from(opened);
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AncestorSwapPhase {
+    BeforeMutation,
+    BeforeRollback,
+}
+
+#[derive(Debug)]
+struct AncestorSwappingGate {
+    project: PathBuf,
+    outside: PathBuf,
+    phase: AncestorSwapPhase,
+}
+
+impl AncestorSwappingGate {
+    fn swap_ancestor(&self) -> Result<(), ait_domain::DomainError> {
+        std::fs::rename(self.project.join("dir"), self.project.join("dir.external")).map_err(
+            |failure| {
+                ait_domain::DomainError::invariant(
+                    ait_domain::ErrorCode::RunRecoveryFailed,
+                    format!(
+                        "capability-bound ancestor could not be replaced (safe failure): {failure}"
+                    ),
+                )
+            },
+        )?;
+        create_directory_link(&self.outside, &self.project.join("dir"));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for AncestorSwappingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        match (self.phase, checkpoint) {
+            (
+                AncestorSwapPhase::BeforeMutation,
+                WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation,
+            )
+            | (
+                AncestorSwapPhase::BeforeRollback,
+                WorkspaceIntegrationCheckpoint::BeforeWorktreeRollback,
+            ) => self.swap_ancestor(),
+            (
+                AncestorSwapPhase::BeforeRollback,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish,
+            ) => TransactionInjectingGate::injected_failure(
+                "injected failure before ancestor-bound rollback",
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn create_directory_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_link(target: &Path, link: &Path) {
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cannot create Windows junction fixture");
+}
+
+#[derive(Debug)]
+struct TransactionEditingAdapter;
+
+#[derive(Debug)]
+struct NestedEditingAdapter;
+
+#[derive(Debug)]
+struct MultiRootEditingAdapter;
+
+#[derive(Clone, Copy, Debug)]
+enum DirectoryFileDirection {
+    FileToDirectory,
+    DirectoryToFile,
+}
+
+#[derive(Debug)]
+struct DirectoryFileEditingAdapter {
+    direction: DirectoryFileDirection,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IgnoredCollisionKind {
+    TrackIgnoredFile,
+    ReplaceDirectory,
+}
+
+#[derive(Debug)]
+struct IgnoredCollisionAdapter {
+    kind: IgnoredCollisionKind,
+}
+
+#[derive(Debug)]
+struct AttributeEditingAdapter;
+
+#[async_trait]
+impl AgentAdapter for DirectoryFileEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "directory_file_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        let path = request.cwd.join("shape");
+        match self.direction {
+            DirectoryFileDirection::FileToDirectory => {
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(path.join("child.txt"), "Run directory child\n").unwrap();
+            }
+            DirectoryFileDirection::DirectoryToFile => {
+                std::fs::remove_dir_all(&path).unwrap();
+                std::fs::write(&path, "Run file value\n").unwrap();
+            }
+        }
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "directory-file-final",
+                    "phase": "final_answer",
+                    "text": "Finished D/F edit."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "directory-file-turn".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for IgnoredCollisionAdapter {
+    fn driver(&self) -> &'static str {
+        "ignored_collision_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        match self.kind {
+            IgnoredCollisionKind::TrackIgnoredFile => {
+                std::fs::remove_file(request.cwd.join(".gitignore")).unwrap();
+                std::fs::write(request.cwd.join("generated.txt"), "Run value\n").unwrap();
+            }
+            IgnoredCollisionKind::ReplaceDirectory => {
+                std::fs::remove_dir_all(request.cwd.join("shape")).unwrap();
+                std::fs::write(request.cwd.join("shape"), "Run file value\n").unwrap();
+            }
+        }
+        Ok(test_completion_stream(
+            "ignored-collision-final",
+            "Finished ignored collision edit.",
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for AttributeEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "attribute_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join(".gitattributes"), "data.txt ident\n").unwrap();
+        std::fs::write(request.cwd.join("data.txt"), "Run $Id$ value\n").unwrap();
+        Ok(test_completion_stream(
+            "attribute-final",
+            "Finished attribute-sensitive edit.",
+        ))
+    }
+}
+
+fn test_completion_stream(id: &str, text: &str) -> AgentStream {
+    Box::pin(tokio_stream::iter([
+        Ok(AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": id,
+                "phase": "final_answer",
+                "text": text
+            }),
+        }),
+        Ok(AgentEvent::Completed {
+            turn_id: format!("{id}-turn"),
+            status: AgentRunStatus::Completed,
+            error: None,
+        }),
+    ]))
+}
+
+#[async_trait]
+impl AgentAdapter for TransactionEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "transaction_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("tracked.txt"), "Run tracked value\n").unwrap();
+        std::fs::write(request.cwd.join("run-owned.txt"), "Run owned value\n").unwrap();
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "transaction-final",
+                    "phase": "final_answer",
+                    "text": "Finished transactional edit."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "transaction-turn".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for NestedEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "nested_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("dir/tracked.txt"), "Run nested value\n").unwrap();
+        Ok(test_completion_stream(
+            "nested-editing-final",
+            "Finished nested edit.",
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for MultiRootEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "multi_root_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::remove_file(request.cwd.join(".gitignore")).unwrap();
+        std::fs::write(request.cwd.join("a-new.txt"), "Run early root\n").unwrap();
+        std::fs::write(request.cwd.join("z-tracked.txt"), "Run late root\n").unwrap();
+        Ok(test_completion_stream(
+            "multi-root-final",
+            "Finished multi-root edit.",
+        ))
+    }
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for InjectingIntegrationGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        match self.injection {
+            FinalValidationInjection::Branch => {
+                assert!(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&self.project)
+                        .args(["switch", "injected-branch"])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            FinalValidationInjection::Staged => {
+                std::fs::write(self.project.join("staged.txt"), "external staged change\n")
+                    .unwrap();
+                assert!(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&self.project)
+                        .args(["add", "staged.txt"])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            FinalValidationInjection::Unstaged => {
+                std::fs::write(
+                    self.project.join("tracked.txt"),
+                    "external unstaged change\n",
+                )
+                .unwrap();
+            }
+            FinalValidationInjection::Untracked => {
+                std::fs::write(
+                    self.project.join("untracked.txt"),
+                    "external untracked change\n",
+                )
+                .unwrap();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct AbsolutePathAdapter;
+
+#[async_trait]
+impl AgentAdapter for AbsolutePathAdapter {
+    fn driver(&self) -> &'static str {
+        "absolute_path_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        let root = request.cwd.display().to_string();
+        let answer = request.cwd.join("answer.txt").display().to_string();
+        let image = request.cwd.join("preview.png").display().to_string();
+        std::fs::write(&answer, "generated\n").unwrap();
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "absolute-cwd",
+                    "status": "completed",
+                    "commandActions": [{"type": "listFiles", "cwd": root}]
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "fileChange",
+                    "id": "absolute-file",
+                    "status": "completed",
+                    "changes": [{"path": answer, "kind": "add"}]
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "imageView",
+                    "id": "absolute-image",
+                    "status": "completed",
+                    "path": image
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final-paths",
+                    "phase": "final_answer",
+                    "text": "Recorded paths."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "turn-paths".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
+
+impl PausingEditingAdapter {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            release: Semaphore::new(0),
+        }
+    }
+
+    async fn started(&self) {
+        self.entered.acquire().await.unwrap().forget();
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for PausingEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "pausing_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("agent-owned.txt"), "agent change\n").unwrap();
+        self.entered.add_permits(1);
+        tokio::select! {
+            permit = self.release.acquire() => permit.unwrap().forget(),
+            () = request.cancellation.cancelled() => return Err(AdapterError::cancelled()),
+        }
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final-paused",
+                    "phase": "final_answer",
+                    "text": "Finished isolated edit."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "turn-paused".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
+
+#[derive(Debug)]
 struct TitleAdapter;
 
 #[async_trait]
@@ -208,7 +1103,133 @@ fn initialized_project() -> TempDir {
             .unwrap()
             .success()
     );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
     project
+}
+
+fn head(project: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn index_tree(project: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .arg("write-tree")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_output(project: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn assert_git_success(project: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn commit_all(project: &Path, subject: &str) {
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["add", "--all"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                subject,
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+fn run_ref(project: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["for-each-ref", "--format=%(refname)", "refs/ait/runs"])
+        .output()
+        .unwrap();
+    let references = String::from_utf8(output.stdout).unwrap();
+    let references = references.lines().collect::<Vec<_>>();
+    assert_eq!(references.len(), 1);
+    references[0].to_owned()
+}
+
+fn paused_request(project: &Path, request_id: &str) -> WorkspaceAgentInvocation {
+    WorkspaceAgentInvocation {
+        request_id: request_id.into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Make an isolated edit".into(),
+        project_instructions: None,
+        commit_subject: "Make an isolated edit".into(),
+        cwd: project.to_path_buf(),
+        baseline_commit: head(project),
+        baseline_index_tree: index_tree(project),
+        cancellation: CancellationToken::new(),
+        integration_gate: None,
+    }
 }
 
 async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResponse {
@@ -222,7 +1243,10 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
             project_instructions: None,
             commit_subject: "Return a result".into(),
             cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
+            integration_gate: None,
         })
         .await
         .unwrap()
@@ -248,16 +1272,7 @@ async fn generates_structured_session_metadata_with_the_small_read_only_model() 
 
 #[tokio::test]
 async fn returns_assistant_result_and_commits_generated_changes() {
-    let project = TempDir::new().unwrap();
-    assert!(
-        Command::new("git")
-            .arg("-C")
-            .arg(project.path())
-            .arg("init")
-            .status()
-            .unwrap()
-            .success()
-    );
+    let project = initialized_project();
     let agent = CodexWorkspaceAgent::new(Arc::new(EditingAdapter));
     let result = agent
         .invoke(WorkspaceAgentInvocation {
@@ -268,7 +1283,10 @@ async fn returns_assistant_result_and_commits_generated_changes() {
             project_instructions: Some("Keep generated files small.".into()),
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
+            integration_gate: None,
         })
         .await
         .unwrap();
@@ -330,6 +1348,73 @@ async fn returns_assistant_result_and_commits_generated_changes() {
         .output()
         .unwrap();
     assert!(status.stdout.is_empty());
+    let worktrees = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(worktrees.stdout)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        1
+    );
+    let refs = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["for-each-ref", "refs/ait/runs"])
+        .output()
+        .unwrap();
+    assert!(refs.stdout.is_empty());
+}
+
+#[tokio::test]
+async fn detached_primary_head_advances_without_moving_the_original_branch() {
+    let project = initialized_project();
+    let branch = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+    let baseline = head(project.path());
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["checkout", "--detach"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let result = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "detached-head".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Create answer.txt".into(),
+            project_instructions: Some("Keep generated files small.".into()),
+            commit_subject: "Create answer.txt".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(head(project.path()), result.commit_id.unwrap());
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &branch]),
+        baseline
+    );
+    let symbolic = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .status()
+        .unwrap();
+    assert_eq!(symbolic.code(), Some(1));
 }
 
 #[tokio::test]
@@ -444,13 +1529,7 @@ async fn keeps_messages_from_legacy_streams_without_phase() {
 
 #[tokio::test]
 async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
-    let project = TempDir::new().unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(project.path())
-        .arg("init")
-        .status()
-        .unwrap();
+    let project = initialized_project();
     std::fs::write(project.path().join("user-work.txt"), "keep me\n").unwrap();
     let agent = CodexWorkspaceAgent::new(Arc::new(EditingAdapter));
     let error = agent
@@ -462,11 +1541,1648 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
             project_instructions: None,
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
+            integration_gate: None,
         })
         .await
         .unwrap_err();
 
-    assert_eq!(error.code, ait_domain::ErrorCode::InvalidConfiguration);
+    assert_eq!(error.code, ait_domain::ErrorCode::ProjectGitDirty);
     assert!(!project.path().join("answer.txt").exists());
+}
+
+#[tokio::test]
+async fn running_user_edit_is_not_mixed_and_the_agent_commit_is_retained() {
+    let project = initialized_project();
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "user-edit-race");
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    assert!(!project.path().join("agent-owned.txt").exists());
+    std::fs::write(project.path().join("user-owned.txt"), "user change\n").unwrap();
+    adapter.release.add_permits(1);
+
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert!(
+        failure
+            .message
+            .contains("isolated Run changes were retained")
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("user-owned.txt")).unwrap(),
+        "user change\n"
+    );
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let reference = run_ref(project.path());
+    let changed = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["show", "--pretty=format:", "--name-only", &reference])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(changed.stdout).unwrap().trim(),
+        "agent-owned.txt"
+    );
+}
+
+#[tokio::test]
+async fn head_advance_rejects_integration_without_overwriting_either_change() {
+    let project = initialized_project();
+    let baseline = head(project.path());
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "head-race");
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    std::fs::write(project.path().join("external.txt"), "external commit\n").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["add", "external.txt"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args([
+                "-c",
+                "user.name=External",
+                "-c",
+                "user.email=external@example.invalid",
+                "commit",
+                "-m",
+                "external",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    adapter.release.add_permits(1);
+
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_ne!(head(project.path()), baseline);
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let reference = run_ref(project.path());
+    let merge_base = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["merge-base", &reference, "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(merge_base.stdout).unwrap().trim(),
+        baseline
+    );
+}
+
+#[tokio::test]
+async fn index_change_rejects_integration_and_leaves_the_index_intact() {
+    let project = initialized_project();
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "index-race");
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    std::fs::write(project.path().join("staged.txt"), "staged user change\n").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["add", "staged.txt"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    adapter.release.add_permits(1);
+
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    let staged = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["diff", "--cached", "--name-only"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(staged.stdout).unwrap().trim(),
+        "staged.txt"
+    );
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let _reference = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn cancellation_never_integrates_partial_changes_and_blocks_implicit_recovery() {
+    let project = initialized_project();
+    let adapter = Arc::new(PausingEditingAdapter::new());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    let request = paused_request(project.path(), "cancelled-race");
+    let mut retry = request.clone();
+    retry.cancellation = CancellationToken::new();
+    let cancellation = request.cancellation.clone();
+    let running = tokio::spawn(async move { agent.invoke(request).await });
+    adapter.started().await;
+
+    cancellation.cancel();
+    let failure = running.await.unwrap().unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::RunCancelled);
+    assert!(
+        failure
+            .message
+            .contains("isolated Run changes were retained")
+    );
+    assert!(!project.path().join("agent-owned.txt").exists());
+    let _reference = run_ref(project.path());
+
+    let retried = CodexWorkspaceAgent::new(adapter)
+        .invoke(retry)
+        .await
+        .unwrap_err();
+    assert_eq!(retried.code, ait_domain::ErrorCode::RunRecoveryFailed);
+}
+
+#[tokio::test]
+async fn final_validation_injections_preserve_the_target_ref_and_external_changes() {
+    for injection in [
+        FinalValidationInjection::Branch,
+        FinalValidationInjection::Staged,
+        FinalValidationInjection::Unstaged,
+        FinalValidationInjection::Untracked,
+    ] {
+        let project = initialized_project();
+        std::fs::write(project.path().join("tracked.txt"), "authorized content\n").unwrap();
+        commit_all(project.path(), "add tracked fixture");
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(project.path())
+                .args(["branch", "injected-branch"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let baseline = head(project.path());
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+        let adapter = Arc::new(PausingEditingAdapter::new());
+        let agent = CodexWorkspaceAgent::new(adapter.clone());
+        let mut request = paused_request(project.path(), &format!("final-{injection:?}"));
+        request.integration_gate = Some(Arc::new(InjectingIntegrationGate {
+            project: project.path().to_path_buf(),
+            injection,
+        }));
+        let running = tokio::spawn(async move { agent.invoke(request).await });
+        adapter.started().await;
+        adapter.release.add_permits(1);
+
+        let failure = running.await.unwrap().unwrap_err();
+        let expected = if matches!(injection, FinalValidationInjection::Branch) {
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable
+        } else {
+            ait_domain::ErrorCode::ProjectGitDirty
+        };
+        assert_eq!(failure.code, expected, "injection: {injection:?}");
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline,
+            "the admitted target ref advanced for {injection:?}"
+        );
+        assert!(!project.path().join("agent-owned.txt").exists());
+        match injection {
+            FinalValidationInjection::Branch => {
+                assert_eq!(
+                    git_output(project.path(), &["symbolic-ref", "--short", "HEAD"]),
+                    "injected-branch"
+                );
+            }
+            FinalValidationInjection::Staged => {
+                assert_eq!(
+                    git_output(project.path(), &["diff", "--cached", "--name-only"]),
+                    "staged.txt"
+                );
+            }
+            FinalValidationInjection::Unstaged => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                    "external unstaged change\n"
+                );
+            }
+            FinalValidationInjection::Untracked => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("untracked.txt")).unwrap(),
+                    "external untracked change\n"
+                );
+            }
+        }
+        let _retained_agent_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn publication_phase_failures_roll_back_run_changes_and_preserve_external_writes() {
+    for injection in [
+        TransactionInjection::StagedBeforeIndexLock,
+        TransactionInjection::UntrackedAfterWorktreeUpdate,
+        TransactionInjection::SamePathAfterWorktreeUpdate,
+        TransactionInjection::BranchSwitchAfterRefPublish,
+        TransactionInjection::RefConfirmationFailure,
+        TransactionInjection::FailureAfterRefPublish,
+        TransactionInjection::UntrackedBeforeIndexPublish,
+    ] {
+        let project = initialized_project();
+        std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+        commit_all(project.path(), "add transaction fixture");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+        let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("transaction-{injection:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Replace tracked.txt and add run-owned.txt".into(),
+                project_instructions: None,
+                commit_subject: "Exercise integration rollback".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(TransactionInjectingGate {
+                    project: project.path().to_path_buf(),
+                    injection,
+                })),
+            })
+            .await
+            .unwrap_err();
+        assert_transaction_rollback(
+            project.path(),
+            injection,
+            &failure,
+            &baseline,
+            &baseline_index,
+            &target_ref,
+        );
+    }
+}
+
+fn assert_transaction_rollback(
+    project: &Path,
+    injection: TransactionInjection,
+    failure: &ait_domain::DomainError,
+    baseline: &str,
+    baseline_index: &str,
+    target_ref: &str,
+) {
+    let expected = if matches!(
+        injection,
+        TransactionInjection::SamePathAfterWorktreeUpdate
+            | TransactionInjection::BranchSwitchAfterRefPublish
+    ) {
+        ait_domain::ErrorCode::RunRecoveryFailed
+    } else if matches!(
+        injection,
+        TransactionInjection::StagedBeforeIndexLock
+            | TransactionInjection::UntrackedAfterWorktreeUpdate
+            | TransactionInjection::UntrackedBeforeIndexPublish
+    ) {
+        ait_domain::ErrorCode::ProjectGitDirty
+    } else {
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    };
+    assert_eq!(failure.code, expected, "injection: {injection:?}");
+    assert_eq!(
+        git_output(project, &["rev-parse", target_ref]),
+        baseline,
+        "target ref changed for {injection:?}"
+    );
+    assert!(
+        !project.join("run-owned.txt").exists(),
+        "Run-owned file leaked for {injection:?}"
+    );
+    if !matches!(injection, TransactionInjection::StagedBeforeIndexLock) {
+        assert_eq!(
+            index_tree(project),
+            baseline_index,
+            "canonical index retained Run state for {injection:?}"
+        );
+    }
+
+    match injection {
+        TransactionInjection::StagedBeforeIndexLock => {
+            assert_eq!(
+                git_output(project, &["diff", "--cached", "--name-only"]),
+                "external-staged.txt"
+            );
+            assert_eq!(
+                std::fs::read_to_string(project.join("external-staged.txt")).unwrap(),
+                "external staged\n"
+            );
+        }
+        TransactionInjection::UntrackedAfterWorktreeUpdate
+        | TransactionInjection::UntrackedBeforeIndexPublish => {
+            assert_eq!(
+                std::fs::read_to_string(project.join("external-untracked.txt")).unwrap(),
+                "external untracked\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+                "authorized baseline\n"
+            );
+        }
+        TransactionInjection::SamePathAfterWorktreeUpdate => assert_eq!(
+            std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+            "external same-path value\n"
+        ),
+        TransactionInjection::BranchSwitchAfterRefPublish => {
+            assert_eq!(
+                git_output(project, &["symbolic-ref", "HEAD"]),
+                "refs/heads/injected-after-publication"
+            );
+            assert_eq!(head(project), baseline);
+            assert_eq!(
+                std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+                "external branch-switch value\n"
+            );
+        }
+        TransactionInjection::RefConfirmationFailure
+        | TransactionInjection::FailureAfterRefPublish => {
+            assert_eq!(
+                std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+                "authorized baseline\n"
+            );
+            assert!(git_output(project, &["status", "--porcelain=v1"]).is_empty());
+        }
+        TransactionInjection::TargetSymrefAfterRefPublish => {
+            unreachable!("the ref-identity injection has dedicated assertions")
+        }
+        TransactionInjection::IgnoredBeforeWorktreeMutation
+        | TransactionInjection::SamePathBeforeRollback
+        | TransactionInjection::DirectoryBeforeRollback
+        | TransactionInjection::BaselineRefAdvanceBeforeLock
+        | TransactionInjection::EarlyRootCollision => {
+            unreachable!("the TOCTOU injections have dedicated assertions")
+        }
+    }
+    let _retained_run_commit = run_ref(project);
+}
+
+#[tokio::test]
+async fn ignored_files_that_candidate_paths_would_replace_are_rejected_before_mutation() {
+    for kind in [
+        IgnoredCollisionKind::TrackIgnoredFile,
+        IgnoredCollisionKind::ReplaceDirectory,
+    ] {
+        let project = initialized_project();
+        match kind {
+            IgnoredCollisionKind::TrackIgnoredFile => {
+                std::fs::write(project.path().join(".gitignore"), "generated.txt\n").unwrap();
+                commit_all(project.path(), "ignore generated file");
+                std::fs::write(
+                    project.path().join("generated.txt"),
+                    b"external ignored value\0with bytes\n",
+                )
+                .unwrap();
+            }
+            IgnoredCollisionKind::ReplaceDirectory => {
+                std::fs::write(project.path().join(".gitignore"), "shape/ignored.bin\n").unwrap();
+                std::fs::create_dir(project.path().join("shape")).unwrap();
+                std::fs::write(
+                    project.path().join("shape/tracked.txt"),
+                    "baseline tracked child\n",
+                )
+                .unwrap();
+                commit_all(project.path(), "add ignored D/F fixture");
+                std::fs::write(
+                    project.path().join("shape/ignored.bin"),
+                    b"external ignored child\0with bytes\n",
+                )
+                .unwrap();
+            }
+        }
+        assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(IgnoredCollisionAdapter { kind }))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("ignored-collision-{kind:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Exercise an ignored filesystem collision".into(),
+                project_instructions: None,
+                commit_subject: "Exercise ignored collision rejection".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::ProjectGitDirty,
+            "kind: {kind:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        assert_eq!(
+            std::fs::read(project.path().join(".git/index")).unwrap(),
+            baseline_index_bytes
+        );
+        match kind {
+            IgnoredCollisionKind::TrackIgnoredFile => {
+                assert_eq!(
+                    std::fs::read(project.path().join("generated.txt")).unwrap(),
+                    b"external ignored value\0with bytes\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join(".gitignore")).unwrap(),
+                    "generated.txt\n"
+                );
+            }
+            IgnoredCollisionKind::ReplaceDirectory => {
+                assert_eq!(
+                    std::fs::read(project.path().join("shape/ignored.bin")).unwrap(),
+                    b"external ignored child\0with bytes\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+                    "baseline tracked child\n"
+                );
+            }
+        }
+        assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+        assert_rollback_journal_empty(project.path());
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn ignored_file_created_after_collision_scan_is_quarantined_and_restored_byte_exact() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitignore"), "generated.txt\n").unwrap();
+    commit_all(project.path(), "ignore generated race fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(IgnoredCollisionAdapter {
+        kind: IgnoredCollisionKind::TrackIgnoredFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "ignored-after-collision-scan".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Race an ignored file after collision scanning".into(),
+        project_instructions: None,
+        commit_subject: "Exercise atomic ignored quarantine".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(TransactionInjectingGate {
+            project: project.path().to_path_buf(),
+            injection: TransactionInjection::IgnoredBeforeWorktreeMutation,
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("generated.txt")).unwrap(),
+        b"external ignored race\0with bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".gitignore")).unwrap(),
+        "generated.txt\n"
+    );
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn ignored_child_created_after_df_scan_is_restored_with_its_directory() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitignore"), "shape/ignored.bin\n").unwrap();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "baseline tracked child\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add D/F ignored race fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(IgnoredCollisionAdapter {
+        kind: IgnoredCollisionKind::ReplaceDirectory,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "ignored-df-after-collision-scan".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Race an ignored D/F child after collision scanning".into(),
+        project_instructions: None,
+        commit_subject: "Exercise atomic D/F quarantine".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(TransactionInjectingGate {
+            project: project.path().to_path_buf(),
+            injection: TransactionInjection::IgnoredBeforeWorktreeMutation,
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("shape/ignored.bin")).unwrap(),
+        b"external ignored race\0with bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+        "baseline tracked child\n"
+    );
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_atomically_isolates_live_file_or_directory_before_candidate_validation() {
+    for injection in [
+        TransactionInjection::SamePathBeforeRollback,
+        TransactionInjection::DirectoryBeforeRollback,
+    ] {
+        let project = initialized_project();
+        std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+        commit_all(project.path(), "add rollback isolation fixture");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("atomic-rollback-isolation-{injection:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Race a live path before rollback isolation".into(),
+                project_instructions: None,
+                commit_subject: "Exercise atomic rollback isolation".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(TransactionInjectingGate {
+                    project: project.path().to_path_buf(),
+                    injection,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "injection: {injection:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        assert_eq!(
+            std::fs::read(project.path().join(".git/index")).unwrap(),
+            baseline_index_bytes
+        );
+        match injection {
+            TransactionInjection::SamePathBeforeRollback => assert_eq!(
+                std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                "external value before rollback isolation\n"
+            ),
+            TransactionInjection::DirectoryBeforeRollback => assert_eq!(
+                std::fs::read(project.path().join("tracked.txt/external.bin")).unwrap(),
+                b"external directory race\0with bytes\n"
+            ),
+            _ => unreachable!(),
+        }
+        assert!(!project.path().join("run-owned.txt").exists());
+        assert_rollback_journal_retained(project.path());
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn baseline_ref_reconciliation_locks_before_confirming_the_noop() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add baseline ref race fixture");
+    let baseline = head(project.path());
+    let external = git_output(project.path(), &["rev-parse", &format!("{baseline}^")]);
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "baseline-ref-reconciliation-lock".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Race the baseline ref reconciliation lock".into(),
+            project_instructions: None,
+            commit_subject: "Exercise baseline ref reconciliation lock".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::BaselineRefAdvanceBeforeLock,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::RunRecoveryFailed,
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        external
+    );
+    let symbolic_target = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["symbolic-ref", &target_ref])
+        .output()
+        .unwrap();
+    assert!(!symbolic_target.status.success());
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_retained(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn open_file_handle_writes_after_quarantine_are_detected_and_restored() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add open file handle fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+    let open_file = OpenOptions::new()
+        .write(true)
+        .open(project.path().join("tracked.txt"))
+        .unwrap();
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "open-file-handle-write".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Race a write through an already-open file".into(),
+            project_instructions: None,
+            commit_subject: "Exercise open file handle protection".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(OpenHandleWritingGate {
+                writer: OpenHandleWriter::File(Mutex::new(open_file)),
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("tracked.txt")).unwrap(),
+        b"external open-file write\0bytes\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_retained(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_directory_handle_writes_after_quarantine_are_detected_and_restored() {
+    let project = initialized_project();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "authorized baseline\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add open directory handle fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+    let open_directory = File::open(project.path().join("shape")).unwrap();
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::DirectoryToFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "open-directory-handle-write".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Race a write through an already-open directory".into(),
+        project_instructions: None,
+        commit_subject: "Exercise open directory handle protection".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(OpenHandleWritingGate {
+            writer: OpenHandleWriter::Directory(open_directory),
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("shape/external-open-dir.bin")).unwrap(),
+        b"external open-directory write\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert_rollback_journal_retained(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_retains_candidate_file_writes_after_quarantine_verification() {
+    let project = initialized_project();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "authorized baseline\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add rollback candidate file fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::DirectoryToFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "rollback-open-candidate-file".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Write through an open candidate file after rollback verification".into(),
+        project_instructions: None,
+        commit_subject: "Retain rollback candidate file inode".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(RollbackOpenHandleWritingGate {
+            candidate: project.path().join("shape"),
+            kind: RollbackOpenHandleKind::File,
+            writer: Mutex::new(None),
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert_eq!(
+        std::fs::read(rollback_journal_for_run(project.path()).join("rollback-live/shape"))
+            .unwrap(),
+        b"external rollback open-file write\0bytes\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rollback_retains_candidate_directory_writes_after_quarantine_verification() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("shape"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add rollback candidate directory fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::FileToDirectory,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "rollback-open-candidate-directory".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Write through an open candidate directory after rollback verification".into(),
+        project_instructions: None,
+        commit_subject: "Retain rollback candidate directory inode".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(RollbackOpenHandleWritingGate {
+            candidate: project.path().join("shape"),
+            kind: RollbackOpenHandleKind::Directory,
+            writer: Mutex::new(None),
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert_eq!(
+        std::fs::read(
+            rollback_journal_for_run(project.path())
+                .join("rollback-live/shape/external-rollback-open-dir.bin")
+        )
+        .unwrap(),
+        b"external rollback open-directory write\0bytes\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[tokio::test]
+async fn successful_publication_retains_an_inode_for_writes_after_return() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add successful open handle fixture");
+    let mut open_file = OpenOptions::new()
+        .write(true)
+        .open(project.path().join("tracked.txt"))
+        .unwrap();
+
+    let result = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "successful-open-file-handle".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Publish while a baseline file remains open".into(),
+            project_instructions: None,
+            commit_subject: "Retain successful publication inode".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+    let commit = result.commit_id.unwrap();
+
+    open_file.set_len(0).unwrap();
+    open_file
+        .write_all(b"external write after successful return\0bytes\n")
+        .unwrap();
+    open_file.sync_all().unwrap();
+
+    assert_eq!(
+        std::fs::read(
+            project
+                .path()
+                .join(".git/ait/integration-rollbacks")
+                .join(commit)
+                .join("original/tracked.txt")
+        )
+        .unwrap(),
+        b"external write after successful return\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "Run tracked value\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn successful_df_publication_retains_an_open_directory_inode() {
+    let project = initialized_project();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "authorized baseline\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add successful open directory fixture");
+    let open_directory = File::open(project.path().join("shape")).unwrap();
+
+    let result = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::DirectoryToFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "successful-open-directory-handle".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Publish while a baseline directory remains open".into(),
+        project_instructions: None,
+        commit_subject: "Retain successful directory inode".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: head(project.path()),
+        baseline_index_tree: index_tree(project.path()),
+        cancellation: CancellationToken::new(),
+        integration_gate: None,
+    })
+    .await
+    .unwrap();
+    let commit = result.commit_id.unwrap();
+
+    write_through_directory_handle(
+        &open_directory,
+        "external-after-return.bin",
+        b"external directory write after successful return\0bytes\n",
+    );
+
+    assert_eq!(
+        std::fs::read(
+            project
+                .path()
+                .join(".git/ait/integration-rollbacks")
+                .join(commit)
+                .join("original/shape/external-after-return.bin")
+        )
+        .unwrap(),
+        b"external directory write after successful return\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape")).unwrap(),
+        "Run file value\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn ancestor_links_never_redirect_publication_or_rollback_outside_the_project() {
+    for phase in [
+        AncestorSwapPhase::BeforeMutation,
+        AncestorSwapPhase::BeforeRollback,
+    ] {
+        let project = initialized_project();
+        std::fs::create_dir(project.path().join("dir")).unwrap();
+        std::fs::write(
+            project.path().join("dir/tracked.txt"),
+            "authorized nested baseline\n",
+        )
+        .unwrap();
+        commit_all(project.path(), "add bound ancestor fixture");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+        let outside = TempDir::new().unwrap();
+        std::fs::write(
+            outside.path().join("tracked.txt"),
+            b"outside sentinel\0must remain exact\n",
+        )
+        .unwrap();
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(NestedEditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("ancestor-link-{phase:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Race an ancestor link against publication".into(),
+                project_instructions: None,
+                commit_subject: "Exercise capability-bound publication".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(AncestorSwappingGate {
+                    project: project.path().to_path_buf(),
+                    outside: outside.path().to_path_buf(),
+                    phase,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "phase: {phase:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        assert_eq!(
+            std::fs::read(project.path().join(".git/index")).unwrap(),
+            baseline_index_bytes
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("tracked.txt")).unwrap(),
+            b"outside sentinel\0must remain exact\n"
+        );
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("dir.external/tracked.txt")).unwrap(),
+                if matches!(phase, AncestorSwapPhase::BeforeMutation) {
+                    "authorized nested baseline\n"
+                } else {
+                    "Run nested value\n"
+                }
+            );
+            if matches!(phase, AncestorSwapPhase::BeforeMutation) {
+                assert_rollback_journal_empty(project.path());
+            } else {
+                assert_rollback_journal_retained(project.path());
+            }
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("dir/tracked.txt")).unwrap(),
+                "authorized nested baseline\n"
+            );
+            assert_rollback_journal_empty(project.path());
+        }
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn untouched_later_roots_do_not_turn_an_early_collision_into_recovery_failure() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitignore"), "a-new.txt\n").unwrap();
+    std::fs::write(
+        project.path().join("z-tracked.txt"),
+        "authorized late root\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add partial apply state fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(MultiRootEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "partial-apply-untouched-root".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Collide before a later baseline root is applied".into(),
+            project_instructions: None,
+            commit_subject: "Exercise per-root publication state".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::EarlyRootCollision,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("a-new.txt")).unwrap(),
+        b"external early collision\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("z-tracked.txt")).unwrap(),
+        "authorized late root\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".gitignore")).unwrap(),
+        "a-new.txt\n"
+    );
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_classifies_filter_owned_files_before_removing_gitattributes() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitattributes"), "data.txt -ident\n").unwrap();
+    std::fs::write(project.path().join("data.txt"), "baseline data\n").unwrap();
+    commit_all(project.path(), "add attribute rollback fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(AttributeEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "attribute-sensitive-rollback".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Change attributes and an affected file".into(),
+            project_instructions: None,
+            commit_subject: "Exercise attribute-sensitive rollback".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::FailureAfterRefPublish,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".gitattributes")).unwrap(),
+        "data.txt -ident\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("data.txt")).unwrap(),
+        "baseline data\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+    assert_rollback_journal_retained(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_preserves_a_target_ref_replaced_by_a_candidate_resolving_symref() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add ref identity fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "target-ref-symref-identity".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Exercise target ref identity preservation".into(),
+            project_instructions: None,
+            commit_subject: "Exercise target identity rollback".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::TargetSymrefAfterRefPublish,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::RunRecoveryFailed,
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        git_output(project.path(), &["symbolic-ref", &target_ref]),
+        "refs/heads/injected-ref-target"
+    );
+    let retained_run_ref = run_ref(project.path());
+    assert_eq!(
+        git_output(
+            project.path(),
+            &["rev-parse", "refs/heads/injected-ref-target"]
+        ),
+        git_output(project.path(), &["rev-parse", &retained_run_ref])
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_retained(project.path());
+}
+
+#[tokio::test]
+async fn directory_file_transitions_roll_back_ref_index_and_worktree_after_publication() {
+    for direction in [
+        DirectoryFileDirection::FileToDirectory,
+        DirectoryFileDirection::DirectoryToFile,
+    ] {
+        let project = initialized_project();
+        match direction {
+            DirectoryFileDirection::FileToDirectory => {
+                std::fs::write(project.path().join("shape"), "baseline file\n").unwrap();
+            }
+            DirectoryFileDirection::DirectoryToFile => {
+                std::fs::create_dir(project.path().join("shape")).unwrap();
+                std::fs::write(
+                    project.path().join("shape/child.txt"),
+                    "baseline directory child\n",
+                )
+                .unwrap();
+                std::fs::write(
+                    project.path().join("shape/sibling.txt"),
+                    "baseline directory sibling\n",
+                )
+                .unwrap();
+            }
+        }
+        commit_all(project.path(), "add D/F baseline");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter { direction }))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("directory-file-{direction:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Exercise a D/F transition".into(),
+                project_instructions: None,
+                commit_subject: "Exercise D/F rollback".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(TransactionInjectingGate {
+                    project: project.path().to_path_buf(),
+                    injection: TransactionInjection::FailureAfterRefPublish,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+            "direction: {direction:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline,
+            "target ref changed for {direction:?}"
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        match direction {
+            DirectoryFileDirection::FileToDirectory => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape")).unwrap(),
+                    "baseline file\n"
+                );
+            }
+            DirectoryFileDirection::DirectoryToFile => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape/child.txt")).unwrap(),
+                    "baseline directory child\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape/sibling.txt")).unwrap(),
+                    "baseline directory sibling\n"
+                );
+            }
+        }
+        assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+        assert_rollback_journal_retained(project.path());
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn detached_head_rollback_preserves_a_later_symbolic_head() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add detached rollback fixture");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["switch", "--detach"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "detached-head-ref-identity".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Exercise detached HEAD rollback".into(),
+            project_instructions: None,
+            commit_subject: "Exercise detached rollback".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::BranchSwitchAfterRefPublish,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::RunRecoveryFailed);
+    assert_eq!(
+        git_output(project.path(), &["symbolic-ref", "HEAD"]),
+        "refs/heads/injected-after-publication"
+    );
+    assert_eq!(head(project.path()), baseline);
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "external branch-switch value\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+fn assert_rollback_journal_empty(project: &Path) {
+    let rollback_root = project.join(".git/ait/integration-rollbacks");
+    assert!(
+        !rollback_root.exists() || std::fs::read_dir(rollback_root).unwrap().next().is_none(),
+        "rollback material leaked"
+    );
+}
+
+fn rollback_journal_for_run(project: &Path) -> PathBuf {
+    let commit = git_output(project, &["rev-parse", &run_ref(project)]);
+    project.join(".git/ait/integration-rollbacks").join(commit)
+}
+
+fn assert_rollback_journal_retained(project: &Path) {
+    let rollback_root = project.join(".git/ait/integration-rollbacks");
+    assert!(
+        rollback_root.exists() && std::fs::read_dir(rollback_root).unwrap().next().is_some(),
+        "rollback recovery material was discarded"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn controlled_worktree_setup_skips_successful_and_failing_post_checkout_hooks() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    for exit_code in [0, 1] {
+        let project = initialized_project();
+        let marker = project.path().join(format!("hook-ran-{exit_code}"));
+        let hook = project.path().join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nprintf hook-side-effect > '{}'\nexit {exit_code}\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&hook, permissions).unwrap();
+
+        let result = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("hook-{exit_code}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Create answer.txt".into(),
+                project_instructions: Some("Keep generated files small.".into()),
+                commit_subject: "Create answer.txt".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: head(project.path()),
+                baseline_index_tree: index_tree(project.path()),
+                cancellation: CancellationToken::new(),
+                integration_gate: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(result.commit_id.is_some());
+        assert!(!marker.exists(), "post-checkout ran with exit {exit_code}");
+        assert!(git_output(project.path(), &["for-each-ref", "refs/ait/runs"]).is_empty());
+        assert_eq!(
+            git_output(project.path(), &["worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn successful_runs_rewrite_absolute_workspace_paths_before_cleanup() {
+    let project = initialized_project();
+    let result = CodexWorkspaceAgent::new(Arc::new(AbsolutePathAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "absolute-paths".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Report paths".into(),
+            project_instructions: None,
+            commit_subject: "Report paths".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.operations.len(), 3);
+    assert_eq!(result.operations[0].paths, ["."]);
+    assert_eq!(result.operations[1].paths, ["answer.txt"]);
+    assert_eq!(result.operations[2].paths, ["preview.png"]);
+    assert!(
+        result
+            .operations
+            .iter()
+            .flat_map(|item| &item.paths)
+            .all(|path| {
+                !Path::new(path).is_absolute() && !path.contains(".git/ait/workspaces")
+            })
+    );
+}
+
+#[tokio::test]
+async fn initialized_submodules_are_rejected_with_an_actionable_error() {
+    let module = initialized_project();
+    std::fs::write(module.path().join("module.txt"), "module content\n").unwrap();
+    commit_all(module.path(), "add module content");
+    let project = initialized_project();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args([
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                module.path().to_str().unwrap(),
+                "module",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    commit_all(project.path(), "add initialized submodule");
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "initialized-submodule".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Inspect the module".into(),
+            project_instructions: Some("Keep generated files small.".into()),
+            commit_subject: "Inspect the module".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::InvalidConfiguration);
+    assert!(failure.message.contains("deinitialize"));
+    let submodule_status = git_output(project.path(), &["submodule", "status", "--recursive"]);
+    assert!(!submodule_status.starts_with('-'));
+    assert!(submodule_status.contains(" module"));
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
 }

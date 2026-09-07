@@ -486,7 +486,9 @@ impl WorkspaceAgent for SlowStreamingAgent {
 async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pagination() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
+    let second_project_dir = temporary.path().join("project-2");
     std::fs::create_dir(&project_dir).unwrap();
+    std::fs::create_dir(&second_project_dir).unwrap();
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(SlowStreamingAgent {
         started: Semaphore::new(0),
@@ -576,9 +578,19 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
 
     command(
         &service,
+        Command::RegisterProject {
+            id: "live-project-2".into(),
+            name: "Live 2".into(),
+            workdir: second_project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await;
+    command(
+        &service,
         Command::CreateSession {
             id: "live-session-2".into(),
-            project_id: "live-project".into(),
+            project_id: "live-project-2".into(),
             agent_id: "live-agent".into(),
             at_message_id: None,
         },
