@@ -11,7 +11,7 @@ use ait_contracts::{Command, CommandResult, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation, WorkspaceOutputItem,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -32,10 +32,16 @@ impl WorkspaceAgent for FixtureCodex {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let assistant_text = format!("Completed: {}", request.commit_subject);
         Ok(WorkspaceAgentResponse {
-            assistant_text: format!("Completed: {}", request.commit_subject),
+            assistant_text: assistant_text.clone(),
             commit_id: None,
             operations: Vec::new(),
+            output_items: vec![WorkspaceOutputItem::Message {
+                id: format!("message-{}", request.request_id),
+                phase: Some("final_answer".into()),
+                text: assistant_text,
+            }],
         })
     }
 }
@@ -147,6 +153,21 @@ impl WorkspaceAgent for SuccessfulCodex {
                 detail: None,
                 paths: vec!["src/main.rs".into()],
             }],
+            output_items: vec![
+                WorkspaceOutputItem::Message {
+                    id: "commentary-1".into(),
+                    phase: Some("commentary".into()),
+                    text: "Inspecting the repository.".into(),
+                },
+                WorkspaceOutputItem::Operation {
+                    id: "operation-1".into(),
+                },
+                WorkspaceOutputItem::Message {
+                    id: "final-1".into(),
+                    phase: Some("final_answer".into()),
+                    text: "Implemented and verified the feature.".into(),
+                },
+            ],
         })
     }
 }
@@ -350,6 +371,24 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
     assert_eq!(
         assistant.data.as_ref().unwrap()["codex"]["operations"][0]["paths"][0],
         serde_json::json!("src/main.rs")
+    );
+    assert_eq!(
+        assistant.data.as_ref().unwrap()["codex"]["output_items"],
+        serde_json::json!([
+            {
+                "type": "message",
+                "id": "commentary-1",
+                "phase": "commentary",
+                "text": "Inspecting the repository."
+            },
+            { "type": "operation", "id": "operation-1" },
+            {
+                "type": "message",
+                "id": "final-1",
+                "phase": "final_answer",
+                "text": "Implemented and verified the feature."
+            }
+        ])
     );
 }
 
@@ -568,6 +607,12 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
             .iter()
             .all(|message| { (started_at..=finished_at).contains(&message.created_at) })
     );
+    assert!(before_restart.messages.iter().any(|message| {
+        message
+            .data
+            .as_ref()
+            .is_some_and(|data| data["codex"]["output_items"][0]["phase"] == "final_answer")
+    }));
 
     drop(service);
     let recovered =

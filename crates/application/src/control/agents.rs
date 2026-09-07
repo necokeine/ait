@@ -562,6 +562,7 @@ impl LocalControlService {
             assistant_text,
             commit_id: None,
             operations: Vec::new(),
+            output_items: Vec::new(),
         })
     }
 }

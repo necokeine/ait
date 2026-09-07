@@ -10,6 +10,7 @@ export interface AgentView { id: string; name: string; config: AgentConfiguratio
 
 export type MessagePart =
   | { type: "text"; text: string }
+  | { type: "codex_message"; id: string; phase: string; text: string }
   | { type: "file"; name: string; media_type: string }
   | { type: "tool_use"; call_id: string; tool_name: string; arguments: string }
   | {

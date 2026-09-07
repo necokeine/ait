@@ -329,22 +329,48 @@ export function renderMessage(message: DesktopMessage, agents: AgentSummary[], s
   const author = messageAuthor(message, agents);
   const isInput = message.role === "user" && message.kind !== "tool_result";
   const avatar = message.role === "assistant" ? author.slice(0, 2).toUpperCase() : message.role === "user" ? "U" : "S";
-  const content = message.parts.map((part) => {
-    if (part.type === "text") return isInput
-      ? `<div class="message-content">${escapeHtml(part.text)}</div>`
-      : renderMessageText(part.text);
-    if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
-    if (part.type === "operation") return renderOperation(part);
-    if (part.type === "file") return `<div class="tool-card"><header><span>＋</span><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
-    if (part.type === "structured") return `<div class="tool-card"><header><span>{ }</span><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(part.value)}</pre></div>`;
-    return '<div class="message-content">Content redacted</div>';
-  }).join("");
+  const content = message.parts.some((part) => part.type === "codex_message")
+    ? renderCodexOutput(message.parts)
+    : message.parts.map((part) => renderPart(part, isInput)).join("");
   return `<article class="message ${message.role}${isInput ? " user-input" : ""}${selected ? " is-selected" : ""}" data-message-id="${escapeHtml(message.id)}" tabindex="0" aria-current="${selected}" aria-label="${escapeHtml(author)} message">
     ${isInput ? "" : `<div class="message-avatar" aria-hidden="true">${escapeHtml(avatar)}</div>`}
     <div class="message-body"><div class="message-heading">${isInput ? "" : `<strong>${escapeHtml(author)}</strong>`}${renderMessageTime(message.createdAt)}</div>
       <div class="${isInput ? "user-input-bubble" : "message-parts"}">${content}</div>
     </div>
   </article>`;
+}
+
+function renderPart(part: DesktopMessage["parts"][number], isInput = false): string {
+  if (part.type === "text") return isInput
+    ? `<div class="message-content">${escapeHtml(part.text)}</div>`
+    : renderMessageText(part.text);
+  if (part.type === "codex_message") {
+    return `<section class="codex-output-message" data-codex-item-id="${escapeHtml(part.id)}" data-codex-phase="${escapeHtml(part.phase)}">${renderMessageText(part.text)}</section>`;
+  }
+  if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
+  if (part.type === "operation") return renderOperation(part);
+  if (part.type === "file") return `<div class="tool-card"><header><span>＋</span><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
+  if (part.type === "structured") return `<div class="tool-card"><header><span>{ }</span><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(part.value)}</pre></div>`;
+  return '<div class="message-content">Content redacted</div>';
+}
+
+function renderCodexOutput(parts: DesktopMessage["parts"]): string {
+  const hasExplicitFinal = parts.some((part) =>
+    part.type === "codex_message" && part.phase === "final_answer");
+  const fallbackFinalIndex = hasExplicitFinal ? -1 : parts.findLastIndex((part) =>
+    part.type === "codex_message");
+  const isFinal = (part: DesktopMessage["parts"][number], index: number): boolean =>
+    part.type === "codex_message"
+      && (part.phase === "final_answer" || index === fallbackFinalIndex);
+  const process = parts.filter((part, index) => !isFinal(part, index));
+  const final = parts.filter(isFinal);
+  const processHtml = process.length > 0
+    ? `<details class="codex-process"><summary><span class="codex-process-status" aria-hidden="true">◇</span><span><strong>Process</strong><small>${process.length} ${process.length === 1 ? "event" : "events"}</small></span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="codex-process-events">${process.map((part) => renderPart(part)).join("")}</div></details>`
+    : "";
+  const finalHtml = final.length > 0
+    ? `<section class="codex-final-answer" data-codex-final-answer>${final.map((part) => renderPart(part)).join("")}</section>`
+    : "";
+  return processHtml + finalHtml;
 }
 
 function renderOperation(part: Extract<DesktopMessage["parts"][number], { type: "operation" }>): string {
