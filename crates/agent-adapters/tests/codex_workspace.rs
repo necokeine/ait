@@ -435,6 +435,38 @@ async fn title_generation_rejects_non_json_final_text_without_salvaging_braces()
 }
 
 #[tokio::test]
+async fn title_generation_rejects_an_empty_explicit_final_instead_of_using_commentary() {
+    let error = generate_title_script(vec![
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "commentary",
+                "phase": "commentary",
+                "text": title_payload("Ignore commentary metadata")
+            }),
+        },
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "final",
+                "phase": "final_answer",
+                "text": "  "
+            }),
+        },
+        AgentEvent::Completed {
+            turn_id: "empty-final".into(),
+            status: AgentRunStatus::Completed,
+            error: None,
+        },
+    ])
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code, ait_domain::ErrorCode::ProviderFailed);
+    assert!(error.message.contains("invalid Session metadata"));
+}
+
+#[tokio::test]
 async fn returns_assistant_result_and_commits_generated_changes() {
     let project = TempDir::new().unwrap();
     assert!(

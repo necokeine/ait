@@ -360,6 +360,7 @@ impl CodexOutputCollector {
     }
 
     fn finish(mut self) -> (String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>) {
+        let assistant_text = self.assistant_text();
         let mut operations = Vec::new();
         let mut output_items = Vec::new();
         for item_id in self.item_order {
@@ -379,8 +380,27 @@ impl CodexOutputCollector {
                 operations.push(operation);
             }
         }
-        let assistant_text = final_assistant_text(&output_items);
         (assistant_text, operations, output_items)
+    }
+
+    fn assistant_text(&self) -> String {
+        let final_messages = self
+            .item_order
+            .iter()
+            .filter_map(|item_id| self.messages.get(item_id))
+            .filter(|message| message.phase.as_deref() == Some("final_answer"))
+            .map(CodexMessageBuffer::reconciled_text)
+            .collect::<Vec<_>>();
+        if !final_messages.is_empty() {
+            return final_messages.join("\n\n");
+        }
+        self.item_order
+            .iter()
+            .rev()
+            .filter_map(|item_id| self.messages.get(item_id))
+            .map(CodexMessageBuffer::reconciled_text)
+            .find(|text| !text.trim().is_empty())
+            .unwrap_or_default()
     }
 }
 
@@ -435,31 +455,6 @@ fn update_message_buffer(buffer: &mut CodexMessageBuffer, item: &Value, complete
             buffer.started = Some(text.to_owned());
         }
     }
-}
-
-fn final_assistant_text(items: &[WorkspaceOutputItem]) -> String {
-    let final_messages = items
-        .iter()
-        .filter_map(|item| match item {
-            WorkspaceOutputItem::Message {
-                phase: Some(phase),
-                text,
-                ..
-            } if phase == "final_answer" => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if !final_messages.is_empty() {
-        return final_messages.join("\n\n");
-    }
-    items
-        .iter()
-        .rev()
-        .find_map(|item| match item {
-            WorkspaceOutputItem::Message { text, .. } => Some(text.clone()),
-            WorkspaceOutputItem::Operation { .. } => None,
-        })
-        .unwrap_or_default()
 }
 
 const MAX_OPERATION_COUNT: usize = 200;
