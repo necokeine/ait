@@ -167,6 +167,28 @@ fn git_head(path: &std::path::Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn git_index_tree(path: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("write-tree")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_commit_tree(path: &std::path::Path, commit: &str) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", &format!("{commit}^{{tree}}")])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
 #[async_trait]
 impl WorkspaceAgent for CommittingAgent {
     async fn invoke(
@@ -264,6 +286,53 @@ impl WorkspaceAgent for SettlingCancellationAgent {
         Ok(WorkspaceAgentResponse {
             assistant_text: "second run completed".into(),
             commit_id: None,
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+struct FinalizationRaceAgent {
+    entered: Semaphore,
+    begin_integration: Semaphore,
+    integration_started: Semaphore,
+    complete: Semaphore,
+}
+
+impl FinalizationRaceAgent {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            begin_integration: Semaphore::new(0),
+            integration_started: Semaphore::new(0),
+            complete: Semaphore::new(0),
+        }
+    }
+
+    async fn started(&self) {
+        self.entered.acquire().await.unwrap().forget();
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for FinalizationRaceAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.entered.add_permits(1);
+        self.begin_integration.acquire().await.unwrap().forget();
+        request
+            .integration_gate
+            .as_ref()
+            .expect("application integration gate")
+            .begin_integration()
+            .await?;
+        self.integration_started.add_permits(1);
+        self.complete.acquire().await.unwrap().forget();
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "integrated result".into(),
+            commit_id: Some("fixture-commit".into()),
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -548,6 +617,7 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
     ));
     let directory = setup(&service, config("high")).await;
     let initial = git_head(directory.path());
+    let initial_tree = git_index_tree(directory.path());
 
     let first = {
         let service = service.clone();
@@ -584,8 +654,16 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
         Some(initial.as_str())
     );
     assert_eq!(
+        first_run.workspace_base_index_tree.as_deref(),
+        Some(initial_tree.as_str())
+    );
+    assert_eq!(
         second_run.workspace_base_commit.as_deref(),
         Some(commits[0].1.as_str())
+    );
+    assert_eq!(
+        second_run.workspace_base_index_tree.as_deref(),
+        Some(git_commit_tree(directory.path(), &commits[0].1).as_str())
     );
     assert_ne!(first_run.id, second_run.id);
     for (baseline, commit, file) in &commits {
@@ -654,6 +732,168 @@ async fn cancellation_holds_the_workspace_lease_until_adapter_settlement() {
         panic!()
     };
     assert_eq!(completed.status, "completed");
+}
+
+#[tokio::test]
+async fn dropping_the_execute_future_keeps_leases_and_terminal_persistence_supervised() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(BlockingAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let abandoned_transport = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    agent.started().await;
+    abandoned_transport.abort();
+    assert!(abandoned_transport.await.unwrap_err().is_cancelled());
+
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "the detached transport released the Project lease before settlement"
+    );
+
+    agent.release.add_permits(1);
+    agent.started().await;
+    let settled = view(&service).await;
+    let first_run = settled
+        .runs
+        .iter()
+        .find(|run| run.session_id.as_deref() == Some("one"))
+        .unwrap();
+    assert_eq!(first_run.status, "completed");
+    assert!(
+        settled
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+
+    agent.release.add_permits(1);
+    let CommandResult::Run(second_run) = second.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(second_run.status, "completed");
+}
+
+#[tokio::test]
+async fn cancellation_wins_the_finalization_gate_before_integration() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+    let active = view(&service).await.runs[0].id.clone();
+
+    let CommandResult::Run(cancelled) = ok(
+        &service,
+        Command::CancelRun {
+            run_id: active.clone(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(cancelled.status, "cancelled");
+    agent.begin_integration.add_permits(1);
+
+    let CommandResult::Run(settled) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(settled.status, "cancelled");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            agent.integration_started.acquire()
+        )
+        .await
+        .is_err(),
+        "integration started after durable cancellation"
+    );
+    let workspace = view(&service).await;
+    assert_eq!(workspace.messages.len(), 2);
+    assert!(
+        workspace
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn integration_wins_the_finalization_gate_and_its_output_is_persisted() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+    let active = view(&service).await.runs[0].id.clone();
+    agent.begin_integration.add_permits(1);
+    agent.integration_started.acquire().await.unwrap().forget();
+
+    let rejected = service
+        .execute(Command::CancelRun {
+            run_id: active.clone(),
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::RunAlreadyTerminal);
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .into_iter()
+            .find(|run| run.id == active)
+            .unwrap()
+            .status,
+        "running"
+    );
+
+    agent.complete.add_permits(1);
+    let CommandResult::Run(completed) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(completed.status, "completed");
+    let workspace = view(&service).await;
+    let assistant = workspace
+        .messages
+        .iter()
+        .find(|message| message.role == "assistant")
+        .unwrap();
+    assert_eq!(assistant.text.as_deref(), Some("integrated result"));
+    assert_eq!(
+        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
+        serde_json::json!("fixture-commit")
+    );
 }
 
 #[tokio::test]

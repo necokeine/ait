@@ -3,9 +3,10 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{BufRead as _, BufReader as StdBufReader, Write as _},
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
+    process::{Child as ProcessChild, ChildStdin, Command as ProcessCommand, Stdio},
     sync::Arc,
     time::Duration,
 };
@@ -234,16 +235,7 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let adapter = Arc::clone(&self.adapter);
-        tokio::spawn(async move { invoke_isolated_workspace(adapter, request).await })
-            .await
-            .map_err(|failure| {
-                domain_error(
-                    ErrorCode::ProviderFailed,
-                    format!("Codex workspace task failed: {failure}"),
-                    true,
-                )
-            })?
+        invoke_isolated_workspace(Arc::clone(&self.adapter), request).await
     }
 }
 
@@ -258,8 +250,12 @@ async fn invoke_isolated_workspace(
             false,
         ));
     }
-    let mut workspace =
-        IsolatedWorkspace::create(&request.cwd, &request.request_id, &request.baseline_commit)?;
+    let mut workspace = IsolatedWorkspace::create(
+        &request.cwd,
+        &request.request_id,
+        &request.baseline_commit,
+        &request.baseline_index_tree,
+    )?;
     let cancellation = request.cancellation.clone();
     let commit_subject = request.commit_subject;
     let stream = adapter
@@ -283,8 +279,9 @@ async fn invoke_isolated_workspace(
             return Err(workspace.settle_failure(adapter_domain_error(failure)));
         }
     };
-    let (assistant_text, operations, output_items) =
+    let (assistant_text, mut operations, output_items) =
         collect_workspace_output(stream, &mut workspace).await?;
+    rewrite_isolated_operation_paths(&mut operations, workspace.path());
     if cancellation.is_cancelled() {
         return Err(workspace.settle_failure(domain_error(
             ErrorCode::RunCancelled,
@@ -305,7 +302,14 @@ async fn invoke_isolated_workspace(
     {
         return Err(workspace.settle_failure(failure));
     }
-    if cancellation.is_cancelled() {
+    if let Err(failure) = workspace.validate_primary() {
+        return Err(workspace.retain(failure));
+    }
+    if let Some(gate) = request.integration_gate {
+        if let Err(failure) = gate.begin_integration().await {
+            return Err(workspace.settle_failure(failure));
+        }
+    } else if cancellation.is_cancelled() {
         return Err(workspace.settle_failure(domain_error(
             ErrorCode::RunCancelled,
             "run was cancelled before isolated changes were integrated",
@@ -383,11 +387,17 @@ struct IsolatedWorkspace {
     worktree: PathBuf,
     run_ref: String,
     baseline: String,
+    baseline_index_tree: String,
     primary_head_ref: Option<String>,
 }
 
 impl IsolatedWorkspace {
-    fn create(primary: &Path, request_id: &str, baseline: &str) -> Result<Self, DomainError> {
+    fn create(
+        primary: &Path,
+        request_id: &str,
+        baseline: &str,
+        baseline_index_tree: &str,
+    ) -> Result<Self, DomainError> {
         let primary = fs::canonicalize(primary).map_err(|failure| {
             domain_error(
                 ErrorCode::ProjectPathNotFound,
@@ -395,7 +405,9 @@ impl IsolatedWorkspace {
                 false,
             )
         })?;
-        let primary_head_ref = ensure_primary_baseline(&primary, baseline, None)?;
+        let primary_head_ref =
+            ensure_primary_baseline(&primary, baseline, baseline_index_tree, None)?;
+        reject_initialized_submodules(&primary)?;
         let git_dir = absolute_git_dir(&primary)?;
         let identity = format!("{:x}", Sha256::digest(request_id.as_bytes()));
         let worktree_root = git_dir.join("ait").join("workspaces");
@@ -420,10 +432,25 @@ impl IsolatedWorkspace {
         }
         git(&primary, &["update-ref", &run_ref, baseline])?;
         let worktree_text = worktree.to_string_lossy().into_owned();
-        if let Err(failure) = git(
+        let setup = git(
             &primary,
-            &["worktree", "add", "--detach", &worktree_text, baseline],
-        ) {
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--no-checkout",
+                &worktree_text,
+                baseline,
+            ],
+        )
+        .and_then(|_| git(&worktree, &["reset", "--hard", baseline]));
+        if let Err(failure) = setup {
+            cleanup_partial_worktree(&primary, &worktree);
+            let _ = delete_git_ref(&primary, &run_ref);
+            return Err(failure);
+        }
+        if let Err(failure) = ensure_isolated_setup(&worktree, baseline) {
+            cleanup_partial_worktree(&primary, &worktree);
             let _ = delete_git_ref(&primary, &run_ref);
             return Err(failure);
         }
@@ -432,6 +459,7 @@ impl IsolatedWorkspace {
             worktree,
             run_ref,
             baseline: baseline.to_owned(),
+            baseline_index_tree: baseline_index_tree.to_owned(),
             primary_head_ref,
         })
     }
@@ -444,31 +472,39 @@ impl IsolatedWorkspace {
         &self.baseline
     }
 
+    fn validate_primary(&self) -> Result<(), DomainError> {
+        ensure_primary_baseline(
+            &self.primary,
+            &self.baseline,
+            &self.baseline_index_tree,
+            Some(&self.primary_head_ref),
+        )
+        .map(|_| ())
+    }
+
     fn integrate(&mut self, commit_id: Option<&str>) -> Result<(), DomainError> {
         if let Some(commit_id) = commit_id {
             ensure_descendant(&self.primary, &self.baseline, commit_id)?;
         }
-        ensure_primary_baseline(&self.primary, &self.baseline, Some(&self.primary_head_ref))?;
+        // Finish fallible isolated-worktree cleanup before the primary checkout
+        // is changed. The following transaction revalidates every admission
+        // baseline after this removal, so cleanup does not reopen the old TOCTOU.
         self.remove_clean_worktree()?;
         if let Some(commit_id) = commit_id {
-            git(
+            integrate_primary_transaction(
                 &self.primary,
-                &["merge", "--ff-only", "--no-edit", commit_id],
+                &self.baseline,
+                &self.baseline_index_tree,
+                self.primary_head_ref.as_deref(),
+                commit_id,
             )?;
-            let integrated = git_head(&self.primary).ok_or_else(|| {
-                domain_error(
-                    ErrorCode::ProjectGitHeadUnavailable,
-                    "Project HEAD disappeared while integrating isolated changes",
-                    true,
-                )
-            })?;
-            if integrated != commit_id {
-                return Err(domain_error(
-                    ErrorCode::ProjectGitHeadUnavailable,
-                    "Project HEAD did not reach the isolated Run commit",
-                    true,
-                ));
-            }
+        } else {
+            ensure_primary_baseline(
+                &self.primary,
+                &self.baseline,
+                &self.baseline_index_tree,
+                Some(&self.primary_head_ref),
+            )?;
         }
         // Ref cleanup is housekeeping after the externally visible commit has
         // already integrated; a stale audit ref must not turn that success into
@@ -904,6 +940,25 @@ fn operation_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<String> 
     result
 }
 
+fn rewrite_isolated_operation_paths(operations: &mut [WorkspaceOperation], worktree: &Path) {
+    for operation in operations {
+        for path in &mut operation.paths {
+            let candidate = Path::new(path);
+            if !candidate.is_absolute() {
+                continue;
+            }
+            let Ok(relative) = candidate.strip_prefix(worktree) else {
+                continue;
+            };
+            *path = if relative.as_os_str().is_empty() {
+                ".".to_owned()
+            } else {
+                relative.to_string_lossy().into_owned()
+            };
+        }
+    }
+}
+
 fn operation_char_count(operation: &WorkspaceOperation) -> usize {
     operation.id.chars().count()
         + operation.kind.chars().count()
@@ -1144,6 +1199,7 @@ fn ensure_clean_worktree(cwd: &Path) -> Result<Option<String>, DomainError> {
 fn ensure_primary_baseline(
     primary: &Path,
     baseline: &str,
+    baseline_index_tree: &str,
     expected_head_ref: Option<&Option<String>>,
 ) -> Result<Option<String>, DomainError> {
     let head = ensure_clean_worktree(primary)?.ok_or_else(|| {
@@ -1162,6 +1218,24 @@ fn ensure_primary_baseline(
             true,
         ));
     }
+    let index_tree = git_index_tree(primary)?;
+    if index_tree != baseline_index_tree {
+        return Err(domain_error(
+            ErrorCode::ProjectGitDirty,
+            format!(
+                "Project index changed during the Codex Run (expected {baseline_index_tree}, found {index_tree}); isolated changes were not integrated"
+            ),
+            true,
+        ));
+    }
+    let head_tree = git_commit_tree(primary, baseline)?;
+    if index_tree != head_tree {
+        return Err(domain_error(
+            ErrorCode::ProjectGitDirty,
+            "Project index no longer matches the authorized HEAD tree; isolated changes were not integrated",
+            false,
+        ));
+    }
     let head_ref = symbolic_head(primary)?;
     if expected_head_ref.is_some_and(|expected| *expected != head_ref) {
         return Err(domain_error(
@@ -1171,6 +1245,52 @@ fn ensure_primary_baseline(
         ));
     }
     Ok(head_ref)
+}
+
+fn git_index_tree(cwd: &Path) -> Result<String, DomainError> {
+    let output = git(cwd, &["write-tree"])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn git_commit_tree(cwd: &Path, commit: &str) -> Result<String, DomainError> {
+    let expression = format!("{commit}^{{tree}}");
+    let output = git(cwd, &["rev-parse", "--verify", &expression])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn reject_initialized_submodules(primary: &Path) -> Result<(), DomainError> {
+    let modules = git(primary, &["submodule", "status", "--recursive"])?;
+    if String::from_utf8_lossy(&modules.stdout)
+        .lines()
+        .any(|line| !line.starts_with('-'))
+    {
+        return Err(domain_error(
+            ErrorCode::InvalidConfiguration,
+            "Codex isolated workspaces do not yet support initialized Git submodules; deinitialize them or register each submodule as a separate Project",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_isolated_setup(worktree: &Path, baseline: &str) -> Result<(), DomainError> {
+    if git_head(worktree).as_deref() != Some(baseline) {
+        return Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "isolated worktree checkout did not reach the authorized baseline",
+            false,
+        ));
+    }
+    ensure_clean_worktree(worktree).map(|_| ())
+}
+
+fn cleanup_partial_worktree(primary: &Path, worktree: &Path) {
+    let worktree_text = worktree.to_string_lossy().into_owned();
+    let _ = git(primary, &["worktree", "remove", "--force", &worktree_text]);
+    let _ = git(primary, &["worktree", "prune"]);
+    if worktree.exists() {
+        let _ = fs::remove_dir_all(worktree);
+    }
 }
 
 fn symbolic_head(cwd: &Path) -> Result<Option<String>, DomainError> {
@@ -1214,6 +1334,373 @@ fn absolute_git_dir(cwd: &Path) -> Result<PathBuf, DomainError> {
             false,
         ))
     }
+}
+
+struct LockedIndex {
+    index: PathBuf,
+    lock: PathBuf,
+    committed: bool,
+}
+
+impl LockedIndex {
+    fn acquire(primary: &Path) -> Result<Self, DomainError> {
+        let git_dir = absolute_git_dir(primary)?;
+        let index = git_dir.join("index");
+        let lock = git_dir.join("index.lock");
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::ProjectWorkspaceBusy,
+                    format!("cannot lock Project Git index for integration: {failure}"),
+                    true,
+                )
+            })?;
+        let locked = Self {
+            index,
+            lock,
+            committed: false,
+        };
+        let mut source = File::open(&locked.index).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot open Project Git index under lock: {failure}"),
+                false,
+            )
+        })?;
+        std::io::copy(&mut source, &mut destination).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot snapshot Project Git index under lock: {failure}"),
+                true,
+            )
+        })?;
+        destination.flush().map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot flush locked Project Git index: {failure}"),
+                true,
+            )
+        })?;
+        drop(destination);
+        Ok(locked)
+    }
+
+    fn path(&self) -> &Path {
+        &self.lock
+    }
+
+    fn commit(mut self) -> Result<(), DomainError> {
+        fs::rename(&self.lock, &self.index).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot publish locked Project Git index: {failure}"),
+                true,
+            )
+        })?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for LockedIndex {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.lock);
+        }
+    }
+}
+
+struct PreparedRefTransaction {
+    child: Option<ProcessChild>,
+    stdin: Option<ChildStdin>,
+    stdout: StdBufReader<std::process::ChildStdout>,
+    committed: bool,
+}
+
+impl PreparedRefTransaction {
+    fn prepare(
+        primary: &Path,
+        target: &str,
+        baseline: &str,
+        commit: &str,
+        no_deref: bool,
+    ) -> Result<Self, DomainError> {
+        let mut child = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(primary)
+            .args(["update-ref", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    format!("cannot start Project ref transaction: {failure}"),
+                    true,
+                )
+            })?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                "Project ref transaction stdin is unavailable",
+                true,
+            )
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                "Project ref transaction stdout is unavailable",
+                true,
+            )
+        })?;
+        writeln!(stdin, "start")
+            .and_then(|()| {
+                if no_deref {
+                    writeln!(stdin, "option no-deref")?;
+                }
+                writeln!(stdin, "update {target} {commit} {baseline}")?;
+                writeln!(stdin, "prepare")?;
+                stdin.flush()
+            })
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    format!("cannot prepare Project ref transaction: {failure}"),
+                    true,
+                )
+            })?;
+        let mut transaction = Self {
+            child: Some(child),
+            stdin: Some(stdin),
+            stdout: StdBufReader::new(stdout),
+            committed: false,
+        };
+        transaction.expect_response("start: ok")?;
+        transaction.expect_response("prepare: ok")?;
+        Ok(transaction)
+    }
+
+    fn expect_response(&mut self, expected: &str) -> Result<(), DomainError> {
+        let mut response = String::new();
+        self.stdout.read_line(&mut response).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot read Project ref transaction response: {failure}"),
+                true,
+            )
+        })?;
+        if response.trim() == expected {
+            Ok(())
+        } else {
+            Err(domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!(
+                    "Project ref transaction did not reach {expected}: {}",
+                    response.trim()
+                ),
+                true,
+            ))
+        }
+    }
+
+    fn commit(mut self) -> Result<(), DomainError> {
+        let stdin = self.stdin.as_mut().ok_or_else(|| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                "Project ref transaction is already closed",
+                true,
+            )
+        })?;
+        writeln!(stdin, "commit")
+            .and_then(|()| stdin.flush())
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    format!("cannot commit Project ref transaction: {failure}"),
+                    true,
+                )
+            })?;
+        self.expect_response("commit: ok")?;
+        // The ref update is externally visible once Git acknowledges commit.
+        // Reaping below is housekeeping and must not turn that success into a
+        // failed Run whose repository side effect is no longer audited.
+        self.committed = true;
+        self.stdin.take();
+        let _ = self.child.as_mut().expect("ref transaction child").wait();
+        Ok(())
+    }
+}
+
+impl Drop for PreparedRefTransaction {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some(stdin) = self.stdin.as_mut() {
+            let _ = writeln!(stdin, "abort");
+            let _ = stdin.flush();
+        }
+        self.stdin.take();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn integrate_primary_transaction(
+    primary: &Path,
+    baseline: &str,
+    baseline_index_tree: &str,
+    expected_head_ref: Option<&str>,
+    commit: &str,
+) -> Result<(), DomainError> {
+    let transaction = PreparedRefTransaction::prepare(
+        primary,
+        "HEAD",
+        baseline,
+        commit,
+        expected_head_ref.is_none(),
+    )?;
+    let index = LockedIndex::acquire(primary)?;
+
+    ensure_primary_reference(primary, baseline, expected_head_ref)?;
+    ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
+    git_with_index(
+        primary,
+        index.path(),
+        &["read-tree", "-u", "-m", baseline, commit],
+    )?;
+    let commit_tree = git_commit_tree(primary, commit)?;
+    ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
+
+    transaction.commit()?;
+    index.commit()?;
+    Ok(())
+}
+
+fn ensure_primary_reference(
+    primary: &Path,
+    expected_commit: &str,
+    expected_head_ref: Option<&str>,
+) -> Result<(), DomainError> {
+    let head = git_head(primary).ok_or_else(|| {
+        domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Project repository has no readable HEAD commit",
+            false,
+        )
+    })?;
+    if head != expected_commit || symbolic_head(primary)?.as_deref() != expected_head_ref {
+        return Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Project HEAD or branch changed before the locked integration transaction",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_index_and_worktree(
+    primary: &Path,
+    index: &Path,
+    expected_tree: &str,
+) -> Result<(), DomainError> {
+    let tree = git_with_index(primary, index, &["write-tree"])?;
+    let tree = String::from_utf8_lossy(&tree.stdout).trim().to_owned();
+    if tree != expected_tree {
+        return Err(domain_error(
+            ErrorCode::ProjectGitDirty,
+            "Project index changed across the locked integration boundary",
+            true,
+        ));
+    }
+    match git_with_index_status(primary, index, &["diff-files", "--quiet"])? {
+        Some(0) => {}
+        Some(1) => {
+            return Err(domain_error(
+                ErrorCode::ProjectGitDirty,
+                "Project tracked files changed across the locked integration boundary",
+                true,
+            ));
+        }
+        status => {
+            return Err(domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!(
+                    "cannot inspect Project tracked files across the locked integration boundary (status {status:?})"
+                ),
+                true,
+            ));
+        }
+    }
+    let untracked = git_with_index(
+        primary,
+        index,
+        &["ls-files", "--others", "--exclude-standard"],
+    )?;
+    if !untracked.stdout.is_empty() {
+        return Err(domain_error(
+            ErrorCode::ProjectGitDirty,
+            "Project untracked files changed across the locked integration boundary",
+            true,
+        ));
+    }
+    Ok(())
+}
+
+fn git_with_index(
+    cwd: &Path,
+    index: &Path,
+    arguments: &[&str],
+) -> Result<std::process::Output, DomainError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(arguments)
+        .env("GIT_INDEX_FILE", index)
+        .output()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot run locked Git integration: {failure}"),
+                true,
+            )
+        })?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            true,
+        ))
+    }
+}
+
+fn git_with_index_status(
+    cwd: &Path,
+    index: &Path,
+    arguments: &[&str],
+) -> Result<Option<i32>, DomainError> {
+    ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(arguments)
+        .env("GIT_INDEX_FILE", index)
+        .status()
+        .map(|status| status.code())
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot inspect locked Git integration: {failure}"),
+                true,
+            )
+        })
 }
 
 fn git_ref_exists(cwd: &Path, reference: &str) -> Result<bool, DomainError> {

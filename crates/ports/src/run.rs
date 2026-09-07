@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
     DomainError, Message, MessageId, ProjectedMessage, Run, RunAttempt, RunAttemptId, RunId,
@@ -136,8 +136,18 @@ pub trait RunAgent: Send + Sync {
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError>;
 }
 
+/// Linearization boundary between cancellation and externally visible workspace integration.
+#[async_trait]
+pub trait WorkspaceIntegrationGate: std::fmt::Debug + Send + Sync {
+    /// Claims finalization for the running invocation.
+    ///
+    /// Once this succeeds, cancellation must not persist a cancelled terminal
+    /// state. If cancellation won first, this returns [`ErrorCode::RunCancelled`].
+    async fn begin_integration(&self) -> Result<(), DomainError>;
+}
+
 /// One workspace-scoped invocation of a complete coding Agent harness.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct WorkspaceAgentInvocation {
     /// Stable correlation identity for the external turn.
     pub request_id: String,
@@ -159,8 +169,12 @@ pub struct WorkspaceAgentInvocation {
     /// refuse to integrate its result if the Project worktree moves away from
     /// it during the invocation.
     pub baseline_commit: String,
+    /// Exact index tree captured with `baseline_commit` at write admission.
+    pub baseline_index_tree: String,
     /// Cooperative cancellation shared with the caller.
     pub cancellation: CancellationToken,
+    /// Shared cancellation/finalization decision owned by the application supervisor.
+    pub integration_gate: Option<Arc<dyn WorkspaceIntegrationGate>>,
 }
 
 /// Durable-facing result of one workspace Agent turn.

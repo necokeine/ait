@@ -1,6 +1,10 @@
 //! Workspace execution and Git commit coverage for the Codex adapter.
 
-use std::{path::Path, process::Command, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
 use ait_agent_adapters::{
     AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
@@ -9,7 +13,7 @@ use ait_agent_adapters::{
 };
 use ait_ports::{
     SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceOutputItem,
+    WorkspaceIntegrationGate, WorkspaceOutputItem,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -129,6 +133,134 @@ impl AgentAdapter for EditingAdapter {
 struct PausingEditingAdapter {
     entered: Semaphore,
     release: Semaphore,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FinalValidationInjection {
+    Branch,
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
+#[derive(Debug)]
+struct InjectingIntegrationGate {
+    project: PathBuf,
+    injection: FinalValidationInjection,
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for InjectingIntegrationGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        match self.injection {
+            FinalValidationInjection::Branch => {
+                assert!(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&self.project)
+                        .args(["switch", "injected-branch"])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            FinalValidationInjection::Staged => {
+                std::fs::write(self.project.join("staged.txt"), "external staged change\n")
+                    .unwrap();
+                assert!(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&self.project)
+                        .args(["add", "staged.txt"])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            FinalValidationInjection::Unstaged => {
+                std::fs::write(
+                    self.project.join("tracked.txt"),
+                    "external unstaged change\n",
+                )
+                .unwrap();
+            }
+            FinalValidationInjection::Untracked => {
+                std::fs::write(
+                    self.project.join("untracked.txt"),
+                    "external untracked change\n",
+                )
+                .unwrap();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct AbsolutePathAdapter;
+
+#[async_trait]
+impl AgentAdapter for AbsolutePathAdapter {
+    fn driver(&self) -> &'static str {
+        "absolute_path_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        let root = request.cwd.display().to_string();
+        let answer = request.cwd.join("answer.txt").display().to_string();
+        let image = request.cwd.join("preview.png").display().to_string();
+        std::fs::write(&answer, "generated\n").unwrap();
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "commandExecution",
+                    "id": "absolute-cwd",
+                    "status": "completed",
+                    "commandActions": [{"type": "listFiles", "cwd": root}]
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "fileChange",
+                    "id": "absolute-file",
+                    "status": "completed",
+                    "changes": [{"path": answer, "kind": "add"}]
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "imageView",
+                    "id": "absolute-image",
+                    "status": "completed",
+                    "path": image
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "final-paths",
+                    "phase": "final_answer",
+                    "text": "Recorded paths."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "turn-paths".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
 }
 
 impl PausingEditingAdapter {
@@ -301,6 +433,61 @@ fn head(project: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
+fn index_tree(project: &Path) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .arg("write-tree")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_output(project: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn commit_all(project: &Path, subject: &str) {
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args(["add", "--all"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project)
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                subject,
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
 fn run_ref(project: &Path) -> String {
     let output = Command::new("git")
         .arg("-C")
@@ -324,7 +511,9 @@ fn paused_request(project: &Path, request_id: &str) -> WorkspaceAgentInvocation 
         commit_subject: "Make an isolated edit".into(),
         cwd: project.to_path_buf(),
         baseline_commit: head(project),
+        baseline_index_tree: index_tree(project),
         cancellation: CancellationToken::new(),
+        integration_gate: None,
     }
 }
 
@@ -340,7 +529,9 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
             commit_subject: "Return a result".into(),
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
+            integration_gate: None,
         })
         .await
         .unwrap()
@@ -378,7 +569,9 @@ async fn returns_assistant_result_and_commits_generated_changes() {
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
+            integration_gate: None,
         })
         .await
         .unwrap();
@@ -461,6 +654,52 @@ async fn returns_assistant_result_and_commits_generated_changes() {
         .output()
         .unwrap();
     assert!(refs.stdout.is_empty());
+}
+
+#[tokio::test]
+async fn detached_primary_head_advances_without_moving_the_original_branch() {
+    let project = initialized_project();
+    let branch = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+    let baseline = head(project.path());
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["checkout", "--detach"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let result = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "detached-head".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Create answer.txt".into(),
+            project_instructions: Some("Keep generated files small.".into()),
+            commit_subject: "Create answer.txt".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(head(project.path()), result.commit_id.unwrap());
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &branch]),
+        baseline
+    );
+    let symbolic = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .status()
+        .unwrap();
+    assert_eq!(symbolic.code(), Some(1));
 }
 
 #[tokio::test]
@@ -588,7 +827,9 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
+            integration_gate: None,
         })
         .await
         .unwrap_err();
@@ -759,4 +1000,215 @@ async fn cancellation_never_integrates_partial_changes_and_blocks_implicit_recov
         .await
         .unwrap_err();
     assert_eq!(retried.code, ait_domain::ErrorCode::RunRecoveryFailed);
+}
+
+#[tokio::test]
+async fn final_validation_injections_preserve_the_target_ref_and_external_changes() {
+    for injection in [
+        FinalValidationInjection::Branch,
+        FinalValidationInjection::Staged,
+        FinalValidationInjection::Unstaged,
+        FinalValidationInjection::Untracked,
+    ] {
+        let project = initialized_project();
+        std::fs::write(project.path().join("tracked.txt"), "authorized content\n").unwrap();
+        commit_all(project.path(), "add tracked fixture");
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(project.path())
+                .args(["branch", "injected-branch"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let baseline = head(project.path());
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+        let adapter = Arc::new(PausingEditingAdapter::new());
+        let agent = CodexWorkspaceAgent::new(adapter.clone());
+        let mut request = paused_request(project.path(), &format!("final-{injection:?}"));
+        request.integration_gate = Some(Arc::new(InjectingIntegrationGate {
+            project: project.path().to_path_buf(),
+            injection,
+        }));
+        let running = tokio::spawn(async move { agent.invoke(request).await });
+        adapter.started().await;
+        adapter.release.add_permits(1);
+
+        let failure = running.await.unwrap().unwrap_err();
+        let expected = if matches!(injection, FinalValidationInjection::Branch) {
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable
+        } else {
+            ait_domain::ErrorCode::ProjectGitDirty
+        };
+        assert_eq!(failure.code, expected, "injection: {injection:?}");
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline,
+            "the admitted target ref advanced for {injection:?}"
+        );
+        assert!(!project.path().join("agent-owned.txt").exists());
+        match injection {
+            FinalValidationInjection::Branch => {
+                assert_eq!(
+                    git_output(project.path(), &["symbolic-ref", "--short", "HEAD"]),
+                    "injected-branch"
+                );
+            }
+            FinalValidationInjection::Staged => {
+                assert_eq!(
+                    git_output(project.path(), &["diff", "--cached", "--name-only"]),
+                    "staged.txt"
+                );
+            }
+            FinalValidationInjection::Unstaged => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                    "external unstaged change\n"
+                );
+            }
+            FinalValidationInjection::Untracked => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("untracked.txt")).unwrap(),
+                    "external untracked change\n"
+                );
+            }
+        }
+        let _retained_agent_commit = run_ref(project.path());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn controlled_worktree_setup_skips_successful_and_failing_post_checkout_hooks() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    for exit_code in [0, 1] {
+        let project = initialized_project();
+        let marker = project.path().join(format!("hook-ran-{exit_code}"));
+        let hook = project.path().join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nprintf hook-side-effect > '{}'\nexit {exit_code}\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&hook, permissions).unwrap();
+
+        let result = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("hook-{exit_code}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Create answer.txt".into(),
+                project_instructions: Some("Keep generated files small.".into()),
+                commit_subject: "Create answer.txt".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: head(project.path()),
+                baseline_index_tree: index_tree(project.path()),
+                cancellation: CancellationToken::new(),
+                integration_gate: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(result.commit_id.is_some());
+        assert!(!marker.exists(), "post-checkout ran with exit {exit_code}");
+        assert!(git_output(project.path(), &["for-each-ref", "refs/ait/runs"]).is_empty());
+        assert_eq!(
+            git_output(project.path(), &["worktree", "list", "--porcelain"])
+                .lines()
+                .filter(|line| line.starts_with("worktree "))
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn successful_runs_rewrite_absolute_workspace_paths_before_cleanup() {
+    let project = initialized_project();
+    let result = CodexWorkspaceAgent::new(Arc::new(AbsolutePathAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "absolute-paths".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Report paths".into(),
+            project_instructions: None,
+            commit_subject: "Report paths".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(result.operations.len(), 3);
+    assert_eq!(result.operations[0].paths, ["."]);
+    assert_eq!(result.operations[1].paths, ["answer.txt"]);
+    assert_eq!(result.operations[2].paths, ["preview.png"]);
+    assert!(
+        result
+            .operations
+            .iter()
+            .flat_map(|item| &item.paths)
+            .all(|path| {
+                !Path::new(path).is_absolute() && !path.contains(".git/ait/workspaces")
+            })
+    );
+}
+
+#[tokio::test]
+async fn initialized_submodules_are_rejected_with_an_actionable_error() {
+    let module = initialized_project();
+    std::fs::write(module.path().join("module.txt"), "module content\n").unwrap();
+    commit_all(module.path(), "add module content");
+    let project = initialized_project();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args([
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                module.path().to_str().unwrap(),
+                "module",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    commit_all(project.path(), "add initialized submodule");
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "initialized-submodule".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Inspect the module".into(),
+            project_instructions: Some("Keep generated files small.".into()),
+            commit_subject: "Inspect the module".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::InvalidConfiguration);
+    assert!(failure.message.contains("deinitialize"));
+    let submodule_status = git_output(project.path(), &["submodule", "status", "--recursive"]);
+    assert!(!submodule_status.starts_with('-'));
+    assert!(submodule_status.contains(" module"));
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
 }
