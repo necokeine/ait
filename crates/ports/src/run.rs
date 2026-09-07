@@ -169,6 +169,8 @@ pub enum WorkspaceIntegrationCheckpoint {
     AfterWorktreeUpdate,
     /// All pre-publication validation passed, immediately before ref publication.
     BeforeRefPublish,
+    /// Git applied the ref transaction, before its confirmation is accepted.
+    BeforeRefCommitConfirmation,
     /// The target ref was published while the canonical index remains unchanged.
     AfterRefPublish,
     /// The canonical index is about to become the candidate index.

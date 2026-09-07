@@ -154,6 +154,8 @@ enum TransactionInjection {
     StagedBeforeIndexLock,
     UntrackedAfterWorktreeUpdate,
     SamePathAfterWorktreeUpdate,
+    BranchSwitchAfterRefPublish,
+    RefConfirmationFailure,
     FailureAfterRefPublish,
     UntrackedBeforeIndexPublish,
 }
@@ -184,7 +186,11 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
                     | TransactionInjection::SamePathAfterWorktreeUpdate,
                 WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate
             ) | (
-                TransactionInjection::FailureAfterRefPublish,
+                TransactionInjection::RefConfirmationFailure,
+                WorkspaceIntegrationCheckpoint::BeforeRefCommitConfirmation
+            ) | (
+                TransactionInjection::BranchSwitchAfterRefPublish
+                    | TransactionInjection::FailureAfterRefPublish,
                 WorkspaceIntegrationCheckpoint::AfterRefPublish
             ) | (
                 TransactionInjection::UntrackedBeforeIndexPublish,
@@ -201,15 +207,7 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
                     "external staged\n",
                 )
                 .unwrap();
-                assert!(
-                    Command::new("git")
-                        .arg("-C")
-                        .arg(&self.project)
-                        .args(["add", "external-staged.txt"])
-                        .status()
-                        .unwrap()
-                        .success()
-                );
+                assert_git_success(&self.project, &["add", "external-staged.txt"]);
             }
             TransactionInjection::UntrackedAfterWorktreeUpdate
             | TransactionInjection::UntrackedBeforeIndexPublish => {
@@ -226,6 +224,37 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
                 )
                 .unwrap();
             }
+            TransactionInjection::BranchSwitchAfterRefPublish => {
+                let candidate = git_output(&self.project, &["rev-parse", "HEAD"]);
+                let baseline = git_output(&self.project, &["rev-parse", &format!("{candidate}^")]);
+                assert_git_success(
+                    &self.project,
+                    &[
+                        "update-ref",
+                        "refs/heads/injected-after-publication",
+                        &baseline,
+                    ],
+                );
+                assert_git_success(
+                    &self.project,
+                    &[
+                        "symbolic-ref",
+                        "HEAD",
+                        "refs/heads/injected-after-publication",
+                    ],
+                );
+                std::fs::write(
+                    self.project.join("tracked.txt"),
+                    "external branch-switch value\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::RefConfirmationFailure => {
+                return Err(ait_domain::DomainError::transient(
+                    ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+                    "injected ref confirmation read failure",
+                ));
+            }
             TransactionInjection::FailureAfterRefPublish => {
                 return Err(ait_domain::DomainError::transient(
                     ait_domain::ErrorCode::ProjectGitHeadUnavailable,
@@ -239,6 +268,65 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
 
 #[derive(Debug)]
 struct TransactionEditingAdapter;
+
+#[derive(Clone, Copy, Debug)]
+enum DirectoryFileDirection {
+    FileToDirectory,
+    DirectoryToFile,
+}
+
+#[derive(Debug)]
+struct DirectoryFileEditingAdapter {
+    direction: DirectoryFileDirection,
+}
+
+#[async_trait]
+impl AgentAdapter for DirectoryFileEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "directory_file_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        let path = request.cwd.join("shape");
+        match self.direction {
+            DirectoryFileDirection::FileToDirectory => {
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+                std::fs::write(path.join("child.txt"), "Run directory child\n").unwrap();
+            }
+            DirectoryFileDirection::DirectoryToFile => {
+                std::fs::remove_dir_all(&path).unwrap();
+                std::fs::write(&path, "Run file value\n").unwrap();
+            }
+        }
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "directory-file-final",
+                    "phase": "final_answer",
+                    "text": "Finished D/F edit."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "directory-file-turn".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
+}
 
 #[async_trait]
 impl AgentAdapter for TransactionEditingAdapter {
@@ -586,6 +674,20 @@ fn git_output(project: &Path, arguments: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn assert_git_success(project: &Path, arguments: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(arguments)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {arguments:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn commit_all(project: &Path, subject: &str) {
@@ -1213,6 +1315,8 @@ async fn publication_phase_failures_roll_back_run_changes_and_preserve_external_
         TransactionInjection::StagedBeforeIndexLock,
         TransactionInjection::UntrackedAfterWorktreeUpdate,
         TransactionInjection::SamePathAfterWorktreeUpdate,
+        TransactionInjection::BranchSwitchAfterRefPublish,
+        TransactionInjection::RefConfirmationFailure,
         TransactionInjection::FailureAfterRefPublish,
         TransactionInjection::UntrackedBeforeIndexPublish,
     ] {
@@ -1241,74 +1345,246 @@ async fn publication_phase_failures_roll_back_run_changes_and_preserve_external_
             })
             .await
             .unwrap_err();
-
-        let expected = if matches!(
+        assert_transaction_rollback(
+            project.path(),
             injection,
-            TransactionInjection::StagedBeforeIndexLock
-                | TransactionInjection::UntrackedAfterWorktreeUpdate
-                | TransactionInjection::SamePathAfterWorktreeUpdate
-                | TransactionInjection::UntrackedBeforeIndexPublish
-        ) {
-            ait_domain::ErrorCode::ProjectGitDirty
-        } else {
-            ait_domain::ErrorCode::ProjectGitHeadUnavailable
-        };
-        assert_eq!(failure.code, expected, "injection: {injection:?}");
+            &failure,
+            &baseline,
+            &baseline_index,
+            &target_ref,
+        );
+    }
+}
+
+fn assert_transaction_rollback(
+    project: &Path,
+    injection: TransactionInjection,
+    failure: &ait_domain::DomainError,
+    baseline: &str,
+    baseline_index: &str,
+    target_ref: &str,
+) {
+    let expected = if matches!(
+        injection,
+        TransactionInjection::StagedBeforeIndexLock
+            | TransactionInjection::UntrackedAfterWorktreeUpdate
+            | TransactionInjection::SamePathAfterWorktreeUpdate
+            | TransactionInjection::UntrackedBeforeIndexPublish
+    ) {
+        ait_domain::ErrorCode::ProjectGitDirty
+    } else {
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    };
+    assert_eq!(failure.code, expected, "injection: {injection:?}");
+    assert_eq!(
+        git_output(project, &["rev-parse", target_ref]),
+        baseline,
+        "target ref changed for {injection:?}"
+    );
+    assert!(
+        !project.join("run-owned.txt").exists(),
+        "Run-owned file leaked for {injection:?}"
+    );
+    if !matches!(injection, TransactionInjection::StagedBeforeIndexLock) {
+        assert_eq!(
+            index_tree(project),
+            baseline_index,
+            "canonical index retained Run state for {injection:?}"
+        );
+    }
+
+    match injection {
+        TransactionInjection::StagedBeforeIndexLock => {
+            assert_eq!(
+                git_output(project, &["diff", "--cached", "--name-only"]),
+                "external-staged.txt"
+            );
+            assert_eq!(
+                std::fs::read_to_string(project.join("external-staged.txt")).unwrap(),
+                "external staged\n"
+            );
+        }
+        TransactionInjection::UntrackedAfterWorktreeUpdate
+        | TransactionInjection::UntrackedBeforeIndexPublish => {
+            assert_eq!(
+                std::fs::read_to_string(project.join("external-untracked.txt")).unwrap(),
+                "external untracked\n"
+            );
+            assert_eq!(
+                std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+                "authorized baseline\n"
+            );
+        }
+        TransactionInjection::SamePathAfterWorktreeUpdate => assert_eq!(
+            std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+            "external same-path value\n"
+        ),
+        TransactionInjection::BranchSwitchAfterRefPublish => {
+            assert_eq!(
+                git_output(project, &["symbolic-ref", "HEAD"]),
+                "refs/heads/injected-after-publication"
+            );
+            assert_eq!(head(project), baseline);
+            assert_eq!(
+                std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+                "external branch-switch value\n"
+            );
+        }
+        TransactionInjection::RefConfirmationFailure
+        | TransactionInjection::FailureAfterRefPublish => {
+            assert_eq!(
+                std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+                "authorized baseline\n"
+            );
+            assert!(git_output(project, &["status", "--porcelain=v1"]).is_empty());
+        }
+    }
+    let _retained_run_commit = run_ref(project);
+}
+
+#[tokio::test]
+async fn directory_file_transitions_roll_back_ref_index_and_worktree_after_publication() {
+    for direction in [
+        DirectoryFileDirection::FileToDirectory,
+        DirectoryFileDirection::DirectoryToFile,
+    ] {
+        let project = initialized_project();
+        match direction {
+            DirectoryFileDirection::FileToDirectory => {
+                std::fs::write(project.path().join("shape"), "baseline file\n").unwrap();
+            }
+            DirectoryFileDirection::DirectoryToFile => {
+                std::fs::create_dir(project.path().join("shape")).unwrap();
+                std::fs::write(
+                    project.path().join("shape/child.txt"),
+                    "baseline directory child\n",
+                )
+                .unwrap();
+                std::fs::write(
+                    project.path().join("shape/sibling.txt"),
+                    "baseline directory sibling\n",
+                )
+                .unwrap();
+            }
+        }
+        commit_all(project.path(), "add D/F baseline");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter { direction }))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("directory-file-{direction:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Exercise a D/F transition".into(),
+                project_instructions: None,
+                commit_subject: "Exercise D/F rollback".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(TransactionInjectingGate {
+                    project: project.path().to_path_buf(),
+                    injection: TransactionInjection::FailureAfterRefPublish,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+            "direction: {direction:?}: {}",
+            failure.message
+        );
         assert_eq!(
             git_output(project.path(), &["rev-parse", &target_ref]),
             baseline,
-            "target ref changed for {injection:?}"
+            "target ref changed for {direction:?}"
         );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        match direction {
+            DirectoryFileDirection::FileToDirectory => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape")).unwrap(),
+                    "baseline file\n"
+                );
+            }
+            DirectoryFileDirection::DirectoryToFile => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape/child.txt")).unwrap(),
+                    "baseline directory child\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape/sibling.txt")).unwrap(),
+                    "baseline directory sibling\n"
+                );
+            }
+        }
+        assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+        let rollback_root = project.path().join(".git/ait/integration-rollbacks");
         assert!(
-            !project.path().join("run-owned.txt").exists(),
-            "Run-owned file leaked for {injection:?}"
+            !rollback_root.exists() || std::fs::read_dir(rollback_root).unwrap().next().is_none(),
+            "rollback material leaked for {direction:?}"
         );
-        if !matches!(injection, TransactionInjection::StagedBeforeIndexLock) {
-            assert_eq!(
-                index_tree(project.path()),
-                baseline_index,
-                "canonical index retained Run state for {injection:?}"
-            );
-        }
-
-        match injection {
-            TransactionInjection::StagedBeforeIndexLock => {
-                assert_eq!(
-                    git_output(project.path(), &["diff", "--cached", "--name-only"]),
-                    "external-staged.txt"
-                );
-                assert_eq!(
-                    std::fs::read_to_string(project.path().join("external-staged.txt")).unwrap(),
-                    "external staged\n"
-                );
-            }
-            TransactionInjection::UntrackedAfterWorktreeUpdate
-            | TransactionInjection::UntrackedBeforeIndexPublish => {
-                assert_eq!(
-                    std::fs::read_to_string(project.path().join("external-untracked.txt")).unwrap(),
-                    "external untracked\n"
-                );
-                assert_eq!(
-                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
-                    "authorized baseline\n"
-                );
-            }
-            TransactionInjection::SamePathAfterWorktreeUpdate => {
-                assert_eq!(
-                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
-                    "external same-path value\n"
-                );
-            }
-            TransactionInjection::FailureAfterRefPublish => {
-                assert_eq!(
-                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
-                    "authorized baseline\n"
-                );
-                assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
-            }
-        }
         let _retained_run_commit = run_ref(project.path());
     }
+}
+
+#[tokio::test]
+async fn detached_head_rollback_preserves_a_later_symbolic_head() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add detached rollback fixture");
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .args(["switch", "--detach"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "detached-head-ref-identity".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Exercise detached HEAD rollback".into(),
+            project_instructions: None,
+            commit_subject: "Exercise detached rollback".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::BranchSwitchAfterRefPublish,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_eq!(
+        git_output(project.path(), &["symbolic-ref", "HEAD"]),
+        "refs/heads/injected-after-publication"
+    );
+    assert_eq!(head(project.path()), baseline);
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "external branch-switch value\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    let _retained_run_commit = run_ref(project.path());
 }
 
 #[cfg(unix)]

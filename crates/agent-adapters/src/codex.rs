@@ -1502,7 +1502,28 @@ struct PreparedRefTransaction {
     child: Option<ProcessChild>,
     stdin: Option<ChildStdin>,
     stdout: StdBufReader<std::process::ChildStdout>,
-    committed: bool,
+    commit_attempted: bool,
+}
+
+struct RefCommitConfirmation {
+    response: String,
+}
+
+impl RefCommitConfirmation {
+    fn confirm(self) -> Result<(), DomainError> {
+        if self.response.trim() == "commit: ok" {
+            Ok(())
+        } else {
+            Err(domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!(
+                    "Project ref transaction did not reach commit: ok: {}",
+                    self.response.trim()
+                ),
+                true,
+            ))
+        }
+    }
 }
 
 impl PreparedRefTransaction {
@@ -1562,7 +1583,7 @@ impl PreparedRefTransaction {
             child: Some(child),
             stdin: Some(stdin),
             stdout: StdBufReader::new(stdout),
-            committed: false,
+            commit_attempted: false,
         };
         transaction.expect_response("start: ok")?;
         transaction.expect_response("prepare: ok")?;
@@ -1592,7 +1613,11 @@ impl PreparedRefTransaction {
         }
     }
 
-    fn commit(&mut self) -> Result<(), DomainError> {
+    fn commit(&mut self) -> Result<RefCommitConfirmation, DomainError> {
+        // Once the command starts crossing the pipe, its outcome is unknown
+        // until the exact target ref is reconciled. Mark it first so every
+        // write/read failure follows the same compensation path.
+        self.commit_attempted = true;
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             domain_error(
                 ErrorCode::ProjectGitHeadUnavailable,
@@ -1600,7 +1625,7 @@ impl PreparedRefTransaction {
                 true,
             )
         })?;
-        writeln!(stdin, "commit")
+        let write_result = writeln!(stdin, "commit")
             .and_then(|()| stdin.flush())
             .map_err(|failure| {
                 domain_error(
@@ -1608,31 +1633,49 @@ impl PreparedRefTransaction {
                     format!("cannot commit Project ref transaction: {failure}"),
                     true,
                 )
-            })?;
-        self.expect_response("commit: ok")?;
-        // The ref update is externally visible once Git acknowledges commit.
-        // Reaping below is housekeeping and must not turn that success into a
-        // failed Run whose repository side effect is no longer audited.
-        self.committed = true;
+            });
+        if let Err(failure) = write_result {
+            self.settle_commit_attempt();
+            return Err(failure);
+        }
+        let mut response = String::new();
+        let read_result = self.stdout.read_line(&mut response).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot read Project ref transaction response: {failure}"),
+                true,
+            )
+        });
+        // Always settle the transaction before the caller inspects or repairs
+        // the ref. In particular, a missing acknowledgement must not leave a
+        // lock-owning update-ref process racing the compensation CAS.
+        self.settle_commit_attempt();
+        read_result?;
+        Ok(RefCommitConfirmation { response })
+    }
+
+    fn settle_commit_attempt(&mut self) {
         self.stdin.take();
-        let _ = self.child.as_mut().expect("ref transaction child").wait();
-        Ok(())
+        if let Some(mut child) = self.child.take() {
+            let _ = child.wait();
+        }
     }
 }
 
 impl Drop for PreparedRefTransaction {
     fn drop(&mut self) {
-        if self.committed {
-            return;
-        }
-        if let Some(stdin) = self.stdin.as_mut() {
-            let _ = writeln!(stdin, "abort");
-            let _ = stdin.flush();
-        }
-        self.stdin.take();
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if self.commit_attempted {
+            self.settle_commit_attempt();
+        } else {
+            if let Some(stdin) = self.stdin.as_mut() {
+                let _ = writeln!(stdin, "abort");
+                let _ = stdin.flush();
+            }
+            self.stdin.take();
+            if let Some(child) = self.child.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
     }
 }
@@ -1640,14 +1683,22 @@ impl Drop for PreparedRefTransaction {
 enum BaselinePath {
     Absent,
     Directory,
-    Symlink(PathBuf),
     File(PathBuf),
+    Symlink(PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TreePathKind {
+    Absent,
+    Directory,
+    File,
+    Symlink,
 }
 
 struct RollbackPath {
     relative: String,
     baseline: BaselinePath,
-    commit_present: bool,
+    candidate: TreePathKind,
 }
 
 struct PrimaryWorktreeRollback {
@@ -1703,8 +1754,8 @@ impl PrimaryWorktreeRollback {
             rollback_io_error("snapshot candidate index", baseline_index, &failure)
         })?;
         git_with_index(primary, &expected_index, &["read-tree", commit])?;
-        let mut paths = Vec::new();
-        let mut seen = HashSet::new();
+        let mut changed_paths = HashSet::new();
+        let mut direct_paths = HashSet::new();
         for raw in output.stdout.split(|byte| *byte == 0) {
             if raw.is_empty() {
                 continue;
@@ -1716,16 +1767,36 @@ impl PrimaryWorktreeRollback {
                     false,
                 )
             })?;
-            if !seen.insert(relative.to_owned()) {
-                continue;
+            validate_rollback_relative_path(relative)?;
+            let path = Path::new(relative);
+            changed_paths.insert(relative.to_owned());
+            direct_paths.insert(relative.to_owned());
+            for ancestor in path.ancestors().skip(1) {
+                if ancestor.as_os_str().is_empty() {
+                    break;
+                }
+                let ancestor = ancestor.to_str().ok_or_else(|| {
+                    domain_error(
+                        ErrorCode::RunRecoveryFailed,
+                        "cannot safely journal a non-UTF-8 Git worktree ancestor",
+                        false,
+                    )
+                })?;
+                changed_paths.insert(ancestor.to_owned());
             }
-            paths.push(capture_rollback_path(
-                primary,
-                &backup_root,
-                commit,
-                relative,
-            )?);
         }
+        let mut paths = changed_paths
+            .into_iter()
+            .map(|relative| {
+                capture_rollback_path(primary, &backup_root, baseline, commit, &relative)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        // Unchanged directory ancestors are only structural context and must
+        // never be removed by rollback. D/F ancestors differ in kind and stay.
+        paths.retain(|entry| {
+            baseline_path_kind(&entry.baseline) != entry.candidate
+                || direct_paths.contains(&entry.relative)
+        });
         paths.sort_by_key(|entry| {
             std::cmp::Reverse(Path::new(&entry.relative).components().count())
         });
@@ -1747,11 +1818,30 @@ impl PrimaryWorktreeRollback {
             self.discard();
             return Ok(());
         }
-        let candidate_root = self.backup_root.join("candidate");
         let mut failures = Vec::new();
+        let mut can_restore = Vec::with_capacity(self.paths.len());
         for entry in &self.paths {
-            if let Err(failure) = self.rollback_path(&candidate_root, entry) {
+            match self.remove_candidate_path(entry) {
+                Ok(restore) => can_restore.push(restore),
+                Err(failure) => {
+                    failures.push(failure.message);
+                    can_restore.push(false);
+                }
+            }
+        }
+        let mut blocked_roots = Vec::<String>::new();
+        for (entry, restore) in self.paths.iter().zip(can_restore).rev() {
+            let blocked_by_ancestor = blocked_roots
+                .iter()
+                .any(|root| Path::new(&entry.relative).starts_with(Path::new(root)));
+            if !restore || blocked_by_ancestor {
+                blocked_roots.push(entry.relative.clone());
+                continue;
+            }
+            let target = self.primary.join(&entry.relative);
+            if let Err(failure) = restore_baseline_path(&entry.baseline, &target) {
                 failures.push(failure.message);
+                blocked_roots.push(entry.relative.clone());
             }
         }
         if let Err(failure) =
@@ -1776,45 +1866,63 @@ impl PrimaryWorktreeRollback {
         }
     }
 
-    fn rollback_path(
-        &self,
-        candidate_root: &Path,
-        entry: &RollbackPath,
-    ) -> Result<(), DomainError> {
+    fn remove_candidate_path(&self, entry: &RollbackPath) -> Result<bool, DomainError> {
         let target = self.primary.join(&entry.relative);
-        if !entry.commit_present {
-            if path_exists(&target)? {
-                // The Run expected this path to be absent, so a present value
-                // was introduced externally after publication began.
-                return Ok(());
+        match entry.candidate {
+            TreePathKind::Absent => {
+                if path_exists(&target)? {
+                    // The Run expected this path to be absent, so a present value
+                    // was introduced externally after publication began.
+                    return Ok(false);
+                }
+                Ok(true)
             }
-            return restore_baseline_path(&entry.baseline, &target);
+            TreePathKind::Directory => match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    match fs::remove_dir(&target) {
+                        Ok(()) => Ok(true),
+                        Err(failure) if failure.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                            // A child changed after publication. Its journal
+                            // entry already preserved it, so retain the D/F
+                            // shape as the external writer's worktree change.
+                            Ok(false)
+                        }
+                        Err(failure) => Err(rollback_io_error(
+                            "remove candidate rollback directory",
+                            &target,
+                            &failure,
+                        )),
+                    }
+                }
+                Ok(_) => Ok(false),
+                Err(failure)
+                    if matches!(
+                        failure.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    Ok(true)
+                }
+                Err(failure) => Err(rollback_io_error(
+                    "inspect candidate rollback directory",
+                    &target,
+                    &failure,
+                )),
+            },
+            TreePathKind::File | TreePathKind::Symlink => {
+                if !worktree_path_matches_index(
+                    &self.primary,
+                    &self.expected_index,
+                    &entry.relative,
+                )? {
+                    // The post-update value no longer equals the Run commit.
+                    // Preserve it as the external writer's version.
+                    return Ok(false);
+                }
+                remove_path(&target)?;
+                Ok(true)
+            }
         }
-        if !worktree_path_matches_index(
-            &self.primary,
-            &self.primary,
-            &self.expected_index,
-            &entry.relative,
-        )? {
-            // The post-update value no longer equals the Run commit. Preserve
-            // it as the external writer's version instead of resetting it.
-            return Ok(());
-        }
-
-        let candidate = candidate_root.join(&entry.relative);
-        if let Some(parent) = candidate.parent() {
-            fs::create_dir_all(parent).map_err(|failure| {
-                rollback_io_error("create rollback quarantine parent", parent, &failure)
-            })?;
-        }
-        fs::rename(&target, &candidate).map_err(|failure| {
-            rollback_io_error("quarantine Run worktree path", &target, &failure)
-        })?;
-        restore_baseline_path(&entry.baseline, &target)?;
-        remove_path(&candidate)?;
-        remove_empty_parents(candidate.parent(), candidate_root);
-        remove_empty_parents(target.parent(), &self.primary);
-        Ok(())
     }
 
     fn discard(&mut self) {
@@ -1826,9 +1934,40 @@ impl PrimaryWorktreeRollback {
 fn capture_rollback_path(
     primary: &Path,
     backup_root: &Path,
+    baseline_commit: &str,
     commit: &str,
     relative: &str,
 ) -> Result<RollbackPath, DomainError> {
+    validate_rollback_relative_path(relative)?;
+    let path = Path::new(relative);
+    let source = primary.join(path);
+    let baseline_kind = git_tree_path_kind(primary, baseline_commit, relative)?;
+    let baseline = match baseline_kind {
+        TreePathKind::Absent => BaselinePath::Absent,
+        TreePathKind::Directory => BaselinePath::Directory,
+        TreePathKind::File | TreePathKind::Symlink => {
+            let backup = backup_root.join("baseline").join(path);
+            if let Some(parent) = backup.parent() {
+                fs::create_dir_all(parent).map_err(|failure| {
+                    rollback_io_error("create baseline backup parent", parent, &failure)
+                })?;
+            }
+            copy_path_snapshot(&source, &backup)?;
+            if baseline_kind == TreePathKind::Symlink {
+                BaselinePath::Symlink(backup)
+            } else {
+                BaselinePath::File(backup)
+            }
+        }
+    };
+    Ok(RollbackPath {
+        relative: relative.to_owned(),
+        baseline,
+        candidate: git_tree_path_kind(primary, commit, relative)?,
+    })
+}
+
+fn validate_rollback_relative_path(relative: &str) -> Result<(), DomainError> {
     let path = Path::new(relative);
     if path.is_absolute()
         || path
@@ -1841,63 +1980,69 @@ fn capture_rollback_path(
             false,
         ));
     }
-    let source = primary.join(path);
-    let baseline = match fs::symlink_metadata(&source) {
-        Ok(metadata) if metadata.file_type().is_symlink() => BaselinePath::Symlink(
-            fs::read_link(&source)
-                .map_err(|failure| rollback_io_error("read baseline symlink", &source, &failure))?,
-        ),
-        Ok(metadata) if metadata.is_dir() => BaselinePath::Directory,
-        Ok(metadata) if metadata.is_file() => {
-            let backup = backup_root.join("baseline").join(path);
-            if let Some(parent) = backup.parent() {
-                fs::create_dir_all(parent).map_err(|failure| {
-                    rollback_io_error("create baseline backup parent", parent, &failure)
-                })?;
-            }
-            fs::copy(&source, &backup).map_err(|failure| {
-                rollback_io_error("snapshot baseline file", &source, &failure)
-            })?;
-            BaselinePath::File(backup)
-        }
-        Ok(_) => {
-            return Err(domain_error(
-                ErrorCode::RunRecoveryFailed,
-                format!(
-                    "cannot journal unsupported worktree file type at {}",
-                    source.display()
-                ),
-                false,
-            ));
-        }
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => BaselinePath::Absent,
-        Err(failure) => {
-            return Err(rollback_io_error(
-                "inspect baseline worktree path",
-                &source,
-                &failure,
-            ));
-        }
+    Ok(())
+}
+
+fn baseline_path_kind(path: &BaselinePath) -> TreePathKind {
+    match path {
+        BaselinePath::Absent => TreePathKind::Absent,
+        BaselinePath::Directory => TreePathKind::Directory,
+        BaselinePath::File(_) => TreePathKind::File,
+        BaselinePath::Symlink(_) => TreePathKind::Symlink,
+    }
+}
+
+fn git_tree_path_kind(
+    primary: &Path,
+    commit: &str,
+    relative: &str,
+) -> Result<TreePathKind, DomainError> {
+    let literal = format!(":(literal){relative}");
+    let output = git(primary, &["ls-tree", "-z", commit, "--", &literal])?;
+    let Some(record) = output.stdout.split(|byte| *byte == 0).next() else {
+        return Ok(TreePathKind::Absent);
     };
-    Ok(RollbackPath {
-        relative: relative.to_owned(),
-        baseline,
-        commit_present: git_tree_contains_path(primary, commit, relative)?,
-    })
+    if record.is_empty() {
+        return Ok(TreePathKind::Absent);
+    }
+    let Some(header) = record.split(|byte| *byte == b'\t').next() else {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!("cannot parse Git tree entry for {relative:?}"),
+            false,
+        ));
+    };
+    let header = String::from_utf8_lossy(header);
+    let mut fields = header.split_whitespace();
+    let mode = fields.next().unwrap_or_default();
+    let object_type = fields.next().unwrap_or_default();
+    match (mode, object_type) {
+        ("040000", "tree") => Ok(TreePathKind::Directory),
+        ("120000", "blob") => Ok(TreePathKind::Symlink),
+        ("100644" | "100755", "blob") => Ok(TreePathKind::File),
+        _ => Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "cannot journal unsupported Git tree entry {mode} {object_type} at {relative:?}"
+            ),
+            false,
+        )),
+    }
 }
 
 fn rollback_primary_integration(
     primary: &Path,
     baseline: &str,
     commit: &str,
-    published_ref: Option<bool>,
+    attempted_ref: Option<(&str, Option<&str>)>,
     index: &LockedIndex,
     rollback: &mut PrimaryWorktreeRollback,
     mut failure: DomainError,
 ) -> DomainError {
     let mut rollback_failures = Vec::new();
-    if let Some(no_deref) = published_ref
-        && let Err(ref_failure) = rollback_published_ref(primary, baseline, commit, no_deref)
+    if let Some((target_ref, expected_head_ref)) = attempted_ref
+        && let Err(ref_failure) =
+            reconcile_attempted_ref(primary, target_ref, expected_head_ref, baseline, commit)
     {
         rollback_failures.push(ref_failure.message);
     }
@@ -1916,21 +2061,85 @@ fn rollback_primary_integration(
     failure
 }
 
-fn rollback_published_ref(
+fn reconcile_attempted_ref(
     primary: &Path,
+    target_ref: &str,
+    expected_head_ref: Option<&str>,
     baseline: &str,
     commit: &str,
-    no_deref: bool,
 ) -> Result<(), DomainError> {
-    if no_deref {
-        git(
-            primary,
-            &["update-ref", "--no-deref", "HEAD", baseline, commit],
-        )?;
-    } else {
-        git(primary, &["update-ref", "HEAD", baseline, commit])?;
+    if expected_head_ref.is_none() && symbolic_head(primary)?.is_some() {
+        return match exact_ref_oid(primary, target_ref)?.as_deref() {
+            Some(current) if current == baseline => Ok(()),
+            Some(current) => Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "detached Project HEAD became symbolic at {current} after ref publication; the external HEAD was preserved"
+                ),
+                false,
+            )),
+            None => Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                "detached Project HEAD became symbolic and unreadable after ref publication; the external HEAD was preserved",
+                false,
+            )),
+        };
     }
-    Ok(())
+
+    let current = exact_ref_oid(primary, target_ref)?;
+    match current.as_deref() {
+        Some(current) if current == baseline => Ok(()),
+        Some(current) if current == commit => git(
+            primary,
+            &["update-ref", "--no-deref", target_ref, baseline, commit],
+        )
+        .map(|_| ()),
+        Some(current) => Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "Project ref {target_ref} changed to {current} after publication; the external ref value was preserved"
+            ),
+            false,
+        )),
+        None => Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "Project ref {target_ref} disappeared after publication; the external deletion was preserved"
+            ),
+            false,
+        )),
+    }
+}
+
+fn exact_ref_oid(primary: &Path, target_ref: &str) -> Result<Option<String>, DomainError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(primary)
+        .args(["show-ref", "--verify", "--hash", target_ref])
+        .output()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!("cannot inspect Project ref {target_ref}: {failure}"),
+                false,
+            )
+        })?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ))
+    } else if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "cannot inspect Project ref {target_ref}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            false,
+        ))
+    }
 }
 
 async fn integration_checkpoint(
@@ -1943,22 +2152,13 @@ async fn integration_checkpoint(
     Ok(())
 }
 
-fn git_tree_contains_path(
-    primary: &Path,
-    commit: &str,
-    relative: &str,
-) -> Result<bool, DomainError> {
-    let output = git(primary, &["ls-tree", "-z", commit, "--", relative])?;
-    Ok(!output.stdout.is_empty())
-}
-
 fn worktree_path_matches_index(
     primary: &Path,
-    worktree: &Path,
     index: &Path,
     relative: &str,
 ) -> Result<bool, DomainError> {
-    let entry = git_with_index(primary, index, &["ls-files", "--stage", "--", relative])?;
+    let literal = format!(":(literal){relative}");
+    let entry = git_with_index(primary, index, &["ls-files", "--stage", "--", &literal])?;
     let entry = String::from_utf8_lossy(&entry.stdout);
     let mut fields = entry
         .split('\t')
@@ -1971,10 +2171,17 @@ fn worktree_path_matches_index(
     let Some(expected_oid) = fields.next() else {
         return Ok(false);
     };
-    let path = worktree.join(relative);
+    let path = primary.join(relative);
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(failure)
+            if matches!(
+                failure.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(false);
+        }
         Err(failure) => {
             return Err(rollback_io_error(
                 "inspect candidate worktree path",
@@ -2045,7 +2252,14 @@ fn worktree_mode_matches(_mode: &str, _metadata: &fs::Metadata) -> bool {
 fn path_exists(path: &Path) -> Result<bool, DomainError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
-        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(failure)
+            if matches!(
+                failure.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(false)
+        }
         Err(failure) => Err(rollback_io_error("inspect rollback target", path, &failure)),
     }
 }
@@ -2053,12 +2267,85 @@ fn path_exists(path: &Path) -> Result<bool, DomainError> {
 fn restore_baseline_path(baseline: &BaselinePath, target: &Path) -> Result<(), DomainError> {
     match baseline {
         BaselinePath::Absent => Ok(()),
-        BaselinePath::Directory => fs::create_dir(target)
-            .map_err(|failure| rollback_io_error("restore baseline directory", target, &failure)),
-        BaselinePath::Symlink(link) => create_symlink(link, target)
-            .map_err(|failure| rollback_io_error("restore baseline symlink", target, &failure)),
-        BaselinePath::File(source) => copy_file_create_only(source, target),
+        BaselinePath::Directory => match fs::symlink_metadata(target) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+            Ok(_) => Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "cannot restore baseline directory at {} because an external path is present",
+                    target.display()
+                ),
+                false,
+            )),
+            Err(failure)
+                if matches!(
+                    failure.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).map_err(|failure| {
+                        rollback_io_error("create baseline directory parent", parent, &failure)
+                    })?;
+                }
+                fs::create_dir(target).map_err(|failure| {
+                    rollback_io_error("restore baseline directory", target, &failure)
+                })
+            }
+            Err(failure) => Err(rollback_io_error(
+                "inspect baseline directory target",
+                target,
+                &failure,
+            )),
+        },
+        BaselinePath::File(source) | BaselinePath::Symlink(source) => {
+            copy_path_snapshot(source, target)
+        }
     }
+}
+
+fn copy_path_snapshot(source: &Path, target: &Path) -> Result<(), DomainError> {
+    let metadata = fs::symlink_metadata(source).map_err(|failure| {
+        rollback_io_error("inspect rollback snapshot source", source, &failure)
+    })?;
+    if metadata.file_type().is_symlink() {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|failure| {
+                rollback_io_error("create rollback symlink parent", parent, &failure)
+            })?;
+        }
+        let link = fs::read_link(source)
+            .map_err(|failure| rollback_io_error("read rollback symlink", source, &failure))?;
+        return create_symlink(&link, target)
+            .map_err(|failure| rollback_io_error("copy rollback symlink", target, &failure));
+    }
+    if metadata.is_file() {
+        return copy_file_create_only(source, target);
+    }
+    if !metadata.is_dir() {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "cannot copy unsupported rollback file type at {}",
+                source.display()
+            ),
+            false,
+        ));
+    }
+    fs::create_dir(target)
+        .map_err(|failure| rollback_io_error("create rollback directory", target, &failure))?;
+    let entries = fs::read_dir(source)
+        .map_err(|failure| rollback_io_error("read rollback directory", source, &failure))?;
+    for entry in entries {
+        let entry = entry.map_err(|failure| {
+            rollback_io_error("read rollback directory entry", source, &failure)
+        })?;
+        copy_path_snapshot(&entry.path(), &target.join(entry.file_name()))?;
+    }
+    fs::set_permissions(target, metadata.permissions()).map_err(|failure| {
+        rollback_io_error("copy rollback directory permissions", target, &failure)
+    })?;
+    Ok(())
 }
 
 fn copy_file_create_only(source: &Path, target: &Path) -> Result<(), DomainError> {
@@ -2108,15 +2395,6 @@ fn remove_path(path: &Path) -> Result<(), DomainError> {
     }
 }
 
-fn remove_empty_parents(mut parent: Option<&Path>, boundary: &Path) {
-    while let Some(path) = parent {
-        if path == boundary || !path.starts_with(boundary) || fs::remove_dir(path).is_err() {
-            break;
-        }
-        parent = path.parent();
-    }
-}
-
 fn rollback_io_error(operation: &str, path: &Path, failure: &std::io::Error) -> DomainError {
     domain_error(
         ErrorCode::RunRecoveryFailed,
@@ -2133,13 +2411,9 @@ async fn integrate_primary_transaction(
     commit: &str,
     integration_gate: Option<&dyn WorkspaceIntegrationGate>,
 ) -> Result<(), DomainError> {
-    let mut transaction = PreparedRefTransaction::prepare(
-        primary,
-        "HEAD",
-        baseline,
-        commit,
-        expected_head_ref.is_none(),
-    )?;
+    let target_ref = expected_head_ref.unwrap_or("HEAD").to_owned();
+    let mut transaction =
+        PreparedRefTransaction::prepare(primary, &target_ref, baseline, commit, true)?;
     integration_checkpoint(
         integration_gate,
         WorkspaceIntegrationCheckpoint::BeforeIndexLock,
@@ -2148,7 +2422,7 @@ async fn integrate_primary_transaction(
     let mut index = LockedIndex::acquire(primary)?;
     let commit_tree = git_commit_tree(primary, commit)?;
     let mut rollback = PrimaryWorktreeRollback::capture(primary, index.path(), baseline, commit)?;
-    let mut ref_published = false;
+    let mut ref_attempted = false;
 
     let outcome = async {
         ensure_primary_reference(primary, baseline, expected_head_ref)?;
@@ -2186,8 +2460,14 @@ async fn integrate_primary_transaction(
         ensure_primary_reference(primary, baseline, expected_head_ref)?;
         index.ensure_canonical_unchanged()?;
         ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
-        transaction.commit()?;
-        ref_published = true;
+        ref_attempted = true;
+        let confirmation = transaction.commit()?;
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::BeforeRefCommitConfirmation,
+        )
+        .await?;
+        confirmation.confirm()?;
 
         integration_checkpoint(
             integration_gate,
@@ -2223,7 +2503,7 @@ async fn integrate_primary_transaction(
             primary,
             baseline,
             commit,
-            ref_published.then_some(expected_head_ref.is_none()),
+            ref_attempted.then_some((target_ref.as_str(), expected_head_ref)),
             &index,
             &mut rollback,
             failure,
