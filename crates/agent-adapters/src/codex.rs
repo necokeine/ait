@@ -11,7 +11,15 @@ use std::{
     time::Duration,
 };
 
-use ait_domain::{AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderModel};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt as _;
+
+#[cfg(unix)]
+use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
+
+use ait_domain::{
+    AgentProvider, DomainError, DomainMetadata, ErrorCode, ProviderKind, ProviderModel,
+};
 use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
     WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
@@ -46,6 +54,9 @@ pub struct CodexAppServerConfig {
     pub client_title: String,
     pub client_version: String,
     pub event_buffer: usize,
+    /// Time allowed for `turn/interrupt` to reach a terminal notification
+    /// before the owned process tree is forcibly reclaimed.
+    pub interrupt_grace_period: Duration,
     pub approval_handler: Arc<dyn ApprovalHandler>,
 }
 
@@ -59,6 +70,7 @@ impl std::fmt::Debug for CodexAppServerConfig {
             .field("client_title", &self.client_title)
             .field("client_version", &self.client_version)
             .field("event_buffer", &self.event_buffer)
+            .field("interrupt_grace_period", &self.interrupt_grace_period)
             .field("approval_handler", &"<handler>")
             .finish()
     }
@@ -73,6 +85,7 @@ impl Default for CodexAppServerConfig {
             client_title: "Local Multi-Agent Manager".to_owned(),
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
             event_buffer: 128,
+            interrupt_grace_period: Duration::from_secs(2),
             approval_handler: Arc::new(DenyAllApprovals),
         }
     }
@@ -108,7 +121,11 @@ impl CodexAppServerAdapter {
         Ok(Self { config })
     }
 
-    fn spawn_process(&self, cwd: &std::path::Path) -> Result<Child, AdapterError> {
+    fn spawn_process(
+        &self,
+        cwd: &std::path::Path,
+        owner_marker: Option<&str>,
+    ) -> Result<Child, AdapterError> {
         let mut command = Command::new(&self.config.codex_binary);
         command
             .arg("app-server")
@@ -120,6 +137,13 @@ impl CodexAppServerAdapter {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        if let Some(owner_marker) = owner_marker {
+            command.env(CODEX_PROCESS_OWNER_ENV, owner_marker);
+        }
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(windows)]
+        command.creation_flags(0x0000_0200);
         command.spawn().map_err(|error| {
             AdapterError::new(
                 AdapterErrorKind::ProcessSpawn,
@@ -130,6 +154,133 @@ impl CodexAppServerAdapter {
     }
 }
 
+const CODEX_PROCESS_OWNER_ENV: &str = "AIT_CODEX_PROCESS_OWNER";
+
+fn process_owner_marker(request_id: &str) -> String {
+    format!("{:x}", Sha256::digest(request_id.as_bytes()))
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug)]
+struct ProcessRecord {
+    pid: u32,
+    zombie: bool,
+}
+
+#[cfg(unix)]
+async fn owned_processes(owner_marker: &str) -> Option<Vec<ProcessRecord>> {
+    let expected = OsString::from(format!("{CODEX_PROCESS_OWNER_ENV}={owner_marker}"));
+    tokio::task::spawn_blocking(move || {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+        );
+        system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                process
+                    .environ()
+                    .iter()
+                    .any(|entry| entry == &expected)
+                    .then_some(ProcessRecord {
+                        pid: pid.as_u32(),
+                        zombie: process.status() == ProcessStatus::Zombie,
+                    })
+            })
+            .collect()
+    })
+    .await
+    .ok()
+}
+
+#[cfg(unix)]
+fn signal_process(pid: u32, signal: rustix::process::Signal) {
+    if let Ok(raw_pid) = i32::try_from(pid)
+        && let Some(pid) = rustix::process::Pid::from_raw(raw_pid)
+    {
+        let _ = rustix::process::kill_process(pid, signal);
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(leader: u32, signal: rustix::process::Signal) {
+    if let Ok(raw_pid) = i32::try_from(leader)
+        && let Some(group) = rustix::process::Pid::from_raw(raw_pid)
+    {
+        let _ = rustix::process::kill_process_group(group, signal);
+    }
+}
+
+#[cfg(unix)]
+async fn reclaim_marked_processes(owner_marker: &str) {
+    let mut empty_passes = 0_u8;
+    loop {
+        let Some(processes) = owned_processes(owner_marker).await else {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            continue;
+        };
+        let alive = processes
+            .into_iter()
+            .filter(|process| !process.zombie)
+            .map(|process| process.pid)
+            .collect::<Vec<_>>();
+        if alive.is_empty() {
+            empty_passes += 1;
+            if empty_passes >= 2 {
+                return;
+            }
+        } else {
+            empty_passes = 0;
+            for pid in &alive {
+                signal_process(*pid, rustix::process::Signal::STOP);
+            }
+            // Every newly forked or reparented descendant inherits the stable
+            // owner marker. Repeating the global scan therefore closes both
+            // the root-first-exit and scan-time fork/exit windows.
+            for pid in alive {
+                signal_process(pid, rustix::process::Signal::KILL);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn terminate_owned_process_tree(child: &mut Child, owner_marker: &str) {
+    let root = child.id();
+    if let Some(root) = root {
+        // Stop the normal fork source first. If it already exited, marked
+        // descendants remain discoverable regardless of their new PPID.
+        signal_process(root, rustix::process::Signal::STOP);
+    }
+    reclaim_marked_processes(owner_marker).await;
+    if let Some(root) = root {
+        signal_process_group(root, rustix::process::Signal::KILL);
+        signal_process(root, rustix::process::Signal::KILL);
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+    reclaim_marked_processes(owner_marker).await;
+}
+
+#[cfg(windows)]
+async fn terminate_owned_process_tree(child: &mut Child, _owner_marker: &str) {
+    if let Some(pid) = child.id() {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status()
+            .await;
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+}
 #[async_trait]
 impl HostProviderModelCatalog for CodexAppServerAdapter {
     async fn discover_models(
@@ -150,7 +301,7 @@ impl HostProviderModelCatalog for CodexAppServerAdapter {
                 false,
             )
         })?;
-        let mut child = self.spawn_process(&cwd).map_err(adapter_domain_error)?;
+        let mut child = self.spawn_process(&cwd, None).map_err(adapter_domain_error)?;
         let stdout = child.stdout.take().ok_or_else(|| {
             domain_error(
                 ErrorCode::ProviderFailed,
@@ -3597,7 +3748,8 @@ fn commit_workspace_changes(
             .then_some(head_after)
             .flatten());
     }
-    git(cwd, &["add", "--all"])?;
+    git(cwd, &["add", "--all"])
+        .map_err(|failure| workspace_settlement_failure(cwd, "git_add", head_before, failure))?;
     let subject = normalized_commit_subject(subject);
     git(
         cwd,
@@ -3611,11 +3763,67 @@ fn commit_workspace_changes(
             "-m",
             &subject,
         ],
-    )?;
-    let revision = git(cwd, &["rev-parse", "HEAD"])?;
+    )
+    .map_err(|failure| workspace_settlement_failure(cwd, "git_commit", head_before, failure))?;
+    let revision = git(cwd, &["rev-parse", "HEAD"]).map_err(|failure| {
+        workspace_settlement_failure(cwd, "git_rev_parse", head_before, failure)
+    })?;
     Ok(Some(
         String::from_utf8_lossy(&revision.stdout).trim().to_owned(),
     ))
+}
+
+fn workspace_settlement_failure(
+    cwd: &Path,
+    operation: &str,
+    head_before: Option<&str>,
+    failure: DomainError,
+) -> DomainError {
+    let head_after = git_head(cwd);
+    let commit_id = (head_after.as_deref() != head_before)
+        .then(|| head_after.clone())
+        .flatten();
+    let index_dirty = git_diff_dirty(cwd, &["diff", "--cached", "--quiet"]);
+    let worktree_dirty = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["status", "--porcelain=v1"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| !output.stdout.is_empty());
+    let details = json!({
+        "status": "failed",
+        "operation": operation,
+        "failure": {
+            "code": failure.code,
+            "message": failure.message.clone(),
+            "retryable": failure.retryable,
+        },
+        "head_before": head_before,
+        "head_after": head_after,
+        "commit_id": commit_id,
+        "index_dirty": index_dirty,
+        "worktree_dirty": worktree_dirty,
+    });
+    failure.with_details(DomainMetadata(BTreeMap::from([(
+        "workspace_settlement".to_owned(),
+        details,
+    )])))
+}
+
+fn git_diff_dirty(cwd: &Path, arguments: &[&str]) -> Option<bool> {
+    let status = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(arguments)
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    }
 }
 
 fn git_head(cwd: &Path) -> Option<String> {
@@ -3713,7 +3921,8 @@ impl AgentAdapter for CodexAppServerAdapter {
             ));
         }
 
-        let mut child = self.spawn_process(&request.cwd)?;
+        let owner_marker = process_owner_marker(&request.request_id);
+        let mut child = self.spawn_process(&request.cwd, Some(&owner_marker))?;
         let stdout = child.stdout.take().ok_or_else(|| {
             AdapterError::new(
                 AdapterErrorKind::ProcessSpawn,
@@ -3736,7 +3945,7 @@ impl AgentAdapter for CodexAppServerAdapter {
             version: self.config.client_version.clone(),
         };
         let approvals = Arc::clone(&self.config.approval_handler);
-        let cancellation = request.cancellation.clone();
+        let interrupt_grace_period = self.config.interrupt_grace_period;
         tokio::spawn(async move {
             let stderr_task = stderr.map(|stderr| {
                 tokio::spawn(async move {
@@ -3747,20 +3956,24 @@ impl AgentAdapter for CodexAppServerAdapter {
                 })
             });
             let result = tokio::select! {
-                // Give the protocol's turn/interrupt path the first opportunity
-                // to handle cancellation; startup and blocked I/O still abort.
-                biased;
-                result = drive_protocol(stdout, stdin, request, client_info, approvals, &sender) => result,
-                () = cancellation.cancelled() => Err(AdapterError::cancelled()),
+                result = drive_protocol_with_interrupt_grace(
+                    stdout,
+                    stdin,
+                    request,
+                    client_info,
+                    approvals,
+                    &sender,
+                    interrupt_grace_period,
+                ) => result,
                 () = sender.closed() => Err(AdapterError::cancelled()),
             };
-            if let Err(error) = result {
-                let _ = sender.send(Err(error)).await;
-            }
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            terminate_owned_process_tree(&mut child, &owner_marker).await;
             if let Some(task) = stderr_task {
                 task.abort();
+                let _ = task.await;
+            }
+            if let Err(error) = result {
+                let _ = sender.send(Err(error)).await;
             }
         });
         Ok(Box::pin(ReceiverStream::new(receiver)))
@@ -3897,7 +4110,7 @@ where
 #[allow(clippy::too_many_lines)]
 pub async fn drive_protocol<R, W>(
     reader: R,
-    mut writer: W,
+    writer: W,
     request: AgentRunRequest,
     client: ClientInfo,
     approvals: Arc<dyn ApprovalHandler>,
@@ -3907,8 +4120,40 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    drive_protocol_with_interrupt_grace(
+        reader,
+        writer,
+        request,
+        client,
+        approvals,
+        sender,
+        Duration::from_secs(2),
+    )
+    .await
+}
+
+/// Drives one protocol turn with an explicit graceful-interrupt deadline.
+#[doc(hidden)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub async fn drive_protocol_with_interrupt_grace<R, W>(
+    reader: R,
+    mut writer: W,
+    request: AgentRunRequest,
+    client: ClientInfo,
+    approvals: Arc<dyn ApprovalHandler>,
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+    interrupt_grace_period: Duration,
+) -> Result<(), AdapterError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let cancellation = request.cancellation.clone();
     let mut lines = BufReader::new(reader).lines();
-    initialize_protocol(&mut lines, &mut writer, client).await?;
+    tokio::select! {
+        result = initialize_protocol(&mut lines, &mut writer, client) => result?,
+        () = cancellation.cancelled() => return Err(AdapterError::cancelled()),
+    }
 
     // Keep the model-specific base prompt and native tools owned by codex-core.
     // Apply the same Ait/Project developer layer on new and resumed threads.
@@ -3927,12 +4172,18 @@ where
         thread_method = "thread/start";
         thread_params["ephemeral"] = json!(false);
     }
-    write_message(
-        &mut writer,
-        &json!({"method": thread_method, "id": 1, "params": thread_params}),
-    )
-    .await?;
-    let (thread_result, _) = wait_for_response(&mut lines, 1).await?;
+    let thread_exchange = async {
+        write_message(
+            &mut writer,
+            &json!({"method": thread_method, "id": 1, "params": thread_params}),
+        )
+        .await?;
+        wait_for_response(&mut lines, 1).await
+    };
+    let (thread_result, _) = tokio::select! {
+        result = thread_exchange => result?,
+        () = cancellation.cancelled() => return Err(AdapterError::cancelled()),
+    };
     let thread_id = thread_result
         .pointer("/thread/id")
         .and_then(Value::as_str)
@@ -3958,47 +4209,118 @@ where
     if let Some(output_schema) = request.output_schema {
         turn_params["outputSchema"] = output_schema;
     }
-    write_message(
-        &mut writer,
-        &json!({"method": "turn/start", "id": 2, "params": turn_params}),
-    )
-    .await?;
-    let (turn_result, deferred) = wait_for_response(&mut lines, 2).await?;
+    let turn_exchange = async {
+        write_message(
+            &mut writer,
+            &json!({"method": "turn/start", "id": 2, "params": turn_params}),
+        )
+        .await?;
+        wait_for_response(&mut lines, 2).await
+    };
+    let (turn_result, deferred) = tokio::select! {
+        result = turn_exchange => result?,
+        () = cancellation.cancelled() => return Err(AdapterError::cancelled()),
+    };
     let turn_id = turn_result
         .pointer("/turn/id")
         .and_then(Value::as_str)
         .ok_or_else(|| AdapterError::protocol("Codex turn response has no turn id"))?
         .to_owned();
-    send_event(
+    let turn_started = send_event(
         sender,
         AgentEvent::TurnStarted {
             turn_id: turn_id.clone(),
         },
-    )
-    .await?;
+    );
+    tokio::select! {
+        biased;
+        () = cancellation.cancelled() => {
+            return interrupt_and_wait(
+                &mut lines,
+                &mut writer,
+                &thread_id,
+                &turn_id,
+                approvals.as_ref(),
+                sender,
+                interrupt_grace_period,
+            ).await;
+        }
+        result = turn_started => result?,
+    }
 
     let mut deferred = VecDeque::from(deferred);
     loop {
-        let message = if let Some(message) = deferred.pop_front() {
-            message
-        } else {
-            tokio::select! {
-                () = request.cancellation.cancelled() => {
-                    write_message(
-                        &mut writer,
-                        &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
-                    ).await?;
-                    return Err(AdapterError::cancelled());
+        let process_message = async {
+            let message = if let Some(message) = deferred.pop_front() {
+                message
+            } else {
+                read_message(&mut lines).await?
+            };
+            handle_message(&message, &mut writer, &turn_id, approvals.as_ref(), sender).await
+        };
+        let cancelled = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => true,
+            completed = process_message => {
+                if completed? {
+                    return Ok(());
                 }
-                message = read_message(&mut lines) => message?,
+                false
             }
         };
-        if handle_message(&message, &mut writer, &turn_id, approvals.as_ref(), sender).await? {
-            return Ok(());
+        if cancelled {
+            return interrupt_and_wait(
+                &mut lines,
+                &mut writer,
+                &thread_id,
+                &turn_id,
+                approvals.as_ref(),
+                sender,
+                interrupt_grace_period,
+            )
+            .await;
         }
     }
 }
 
+async fn interrupt_and_wait<R, W>(
+    lines: &mut tokio::io::Lines<R>,
+    writer: &mut W,
+    thread_id: &str,
+    turn_id: &str,
+    approvals: &dyn ApprovalHandler,
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+    grace_period: Duration,
+) -> Result<(), AdapterError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let interrupted = json!({
+        "method": "turn/interrupt",
+        "id": 3,
+        "params": {"threadId": thread_id, "turnId": turn_id},
+    });
+    let graceful_interrupt = async {
+        write_message(writer, &interrupted).await?;
+        loop {
+            let message = read_message(lines).await?;
+            let completed = message.get("method").and_then(Value::as_str) == Some("turn/completed")
+                && message
+                    .pointer("/params/turn/id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|id| id == turn_id);
+            handle_message(&message, writer, turn_id, approvals, sender).await?;
+            if completed {
+                return Err(AdapterError::cancelled());
+            }
+        }
+    };
+    match tokio::time::timeout(grace_period, graceful_interrupt).await {
+        Ok(result) => result,
+        Err(_) => Err(AdapterError::cancelled()),
+    }
+}
 async fn wait_for_response<R>(
     lines: &mut tokio::io::Lines<R>,
     expected_id: i64,

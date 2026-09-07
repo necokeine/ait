@@ -100,17 +100,22 @@ async fn missing_interrupt_terminal_forces_the_owned_process_tree_to_exit() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
     let binary = cwd.join("unresponsive-codex");
+    let mut unrelated = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .unwrap();
     fs::write(
         &binary,
         r#"#!/bin/sh
 echo $$ > child.pid
-sleep 300 &
-echo $! > grandchild.pid
 while IFS= read -r line; do
   case "$line" in
     *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
     *'"id":1'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-force"}}}' ;;
-    *'"id":2'*) printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-force"}}}' ;;
+    *'"id":2'*)
+      python3 -c 'import os,time,pathlib; os.setsid(); pathlib.Path("detached.pid").write_text(str(os.getpid())); child=os.fork(); pathlib.Path("detached-grandchild.pid").write_text(str(os.getpid())) if child == 0 else None; time.sleep(300)' </dev/null >/dev/null 2>&1 &
+      printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-force"}}}'
+      ;;
     *'"id":3'*) : > interrupt-seen ;;
   esac
 done
@@ -149,7 +154,14 @@ done
     })
     .await
     .expect("fake app-server must start a turn");
-    let (pid, grandchild_pid) = read_owned_pids(&cwd).await;
+    let root_pid = read_pid(&cwd, "child.pid").await;
+    let detached_pid = read_pid(&cwd, "detached.pid").await;
+    let detached_grandchild_pid = read_pid(&cwd, "detached-grandchild.pid").await;
+    assert_ne!(
+        process_group(detached_pid.trim()),
+        process_group(root_pid.trim()),
+        "the fake tool must use setsid() like Codex shell tools"
+    );
 
     let started = tokio::time::Instant::now();
     cancellation.cancel();
@@ -170,20 +182,24 @@ done
     .expect("interrupt timeout must force cleanup and settle the stream");
     assert!(started.elapsed() >= Duration::from_millis(40));
     assert!(cwd.join("interrupt-seen").exists());
-    assert_dead(pid.trim()).await;
-    assert_dead(grandchild_pid.trim()).await;
+    assert_dead(root_pid.trim()).await;
+    assert_dead(detached_pid.trim()).await;
+    assert_dead(detached_grandchild_pid.trim()).await;
+    assert!(
+        unrelated.try_wait().unwrap().is_none(),
+        "descendant cleanup must not kill a pre-existing unrelated process"
+    );
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
 }
 
-async fn read_owned_pids(cwd: &std::path::Path) -> (String, String) {
+async fn read_pid(cwd: &std::path::Path, filename: &str) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let (Ok(pid), Ok(grandchild_pid)) = (
-                fs::read_to_string(cwd.join("child.pid")),
-                fs::read_to_string(cwd.join("grandchild.pid")),
-            ) && !pid.trim().is_empty()
-                && !grandchild_pid.trim().is_empty()
+            if let Ok(pid) = fs::read_to_string(cwd.join(filename))
+                && !pid.trim().is_empty()
             {
-                break (pid, grandchild_pid);
+                break pid;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -192,19 +208,33 @@ async fn read_owned_pids(cwd: &std::path::Path) -> (String, String) {
     .unwrap()
 }
 
+fn process_group(pid: &str) -> String {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", pid])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
 async fn assert_dead(pid: &str) {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            let alive = std::process::Command::new("kill")
-                .args(["-0", pid])
+            let state = std::process::Command::new("ps")
+                .args(["-o", "state=", "-p", pid])
                 .output()
                 .unwrap();
-            if !alive.status.success() {
+            if !state.status.success()
+                || String::from_utf8_lossy(&state.stdout)
+                    .trim()
+                    .starts_with('Z')
+                || state.stdout.is_empty()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("the adapter must reclaim its entire owned process group");
+    .expect("the adapter must reclaim every tracked descendant");
 }

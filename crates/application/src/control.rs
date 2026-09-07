@@ -1176,7 +1176,7 @@ impl LocalControlService {
             let outcome = self.commit_command(command, has_workspace_lease).await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
-                && run.status == "cancelled"
+                && matches!(run.status.as_str(), "cancelling" | "cancelled")
                 && let Some(token) = self
                     .cancellations
                     .lock()
@@ -1199,7 +1199,7 @@ impl LocalControlService {
         let outcome = self.commit_command(command, has_workspace_lease).await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
-            && run.status == "cancelled"
+            && matches!(run.status.as_str(), "cancelling" | "cancelled")
         {
             *decision = WorkspaceFinalizationDecision::Cancelled;
             control.cancellation.cancel();
@@ -2149,9 +2149,15 @@ fn cancel_run(
         .iter()
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    if matches!(state.runs[index].status.as_str(), "cancelling" | "cancelled") {
+        return Ok((
+            CommandResult::Run(state.runs[index].clone()),
+            Vec::new(),
+        ));
+    }
     if matches!(
         state.runs[index].status.as_str(),
-        "completed" | "failed" | "cancelled"
+        "completed" | "failed" | "limit_exceeded"
     ) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
@@ -2160,9 +2166,20 @@ fn cancel_run(
         ));
     }
     let mut run = state.runs[index].clone();
-    run.status = "cancelled".into();
-    run.error = Some(error(ErrorCode::RunCancelled, "run was cancelled", false));
-    release_session(state, &run);
+    let queued = run.status == "queued";
+    run.status = if queued { "cancelled" } else { "cancelling" }.into();
+    run.error = Some(error(
+        ErrorCode::RunCancelled,
+        if queued {
+            "run was cancelled before execution started"
+        } else {
+            "run cancellation was requested; execution is stopping and settling"
+        },
+        false,
+    ));
+    if queued {
+        release_session(state, &run);
+    }
     state.runs[index] = run.clone();
     Ok((
         CommandResult::Run(run.clone()),
@@ -3303,6 +3320,23 @@ fn apply_workspace_terminal_result(
     run: &mut RunView,
     result: &Result<WorkspaceAgentResponse, DomainError>,
 ) {
+    if run.status == "cancelling" {
+        run.workspace_commit_id = result
+            .as_ref()
+            .ok()
+            .and_then(|output| output.commit_id.clone());
+        run.status = "cancelled".into();
+        let mut cancellation_error = error(
+            ErrorCode::RunCancelled,
+            "run was cancelled after execution settled",
+            false,
+        );
+        if let Err(failure) = result {
+            cancellation_error.details = failure.details.clone().map(Box::new);
+        }
+        run.error = Some(cancellation_error);
+        return;
+    }
     match result {
         Ok(output) => {
             let operations = output
@@ -3362,6 +3396,7 @@ fn apply_workspace_terminal_result(
             append_output(state, run, reply);
             run.status = "completed".into();
             run.error = None;
+            run.workspace_commit_id.clone_from(&output.commit_id);
         }
         Err(failure) => {
             run.status = match failure.code {
@@ -3370,7 +3405,7 @@ fn apply_workspace_terminal_result(
                 _ => "failed",
             }
             .into();
-            run.error = Some(error(failure.code, &failure.message, failure.retryable));
+            run.error = Some(api_error(failure));
         }
     }
 }
@@ -3411,6 +3446,16 @@ fn error(code: ErrorCode, message: impl Into<String>, retryable: bool) -> ApiErr
         code,
         message: message.into(),
         retryable,
+        details: None,
+    }
+}
+
+fn api_error(failure: &DomainError) -> ApiError {
+    ApiError {
+        code: failure.code,
+        message: failure.message.clone(),
+        retryable: failure.retryable,
+        details: failure.details.clone().map(Box::new),
     }
 }
 #[allow(clippy::needless_pass_by_value)]

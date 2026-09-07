@@ -1,7 +1,7 @@
 //! Versioned transport DTOs shared by HTTP, CLI, IPC, and future UI clients.
 #![allow(missing_docs)]
 
-use ait_domain::ErrorCode;
+use ait_domain::{DomainMetadata, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -134,6 +134,9 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
     pub retryable: bool,
+    /// Optional non-secret machine-readable failure context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<DomainMetadata>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

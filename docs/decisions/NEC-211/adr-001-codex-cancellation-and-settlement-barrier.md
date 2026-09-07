@@ -14,13 +14,18 @@
    `cancelled` 并释放 Session。新输入继续按 ADR-009 立即返回 `SESSION_BUSY`，不会与旧执行重叠。
 3. `WorkspaceAgent::invoke` 的返回是可等待的退出/结算屏障。普通取消不能由 application
    `select!` 丢弃该 future；实现必须在返回前回收本次 invocation 拥有的进程并完成已经开始的
-   外部副作用。
+   外部副作用。OpenAI/DeepSeek API 请求不拥有本地工作区结算，仍通过 drop HTTP future 快速取消，
+   避免等待远端请求超时。
 4. Codex turn 建立前收到取消时直接回收进程树；建立后发送一次带目标 thread/turn 的
-   `turn/interrupt`，等待目标 `turn/completed`，宽限期为 2 秒。ACK 或终态缺失超过期限后，
-   只强杀 spawn 时创建的独立进程组（Windows 使用同一 PID 的 `/T` tree），并等待直接子进程退出。
+   `turn/interrupt`，等待目标 `turn/completed`，宽限期为 2 秒。同一绝对期限覆盖协议读写、审批
+   handler 和事件通道背压。ACK 或终态缺失超过期限后，Unix 先冻结 app-server，再按 PPID 递归
+   发现并冻结后代到固定点，随后强杀和等待；独立进程组只作为补充安全网，因此 Codex 工具调用的
+   `setsid()` 不会逃逸。Windows 使用同一 PID 的 `/T` tree。
 5. Git 提交开始前再次检查取消。若取消已经记录，不启动 Git；一旦进入 Git 结算，`git add`、
    hook、commit 和 HEAD 读取不可因普通取消中途丢弃。取消与 commit 并发时不追加成功 assistant
-   Message，但将确定的 commit SHA 保存到 Run 的 `workspace_commit_id` 供审计与后续对账。
+   Message，但将确定的 commit SHA 保存到 Run 的 `workspace_commit_id` 供审计与后续对账。若 add、
+   hook、commit 或 HEAD 读取失败，则在 Run error 的结构化 details 中保留操作阶段、失败代码/消息、
+   前后 HEAD、index/worktree dirty 状态和可能已经产生的 commit。
 6. NEC-205 的状态通道继续区分 `running`、`settling`、`cancelling` 与终态。桌面在 active Run 上
    提供停止入口，并在屏障完成前显示正在停止/结算；只有持久化 `cancelled` 后才显示取消完成。
 
@@ -28,16 +33,18 @@
 
 - 持久化取消意图、停止请求与取消终态不再是同一个瞬间。
 - 迟到的成功输出不能覆盖取消状态或追加不可变 Message；已经完成的 Git commit 不会成为无归属副作用。
-- Session 写入所有权覆盖完整外部执行和 Git 结算期。进程树回收只按本次 spawn 的独立组执行，
-  不按进程名或工作目录扫描，因此不会误杀预先存在或无关进程。
+- Session 写入所有权覆盖完整外部执行和 Git 结算期。Unix 进程树回收以本次 spawn PID 的 PPID
+  后代关系为所有权根，不按进程名或工作目录扫描；冻结到固定点后才 kill，因此脱组工具不会逃逸，
+  预先存在或无关进程也不会被命中。
 - daemon 崩溃后的持久恢复和无法确认的 Git/SQLite 对账仍由 NEC-212 负责；失败/取消部分输出保留由
   NEC-210 负责；同 Project 并发工作区隔离由 NEC-209 负责。
 
 ## 验证
 
-- 协议 fake 覆盖 interrupt ACK/终态延迟及 ACK 缺失超时。
-- 进程测试覆盖握手取消、直接子进程、继承进程组的孙进程，以及无关预先存在进程。
+- 协议 fake 覆盖 interrupt ACK/终态延迟、ACK 缺失、阻塞 approval handler 和已满事件通道。
+- 进程测试覆盖握手取消、`setsid()` 脱组工具、脱组工具孙进程，以及无关预先存在进程。
 - application fake 覆盖重复取消、取消后立即发送、迟到成功、Session 延迟释放、Message 不追加与
-  commit 审计。
-- 临时 Git 仓库和延迟 pre-commit hook 覆盖 commit 开始后的 shielded settlement。
+  commit 审计，并覆盖 OpenAI/DeepSeek pending 请求的快速取消。
+- 临时 Git 仓库和延迟 pre-commit hook 覆盖 commit 开始后的 shielded settlement，以及取消后
+  hook 失败的结构化审计。
 - desktop 单元测试覆盖 stopping 与 cancelled-after-commit 展示。

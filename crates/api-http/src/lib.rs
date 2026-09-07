@@ -869,6 +869,7 @@ pub fn malformed_request(message: impl Into<String>) -> Response {
         code: ErrorCode::InvalidRun,
         message: message.into(),
         retryable: false,
+        details: None,
     })
 }
 

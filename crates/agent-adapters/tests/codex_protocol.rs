@@ -218,6 +218,10 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
 #[derive(Debug)]
 struct AcceptOnce;
 
+struct BlockingApproval {
+    entered: tokio::sync::Semaphore,
+}
+
 #[tokio::test]
 async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
@@ -284,6 +288,14 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
 impl ApprovalHandler for AcceptOnce {
     async fn decide(&self, _request: &ApprovalRequest) -> ApprovalDecision {
         ApprovalDecision::Accept
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for BlockingApproval {
+    async fn decide(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+        self.entered.add_permits(1);
+        std::future::pending().await
     }
 }
 
@@ -480,4 +492,144 @@ async fn missing_interrupt_ack_hits_the_grace_deadline() {
         .unwrap_err();
     assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
     server.abort();
+}
+
+#[tokio::test]
+async fn interrupt_deadline_bounds_a_blocked_approval_handler() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-approval"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-approval"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"id":90,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-approval"}}),
+        )
+        .await;
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        write_json(&mut server_write, json!({"id":3,"result":{}})).await;
+        write_json(
+            &mut server_write,
+            json!({"id":91,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-approval"}}),
+        )
+        .await;
+        std::future::pending::<()>().await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    let approvals = Arc::new(BlockingApproval {
+        entered: tokio::sync::Semaphore::new(0),
+    });
+    let (sender, mut receiver) = mpsc::channel(32);
+    let drive = tokio::spawn({
+        let approvals = approvals.clone();
+        async move {
+            drive_protocol_with_interrupt_grace(
+                client_read,
+                client_write,
+                request,
+                client(),
+                approvals,
+                &sender,
+                Duration::from_millis(40),
+            )
+            .await
+        }
+    });
+    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    tokio::time::timeout(Duration::from_secs(1), approvals.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let started = tokio::time::Instant::now();
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_millis(500), drive)
+        .await
+        .expect("blocked approval handling must obey the interrupt deadline")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    server.abort();
+    drain.await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_deadline_bounds_full_event_channel_backpressure() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let (turn_exists, start_cancellation) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-backpressure"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-backpressure"}}}),
+        )
+        .await;
+        turn_exists.send(()).unwrap();
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        write_json(&mut server_write, json!({"id":3,"result":{}})).await;
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-backpressure","status":"interrupted"}}}),
+        )
+        .await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    // ThreadStarted fills the only slot; TurnStarted then blocks until cancel.
+    let (sender, _receiver) = mpsc::channel(1);
+    let drive = tokio::spawn(async move {
+        drive_protocol_with_interrupt_grace(
+            client_read,
+            client_write,
+            request,
+            client(),
+            Arc::new(ait_agent_adapters::DenyAllApprovals),
+            &sender,
+            Duration::from_millis(40),
+        )
+        .await
+    });
+    start_cancellation.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let started = tokio::time::Instant::now();
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_millis(500), drive)
+        .await
+        .expect("event backpressure must obey the interrupt deadline")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    server.await.unwrap();
 }
