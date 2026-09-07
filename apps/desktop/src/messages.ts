@@ -63,6 +63,13 @@ function messageParts(message: WorkspaceMessage): MessagePart[] {
     if (projected.length > 0) return projected;
   }
 
+  if (operations.length > 0 && message.text !== null) {
+    return [
+      ...operations,
+      { type: "codex_message", id: message.id, phase: "final_answer", text: message.text },
+    ];
+  }
+
   const parts: MessagePart[] = [];
   if (message.text !== null) parts.push({ type: "text", text: message.text });
   parts.push(...operations);

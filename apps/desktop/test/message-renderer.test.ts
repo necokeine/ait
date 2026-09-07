@@ -116,8 +116,12 @@ test("projects and renders persisted Codex operation records with expandable det
     },
   }, "agent");
   assert.equal(message.parts.length, 2);
-  assert.equal(message.parts[1]?.type, "operation");
+  assert.equal(message.parts[0]?.type, "operation");
+  assert.equal(message.parts[1]?.type, "codex_message");
   const html = renderMessage(message, []);
+  assert.ok(html.includes('<details class="codex-process">'));
+  assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
+  assert.ok(html.indexOf("Read file") < html.indexOf("Done."));
   assert.ok(html.includes('class="operation-record"'));
   assert.ok(html.includes("<summary>"));
   assert.ok(html.includes("Read file"));

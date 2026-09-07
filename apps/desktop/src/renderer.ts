@@ -343,7 +343,7 @@ function renderConversation(): void {
   });
   requestAnimationFrame(() => {
     const finalAnswer = conversation.querySelector<HTMLElement>(".message:last-child [data-codex-final-answer]");
-    if (finalAnswer) finalAnswer.scrollIntoView({ block: "end" });
+    if (finalAnswer) finalAnswer.scrollIntoView({ block: "start" });
     else conversationScroll.scrollTop = conversationScroll.scrollHeight;
   });
 }

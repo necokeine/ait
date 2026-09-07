@@ -168,6 +168,66 @@ impl AgentAdapter for TitleAdapter {
     }
 }
 
+#[derive(Debug)]
+struct ScriptedAdapter {
+    events: Vec<AgentEvent>,
+}
+
+#[async_trait]
+impl AgentAdapter for ScriptedAdapter {
+    fn driver(&self) -> &'static str {
+        "scripted_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: false,
+            file_changes: false,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, _: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        Ok(Box::pin(tokio_stream::iter(
+            self.events.clone().into_iter().map(Ok),
+        )))
+    }
+}
+
+fn initialized_project() -> TempDir {
+    let project = TempDir::new().unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(project.path())
+            .arg("init")
+            .status()
+            .unwrap()
+            .success()
+    );
+    project
+}
+
+async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResponse {
+    let project = initialized_project();
+    CodexWorkspaceAgent::new(Arc::new(ScriptedAdapter { events }))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "scripted-run".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Return a result".into(),
+            project_instructions: None,
+            commit_subject: "Return a result".into(),
+            cwd: project.path().to_path_buf(),
+            cancellation: CancellationToken::new(),
+        })
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn generates_structured_session_metadata_with_the_small_read_only_model() {
     let project = TempDir::new().unwrap();
@@ -270,6 +330,116 @@ async fn returns_assistant_result_and_commits_generated_changes() {
         .output()
         .unwrap();
     assert!(status.stdout.is_empty());
+}
+
+#[tokio::test]
+async fn retains_completed_only_final_text_and_does_not_repeat_completed_delta_text() {
+    let completed_only = invoke_script(vec![
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "final-completed-only",
+                "phase": "final_answer",
+                "text": "Complete final answer."
+            }),
+        },
+        AgentEvent::Completed {
+            turn_id: "turn-completed-only".into(),
+            status: AgentRunStatus::Completed,
+            error: None,
+        },
+    ])
+    .await;
+    assert_eq!(completed_only.assistant_text, "Complete final answer.");
+    assert_eq!(
+        completed_only.output_items,
+        [WorkspaceOutputItem::Message {
+            id: "final-completed-only".into(),
+            phase: Some("final_answer".into()),
+            text: "Complete final answer.".into(),
+        }]
+    );
+
+    let delta_and_completed = invoke_script(vec![
+        AgentEvent::MessageDelta {
+            item_id: "final-with-delta".into(),
+            delta: "Complete ".into(),
+        },
+        AgentEvent::MessageDelta {
+            item_id: "final-with-delta".into(),
+            delta: "final answer.".into(),
+        },
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "final-with-delta",
+                "phase": "final_answer",
+                "text": "Complete final answer."
+            }),
+        },
+        AgentEvent::Completed {
+            turn_id: "turn-with-delta".into(),
+            status: AgentRunStatus::Completed,
+            error: None,
+        },
+    ])
+    .await;
+    assert_eq!(delta_and_completed.assistant_text, "Complete final answer.");
+    assert_eq!(
+        delta_and_completed.output_items,
+        [WorkspaceOutputItem::Message {
+            id: "final-with-delta".into(),
+            phase: Some("final_answer".into()),
+            text: "Complete final answer.".into(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn keeps_messages_from_legacy_streams_without_phase() {
+    let result = invoke_script(vec![
+        AgentEvent::MessageDelta {
+            item_id: "legacy-progress".into(),
+            delta: "Legacy progress".into(),
+        },
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "legacy-progress",
+                "text": "Legacy progress message."
+            }),
+        },
+        AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": "legacy-final",
+                "text": "Legacy final answer."
+            }),
+        },
+        AgentEvent::Completed {
+            turn_id: "legacy-turn".into(),
+            status: AgentRunStatus::Completed,
+            error: None,
+        },
+    ])
+    .await;
+
+    assert_eq!(result.assistant_text, "Legacy final answer.");
+    assert_eq!(
+        result.output_items,
+        [
+            WorkspaceOutputItem::Message {
+                id: "legacy-progress".into(),
+                phase: None,
+                text: "Legacy progress message.".into(),
+            },
+            WorkspaceOutputItem::Message {
+                id: "legacy-final".into(),
+                phase: None,
+                text: "Legacy final answer.".into(),
+            },
+        ]
+    );
 }
 
 #[tokio::test]
