@@ -878,13 +878,13 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
                 "agent" => {
                     snapshot.value["agents"][0]["config"]["provider_id"] = serde_json::json!(id)
                 }
-                "run" => snapshot.value["runs"][0]["provider"] = retired["provider"].clone(),
+                "run" => snapshot.value["runs"][0]["provider"] = retired_provider(kind),
                 "credential" => {
                     snapshot.value["provider_credentials"][&id] =
                         serde_json::json!("opaque-reference")
                 }
-                "custom" => retired["provider"]["id"] = serde_json::json!(format!("custom-{kind}")),
-                "url" => retired["provider"]["url"] = serde_json::json!("http://localhost:1234"),
+                "custom" => retired["id"] = serde_json::json!(format!("custom-{kind}")),
+                "url" => retired["url"] = serde_json::json!("http://localhost:1234"),
                 _ => unreachable!(),
             }
             snapshot.value["providers"]
@@ -907,10 +907,15 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
 const RETIRED_BUILTINS: [&str; 4] = ["tool", "manual", "provider_failure", "approval_required"];
 
 fn retired_builtin(kind: &str) -> serde_json::Value {
+    let mut provider = retired_provider(kind);
+    provider["has_secret"] = serde_json::json!(false);
+    provider
+}
+
+fn retired_provider(kind: &str) -> serde_json::Value {
     serde_json::json!({
-        "provider": {"id": format!("builtin-{kind}"), "name": kind, "kind": kind,
-            "url": null, "models": [{"id": "default", "name": "Default", "reasoning_efforts": []}]},
-        "has_secret": false,
+        "id": format!("builtin-{kind}"), "name": kind, "kind": kind,
+        "url": null, "models": [{"id": "default", "name": "Default", "reasoning_efforts": []}],
     })
 }
 
