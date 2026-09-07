@@ -1825,6 +1825,7 @@ struct RollbackPath {
     rollback_live: BoundPath,
     state: RootPublicationState,
     original_quarantined: bool,
+    rollback_candidate_quarantined: bool,
 }
 
 struct PrimaryWorktreeRollback {
@@ -1952,6 +1953,7 @@ impl PrimaryWorktreeRollback {
                     baseline_snapshot,
                     state: RootPublicationState::Untouched,
                     original_quarantined: false,
+                    rollback_candidate_quarantined: false,
                 })
             })
             .collect::<Result<Vec<_>, DomainError>>()?;
@@ -2035,14 +2037,19 @@ impl PrimaryWorktreeRollback {
         Ok(())
     }
 
-    fn rollback(&mut self, candidate_index: &Path, baseline: &str) -> Result<(), DomainError> {
+    async fn rollback(
+        &mut self,
+        candidate_index: &Path,
+        baseline: &str,
+        integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+    ) -> Result<(), DomainError> {
         if !self.update_started {
             self.discard();
             return Ok(());
         }
         let mut failures = Vec::new();
         for entry in &mut self.paths {
-            if let Err(failure) = rollback_quarantined_path(entry) {
+            if let Err(failure) = rollback_quarantined_path(entry, integration_gate).await {
                 failures.push(failure.message);
             }
         }
@@ -2053,7 +2060,9 @@ impl PrimaryWorktreeRollback {
         }
         self.update_started = false;
         if failures.is_empty() {
-            self.discard();
+            if !self.has_durable_quarantine() {
+                self.discard();
+            }
             Ok(())
         } else {
             Err(domain_error(
@@ -2075,18 +2084,27 @@ impl PrimaryWorktreeRollback {
 
     fn complete(&mut self) {
         self.update_started = false;
-        if self.paths.iter().any(|entry| entry.original_quarantined) {
+        if self.has_durable_quarantine() {
             // An editor may still hold a writable descriptor to a baseline inode
-            // after its directory entry was quarantined. There is no portable
-            // way to prove all such handles are closed, so successful publication
-            // retains the exact inode/tree as durable recovery material.
+            // or a rolled-back candidate inode after its directory entry was
+            // quarantined. There is no portable way to prove all such handles
+            // are closed, so the exact inode/tree remains durable recovery material.
             return;
         }
         self.discard();
     }
+
+    fn has_durable_quarantine(&self) -> bool {
+        self.paths
+            .iter()
+            .any(|entry| entry.original_quarantined || entry.rollback_candidate_quarantined)
+    }
 }
 
-fn rollback_quarantined_path(entry: &mut RollbackPath) -> Result<(), DomainError> {
+async fn rollback_quarantined_path(
+    entry: &mut RollbackPath,
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+) -> Result<(), DomainError> {
     match entry.state {
         RootPublicationState::Untouched => return Ok(()),
         RootPublicationState::Quarantined => {
@@ -2134,12 +2152,27 @@ fn rollback_quarantined_path(entry: &mut RollbackPath) -> Result<(), DomainError
         return Err(external_rollback_path_error(&entry.relative));
     }
 
-    restore_original_quarantine(entry)?;
     if live_moved {
-        remove_path(&entry.rollback_live.display)?;
+        // A matching snapshot proves only what was present at this instant.
+        // POSIX file and directory descriptors (and equivalent platform handles)
+        // can still mutate the isolated inode/tree afterwards, so never unlink it
+        // automatically. Keeping the exact directory entry makes any late bytes
+        // recoverable under the commit-addressed integration journal.
+        entry.rollback_candidate_quarantined = true;
     }
+    let checkpoint_failure = if live_moved {
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::AfterRollbackCandidateQuarantine,
+        )
+        .await
+        .err()
+    } else {
+        None
+    };
+    restore_original_quarantine(entry)?;
     entry.state = RootPublicationState::Untouched;
-    Ok(())
+    checkpoint_failure.map_or(Ok(()), Err)
 }
 
 fn restore_original_quarantine(entry: &mut RollbackPath) -> Result<(), DomainError> {
@@ -2826,7 +2859,10 @@ async fn rollback_primary_integration(
     {
         rollback_failures.push(ref_failure.message);
     }
-    if let Err(worktree_failure) = rollback.rollback(index.path(), baseline) {
+    if let Err(worktree_failure) = rollback
+        .rollback(index.path(), baseline, integration_gate)
+        .await
+    {
         rollback_failures.push(worktree_failure.message);
     }
     if !rollback_failures.is_empty() {
@@ -2965,18 +3001,6 @@ fn path_exists(path: &Path) -> Result<bool, DomainError> {
             Ok(false)
         }
         Err(failure) => Err(rollback_io_error("inspect rollback target", path, &failure)),
-    }
-}
-
-fn remove_path(path: &Path) -> Result<(), DomainError> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|failure| rollback_io_error("inspect rollback cleanup path", path, &failure))?;
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path)
-            .map_err(|failure| rollback_io_error("remove rollback directory", path, &failure))
-    } else {
-        fs::remove_file(path)
-            .map_err(|failure| rollback_io_error("remove rollback file", path, &failure))
     }
 }
 

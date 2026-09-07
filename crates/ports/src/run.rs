@@ -179,6 +179,8 @@ pub enum WorkspaceIntegrationCheckpoint {
     BeforeBaselineRefReconciliationLock,
     /// The candidate view is fixed, immediately before rollback isolates live paths.
     BeforeWorktreeRollback,
+    /// A rollback candidate was isolated and verified, before restoring the baseline.
+    AfterRollbackCandidateQuarantine,
     /// The canonical index is about to become the candidate index.
     BeforeIndexPublish,
 }

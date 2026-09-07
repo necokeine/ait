@@ -428,6 +428,84 @@ impl WorkspaceIntegrationGate for OpenHandleWritingGate {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RollbackOpenHandleKind {
+    File,
+    #[cfg(unix)]
+    Directory,
+}
+
+#[derive(Debug)]
+struct RollbackOpenHandleWritingGate {
+    candidate: PathBuf,
+    kind: RollbackOpenHandleKind,
+    writer: Mutex<Option<OpenHandleWriter>>,
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for RollbackOpenHandleWritingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        match checkpoint {
+            WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate => {
+                let opened = match self.kind {
+                    RollbackOpenHandleKind::File => OpenHandleWriter::File(Mutex::new(
+                        OpenOptions::new()
+                            .write(true)
+                            .open(&self.candidate)
+                            .unwrap(),
+                    )),
+                    #[cfg(unix)]
+                    RollbackOpenHandleKind::Directory => {
+                        OpenHandleWriter::Directory(File::open(&self.candidate).unwrap())
+                    }
+                };
+                let previous = self.writer.lock().unwrap().replace(opened);
+                assert!(previous.is_none(), "candidate handle was opened twice");
+                Ok(())
+            }
+            WorkspaceIntegrationCheckpoint::AfterRefPublish => {
+                TransactionInjectingGate::injected_failure(
+                    "injected failure with an open candidate handle",
+                )
+            }
+            WorkspaceIntegrationCheckpoint::AfterRollbackCandidateQuarantine => {
+                let writer = self
+                    .writer
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("candidate handle was not opened before rollback");
+                match writer {
+                    OpenHandleWriter::File(file) => {
+                        let mut file = file.into_inner().unwrap();
+                        file.set_len(0).unwrap();
+                        file.write_all(b"external rollback open-file write\0bytes\n")
+                            .unwrap();
+                        file.sync_all().unwrap();
+                    }
+                    #[cfg(unix)]
+                    OpenHandleWriter::Directory(directory) => {
+                        write_through_directory_handle(
+                            &directory,
+                            "external-rollback-open-dir.bin",
+                            b"external rollback open-directory write\0bytes\n",
+                        );
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(unix)]
 fn write_through_directory_handle(directory: &File, name: &str, bytes: &[u8]) {
     let opened = rustix::fs::openat(
@@ -2200,7 +2278,7 @@ async fn baseline_ref_reconciliation_locks_before_confirming_the_noop() {
         "authorized baseline\n"
     );
     assert!(!project.path().join("run-owned.txt").exists());
-    assert_rollback_journal_empty(project.path());
+    assert_rollback_journal_retained(project.path());
     let _retained_run_commit = run_ref(project.path());
 }
 
@@ -2252,7 +2330,7 @@ async fn open_file_handle_writes_after_quarantine_are_detected_and_restored() {
         b"external open-file write\0bytes\n"
     );
     assert!(!project.path().join("run-owned.txt").exists());
-    assert_rollback_journal_empty(project.path());
+    assert_rollback_journal_retained(project.path());
     let _retained_run_commit = run_ref(project.path());
 }
 
@@ -2312,8 +2390,133 @@ async fn open_directory_handle_writes_after_quarantine_are_detected_and_restored
         std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
         "authorized baseline\n"
     );
-    assert_rollback_journal_empty(project.path());
+    assert_rollback_journal_retained(project.path());
     let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_retains_candidate_file_writes_after_quarantine_verification() {
+    let project = initialized_project();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "authorized baseline\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add rollback candidate file fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::DirectoryToFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "rollback-open-candidate-file".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Write through an open candidate file after rollback verification".into(),
+        project_instructions: None,
+        commit_subject: "Retain rollback candidate file inode".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(RollbackOpenHandleWritingGate {
+            candidate: project.path().join("shape"),
+            kind: RollbackOpenHandleKind::File,
+            writer: Mutex::new(None),
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert_eq!(
+        std::fs::read(rollback_journal_for_run(project.path()).join("rollback-live/shape"))
+            .unwrap(),
+        b"external rollback open-file write\0bytes\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rollback_retains_candidate_directory_writes_after_quarantine_verification() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("shape"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add rollback candidate directory fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::FileToDirectory,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "rollback-open-candidate-directory".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Write through an open candidate directory after rollback verification".into(),
+        project_instructions: None,
+        commit_subject: "Retain rollback candidate directory inode".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(RollbackOpenHandleWritingGate {
+            candidate: project.path().join("shape"),
+            kind: RollbackOpenHandleKind::Directory,
+            writer: Mutex::new(None),
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert_eq!(
+        std::fs::read(
+            rollback_journal_for_run(project.path())
+                .join("rollback-live/shape/external-rollback-open-dir.bin")
+        )
+        .unwrap(),
+        b"external rollback open-directory write\0bytes\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
 }
 
 #[tokio::test]
@@ -2630,7 +2833,7 @@ async fn rollback_classifies_filter_owned_files_before_removing_gitattributes() 
         "baseline data\n"
     );
     assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
-    assert_rollback_journal_empty(project.path());
+    assert_rollback_journal_retained(project.path());
     let _retained_run_commit = run_ref(project.path());
 }
 
@@ -2687,7 +2890,7 @@ async fn rollback_preserves_a_target_ref_replaced_by_a_candidate_resolving_symre
         "authorized baseline\n"
     );
     assert!(!project.path().join("run-owned.txt").exists());
-    assert_rollback_journal_empty(project.path());
+    assert_rollback_journal_retained(project.path());
 }
 
 #[tokio::test]
@@ -2771,7 +2974,7 @@ async fn directory_file_transitions_roll_back_ref_index_and_worktree_after_publi
             }
         }
         assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
-        assert_rollback_journal_empty(project.path());
+        assert_rollback_journal_retained(project.path());
         let _retained_run_commit = run_ref(project.path());
     }
 }
@@ -2834,6 +3037,11 @@ fn assert_rollback_journal_empty(project: &Path) {
         !rollback_root.exists() || std::fs::read_dir(rollback_root).unwrap().next().is_none(),
         "rollback material leaked"
     );
+}
+
+fn rollback_journal_for_run(project: &Path) -> PathBuf {
+    let commit = git_output(project, &["rev-parse", &run_ref(project)]);
+    project.join(".git/ait/integration-rollbacks").join(commit)
 }
 
 fn assert_rollback_journal_retained(project: &Path) {
