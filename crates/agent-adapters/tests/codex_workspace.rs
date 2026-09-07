@@ -155,6 +155,7 @@ enum TransactionInjection {
     UntrackedAfterWorktreeUpdate,
     SamePathAfterWorktreeUpdate,
     BranchSwitchAfterRefPublish,
+    TargetSymrefAfterRefPublish,
     RefConfirmationFailure,
     FailureAfterRefPublish,
     UntrackedBeforeIndexPublish,
@@ -166,40 +167,8 @@ struct TransactionInjectingGate {
     injection: TransactionInjection,
 }
 
-#[async_trait]
-impl WorkspaceIntegrationGate for TransactionInjectingGate {
-    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
-        Ok(())
-    }
-
-    async fn checkpoint(
-        &self,
-        checkpoint: WorkspaceIntegrationCheckpoint,
-    ) -> Result<(), ait_domain::DomainError> {
-        let matches = matches!(
-            (self.injection, checkpoint),
-            (
-                TransactionInjection::StagedBeforeIndexLock,
-                WorkspaceIntegrationCheckpoint::BeforeIndexLock
-            ) | (
-                TransactionInjection::UntrackedAfterWorktreeUpdate
-                    | TransactionInjection::SamePathAfterWorktreeUpdate,
-                WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate
-            ) | (
-                TransactionInjection::RefConfirmationFailure,
-                WorkspaceIntegrationCheckpoint::BeforeRefCommitConfirmation
-            ) | (
-                TransactionInjection::BranchSwitchAfterRefPublish
-                    | TransactionInjection::FailureAfterRefPublish,
-                WorkspaceIntegrationCheckpoint::AfterRefPublish
-            ) | (
-                TransactionInjection::UntrackedBeforeIndexPublish,
-                WorkspaceIntegrationCheckpoint::BeforeIndexPublish
-            )
-        );
-        if !matches {
-            return Ok(());
-        }
+impl TransactionInjectingGate {
+    fn inject(&self) -> Result<(), ait_domain::DomainError> {
         match self.injection {
             TransactionInjection::StagedBeforeIndexLock => {
                 std::fs::write(
@@ -249,6 +218,22 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
                 )
                 .unwrap();
             }
+            TransactionInjection::TargetSymrefAfterRefPublish => {
+                let target_ref = git_output(&self.project, &["symbolic-ref", "HEAD"]);
+                let candidate = head(&self.project);
+                assert_git_success(
+                    &self.project,
+                    &["update-ref", "refs/heads/injected-ref-target", &candidate],
+                );
+                assert_git_success(
+                    &self.project,
+                    &[
+                        "symbolic-ref",
+                        &target_ref,
+                        "refs/heads/injected-ref-target",
+                    ],
+                );
+            }
             TransactionInjection::RefConfirmationFailure => {
                 return Err(ait_domain::DomainError::transient(
                     ait_domain::ErrorCode::ProjectGitHeadUnavailable,
@@ -266,6 +251,45 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
     }
 }
 
+#[async_trait]
+impl WorkspaceIntegrationGate for TransactionInjectingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        let matches = matches!(
+            (self.injection, checkpoint),
+            (
+                TransactionInjection::StagedBeforeIndexLock,
+                WorkspaceIntegrationCheckpoint::BeforeIndexLock
+            ) | (
+                TransactionInjection::UntrackedAfterWorktreeUpdate
+                    | TransactionInjection::SamePathAfterWorktreeUpdate,
+                WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate
+            ) | (
+                TransactionInjection::RefConfirmationFailure,
+                WorkspaceIntegrationCheckpoint::BeforeRefCommitConfirmation
+            ) | (
+                TransactionInjection::BranchSwitchAfterRefPublish
+                    | TransactionInjection::TargetSymrefAfterRefPublish
+                    | TransactionInjection::FailureAfterRefPublish,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+            ) | (
+                TransactionInjection::UntrackedBeforeIndexPublish,
+                WorkspaceIntegrationCheckpoint::BeforeIndexPublish
+            )
+        );
+        if !matches {
+            return Ok(());
+        }
+        self.inject()
+    }
+}
+
 #[derive(Debug)]
 struct TransactionEditingAdapter;
 
@@ -279,6 +303,20 @@ enum DirectoryFileDirection {
 struct DirectoryFileEditingAdapter {
     direction: DirectoryFileDirection,
 }
+
+#[derive(Clone, Copy, Debug)]
+enum IgnoredCollisionKind {
+    TrackIgnoredFile,
+    ReplaceDirectory,
+}
+
+#[derive(Debug)]
+struct IgnoredCollisionAdapter {
+    kind: IgnoredCollisionKind,
+}
+
+#[derive(Debug)]
+struct AttributeEditingAdapter;
 
 #[async_trait]
 impl AgentAdapter for DirectoryFileEditingAdapter {
@@ -326,6 +364,86 @@ impl AgentAdapter for DirectoryFileEditingAdapter {
             }),
         ])))
     }
+}
+
+#[async_trait]
+impl AgentAdapter for IgnoredCollisionAdapter {
+    fn driver(&self) -> &'static str {
+        "ignored_collision_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        match self.kind {
+            IgnoredCollisionKind::TrackIgnoredFile => {
+                std::fs::remove_file(request.cwd.join(".gitignore")).unwrap();
+                std::fs::write(request.cwd.join("generated.txt"), "Run value\n").unwrap();
+            }
+            IgnoredCollisionKind::ReplaceDirectory => {
+                std::fs::remove_dir_all(request.cwd.join("shape")).unwrap();
+                std::fs::write(request.cwd.join("shape"), "Run file value\n").unwrap();
+            }
+        }
+        Ok(test_completion_stream(
+            "ignored-collision-final",
+            "Finished ignored collision edit.",
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for AttributeEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "attribute_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join(".gitattributes"), "data.txt ident\n").unwrap();
+        std::fs::write(request.cwd.join("data.txt"), "Run $Id$ value\n").unwrap();
+        Ok(test_completion_stream(
+            "attribute-final",
+            "Finished attribute-sensitive edit.",
+        ))
+    }
+}
+
+fn test_completion_stream(id: &str, text: &str) -> AgentStream {
+    Box::pin(tokio_stream::iter([
+        Ok(AgentEvent::ItemCompleted {
+            item: json!({
+                "type": "agentMessage",
+                "id": id,
+                "phase": "final_answer",
+                "text": text
+            }),
+        }),
+        Ok(AgentEvent::Completed {
+            turn_id: format!("{id}-turn"),
+            status: AgentRunStatus::Completed,
+            error: None,
+        }),
+    ]))
 }
 
 #[async_trait]
@@ -1438,8 +1556,220 @@ fn assert_transaction_rollback(
             );
             assert!(git_output(project, &["status", "--porcelain=v1"]).is_empty());
         }
+        TransactionInjection::TargetSymrefAfterRefPublish => {
+            unreachable!("the ref-identity injection has dedicated assertions")
+        }
     }
     let _retained_run_commit = run_ref(project);
+}
+
+#[tokio::test]
+async fn ignored_files_that_candidate_paths_would_replace_are_rejected_before_mutation() {
+    for kind in [
+        IgnoredCollisionKind::TrackIgnoredFile,
+        IgnoredCollisionKind::ReplaceDirectory,
+    ] {
+        let project = initialized_project();
+        match kind {
+            IgnoredCollisionKind::TrackIgnoredFile => {
+                std::fs::write(project.path().join(".gitignore"), "generated.txt\n").unwrap();
+                commit_all(project.path(), "ignore generated file");
+                std::fs::write(
+                    project.path().join("generated.txt"),
+                    b"external ignored value\0with bytes\n",
+                )
+                .unwrap();
+            }
+            IgnoredCollisionKind::ReplaceDirectory => {
+                std::fs::write(project.path().join(".gitignore"), "shape/ignored.bin\n").unwrap();
+                std::fs::create_dir(project.path().join("shape")).unwrap();
+                std::fs::write(
+                    project.path().join("shape/tracked.txt"),
+                    "baseline tracked child\n",
+                )
+                .unwrap();
+                commit_all(project.path(), "add ignored D/F fixture");
+                std::fs::write(
+                    project.path().join("shape/ignored.bin"),
+                    b"external ignored child\0with bytes\n",
+                )
+                .unwrap();
+            }
+        }
+        assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(IgnoredCollisionAdapter { kind }))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("ignored-collision-{kind:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Exercise an ignored filesystem collision".into(),
+                project_instructions: None,
+                commit_subject: "Exercise ignored collision rejection".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::ProjectGitDirty,
+            "kind: {kind:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        assert_eq!(
+            std::fs::read(project.path().join(".git/index")).unwrap(),
+            baseline_index_bytes
+        );
+        match kind {
+            IgnoredCollisionKind::TrackIgnoredFile => {
+                assert_eq!(
+                    std::fs::read(project.path().join("generated.txt")).unwrap(),
+                    b"external ignored value\0with bytes\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join(".gitignore")).unwrap(),
+                    "generated.txt\n"
+                );
+            }
+            IgnoredCollisionKind::ReplaceDirectory => {
+                assert_eq!(
+                    std::fs::read(project.path().join("shape/ignored.bin")).unwrap(),
+                    b"external ignored child\0with bytes\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+                    "baseline tracked child\n"
+                );
+            }
+        }
+        assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+        assert_rollback_journal_empty(project.path());
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn rollback_classifies_filter_owned_files_before_removing_gitattributes() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitattributes"), "data.txt -ident\n").unwrap();
+    std::fs::write(project.path().join("data.txt"), "baseline data\n").unwrap();
+    commit_all(project.path(), "add attribute rollback fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(AttributeEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "attribute-sensitive-rollback".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Change attributes and an affected file".into(),
+            project_instructions: None,
+            commit_subject: "Exercise attribute-sensitive rollback".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::FailureAfterRefPublish,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".gitattributes")).unwrap(),
+        "data.txt -ident\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("data.txt")).unwrap(),
+        "baseline data\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_preserves_a_target_ref_replaced_by_a_candidate_resolving_symref() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add ref identity fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "target-ref-symref-identity".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Exercise target ref identity preservation".into(),
+            project_instructions: None,
+            commit_subject: "Exercise target identity rollback".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::TargetSymrefAfterRefPublish,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::RunRecoveryFailed,
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        git_output(project.path(), &["symbolic-ref", &target_ref]),
+        "refs/heads/injected-ref-target"
+    );
+    let retained_run_ref = run_ref(project.path());
+    assert_eq!(
+        git_output(
+            project.path(),
+            &["rev-parse", "refs/heads/injected-ref-target"]
+        ),
+        git_output(project.path(), &["rev-parse", &retained_run_ref])
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_empty(project.path());
 }
 
 #[tokio::test]
@@ -1523,11 +1853,7 @@ async fn directory_file_transitions_roll_back_ref_index_and_worktree_after_publi
             }
         }
         assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
-        let rollback_root = project.path().join(".git/ait/integration-rollbacks");
-        assert!(
-            !rollback_root.exists() || std::fs::read_dir(rollback_root).unwrap().next().is_none(),
-            "rollback material leaked for {direction:?}"
-        );
+        assert_rollback_journal_empty(project.path());
         let _retained_run_commit = run_ref(project.path());
     }
 }
@@ -1569,10 +1895,7 @@ async fn detached_head_rollback_preserves_a_later_symbolic_head() {
         .await
         .unwrap_err();
 
-    assert_eq!(
-        failure.code,
-        ait_domain::ErrorCode::ProjectGitHeadUnavailable
-    );
+    assert_eq!(failure.code, ait_domain::ErrorCode::RunRecoveryFailed);
     assert_eq!(
         git_output(project.path(), &["symbolic-ref", "HEAD"]),
         "refs/heads/injected-after-publication"
@@ -1585,6 +1908,14 @@ async fn detached_head_rollback_preserves_a_later_symbolic_head() {
     );
     assert!(!project.path().join("run-owned.txt").exists());
     let _retained_run_commit = run_ref(project.path());
+}
+
+fn assert_rollback_journal_empty(project: &Path) {
+    let rollback_root = project.join(".git/ait/integration-rollbacks");
+    assert!(
+        !rollback_root.exists() || std::fs::read_dir(rollback_root).unwrap().next().is_none(),
+        "rollback material leaked"
+    );
 }
 
 #[cfg(unix)]
