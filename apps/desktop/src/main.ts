@@ -13,13 +13,14 @@ import {
 import { runFailure } from "./runs.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
+import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
-  "project.choose-directory", "project.create", "project.set-default-agent",
+  "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
 ]);
@@ -94,6 +95,27 @@ class DaemonClient {
         properties: ["openDirectory", "createDirectory"],
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
+    }
+    if (method === "project.open-file") {
+      const projectId = typeof params.projectId === "string" ? params.projectId : "";
+      const reference = typeof params.path === "string" ? params.path : "";
+      const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
+      const project = workspace.projects.find((candidate) => candidate.id === projectId);
+      if (!project) throw new Error("Project not found.");
+      const path = await resolveProjectPath(project.workdir, reference);
+      const line = positiveInteger(params.line);
+      const column = positiveInteger(params.column) ?? 1;
+      if (line) {
+        try {
+          await shell.openExternal(vscodeFileUrl(path, line, column));
+          return { positioned: true };
+        } catch {
+          // Fall through to the system's default application when VS Code is unavailable.
+        }
+      }
+      const failure = await shell.openPath(path);
+      if (failure) throw new Error(failure);
+      return { positioned: false };
     }
     if (method === "project.create") {
       const id = randomUUID();
@@ -267,6 +289,10 @@ class DaemonClient {
 function objectParams(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 const daemon = new DaemonClient();

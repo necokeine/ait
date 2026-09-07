@@ -577,6 +577,7 @@ impl LocalControlService {
         Ok(WorkspaceAgentResponse {
             assistant_text,
             commit_id: None,
+            operations: Vec::new(),
         })
     }
 }

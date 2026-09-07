@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { messageTextBlocks, renderMessage, renderMessageText, renderMessageTime } from "../src/message-renderer.js";
+import { messageTextBlocks, parseFileReference, renderMessage, renderMessageText, renderMessageTime } from "../src/message-renderer.js";
 import { projectMessage, type WorkspaceMessage } from "../src/messages.js";
 
 test("separates prose and multiple code fences while preserving code whitespace", () => {
@@ -34,6 +34,35 @@ test("treats prose, language labels and code as text, including HTML payloads", 
   assert.match(renderMessageText("```unknown-language\nhello\n```"), /unknown-language/);
 });
 
+test("renders safe Markdown tables, external links, and project file references", () => {
+  const html = renderMessageText([
+    "## Files",
+    "",
+    "| File | Purpose |",
+    "| :--- | ---: |",
+    "| [main](src/main.rs#L12C4) | **entry** |",
+    "",
+    "See `crates/domain/src/message.rs:42`, crates/agent_adapters/src/provider_gateway.rs:70, [main.rs (line 8)](src/main.rs), and [docs](https://example.com/docs).",
+  ].join("\n"));
+  assert.ok(html.includes("<table>"));
+  assert.ok(html.includes('class="align-right"'));
+  assert.ok(html.includes('data-file-path="src/main.rs"'));
+  assert.ok(html.includes('data-file-line="12"'));
+  assert.ok(html.includes('data-file-column="4"'));
+  assert.ok(html.includes('data-file-path="crates/domain/src/message.rs"'));
+  assert.ok(html.includes('data-file-path="crates/agent_adapters/src/provider_gateway.rs"'));
+  assert.ok(html.includes('title="Open src/main.rs at line 8"'));
+  assert.ok(html.includes('href="https://example.com/docs"'));
+  assert.ok(html.includes("<strong>entry</strong>"));
+  assert.deepEqual(parseFileReference("src/main.rs:12:4"), { path: "src/main.rs", line: 12, column: 4 });
+  assert.deepEqual(parseFileReference("C:\\project\\src\\main.rs:12"), { path: "C:\\project\\src\\main.rs", line: 12 });
+  assert.equal(parseFileReference("https://example.com/file.rs#L1"), undefined);
+  assert.equal(parseFileReference("#section"), undefined);
+  const unsafe = renderMessageText("[unsafe](javascript:alert(1)) https://example.com/file.rs");
+  assert.ok(!unsafe.includes("javascript:"));
+  assert.ok(!unsafe.includes('data-file-path="//example.com/file.rs"'));
+});
+
 const timestamp = Date.UTC(2026, 8, 7, 3, 7, 42);
 const input: WorkspaceMessage = {
   id: "message", project_id: "project", parent_message_id: null, role: "user", kind: "standard",
@@ -65,6 +94,34 @@ test("carries persisted times through projection for every role and tool result"
   const tool = projectMessage({ ...input, role: "assistant", text: null, data: { tool_use: { tool_name: "read", arguments: {} } } }, "agent");
   assert.equal(tool.parts[0]?.type, "tool_use");
   assert.ok(renderMessage(tool, []).includes(`datetime="${new Date(timestamp).toISOString()}"`));
+});
+
+test("projects and renders persisted Codex operation records with expandable detail", () => {
+  const message = projectMessage({
+    ...input,
+    role: "assistant",
+    text: "Done.",
+    data: {
+      codex: {
+        operations: [{
+          id: "operation-1",
+          kind: "read",
+          status: "completed",
+          title: "Read file",
+          detail: "$ sed -n '1,20p' src/main.rs\nfn main() {}",
+          paths: ["src/main.rs"],
+        }],
+      },
+    },
+  }, "agent");
+  assert.equal(message.parts.length, 2);
+  assert.equal(message.parts[1]?.type, "operation");
+  const html = renderMessage(message, []);
+  assert.ok(html.includes('class="operation-record"'));
+  assert.ok(html.includes("<summary>"));
+  assert.ok(html.includes("Read file"));
+  assert.ok(html.includes('data-file-path="src/main.rs"'));
+  assert.ok(html.includes("fn main() {}"));
 });
 
 test("does not invent dates for missing or invalid historical timestamps", () => {

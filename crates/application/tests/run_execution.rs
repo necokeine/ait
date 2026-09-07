@@ -104,6 +104,7 @@ impl WorkspaceAgent for RecordingAgent {
         Ok(WorkspaceAgentResponse {
             assistant_text: "fixture output".into(),
             commit_id: None,
+            operations: Vec::new(),
         })
     }
 }

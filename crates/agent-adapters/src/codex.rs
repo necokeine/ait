@@ -11,7 +11,7 @@ use std::{
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -181,6 +181,8 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         let mut assistant_text = String::new();
         let mut completed_text = None;
         let mut completed = false;
+        let mut operations = Vec::new();
+        let mut operation_chars: usize = 0;
         while let Some(event) = stream.next().await {
             match event.map_err(adapter_domain_error)? {
                 AgentEvent::MessageDelta { delta, .. } => assistant_text.push_str(&delta),
@@ -188,6 +190,14 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
                     if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
                         completed_text =
                             item.get("text").and_then(Value::as_str).map(str::to_owned);
+                    } else if operations.len() < MAX_OPERATION_COUNT
+                        && let Some(operation) = codex_operation(&item)
+                    {
+                        let size = operation_char_count(&operation);
+                        if operation_chars.saturating_add(size) <= MAX_OPERATION_TOTAL_CHARS {
+                            operation_chars += size;
+                            operations.push(operation);
+                        }
                     }
                 }
                 AgentEvent::Completed { status, error, .. } => {
@@ -228,8 +238,289 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         Ok(WorkspaceAgentResponse {
             assistant_text,
             commit_id,
+            operations,
         })
     }
+}
+
+const MAX_OPERATION_COUNT: usize = 200;
+const MAX_OPERATION_SUMMARY_CHARS: usize = 1_000;
+const MAX_OPERATION_DETAIL_CHARS: usize = 20_000;
+const MAX_OPERATION_PATHS: usize = 32;
+const MAX_OPERATION_TOTAL_CHARS: usize = 256_000;
+
+fn codex_operation(item: &Value) -> Option<WorkspaceOperation> {
+    let kind = item.get("type")?.as_str()?;
+    if matches!(
+        kind,
+        "agentMessage" | "userMessage" | "hookPrompt" | "plan" | "reasoning" | "functionCallOutput"
+    ) {
+        return None;
+    }
+    let id = bounded_string(
+        item.get("id").and_then(Value::as_str).unwrap_or(kind),
+        MAX_OPERATION_SUMMARY_CHARS,
+    );
+    let status = bounded_string(
+        item.get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("completed"),
+        64,
+    );
+    match kind {
+        "commandExecution" => Some(command_operation(item, id, status)),
+        "fileChange" => Some(file_change_operation(item, id, status)),
+        "mcpToolCall" => Some(tool_operation(item, id, status, false)),
+        "dynamicToolCall" => Some(tool_operation(item, id, status, true)),
+        "webSearch" => Some(WorkspaceOperation {
+            id,
+            kind: "web_search".into(),
+            status,
+            title: "Searched the web".into(),
+            summary: bounded_value(item.get("query"), MAX_OPERATION_SUMMARY_CHARS),
+            detail: bounded_json(item.get("results"), MAX_OPERATION_DETAIL_CHARS),
+            paths: Vec::new(),
+        }),
+        "imageView" => {
+            let paths = operation_paths(
+                [item.get("path").and_then(Value::as_str)]
+                    .into_iter()
+                    .flatten(),
+            );
+            Some(WorkspaceOperation {
+                id,
+                kind: "image_view".into(),
+                status,
+                title: "Viewed image".into(),
+                summary: None,
+                detail: None,
+                paths,
+            })
+        }
+        _ => Some(WorkspaceOperation {
+            id,
+            kind: snake_case(kind),
+            status,
+            title: humanize_kind(kind),
+            summary: None,
+            detail: bounded_json(Some(item), MAX_OPERATION_DETAIL_CHARS),
+            paths: Vec::new(),
+        }),
+    }
+}
+
+fn command_operation(item: &Value, id: String, status: String) -> WorkspaceOperation {
+    let actions = item
+        .get("commandActions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let first = actions.first();
+    let action_kind = first
+        .and_then(|action| action.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let (kind, title, summary) = match action_kind {
+        "read" => (
+            "read",
+            "Read file",
+            first.and_then(|action| action.get("name")),
+        ),
+        "listFiles" => ("list_files", "Listed files", None),
+        "search" => (
+            "search",
+            "Searched files",
+            first.and_then(|action| action.get("query")),
+        ),
+        _ => ("command", "Ran command", item.get("command")),
+    };
+    let mut paths = operation_paths(actions.iter().filter_map(|action| {
+        action
+            .get("path")
+            .and_then(Value::as_str)
+            .or_else(|| action.get("cwd").and_then(Value::as_str))
+    }));
+    if paths.is_empty() && matches!(action_kind, "listFiles" | "search") {
+        paths = operation_paths(item.get("cwd").and_then(Value::as_str));
+    }
+    let command = item.get("command").and_then(Value::as_str);
+    let output = item.get("aggregatedOutput").and_then(Value::as_str);
+    let detail = match (command, output) {
+        (Some(command), Some(output)) if !output.is_empty() => Some(bounded_string(
+            &format!("$ {command}\n{output}"),
+            MAX_OPERATION_DETAIL_CHARS,
+        )),
+        (Some(command), _) if action_kind != "unknown" => Some(bounded_string(
+            &format!("$ {command}"),
+            MAX_OPERATION_DETAIL_CHARS,
+        )),
+        _ => output.map(|value| bounded_string(value, MAX_OPERATION_DETAIL_CHARS)),
+    };
+    WorkspaceOperation {
+        id,
+        kind: kind.into(),
+        status,
+        title: title.into(),
+        summary: bounded_value(summary, MAX_OPERATION_SUMMARY_CHARS),
+        detail,
+        paths,
+    }
+}
+
+fn file_change_operation(item: &Value, id: String, status: String) -> WorkspaceOperation {
+    let changes = item
+        .get("changes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let paths = operation_paths(
+        changes
+            .iter()
+            .filter_map(|change| change.get("path").and_then(Value::as_str)),
+    );
+    let detail = changes
+        .iter()
+        .filter_map(|change| {
+            let path = change.get("path").and_then(Value::as_str)?;
+            let diff = change
+                .get("diff")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some(if diff.is_empty() {
+                path.to_owned()
+            } else {
+                format!("{path}\n{diff}")
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    WorkspaceOperation {
+        id,
+        kind: "file_change".into(),
+        status,
+        title: "Changed files".into(),
+        summary: Some(format!(
+            "{} {}",
+            changes.len(),
+            if changes.len() == 1 { "file" } else { "files" }
+        )),
+        detail: (!detail.is_empty()).then(|| bounded_string(&detail, MAX_OPERATION_DETAIL_CHARS)),
+        paths,
+    }
+}
+
+fn tool_operation(item: &Value, id: String, status: String, dynamic: bool) -> WorkspaceOperation {
+    let server = item.get("server").and_then(Value::as_str);
+    let tool = item.get("tool").and_then(Value::as_str).unwrap_or("tool");
+    let title = server.map_or_else(
+        || format!("Called {tool}"),
+        |server| format!("Called {server} · {tool}"),
+    );
+    let result = if dynamic {
+        item.get("contentItems")
+    } else {
+        item.get("error")
+            .filter(|value| !value.is_null())
+            .or_else(|| item.get("result"))
+    };
+    WorkspaceOperation {
+        id,
+        kind: if dynamic {
+            "dynamic_tool_call".into()
+        } else {
+            "mcp_tool_call".into()
+        },
+        status,
+        title: bounded_string(&title, MAX_OPERATION_SUMMARY_CHARS),
+        summary: bounded_json(item.get("arguments"), MAX_OPERATION_SUMMARY_CHARS),
+        detail: bounded_json(result, MAX_OPERATION_DETAIL_CHARS),
+        paths: Vec::new(),
+    }
+}
+
+fn operation_paths<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut result = Vec::new();
+    for path in paths {
+        let path = path.trim();
+        if path.is_empty() || result.iter().any(|existing| existing == path) {
+            continue;
+        }
+        result.push(bounded_string(path, 4_096));
+        if result.len() == MAX_OPERATION_PATHS {
+            break;
+        }
+    }
+    result
+}
+
+fn operation_char_count(operation: &WorkspaceOperation) -> usize {
+    operation.id.chars().count()
+        + operation.kind.chars().count()
+        + operation.status.chars().count()
+        + operation.title.chars().count()
+        + operation
+            .summary
+            .as_deref()
+            .map_or(0, |value| value.chars().count())
+        + operation
+            .detail
+            .as_deref()
+            .map_or(0, |value| value.chars().count())
+        + operation
+            .paths
+            .iter()
+            .map(|path| path.chars().count())
+            .sum::<usize>()
+}
+
+fn bounded_value(value: Option<&Value>, limit: usize) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(|value| bounded_string(value, limit))
+}
+
+fn bounded_json(value: Option<&Value>, limit: usize) -> Option<String> {
+    let value = value?;
+    if value.is_null() {
+        return None;
+    }
+    Some(bounded_string(&value.to_string(), limit))
+}
+
+fn bounded_string(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let mut result = value.chars().take(limit).collect::<String>();
+    result.push_str("\n… truncated");
+    result
+}
+
+fn snake_case(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    for (index, character) in value.chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
+fn humanize_kind(value: &str) -> String {
+    let words = snake_case(value).replace('_', " ");
+    let mut characters = words.chars();
+    characters.next().map_or_else(String::new, |first| {
+        format!(
+            "{}{}",
+            first.to_ascii_uppercase(),
+            characters.collect::<String>()
+        )
+    })
 }
 
 /// Small read-only Codex turn used to generate searchable Session metadata.
