@@ -10,54 +10,22 @@ use super::{
 use ait_contracts::ProviderSecret;
 
 pub(super) fn builtin_providers() -> Vec<AgentProviderView> {
-    [
-        AgentMode::Codex,
-        AgentMode::Tool,
-        AgentMode::Manual,
-        AgentMode::ProviderFailure,
-        AgentMode::ApprovalRequired,
-    ]
-    .into_iter()
-    .map(|kind| {
-        let key = serde_json::to_value(kind)
-            .expect("provider kind")
-            .as_str()
-            .expect("string")
-            .to_owned();
-        let models = if kind == AgentMode::Codex {
-            ["gpt-5.6-sol"]
-                .into_iter()
-                .map(|id| ProviderModel {
-                    id: id.into(),
-                    name: id.into(),
-                    reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
-                        .map(str::to_owned)
-                        .to_vec(),
-                })
-                .collect()
-        } else {
-            vec![ProviderModel {
-                id: "default".into(),
-                name: "Default".into(),
-                reasoning_efforts: Vec::new(),
-            }]
-        };
-        AgentProviderView {
-            provider: AgentProvider {
-                id: format!("builtin-{key}"),
-                name: if kind == AgentMode::Codex {
-                    "Codex".into()
-                } else {
-                    key
-                },
-                kind,
-                url: None,
-                models,
-            },
-            has_secret: false,
-        }
-    })
-    .collect()
+    vec![AgentProviderView {
+        provider: AgentProvider {
+            id: "builtin-codex".into(),
+            name: "Codex".into(),
+            kind: AgentMode::Codex,
+            url: None,
+            models: vec![ProviderModel {
+                id: "gpt-5.6-sol".into(),
+                name: "gpt-5.6-sol".into(),
+                reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            }],
+        },
+        has_secret: false,
+    }]
 }
 
 fn invalid(message: &str) -> ApiError {
@@ -131,13 +99,6 @@ fn validate_model(provider: &AgentProvider, config: &AgentConfiguration) -> Resu
         ));
     }
     Ok(())
-}
-
-pub(super) fn provider_kind(
-    state: &State,
-    config: &AgentConfiguration,
-) -> Result<AgentMode, ApiError> {
-    Ok(validate_config(state, config)?.kind)
 }
 
 pub(super) fn require_named_agent<'a>(

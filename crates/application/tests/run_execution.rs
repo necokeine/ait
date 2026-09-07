@@ -9,7 +9,7 @@ use std::{
 };
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentMode, Command, CommandResult, ProjectView, RunView};
+use ait_contracts::{Command, CommandResult, ProjectView, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, PendingEvent, WorkspaceAgent,
@@ -17,7 +17,7 @@ use ait_ports::{
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tempfile::TempDir;
 
 struct ConflictingStore {
@@ -138,7 +138,7 @@ fn send_message() -> Command {
 }
 
 impl Fixture {
-    async fn new(mode: AgentMode) -> Self {
+    async fn new() -> Self {
         let temporary = TempDir::new().unwrap();
         let project_dir = temporary.path().join("project");
         std::fs::create_dir(&project_dir).unwrap();
@@ -171,7 +171,7 @@ impl Fixture {
             Command::RegisterAgent {
                 id: "agent".into(),
                 name: "Agent".into(),
-                config: config(mode),
+                config: config(),
             },
         )
         .await;
@@ -211,7 +211,7 @@ impl Fixture {
 #[tokio::test]
 async fn run_commands_return_persisted_terminal_results_and_do_not_repeat_external_calls_on_conflict()
  {
-    let fixture = Fixture::new(AgentMode::Codex).await;
+    let fixture = Fixture::new().await;
     for (index, input) in [
         send_message(),
         Command::ForkSession {
@@ -275,7 +275,7 @@ async fn run_commands_return_persisted_terminal_results_and_do_not_repeat_extern
 
 #[tokio::test]
 async fn provider_failure_is_returned_as_a_persisted_failed_run() {
-    let fixture = Fixture::new(AgentMode::Codex).await;
+    let fixture = Fixture::new().await;
     fixture.agent.fail.store(true, Ordering::Relaxed);
     *fixture.store.checkpoints.lock().unwrap() = VecDeque::from(["failed"]);
     let result = run(&fixture.service, send_message()).await;
@@ -301,7 +301,7 @@ async fn provider_failure_is_returned_as_a_persisted_failed_run() {
 
 #[tokio::test]
 async fn failed_creation_commit_never_invokes_the_agent() {
-    let fixture = Fixture::new(AgentMode::Codex).await;
+    let fixture = Fixture::new().await;
     fixture.store.reject_runs.store(true, Ordering::Relaxed);
     let response = fixture.service.execute(send_message()).await;
     assert_eq!(response.error.unwrap().code, ErrorCode::RunQueueConflict);
@@ -314,32 +314,27 @@ async fn failed_creation_commit_never_invokes_the_agent() {
 
 #[tokio::test]
 async fn queued_run_queries_and_duplicate_cron_triggers_never_start_execution() {
-    let fixture = Fixture::new(AgentMode::Manual).await;
-    let mut manual = run(&fixture.service, send_message()).await;
+    let fixture = Fixture::new().await;
+    *fixture.store.checkpoints.lock().unwrap() =
+        VecDeque::from(["running", "running", "running", "running"]);
+    let response = fixture.service.execute(send_message()).await;
+    assert_eq!(response.error.unwrap().code, ErrorCode::RunQueueConflict);
+    let snapshot = fixture.store.load().await.unwrap();
+    let interactive: RunView = serde_json::from_value(snapshot.value["runs"][0].clone()).unwrap();
+    assert_eq!(interactive.status, "queued");
     let trigger = Command::TriggerCron {
         cron_id: "cron".into(),
         scheduled_at: 42,
     };
-    let mut cron = run(&fixture.service, trigger.clone()).await;
-    // Seed queued Codex checkpoints, as if execution had stopped after creation.
-    let mut snapshot = fixture.store.load().await.unwrap();
-    let configuration = config(AgentMode::Codex);
-    let provider = snapshot.value["providers"][0].clone();
-    let mut provider = provider.as_object().unwrap().clone();
-    provider.remove("has_secret");
-    manual.config = configuration.clone();
-    cron.config = configuration.clone();
-    manual.provider = serde_json::from_value(json!(provider)).unwrap();
-    cron.provider = manual.provider.clone();
-    snapshot.value["agents"][0]["config"] = json!(configuration);
-    snapshot.value["runs"] = json!([manual, cron]);
-    fixture
-        .store
-        .commit(snapshot.revision, snapshot.value, vec![])
-        .await
-        .unwrap();
+    *fixture.store.checkpoints.lock().unwrap() =
+        VecDeque::from(["running", "running", "running", "running"]);
+    let response = fixture.service.execute(trigger.clone()).await;
+    assert_eq!(response.error.unwrap().code, ErrorCode::RunQueueConflict);
+    let snapshot = fixture.store.load().await.unwrap();
+    let cron: RunView = serde_json::from_value(snapshot.value["runs"][1].clone()).unwrap();
+    assert_eq!(cron.status, "queued");
     let before = fixture.store.load().await.unwrap();
-    for queued in [&manual, &cron] {
+    for queued in [&interactive, &cron] {
         let result = run(
             &fixture.service,
             Command::GetRun {
@@ -354,50 +349,21 @@ async fn queued_run_queries_and_duplicate_cron_triggers_never_start_execution() 
     assert_eq!(run(&fixture.service, trigger).await, cron);
     assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 0);
     assert_eq!(fixture.store.load().await.unwrap().value, before.value);
-}
-
-#[tokio::test]
-async fn manual_and_approval_modes_remain_queryable_and_cancellable() {
-    for (mode, status) in [
-        (AgentMode::Manual, "queued"),
-        (AgentMode::ApprovalRequired, "waiting_approval"),
-    ] {
-        let fixture = Fixture::new(mode).await;
-        let pending = run(&fixture.service, send_message()).await;
-        assert_eq!(pending.status, status);
-        assert_eq!(
-            run(
-                &fixture.service,
-                Command::GetRun {
-                    run_id: pending.id.clone()
-                }
-            )
-            .await,
-            pending
-        );
-        let cancelled = run(&fixture.service, Command::CancelRun { run_id: pending.id }).await;
-        assert_eq!(cancelled.status, "cancelled");
-        assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 0);
-        assert!(
-            fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null()
-        );
-    }
-}
-
-fn config(mode: AgentMode) -> ait_contracts::AgentConfiguration {
-    let key = serde_json::to_value(mode).unwrap();
-    ait_contracts::AgentConfiguration {
-        provider_id: format!("builtin-{}", key.as_str().unwrap()),
-        model: if mode == AgentMode::Codex {
-            "gpt-5.6-sol"
-        } else {
-            "default"
-        }
-        .into(),
-        reasoning_effort: if mode == AgentMode::Codex {
-            Some("high".into())
-        } else {
-            None
+    let cancelled = run(
+        &fixture.service,
+        Command::CancelRun {
+            run_id: interactive.id,
         },
+    )
+    .await;
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
+}
+
+fn config() -> ait_contracts::AgentConfiguration {
+    ait_contracts::AgentConfiguration {
+        provider_id: "builtin-codex".into(),
+        model: "gpt-5.6-sol".into(),
+        reasoning_effort: Some("high".into()),
     }
 }

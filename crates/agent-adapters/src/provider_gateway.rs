@@ -42,7 +42,7 @@ fn client_with_secret(provider: &AgentProvider, secret: String) -> Result<LLMCli
     let kind = match provider.kind {
         ProviderKind::OpenAI => LLMProvider::OpenAI,
         ProviderKind::DeepSeek => LLMProvider::DeepSeek,
-        _ => {
+        ProviderKind::Codex => {
             return Err(DomainError::invariant(
                 ErrorCode::InvalidConfiguration,
                 "provider does not expose an LLM API",

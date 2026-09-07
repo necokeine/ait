@@ -12,10 +12,6 @@ pub enum ProviderKind {
     OpenAI,
     #[serde(rename = "deepseek")]
     DeepSeek,
-    Tool,
-    Manual,
-    ProviderFailure,
-    ApprovalRequired,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

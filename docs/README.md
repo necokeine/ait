@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-203/adr-001-remove-test-provider-identities.md`：移除 Tool、Manual、ProviderFailure 与 ApprovalRequired 的生产 Provider 身份，保留 seam 测试与旧快照引用保护。
+
 - `decisions/NEC-201/adr-001-codex-provider-model-discovery.md`：Codex Provider 通过 app-server `model/list` 动态发现 picker 可见模型及逐模型推理等级。
 
 - `decisions/NEC-198/adr-001-codex-operation-and-message-rendering.md`：Codex 原生操作的有界展示投影、安全 Markdown 表格与受 Project 根约束的文件/行号跳转。

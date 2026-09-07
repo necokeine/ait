@@ -15,7 +15,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 [dev-dependencies]
 ait-api-http = { path = "../../crates/api-http" }
 ait-application = { path = "../../crates/application" }
+ait-domain = { path = "../../crates/domain" }
+ait-ports = { path = "../../crates/ports" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
+async-trait = "0.1"
 axum = "0.8"
 tempfile = "3"
 tokio = { version = "1", features = ["net", "process", "sync", "time"] }

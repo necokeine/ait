@@ -1,5 +1,8 @@
 ## NEC-152 本地 API/CLI 纵向切片
 
+> NEC-203 已移除本切片最初使用的 Tool、Manual、ProviderFailure 与 ApprovalRequired
+> built-in Provider；确定性验收改为从测试端口注入，生产目录只保留真实执行适配器。
+
 该切片把 Project、Agent、Session、Message、Run 和 Cron 的可执行路径接到同一个
 `LocalControlService`。HTTP 与 CLI 只是传输适配器，不各自实现领域规则。
 
@@ -14,7 +17,7 @@ CLI 的 `command` 子命令接受版本一的 JSON command。例如注册 Agent�
 
 ```bash
 cargo run -p ait-cli -- command \
-  '{"type":"register_agent","id":"agent-1","name":"Demo","model":"deterministic-v1","mode":"tool"}'
+  '{"type":"register_agent","id":"agent-1","name":"Demo","config":{"provider_id":"builtin-codex","model":"gpt-5.6-sol","reasoning_effort":"high"}}'
 ```
 
 完整命令集合由 `ait-contracts::Command` 定义，包括：
@@ -27,9 +30,9 @@ cargo run -p ait-cli -- command \
 - `export_project`、`import_project`：版本化导出/原子导入无凭证 Project archive；
 - `snapshot`：从 SQLite 恢复完整最终投影。
 
-`AgentMode::Tool` 是不依赖凭据的验收驱动：它按顺序持久化 assistant ToolUse、user
-ToolResult 和最终 assistant Message。`Manual` 留下可取消 Run；`ProviderFailure` 与
-`ApprovalRequired` 用于稳定错误路径。
+生产命令不再通过 Provider kind 构造工具、排队、失败或审批状态。ToolUse/ToolResult 与审批恢复由
+runtime 的 scripted ports 覆盖；Provider 失败、queued checkpoint 与取消由 application 测试向
+executor/store seam 注入。HTTP/CLI 测试同样注入确定性 `WorkspaceAgent`，不会把 fake 注册进目录。
 
 ### API 与事件恢复
 
@@ -44,12 +47,13 @@ ToolResult 和最终 assistant Message。`Manual` 留下可取消 Run；`Provide
 
 ### 稳定错误
 
-切片明确覆盖 `INVALID_AGENT_CONFIGURATION`、`PROVIDER_FAILED`、
-`TOOL_APPROVAL_REQUIRED`、`SESSION_POINTER_CONFLICT`、`RUN_CANCELLED`，以及终态取消时的
-`RUN_ALREADY_TERMINAL`。错误通过 API、CLI 与 durable Run 投影保持同一 wire code。
+切片明确覆盖 `INVALID_AGENT_CONFIGURATION`、真实执行器返回的 `PROVIDER_FAILED`、
+`SESSION_POINTER_CONFLICT`、`RUN_CANCELLED`，以及终态取消时的 `RUN_ALREADY_TERMINAL`。
+`TOOL_APPROVAL_REQUIRED` 由 runtime 的真实审批状态机覆盖。错误通过 API、CLI 与 durable Run
+投影保持同一 wire code。
 
 ### 验收测试
 
-`crates/application/tests/control_plane.rs` 演示 tool Session、从 root 切分支、Cron Run、
+`crates/application/tests/control_plane.rs` 演示注入 executor 的 Codex Session、从 root 切分支、Cron Run、
 cursor 分页重连与关闭/重开 SQLite 后恢复；`crates/api-http/tests/http.rs` 验证各实体操作
 路由和 SSE 使用同一 application service。
