@@ -344,55 +344,59 @@ async fn failed_creation_commit_never_invokes_the_agent() {
 }
 
 #[tokio::test]
-async fn queued_run_queries_and_duplicate_cron_triggers_never_start_execution() {
+async fn post_admission_failures_queries_and_duplicate_cron_triggers_never_start_execution() {
     let fixture = Fixture::new().await;
     *fixture.store.checkpoints.lock().unwrap() =
         VecDeque::from(["running", "running", "running", "running"]);
-    let response = fixture.service.execute(send_message()).await;
-    assert_eq!(response.error.unwrap().code, ErrorCode::RunQueueConflict);
-    let snapshot = fixture.store.load().await.unwrap();
-    let interactive: RunView = serde_json::from_value(snapshot.value["runs"][0].clone()).unwrap();
-    assert_eq!(interactive.status, "queued");
+    let interactive = run(&fixture.service, send_message()).await;
+    assert_eq!(interactive.status, "failed");
+    assert_eq!(
+        interactive.error.as_ref().unwrap().code,
+        ErrorCode::RunQueueConflict
+    );
     let trigger = Command::TriggerCron {
         cron_id: "cron".into(),
         scheduled_at: 42,
     };
     *fixture.store.checkpoints.lock().unwrap() =
         VecDeque::from(["running", "running", "running", "running"]);
-    let response = fixture.service.execute(trigger.clone()).await;
-    assert_eq!(response.error.unwrap().code, ErrorCode::RunQueueConflict);
-    let snapshot = fixture.store.load().await.unwrap();
-    let cron: RunView = serde_json::from_value(snapshot.value["runs"][1].clone()).unwrap();
-    assert_eq!(cron.status, "queued");
+    let cron = run(&fixture.service, trigger.clone()).await;
+    assert_eq!(cron.status, "failed");
+    assert_eq!(
+        cron.error.as_ref().unwrap().code,
+        ErrorCode::RunQueueConflict
+    );
     let before = fixture.store.load().await.unwrap();
-    for queued in [&interactive, &cron] {
+    for terminal in [&interactive, &cron] {
         let result = run(
             &fixture.service,
             Command::GetRun {
-                run_id: queued.id.clone(),
+                run_id: terminal.id.clone(),
             },
         )
         .await;
-        assert_eq!(&result, queued);
+        assert_eq!(&result, terminal);
     }
     let after = fixture.store.load().await.unwrap();
     assert_eq!(before, after);
     assert_eq!(run(&fixture.service, trigger).await, cron);
     assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 0);
     assert_eq!(fixture.store.load().await.unwrap().value, before.value);
-    let cancelled = run(
-        &fixture.service,
-        Command::CancelRun {
+    let cancellation = fixture
+        .service
+        .execute(Command::CancelRun {
             run_id: interactive.id,
-        },
-    )
-    .await;
-    assert_eq!(cancelled.status, "cancelled");
+        })
+        .await;
+    assert_eq!(
+        cancellation.error.unwrap().code,
+        ErrorCode::RunAlreadyTerminal
+    );
     assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
-    assert_eq!(fixture.service.mark_interrupted_runs().await.unwrap(), 1);
+    assert_eq!(fixture.service.mark_interrupted_runs().await.unwrap(), 0);
     let recovered = run(&fixture.service, Command::GetRun { run_id: cron.id }).await;
     assert_eq!(recovered.status, "failed");
-    assert_eq!(recovered.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+    assert_eq!(recovered.error.unwrap().code, ErrorCode::RunQueueConflict);
 }
 
 fn config() -> ait_contracts::AgentConfiguration {

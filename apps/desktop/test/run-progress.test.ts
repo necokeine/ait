@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { renderRunProgress, renderRunTerminal } from "../src/message-renderer.js";
-import { applyProgressEvent, progressFromCheckpoint } from "../src/run-progress.js";
+import {
+  applyProgressEvent,
+  isTerminalRunEvent,
+  progressFromCheckpoint,
+  terminalRunForSession,
+} from "../src/run-progress.js";
+import type { DesktopSnapshot } from "../src/types.js";
 
 const base = {
   version: 1,
@@ -93,4 +99,40 @@ test("renders failure and cancellation as terminal states rather than connection
   assert.ok(!failed.includes("Connection interrupted"));
   const cancelled = renderRunTerminal("cancelled", undefined, "Codex");
   assert.ok(cancelled.includes("Run cancelled"));
+});
+
+test("a cancellation event refreshes an active snapshot into its cancelled terminal card", () => {
+  const session = {
+    id: "session-a", projectId: "project-a", name: "", title: "Session", description: "",
+    titleGenerationStarted: false, currentMessageId: "message-a", agentId: "agent-a", version: 1,
+    active: true, activeRunId: "run-a", updatedAt: 0,
+  };
+  const active: Pick<DesktopSnapshot, "sessions" | "runs"> = {
+    sessions: [session],
+    runs: [{
+      id: "run-a", sessionId: "session-a", baseMessageId: "message-a",
+      lastMessageId: null, status: "running",
+    }],
+  };
+  const cancelledEvent = {
+    api_version: 1, cursor: 12, kind: "run.updated", entity_id: "run-a", created_at: 1,
+    body: { id: "run-a", status: "cancelled" },
+  };
+
+  assert.equal(terminalRunForSession(active, "session-a"), undefined);
+  assert.equal(isTerminalRunEvent(cancelledEvent), true);
+
+  const authoritative: Pick<DesktopSnapshot, "sessions" | "runs"> = {
+    sessions: [{ ...session, active: false, activeRunId: null, version: 2 }],
+    runs: [{
+      id: "run-a", sessionId: "session-a", baseMessageId: "message-a",
+      lastMessageId: null, status: "cancelled", error: { message: "run was cancelled" },
+    }],
+  };
+  const terminal = terminalRunForSession(authoritative, "session-a");
+  assert.equal(authoritative.sessions[0]?.activeRunId, null);
+  assert.equal(terminal?.status, "cancelled");
+  assert.ok(renderRunTerminal(terminal!.status, terminal!.error?.message, "Codex").includes("Run cancelled"));
+
+  assert.equal(isTerminalRunEvent({ ...cancelledEvent, kind: "run.cancelled" }), true);
 });

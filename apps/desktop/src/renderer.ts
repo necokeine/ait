@@ -1,7 +1,7 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
 import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgress, renderRunTerminal } from "./message-renderer.js";
-import { applyProgressEvent } from "./run-progress.js";
+import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
@@ -349,10 +349,8 @@ function renderConversation(): void {
   const live = session.activeRunId
     ? renderRunProgress(progress, agent ? agentDisplayName(agent) : "Assistant", streamConnected)
     : "";
-  const latestRun = snapshot.runs.findLast((run) => run.sessionId === session.id);
-  const terminal = !session.activeRunId && latestRun
-    && ["failed", "cancelled", "limit_exceeded"].includes(latestRun.status)
-    && latestRun.lastMessageId === null
+  const latestRun = terminalRunForSession(snapshot, session.id);
+  const terminal = latestRun
     ? renderRunTerminal(
       latestRun.status,
       latestRun.error?.message,
@@ -424,7 +422,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       renderCurrent ||= currentSession()?.activeRunId === runId;
       continue;
     }
-    if (event.kind === "run.updated") {
+    if (event.kind === "run.updated" || event.kind === "run.cancelled") {
       const run = event.body as Record<string, unknown>;
       const runId = typeof run.id === "string" ? run.id : undefined;
       const status = typeof run.status === "string" ? run.status : undefined;
@@ -433,7 +431,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
         if (progress) progress.status = "settling";
         renderCurrent ||= currentSession()?.activeRunId === runId;
       }
-      if (["completed", "failed", "cancelled", "limit_exceeded"].includes(status ?? "")) {
+      if (isTerminalRunEvent(event)) {
         refresh = true;
       }
       continue;

@@ -569,7 +569,10 @@ impl LocalControlService {
             result
         };
         if result.is_ok() {
-            let _ = self.set_run_settling(&run.id).await?;
+            // Settling is an informational state for the live UI. Once the
+            // workspace result exists, failure to expose that intermediate
+            // state must not bypass the reliable terminal persistence path.
+            let _ = self.set_run_settling(&run.id).await;
         }
         self.finish_workspace_run(&run.id, result).await
     }
@@ -655,7 +658,15 @@ impl LocalControlService {
                 .await
         });
         let result = match task.await {
-            Ok(result) => result,
+            Ok(Ok(run)) => Ok(run),
+            Ok(Err(failure)) => {
+                // Admission already made this Run visible to an asynchronous
+                // caller. Every later error therefore belongs to the Run and
+                // must be persisted before its Session and workspace leases
+                // are released.
+                self.finish_workspace_run(&run_id, Err(api_domain_error(failure)))
+                    .await
+            }
             Err(failure) => {
                 self.finish_workspace_run(
                     &run_id,
@@ -1933,7 +1944,10 @@ fn cancel_run(
     state.runs[index] = run.clone();
     Ok((
         CommandResult::Run(run.clone()),
-        vec![pending("run.cancelled", Some(run.id.clone()), &run)],
+        // Terminal Run transitions share one event contract so every client
+        // schedules an authoritative snapshot refresh. Renderers still accept
+        // legacy run.cancelled events retained in older outboxes.
+        vec![pending("run.updated", Some(run.id.clone()), &run)],
     ))
 }
 
