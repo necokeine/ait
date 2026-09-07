@@ -663,13 +663,13 @@ fn remove_unused_retired_builtins(value: &mut Value) {
     }
 }
 
-pub(super) struct InvocationGuard<'a> {
-    cancellations: &'a Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+pub(super) struct InvocationGuard {
+    cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     id: String,
 }
-impl<'a> InvocationGuard<'a> {
+impl InvocationGuard {
     pub(super) fn new(
-        cancellations: &'a Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+        cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
         id: &str,
         token: tokio_util::sync::CancellationToken,
     ) -> Self {
@@ -683,7 +683,7 @@ impl<'a> InvocationGuard<'a> {
         }
     }
 }
-impl Drop for InvocationGuard<'_> {
+impl Drop for InvocationGuard {
     fn drop(&mut self) {
         self.cancellations
             .lock()
