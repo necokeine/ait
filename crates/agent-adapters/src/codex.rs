@@ -1,17 +1,18 @@
 //! Codex adapter backed by `codex app-server` over stdio JSONL.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     ffi::OsString,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::Arc,
+    time::Duration,
 };
 
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderModel};
 use ait_ports::{
-    GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
+    GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
+    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -119,6 +120,76 @@ impl CodexAppServerAdapter {
                 false,
             )
         })
+    }
+}
+
+#[async_trait]
+impl HostProviderModelCatalog for CodexAppServerAdapter {
+    async fn discover_models(
+        &self,
+        provider: &AgentProvider,
+    ) -> Result<Vec<ProviderModel>, DomainError> {
+        if provider.kind != ProviderKind::Codex {
+            return Err(domain_error(
+                ErrorCode::InvalidConfiguration,
+                "Codex app-server can only discover Codex provider models",
+                false,
+            ));
+        }
+        let cwd = std::env::current_dir().map_err(|error| {
+            domain_error(
+                ErrorCode::ProviderFailed,
+                format!("failed to resolve Codex app-server working directory: {error}"),
+                false,
+            )
+        })?;
+        let mut child = self.spawn_process(&cwd).map_err(adapter_domain_error)?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            domain_error(
+                ErrorCode::ProviderFailed,
+                "Codex stdout pipe is unavailable",
+                false,
+            )
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            domain_error(
+                ErrorCode::ProviderFailed,
+                "Codex stdin pipe is unavailable",
+                false,
+            )
+        })?;
+        let stderr_task = child.stderr.take().map(|stderr| {
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(_)) = lines.next_line().await {}
+            })
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            drive_model_list_protocol(
+                stdout,
+                stdin,
+                ClientInfo {
+                    name: self.config.client_name.clone(),
+                    title: self.config.client_title.clone(),
+                    version: self.config.client_version.clone(),
+                },
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(AdapterError::new(
+                AdapterErrorKind::Unavailable,
+                "Codex model discovery timed out",
+                true,
+            ))
+        });
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        if let Some(task) = stderr_task {
+            task.abort();
+        }
+        result.map_err(adapter_domain_error)
     }
 }
 
@@ -875,6 +946,124 @@ pub struct ClientInfo {
     pub version: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexModelPage {
+    data: Vec<CodexModel>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexModel {
+    model: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    supported_reasoning_efforts: Vec<CodexReasoningEffort>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexReasoningEffort {
+    reasoning_effort: String,
+}
+
+async fn initialize_protocol<R, W>(
+    lines: &mut tokio::io::Lines<R>,
+    writer: &mut W,
+    client: ClientInfo,
+) -> Result<(), AdapterError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    write_message(
+        writer,
+        &json!({
+            "method": "initialize",
+            "id": 0,
+            "params": {
+                "clientInfo": {
+                    "name": client.name,
+                    "title": client.title,
+                    "version": client.version,
+                },
+                "capabilities": {"experimentalApi": false}
+            }
+        }),
+    )
+    .await?;
+    let _ = wait_for_response(lines, 0).await?;
+    write_message(writer, &json!({"method": "initialized", "params": {}})).await
+}
+
+/// Drives the initialized, paginated `model/list` exchange used by host model
+/// discovery without starting a Codex thread or turn.
+#[doc(hidden)]
+pub async fn drive_model_list_protocol<R, W>(
+    reader: R,
+    mut writer: W,
+    client: ClientInfo,
+) -> Result<Vec<ProviderModel>, AdapterError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut lines = BufReader::new(reader).lines();
+    initialize_protocol(&mut lines, &mut writer, client).await?;
+    let mut models = Vec::new();
+    let mut model_ids = HashSet::new();
+    let mut seen_cursors = HashSet::new();
+    let mut cursor: Option<String> = None;
+    let mut request_id = 1_i64;
+    loop {
+        let mut params = json!({"limit": 100, "includeHidden": false});
+        if let Some(value) = &cursor {
+            params["cursor"] = json!(value);
+        }
+        write_message(
+            &mut writer,
+            &json!({"method": "model/list", "id": request_id, "params": params}),
+        )
+        .await?;
+        let (result, _) = wait_for_response(&mut lines, request_id).await?;
+        let page: CodexModelPage = serde_json::from_value(result).map_err(|error| {
+            AdapterError::protocol(format!("invalid Codex model/list response: {error}"))
+        })?;
+        for model in page.data {
+            let id = model.model.trim().to_owned();
+            if id.is_empty() || !model_ids.insert(id.clone()) {
+                continue;
+            }
+            let mut efforts = Vec::new();
+            let mut seen_efforts = HashSet::new();
+            for effort in model.supported_reasoning_efforts {
+                let effort = effort.reasoning_effort.trim().to_owned();
+                if !effort.is_empty() && seen_efforts.insert(effort.clone()) {
+                    efforts.push(effort);
+                }
+            }
+            let name = model.display_name.trim();
+            models.push(ProviderModel {
+                id: id.clone(),
+                name: if name.is_empty() { id } else { name.to_owned() },
+                reasoning_efforts: efforts,
+            });
+        }
+        let Some(next) = page.next_cursor.filter(|value| !value.trim().is_empty()) else {
+            return Ok(models);
+        };
+        if !seen_cursors.insert(next.clone()) {
+            return Err(AdapterError::protocol(
+                "Codex model/list returned a repeated pagination cursor",
+            ));
+        }
+        cursor = Some(next);
+        request_id += 1;
+    }
+}
+
 #[doc(hidden)]
 #[allow(clippy::too_many_lines)]
 pub async fn drive_protocol<R, W>(
@@ -890,25 +1079,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut lines = BufReader::new(reader).lines();
-
-    write_message(
-        &mut writer,
-        &json!({
-            "method": "initialize",
-            "id": 0,
-            "params": {
-                "clientInfo": {
-                    "name": client.name,
-                    "title": client.title,
-                    "version": client.version,
-                },
-                "capabilities": {"experimentalApi": false}
-            }
-        }),
-    )
-    .await?;
-    let _ = wait_for_response(&mut lines, 0).await?;
-    write_message(&mut writer, &json!({"method": "initialized", "params": {}})).await?;
+    initialize_protocol(&mut lines, &mut writer, client).await?;
 
     // Keep the model-specific base prompt and native tools owned by codex-core.
     // Apply the same Ait/Project developer layer on new and resumed threads.

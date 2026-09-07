@@ -96,7 +96,9 @@ export function renderProviderSettings(
       get("#provider-next").textContent = "Loading models…";
       get("#provider-error").classList.add("is-hidden");
       try {
-        const discovered = remote ? await window.ait.discoverProviderModels(request()) : provider.models;
+        const discovered = remote || provider.kind === "codex"
+          ? await window.ait.discoverProviderModels(request())
+          : provider.models;
         if (!live()) return;
         choices = modelChoices(discovered, existing?.models ?? [], snapshot.agents.filter((agent) => agent.config.provider_id === provider.id).map((agent) => agent.config), choices);
         selection(discovered.length);

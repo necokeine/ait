@@ -20,9 +20,9 @@ use ait_domain::{
     MessageId, ProjectId, TimestampMs,
 };
 use ait_ports::{
-    AgentProviderGateway, ControlStore, ControlStoreError, PendingEvent, ProviderMessage,
-    SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceAgentResponse,
+    AgentProviderGateway, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
+    ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -125,6 +125,7 @@ pub struct LocalControlService {
     session_leases: Mutex<HashMap<String, Weak<()>>>,
     cancellations: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
+    host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
 }
@@ -137,6 +138,7 @@ impl LocalControlService {
             session_leases: Mutex::new(HashMap::new()),
             cancellations: Mutex::new(HashMap::new()),
             provider_gateway: None,
+            host_provider_catalog: None,
             workspace_agent: None,
             session_title_generator: None,
         }
@@ -153,6 +155,7 @@ impl LocalControlService {
             session_leases: Mutex::new(HashMap::new()),
             cancellations: Mutex::new(HashMap::new()),
             provider_gateway: None,
+            host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
         }
@@ -161,6 +164,16 @@ impl LocalControlService {
     #[must_use]
     pub fn with_provider_gateway(mut self, gateway: Arc<dyn AgentProviderGateway>) -> Self {
         self.provider_gateway = Some(gateway);
+        self
+    }
+
+    /// Adds model discovery for host-authenticated providers such as Codex.
+    #[must_use]
+    pub fn with_host_provider_catalog(
+        mut self,
+        catalog: Arc<dyn HostProviderModelCatalog>,
+    ) -> Self {
+        self.host_provider_catalog = Some(catalog);
         self
     }
 

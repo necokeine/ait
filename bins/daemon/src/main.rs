@@ -6,7 +6,7 @@ use ait_agent_adapters::codex::{
     CodexAppServerAdapter, CodexAppServerConfig, CodexSessionTitleGenerator, CodexWorkspaceAgent,
 };
 use ait_application::LocalControlService;
-use ait_ports::{SessionTitleGenerator, WorkspaceAgent};
+use ait_ports::{HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent};
 use ait_storage_sqlite::SqliteControlStore;
 use clap::Parser;
 
@@ -29,10 +29,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(SqliteControlStore::open(arguments.database)?);
     let adapter = Arc::new(CodexAppServerAdapter::new(CodexAppServerConfig::default())?);
     let codex: Arc<dyn WorkspaceAgent> = Arc::new(CodexWorkspaceAgent::new(adapter.clone()));
+    let catalog: Arc<dyn HostProviderModelCatalog> = adapter.clone();
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
     let service = Arc::new(
         LocalControlService::with_workspace_agent(store, codex)
             .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
+            .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
     );
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;

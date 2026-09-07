@@ -2,9 +2,10 @@
 use super::{
     AgentConfiguration, AgentMode, AgentProvider, AgentProviderGateway, AgentProviderView,
     AgentView, ApiError, Arc, Command, CommandResult, ControlStoreError, DomainError, ErrorCode,
-    HashMap, HashSet, LocalControlService, Mutex, PendingEvent, ProviderMessage, ProviderModel,
-    RunView, SessionView, State, Uuid, Value, Weak, WorkspaceAgentResponse, decode_state, error,
-    json, pending, require_agent, serialization_error, store_error,
+    HashMap, HashSet, HostProviderModelCatalog, LocalControlService, Mutex, PendingEvent,
+    ProviderMessage, ProviderModel, RunView, SessionView, State, Uuid, Value, Weak,
+    WorkspaceAgentResponse, decode_state, error, json, pending, require_agent, serialization_error,
+    store_error,
 };
 use ait_contracts::ProviderSecret;
 
@@ -322,6 +323,16 @@ impl LocalControlService {
             .ok_or_else(|| invalid("provider gateway is not configured"))
     }
 
+    fn host_catalog(&self) -> Result<&dyn HostProviderModelCatalog, ApiError> {
+        self.host_provider_catalog.as_deref().ok_or_else(|| {
+            error(
+                ErrorCode::InvalidConfiguration,
+                "host provider model catalog is not configured",
+                false,
+            )
+        })
+    }
+
     pub(super) async fn save_provider(
         &self,
         provider: AgentProvider,
@@ -428,6 +439,18 @@ impl LocalControlService {
         secret: Option<ProviderSecret>,
     ) -> Result<CommandResult, ApiError> {
         validate_provider(&provider)?;
+        if provider.kind == AgentMode::Codex {
+            if secret.is_some() {
+                return Err(invalid("Codex uses host authentication"));
+            }
+            provider.models = self
+                .host_catalog()?
+                .discover_models(&provider)
+                .await
+                .map_err(domain_error)?;
+            validate_provider(&provider)?;
+            return Ok(CommandResult::ProviderModels(provider.models));
+        }
         if !matches!(provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
             return Err(invalid("this provider does not expose model discovery"));
         }
