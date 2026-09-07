@@ -8,8 +8,8 @@ use ait_contracts::{
 };
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    AgentProviderGateway, ControlStore, ProviderMessage, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceAgentResponse,
+    AgentProviderGateway, ControlStore, HostProviderModelCatalog, ProviderMessage, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -315,6 +315,31 @@ struct Gateway {
 }
 
 #[derive(Default)]
+struct HostCatalog(Mutex<Vec<AgentProvider>>);
+
+#[async_trait]
+impl HostProviderModelCatalog for HostCatalog {
+    async fn discover_models(
+        &self,
+        provider: &AgentProvider,
+    ) -> Result<Vec<ProviderModel>, DomainError> {
+        self.0.lock().unwrap().push(provider.clone());
+        Ok(vec![
+            ProviderModel {
+                id: "gpt-new".into(),
+                name: "GPT New".into(),
+                reasoning_efforts: vec!["low".into(), "high".into()],
+            },
+            ProviderModel {
+                id: "gpt-fast".into(),
+                name: "GPT Fast".into(),
+                reasoning_efforts: vec!["medium".into()],
+            },
+        ])
+    }
+}
+
+#[derive(Default)]
 struct CapturingWorkspaceAgent(Mutex<Vec<WorkspaceAgentInvocation>>);
 
 #[async_trait]
@@ -489,6 +514,60 @@ impl AgentProviderGateway for Gateway {
         ));
         Ok("API response".into())
     }
+}
+
+#[tokio::test]
+async fn codex_discovery_uses_the_host_catalog_without_persisting_results() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let catalog = Arc::new(HostCatalog::default());
+    let service =
+        LocalControlService::new(store.clone()).with_host_provider_catalog(catalog.clone());
+    let provider = view(&service)
+        .await
+        .providers
+        .into_iter()
+        .find(|view| view.provider.kind == AgentMode::Codex)
+        .unwrap()
+        .provider;
+    let before = store.load().await.unwrap();
+    let CommandResult::ProviderModels(models) = ok(
+        &service,
+        Command::DiscoverProviderModels {
+            provider: provider.clone(),
+            secret: None,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(
+        models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-new", "gpt-fast"]
+    );
+    assert_eq!(models[0].reasoning_efforts, ["low", "high"]);
+    assert_eq!(
+        catalog.0.lock().unwrap().as_slice(),
+        std::slice::from_ref(&provider)
+    );
+    let after = store.load().await.unwrap();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.value, before.value);
+
+    let rejected = service
+        .execute(Command::DiscoverProviderModels {
+            provider,
+            secret: Some(ProviderSecret("must-not-be-used".into())),
+        })
+        .await;
+    assert_eq!(
+        rejected.error.unwrap().code,
+        ErrorCode::InvalidAgentConfiguration
+    );
+    assert_eq!(catalog.0.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

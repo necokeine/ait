@@ -14,7 +14,7 @@ pub use project::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
     StoreError,
 };
-pub use provider::{AgentProviderGateway, ProviderMessage};
+pub use provider::{AgentProviderGateway, HostProviderModelCatalog, ProviderMessage};
 pub use run::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult,
     GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator, RunStore,

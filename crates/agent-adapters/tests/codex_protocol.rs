@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use ait_agent_adapters::{
     AgentEvent, AgentRunRequest, AgentRunStatus, ApprovalDecision, ApprovalHandler, ApprovalPolicy,
     ApprovalRequest, SandboxMode,
-    codex::{ClientInfo, drive_protocol},
+    codex::{ClientInfo, drive_model_list_protocol, drive_protocol},
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -50,6 +50,65 @@ async fn write_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: Val
         .unwrap();
     writer.write_all(b"\n").await.unwrap();
     writer.flush().await.unwrap();
+}
+
+#[tokio::test]
+async fn discovers_picker_visible_models_and_reasoning_efforts_across_pages() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        assert_eq!(read_json(&mut lines).await["method"], "initialize");
+        write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
+        assert_eq!(read_json(&mut lines).await["method"], "initialized");
+        let first = read_json(&mut lines).await;
+        assert_eq!(first["method"], "model/list");
+        assert_eq!(first["params"]["includeHidden"], false);
+        assert!(first["params"].get("cursor").is_none());
+        write_json(
+            &mut server_write,
+            json!({"id": 1, "result": {
+                "data": [{
+                    "model": "gpt-new",
+                    "displayName": "GPT New",
+                    "supportedReasoningEfforts": [
+                        {"reasoningEffort": "low"},
+                        {"reasoningEffort": "high"}
+                    ]
+                }],
+                "nextCursor": "page-2"
+            }}),
+        )
+        .await;
+        let second = read_json(&mut lines).await;
+        assert_eq!(second["id"], 2);
+        assert_eq!(second["params"]["cursor"], "page-2");
+        write_json(
+            &mut server_write,
+            json!({"id": 2, "result": {
+                "data": [{
+                    "model": "gpt-fast",
+                    "displayName": "",
+                    "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]
+                }],
+                "nextCursor": null
+            }}),
+        )
+        .await;
+    });
+
+    let models = drive_model_list_protocol(client_read, client_write, client())
+        .await
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "gpt-new");
+    assert_eq!(models[0].name, "GPT New");
+    assert_eq!(models[0].reasoning_efforts, ["low", "high"]);
+    assert_eq!(models[1].id, "gpt-fast");
+    assert_eq!(models[1].name, "gpt-fast");
+    assert_eq!(models[1].reasoning_efforts, ["medium"]);
 }
 
 #[tokio::test]

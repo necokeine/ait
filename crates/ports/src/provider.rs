@@ -32,6 +32,18 @@ pub trait AgentProviderGateway: Send + Sync {
     ) -> Result<String, DomainError>;
 }
 
+/// Model discovery for providers authenticated by a host application rather
+/// than an API credential managed by Ait.
+#[async_trait]
+pub trait HostProviderModelCatalog: Send + Sync {
+    /// Fetch the provider's picker-visible models and their advertised
+    /// capabilities without changing persisted configuration.
+    async fn discover_models(
+        &self,
+        provider: &AgentProvider,
+    ) -> Result<Vec<ProviderModel>, DomainError>;
+}
+
 /// Text history projected for a single LLM call, without an SDK dependency.
 #[derive(Clone, Debug)]
 pub struct ProviderMessage {

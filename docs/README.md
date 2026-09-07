@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-201/adr-001-codex-provider-model-discovery.md`：Codex Provider 通过 app-server `model/list` 动态发现 picker 可见模型及逐模型推理等级。
+
 - `decisions/NEC-198/adr-001-codex-operation-and-message-rendering.md`：Codex 原生操作的有界展示投影、安全 Markdown 表格与受 Project 根约束的文件/行号跳转。
 
 - `decisions/NEC-196/adr-001-remove-retired-provider.md`：退役内置 Provider 的删除范围、未引用目录项清理及旧数据兼容边界。
