@@ -364,7 +364,12 @@ export function renderRunTerminal(
   status: string,
   message: string | undefined,
   author: string,
-  partial?: { progress?: RunProgress; worktree?: RunWorktreeState },
+  partial?: {
+    progress?: RunProgress;
+    progressError?: { code?: string; message: string };
+    worktree?: RunWorktreeState;
+    worktreeError?: { code?: string; message: string };
+  },
   runId = "",
   projectId = "",
 ): string {
@@ -379,10 +384,17 @@ export function renderRunTerminal(
   const worktree = partial?.worktree?.dirty
     ? renderRetainedWorktree(partial.worktree, runId, projectId)
     : "";
+  const unknown = [
+    partial?.progressError ? `Progress archive unknown: ${partial.progressError.message}` : "",
+    partial?.worktreeError ? `Workspace state unknown: ${partial.worktreeError.message}` : "",
+  ].filter(Boolean);
+  const inspectionFailure = unknown.length
+    ? `<section class="partial-run-unknown"><strong>Some terminal state could not be inspected</strong><p>${escapeHtml(unknown.join(" "))}</p></section>`
+    : "";
   return `<article class="message assistant run-terminal status-${escapeHtml(status)}" data-run-id="${escapeHtml(runId)}" aria-live="polite">
     <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
     <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong></div>
-      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>${partialProgress}${worktree}
+      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>${partialProgress}${inspectionFailure}${worktree}
     </div>
   </article>`;
 }

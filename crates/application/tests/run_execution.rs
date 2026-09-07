@@ -5,7 +5,7 @@ use std::{
     process::Command as ProcessCommand,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -14,7 +14,7 @@ use ait_contracts::{Command, CommandResult, ProjectView, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
-    PendingEvent, ProgressCheckpoint, WorkspaceAgent, WorkspaceAgentInvocation,
+    PendingEvent, ProgressCheckpoint, RunOutputArchive, WorkspaceAgent, WorkspaceAgentInvocation,
     WorkspaceAgentResponse, WorkspaceOperation, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use ait_storage_sqlite::SqliteControlStore;
@@ -27,6 +27,24 @@ struct ConflictingStore {
     inner: SqliteControlStore,
     checkpoints: Mutex<VecDeque<&'static str>>,
     reject_runs: AtomicBool,
+    progress_delay_ms: AtomicU64,
+    fail_progress: AtomicBool,
+}
+
+impl ConflictingStore {
+    fn rejects(&self, value: &Value) -> bool {
+        let status = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .and_then(|run| run["status"].as_str());
+        let mut checkpoints = self.checkpoints.lock().unwrap();
+        if status.is_some() && status == checkpoints.front().copied() {
+            checkpoints.pop_front();
+            true
+        } else {
+            status.is_some() && self.reject_runs.load(Ordering::Relaxed)
+        }
+    }
 }
 
 #[async_trait]
@@ -41,23 +59,26 @@ impl ControlStore for ConflictingStore {
         value: Value,
         events: Vec<PendingEvent>,
     ) -> Result<ControlSnapshot, ControlStoreError> {
-        let status = value["runs"]
-            .as_array()
-            .and_then(|runs| runs.last())
-            .and_then(|run| run["status"].as_str());
-        let conflict = {
-            let mut checkpoints = self.checkpoints.lock().unwrap();
-            if status.is_some() && status == checkpoints.front().copied() {
-                checkpoints.pop_front();
-                true
-            } else {
-                status.is_some() && self.reject_runs.load(Ordering::Relaxed)
-            }
-        };
-        if conflict {
+        if self.rejects(&value) {
             return Err(ControlStoreError::Conflict);
         }
         self.inner.commit(revision, value, events).await
+    }
+
+    async fn commit_terminal(
+        &self,
+        revision: u64,
+        value: Value,
+        events: Vec<PendingEvent>,
+        run_id: &str,
+        output: Option<RunOutputArchive>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        if self.rejects(&value) {
+            return Err(ControlStoreError::Conflict);
+        }
+        self.inner
+            .commit_terminal(revision, value, events, run_id, output)
+            .await
     }
 
     async fn replay(
@@ -85,11 +106,27 @@ impl ControlStore for ConflictingStore {
         checkpoint: ProgressCheckpoint,
         events: Vec<PendingEvent>,
     ) -> Result<(), ControlStoreError> {
+        let delay = self.progress_delay_ms.load(Ordering::Relaxed);
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        if self.fail_progress.load(Ordering::Relaxed) {
+            return Err(ControlStoreError::Other(
+                "injected progress persistence failure".into(),
+            ));
+        }
         self.inner.save_progress(checkpoint, events).await
     }
 
     async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
         self.inner.load_progress().await
+    }
+
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<RunOutputArchive>, ControlStoreError> {
+        self.inner.load_run_outputs(run_ids).await
     }
 
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
@@ -178,6 +215,8 @@ impl Fixture {
             inner: SqliteControlStore::in_memory().unwrap(),
             checkpoints: Mutex::default(),
             reject_runs: AtomicBool::new(false),
+            progress_delay_ms: AtomicU64::new(0),
+            fail_progress: AtomicBool::new(false),
         });
         let agent = Arc::new(RecordingAgent {
             store: store.clone(),
@@ -525,6 +564,10 @@ impl WorkspaceAgent for PartialThenContinuingAgent {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one recovery test exercises content, type, mode, and unchanged fingerprints"
+)]
 async fn terminal_partial_output_survives_reload_and_requires_exact_worktree_confirmation() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("partial-project");
@@ -585,6 +628,8 @@ async fn terminal_partial_output_survives_reload_and_requires_exact_worktree_con
     assert!(worktree.dirty);
     assert_eq!(worktree.changes[0].path, "partial.txt");
     let fingerprint = worktree.fingerprint.clone();
+    let persisted = store.load().await.unwrap();
+    assert!(persisted.value["runs"][0].get("partial_output").is_none());
 
     let reopened = LocalControlService::with_workspace_agent(store.clone(), agent);
     let reloaded = run(
@@ -607,6 +652,39 @@ async fn terminal_partial_output_survives_reload_and_requires_exact_worktree_con
     assert_eq!(agent_calls(&reopened, &failed.id).await, 0);
 
     std::fs::write(project_dir.join("partial.txt"), "retained output\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let path = project_dir.join("partial.txt");
+        let original_mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        std::fs::remove_file(&path).unwrap();
+        symlink("retained output\n", &path).unwrap();
+        let rejected = reopened
+            .execute(Command::ContinueRun {
+                run_id: failed.id.clone(),
+                expected_worktree_fingerprint: fingerprint.clone(),
+            })
+            .await;
+        assert_eq!(rejected.error.unwrap().code, ErrorCode::ProjectGitDirty);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "retained output\n").unwrap();
+        let mut executable = std::fs::metadata(&path).unwrap().permissions();
+        executable.set_mode(original_mode | 0o111);
+        std::fs::set_permissions(&path, executable).unwrap();
+        let rejected = reopened
+            .execute(Command::ContinueRun {
+                run_id: failed.id.clone(),
+                expected_worktree_fingerprint: fingerprint.clone(),
+            })
+            .await;
+        assert_eq!(rejected.error.unwrap().code, ErrorCode::ProjectGitDirty);
+
+        let mut original = std::fs::metadata(&path).unwrap().permissions();
+        original.set_mode(original_mode);
+        std::fs::set_permissions(&path, original).unwrap();
+    }
     let continued = run(
         &reopened,
         Command::ContinueRun {
@@ -617,7 +695,10 @@ async fn terminal_partial_output_survives_reload_and_requires_exact_worktree_con
     .await;
     assert_eq!(continued.status, "completed");
     assert_eq!(
-        continued.recovery_of_run_id.as_deref(),
+        continued
+            .recovery_of_run_id
+            .as_ref()
+            .map(ait_domain::RunId::as_str),
         Some(failed.id.as_str())
     );
     assert!(continued.last_message_id.is_some());
@@ -637,7 +718,11 @@ async fn agent_calls(service: &LocalControlService, source_run_id: &str) -> usiz
     workspace
         .runs
         .iter()
-        .filter(|run| run.recovery_of_run_id.as_deref() == Some(source_run_id))
+        .filter(|run| {
+            run.recovery_of_run_id
+                .as_ref()
+                .is_some_and(|source| source.as_str() == source_run_id)
+        })
         .count()
 }
 
@@ -789,6 +874,355 @@ async fn cancellation_retains_confirmed_and_unfinished_output_with_workspace_sta
     assert!(partial.worktree.as_ref().is_some_and(|state| state.dirty));
     assert_eq!(partial.worktree.unwrap().changes[0].path, "cancelled.txt");
     assert!(service.progress_checkpoints().await.unwrap().is_empty());
+}
+
+struct CompletesAsCancellationCommitsAgent {
+    started: Semaphore,
+    release: Semaphore,
+}
+
+#[async_trait]
+impl WorkspaceAgent for CompletesAsCancellationCommitsAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("progress entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        progress
+            .report(WorkspaceProgressEvent::MessageCompleted {
+                id: "racing-final".into(),
+                phase: Some("final_answer".into()),
+                text: "Completed while cancellation committed.".into(),
+            })
+            .await;
+        self.started.add_permits(1);
+        self.release.acquire().await.unwrap().forget();
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "Completed while cancellation committed.".into(),
+            commit_id: Some("committed-before-cancel".into()),
+            operations: Vec::new(),
+            output_items: vec![ait_ports::WorkspaceOutputItem::Message {
+                id: "racing-final".into(),
+                phase: Some("final_answer".into()),
+                text: "Completed while cancellation committed.".into(),
+            }],
+        })
+    }
+}
+
+#[tokio::test]
+async fn cancellation_winning_the_terminal_cas_archives_a_concurrent_success() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("racing-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(CompletesAsCancellationCommitsAgent {
+        started: Semaphore::new(0),
+        release: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "racing-project".into(),
+            name: "Racing".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "racing-agent".into(),
+            name: "Racing agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "racing-session".into(),
+            project_id: project.id,
+            agent_id: "racing-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+
+    let executing = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            run(
+                &service,
+                Command::SendMessage {
+                    session_id: "racing-session".into(),
+                    text: "finish as cancellation lands".into(),
+                },
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(2), agent.started.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let CommandResult::Workspace(workspace) = command(&service, Command::Snapshot).await else {
+        unreachable!()
+    };
+    let run_id = workspace.runs[0].id.clone();
+    command(&service, Command::CancelRun { run_id }).await;
+    agent.release.add_permits(1);
+    let cancelled = tokio::time::timeout(Duration::from_secs(2), executing)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(cancelled.last_message_id.is_none());
+    let progress = cancelled
+        .partial_output
+        .expect("successful output must be archived when cancellation wins")
+        .progress
+        .expect("final progress checkpoint");
+    assert_eq!(progress["items"][0]["completed"], true);
+    assert_eq!(
+        progress["items"][0]["text"],
+        "Completed while cancellation committed."
+    );
+}
+
+struct FailingProgressAgent;
+
+#[async_trait]
+impl WorkspaceAgent for FailingProgressAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("progress entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        progress
+            .report(WorkspaceProgressEvent::MessageCompleted {
+                id: "checkpoint".into(),
+                phase: Some("commentary".into()),
+                text: "must survive terminal archival".into(),
+            })
+            .await;
+        Err(DomainError::invariant(
+            ErrorCode::ProviderFailed,
+            "injected provider failure",
+        ))
+    }
+}
+
+struct BreaksWorktreeInspectionAgent;
+
+#[async_trait]
+impl WorkspaceAgent for BreaksWorktreeInspectionAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("progress entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        progress
+            .report(WorkspaceProgressEvent::MessageCompleted {
+                id: "before-inspection-failure".into(),
+                phase: Some("commentary".into()),
+                text: "Git metadata is about to disappear.".into(),
+            })
+            .await;
+        std::fs::rename(request.cwd.join(".git"), request.cwd.join("git-hidden")).unwrap();
+        Err(DomainError::invariant(
+            ErrorCode::ProviderFailed,
+            "injected provider failure",
+        ))
+    }
+}
+
+#[tokio::test]
+async fn terminal_archive_persists_an_explicit_unknown_worktree_state() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("unknown-worktree-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let service = LocalControlService::with_workspace_agent(
+        store.clone(),
+        Arc::new(BreaksWorktreeInspectionAgent),
+    );
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "unknown-worktree-project".into(),
+            name: "Unknown worktree".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "unknown-worktree-agent".into(),
+            name: "Unknown worktree agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "unknown-worktree-session".into(),
+            project_id: project.id,
+            agent_id: "unknown-worktree-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+
+    let failed = run(
+        &service,
+        Command::SendMessage {
+            session_id: "unknown-worktree-session".into(),
+            text: "break inspection".into(),
+        },
+    )
+    .await;
+    let partial = failed.partial_output.unwrap();
+    assert!(partial.worktree.is_none());
+    assert_eq!(
+        partial.worktree_error.as_ref().unwrap().code,
+        ErrorCode::ProjectGitHeadUnavailable
+    );
+
+    let reopened = LocalControlService::new(store);
+    let reloaded = run(&reopened, Command::GetRun { run_id: failed.id }).await;
+    assert!(reloaded.partial_output.unwrap().worktree_error.is_some());
+}
+
+#[tokio::test]
+async fn terminal_archival_waits_for_slow_progress_and_survives_progress_store_failure() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("progress-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(ConflictingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        checkpoints: Mutex::default(),
+        reject_runs: AtomicBool::new(false),
+        progress_delay_ms: AtomicU64::new(600),
+        fail_progress: AtomicBool::new(false),
+    });
+    let service =
+        LocalControlService::with_workspace_agent(store.clone(), Arc::new(FailingProgressAgent));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "progress-project".into(),
+            name: "Progress".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "progress-agent".into(),
+            name: "Progress agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "slow-progress-session".into(),
+            project_id: project.id.clone(),
+            agent_id: "progress-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let delayed = run(
+        &service,
+        Command::SendMessage {
+            session_id: "slow-progress-session".into(),
+            text: "slow checkpoint".into(),
+        },
+    )
+    .await;
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    assert_eq!(
+        delayed.partial_output.unwrap().progress.unwrap()["items"][0]["text"],
+        "must survive terminal archival"
+    );
+
+    store.progress_delay_ms.store(0, Ordering::Relaxed);
+    store.fail_progress.store(true, Ordering::Relaxed);
+    command(
+        &service,
+        Command::CreateSession {
+            id: "failed-progress-session".into(),
+            project_id: project.id,
+            agent_id: "progress-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let failed_store = run(
+        &service,
+        Command::SendMessage {
+            session_id: "failed-progress-session".into(),
+            text: "failed checkpoint store".into(),
+        },
+    )
+    .await;
+    let partial = failed_store.partial_output.unwrap();
+    let checkpoint = partial.progress.unwrap();
+    assert_eq!(
+        checkpoint["items"][0]["text"],
+        "must survive terminal archival"
+    );
+    assert_eq!(
+        partial.progress_error.unwrap().message,
+        "injected progress persistence failure"
+    );
 }
 
 #[async_trait]

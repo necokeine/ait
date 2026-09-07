@@ -43,6 +43,7 @@ dependencies = [
  "ait-domain",
  "ait-ports",
  "ait-tools",
+ "ait-worktree",
  "async-trait",
  "axum",
  "bytes",
@@ -52,7 +53,6 @@ dependencies = [
  "rig-core",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "tokio",
@@ -90,6 +90,7 @@ dependencies = [
  "ait-runtime",
  "ait-scheduler",
  "ait-storage-sqlite",
+ "ait-worktree",
  "async-trait",
  "criterion",
  "serde",
@@ -289,6 +290,15 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "ait-worktree"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

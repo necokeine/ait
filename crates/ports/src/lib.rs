@@ -10,7 +10,7 @@ mod session;
 
 pub use control::{
     ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
-    PendingEvent, ProgressCheckpoint,
+    MAX_TERMINAL_OUTPUT_ARCHIVE_BYTES, PendingEvent, ProgressCheckpoint, RunOutputArchive,
 };
 pub use message::{MessageStore, MessageStoreError};
 pub use project::{

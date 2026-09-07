@@ -98,7 +98,9 @@ export interface DesktopRun {
   error?: { code?: string; message: string };
   partialOutput?: {
     progress?: RunProgress;
+    progressError?: { code?: string; message: string };
     worktree?: RunWorktreeState;
+    worktreeError?: { code?: string; message: string };
   };
   recoveryOfRunId?: string;
 }

@@ -1,5 +1,9 @@
+use ait_domain::RunPartialOutput;
 use async_trait::async_trait;
 use serde_json::Value;
+
+/// Total serialized byte budget retained across terminal Run output archives.
+pub const MAX_TERMINAL_OUTPUT_ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Optimistically versioned, transport-neutral control-plane snapshot.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +73,17 @@ pub struct ProgressCheckpoint {
     pub updated_at: i64,
 }
 
+/// Independently stored terminal output for one Run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunOutputArchive {
+    /// Owning Run identity.
+    pub run_id: String,
+    /// Bounded terminal output outside the mutable control snapshot.
+    pub output: RunPartialOutput,
+    /// Unix timestamp in milliseconds.
+    pub updated_at: i64,
+}
+
 /// Failures exposed by control-plane persistence adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlStoreError {
@@ -103,6 +118,17 @@ pub trait ControlStore: Send + Sync {
         events: Vec<PendingEvent>,
     ) -> Result<ControlSnapshot, ControlStoreError>;
 
+    /// Atomically commits a terminal Run transition, independently archives
+    /// its bounded output, and clears the transient progress checkpoint.
+    async fn commit_terminal(
+        &self,
+        expected_revision: u64,
+        value: Value,
+        events: Vec<PendingEvent>,
+        run_id: &str,
+        output: Option<RunOutputArchive>,
+    ) -> Result<ControlSnapshot, ControlStoreError>;
+
     /// Replays durable events strictly after `cursor` in cursor order.
     async fn replay(
         &self,
@@ -131,6 +157,12 @@ pub trait ControlStore: Send + Sync {
 
     /// Loads checkpoints for active or interrupted clients to resynchronize.
     async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError>;
+
+    /// Loads independently archived output for only the requested Runs.
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<RunOutputArchive>, ControlStoreError>;
 
     /// Removes transient display state after the immutable result is durable.
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError>;

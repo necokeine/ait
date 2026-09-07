@@ -49,7 +49,9 @@ interface WorkspaceView {
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
     error?: { code?: string; message?: string } | null;
-    partial_output?: { progress?: unknown; worktree?: unknown } | null;
+    partial_output?: {
+      progress?: unknown; progress_error?: unknown; worktree?: unknown; worktree_error?: unknown;
+    } | null;
     recovery_of_run_id?: string | null;
   }>;
 }
@@ -427,9 +429,15 @@ class DaemonClient {
   }
 }
 
-function partialOutput(value: unknown): { progress?: RunProgress; worktree?: RunWorktreeState } | undefined {
+function partialOutput(value: unknown): {
+  progress?: RunProgress;
+  progressError?: { code?: string; message: string };
+  worktree?: RunWorktreeState;
+  worktreeError?: { code?: string; message: string };
+} | undefined {
   const partial = objectParams(value);
   const progress = progressFromCheckpoint(partial.progress);
+  const progressError = archiveError(partial.progress_error);
   const rawWorktree = objectParams(partial.worktree);
   const fingerprint = typeof rawWorktree.fingerprint === "string" ? rawWorktree.fingerprint : "";
   const changes = Array.isArray(rawWorktree.changes)
@@ -447,10 +455,23 @@ function partialOutput(value: unknown): { progress?: RunProgress; worktree?: Run
     changes,
     truncated: rawWorktree.truncated === true,
   } : undefined;
-  return progress || worktree ? {
+  const worktreeError = archiveError(partial.worktree_error);
+  return progress || progressError || worktree || worktreeError ? {
     ...(progress ? { progress } : {}),
+    ...(progressError ? { progressError } : {}),
     ...(worktree ? { worktree } : {}),
+    ...(worktreeError ? { worktreeError } : {}),
   } : undefined;
+}
+
+function archiveError(value: unknown): { code?: string; message: string } | undefined {
+  const candidate = objectParams(value);
+  return typeof candidate.message === "string" && candidate.message.trim()
+    ? {
+      message: candidate.message,
+      ...(typeof candidate.code === "string" ? { code: candidate.code } : {}),
+    }
+    : undefined;
 }
 
 function objectParams(value: unknown): Record<string, unknown> {

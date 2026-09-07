@@ -4,7 +4,7 @@ use std::{path::Path, sync::Mutex};
 
 use ait_ports::{
     ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
-    PendingEvent, ProgressCheckpoint,
+    MAX_TERMINAL_OUTPUT_ARCHIVE_BYTES, PendingEvent, ProgressCheckpoint, RunOutputArchive,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
@@ -57,6 +57,11 @@ impl SqliteControlStore {
                created_at INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS run_progress (
+               run_id TEXT PRIMARY KEY,
+               body_json TEXT NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS run_terminal_output (
                run_id TEXT PRIMARY KEY,
                body_json TEXT NOT NULL,
                updated_at INTEGER NOT NULL
@@ -183,6 +188,106 @@ impl ControlStore for SqliteControlStore {
         Ok(ControlSnapshot { revision, value })
     }
 
+    async fn commit_terminal(
+        &self,
+        expected_revision: u64,
+        value: Value,
+        events: Vec<PendingEvent>,
+        run_id: &str,
+        output: Option<RunOutputArchive>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let mut connection = self.connection.lock().map_err(lock_error)?;
+        let transaction = connection.transaction().map_err(sql_error)?;
+        let current = transaction
+            .query_row(
+                "SELECT revision FROM control_state WHERE singleton = 1",
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .unwrap_or(0);
+        if current != expected_revision {
+            return Err(ControlStoreError::Conflict);
+        }
+        let revision = expected_revision.saturating_add(1);
+        let body = serde_json::to_string(&value).map_err(json_error)?;
+        transaction
+            .execute(
+                "INSERT INTO control_state(singleton, revision, body_json) VALUES(1, ?1, ?2)
+                 ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision, body_json = excluded.body_json",
+                params![revision, body],
+            )
+            .map_err(sql_error)?;
+        for event in events {
+            transaction
+                .execute(
+                    "INSERT INTO durable_events(kind, entity_id, body_json, created_at) VALUES(?1, ?2, ?3, ?4)",
+                    params![event.kind, event.entity_id, serde_json::to_string(&event.body).map_err(json_error)?, event.created_at],
+                )
+                .map_err(sql_error)?;
+        }
+        if let Some(output) = output {
+            if output.run_id != run_id {
+                return Err(ControlStoreError::Other(
+                    "terminal output Run identity does not match the transition".into(),
+                ));
+            }
+            output
+                .output
+                .validate()
+                .map_err(|error| ControlStoreError::Other(error.message))?;
+            let output_body = serde_json::to_string(&output.output).map_err(json_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO run_terminal_output(run_id, body_json, updated_at) VALUES(?1, ?2, ?3)
+                     ON CONFLICT(run_id) DO UPDATE SET body_json = excluded.body_json, updated_at = excluded.updated_at",
+                    params![output.run_id, output_body, output.updated_at],
+                )
+                .map_err(sql_error)?;
+
+            loop {
+                let total = transaction
+                    .query_row(
+                        "SELECT COALESCE(SUM(length(CAST(body_json AS BLOB))), 0) FROM run_terminal_output",
+                        [],
+                        |row| row.get::<_, u64>(0),
+                    )
+                    .map_err(sql_error)?;
+                if total <= u64::try_from(MAX_TERMINAL_OUTPUT_ARCHIVE_BYTES).unwrap_or(u64::MAX) {
+                    break;
+                }
+                let oldest = transaction
+                    .query_row(
+                        "SELECT run_id FROM run_terminal_output WHERE run_id != ?1 ORDER BY updated_at, run_id LIMIT 1",
+                        params![run_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(sql_error)?
+                    .ok_or_else(|| {
+                        ControlStoreError::Other(
+                            "terminal output archive exceeds its total byte budget".into(),
+                        )
+                    })?;
+                transaction
+                    .execute(
+                        "DELETE FROM run_terminal_output WHERE run_id = ?1",
+                        params![oldest],
+                    )
+                    .map_err(sql_error)?;
+            }
+        }
+        transaction
+            .execute(
+                "DELETE FROM run_progress WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)?;
+        Ok(ControlSnapshot { revision, value })
+    }
+
     async fn replay(
         &self,
         cursor: u64,
@@ -281,6 +386,33 @@ impl ControlStore for SqliteControlStore {
         .collect()
     }
 
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<RunOutputArchive>, ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        let mut statement = connection
+            .prepare("SELECT body_json, updated_at FROM run_terminal_output WHERE run_id = ?1")
+            .map_err(sql_error)?;
+        let mut outputs = Vec::new();
+        for run_id in run_ids {
+            let row = statement
+                .query_row(params![run_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .optional()
+                .map_err(sql_error)?;
+            if let Some((body, updated_at)) = row {
+                outputs.push(RunOutputArchive {
+                    run_id: run_id.clone(),
+                    output: serde_json::from_str(&body).map_err(json_error)?,
+                    updated_at,
+                });
+            }
+        }
+        Ok(outputs)
+    }
+
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
         let connection = self.connection.lock().map_err(lock_error)?;
         connection
@@ -354,6 +486,48 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn terminal_output_archive_is_independent_and_globally_bounded() {
+        let store = SqliteControlStore::in_memory().unwrap();
+        let mut revision = 0;
+        let run_ids = (0..24)
+            .map(|index| format!("run-{index:02}"))
+            .collect::<Vec<_>>();
+        for (index, run_id) in run_ids.iter().enumerate() {
+            let output = serde_json::from_value(serde_json::json!({
+                "progress": {"blob": "x".repeat(800 * 1024), "index": index}
+            }))
+            .unwrap();
+            let value = serde_json::json!({"latest_run": run_id});
+            let committed = store
+                .commit_terminal(
+                    revision,
+                    value,
+                    Vec::new(),
+                    run_id,
+                    Some(RunOutputArchive {
+                        run_id: run_id.clone(),
+                        output,
+                        updated_at: i64::try_from(index).unwrap(),
+                    }),
+                )
+                .await
+                .unwrap();
+            revision = committed.revision;
+        }
+
+        let outputs = store.load_run_outputs(&run_ids).await.unwrap();
+        let total = outputs
+            .iter()
+            .map(|archive| serde_json::to_vec(&archive.output).unwrap().len())
+            .sum::<usize>();
+        assert!(total <= MAX_TERMINAL_OUTPUT_ARCHIVE_BYTES);
+        assert!(outputs.len() < run_ids.len());
+        assert!(outputs.iter().any(|archive| archive.run_id == "run-23"));
+        let snapshot = store.load().await.unwrap();
+        assert!(serde_json::to_vec(&snapshot.value).unwrap().len() < 1024);
+    }
 
     #[tokio::test]
     async fn online_backup_restores_a_consistent_revision_and_outbox() {

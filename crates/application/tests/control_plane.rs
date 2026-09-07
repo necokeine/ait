@@ -8,7 +8,7 @@ use std::sync::{
 
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, default_settings};
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{DomainError, ErrorCode, RunTrigger};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation, WorkspaceOutputItem,
@@ -581,7 +581,7 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
         CommandResult::Run(value) => value,
         _ => panic!(),
     };
-    assert_eq!(scheduled.trigger, "cron");
+    assert_eq!(scheduled.trigger, RunTrigger::Cron);
     assert_eq!(scheduled.status, "completed");
     assert!(scheduled.session_id.is_none());
 

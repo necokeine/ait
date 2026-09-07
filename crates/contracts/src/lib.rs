@@ -219,7 +219,7 @@ pub struct RunView {
     pub agent_revision: u64,
     pub config: AgentConfiguration,
     pub provider: AgentProvider,
-    pub trigger: String,
+    pub trigger: ait_domain::RunTrigger,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
     pub status: String,
@@ -230,43 +230,10 @@ pub struct RunView {
     pub partial_output: Option<Box<RunPartialOutput>>,
     /// Failed Run whose explicitly adopted workspace this Run continues.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_of_run_id: Option<String>,
+    pub recovery_of_run_id: Option<ait_domain::RunId>,
 }
 
-/// Terminal, non-Message output retained for a failed or cancelled Run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RunPartialOutput {
-    /// Last bounded progress projection written by the Run.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<Value>,
-    /// Git state observed after provider/Git execution stopped.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<RunWorktreeState>,
-}
-
-/// One bounded Git status entry belonging to a terminal Run workspace.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RunWorktreeChange {
-    /// Two-character porcelain status such as ` M`, `A `, or `??`.
-    pub status: String,
-    /// Project-relative path as reported by Git.
-    pub path: String,
-}
-
-/// Exact Git worktree identity used to guard explicit continuation.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RunWorktreeState {
-    /// HEAD observed with the status snapshot, absent for an unborn branch.
-    pub head: Option<String>,
-    /// Whether the index, worktree, or untracked set has changes.
-    pub dirty: bool,
-    /// SHA-256 over HEAD, the complete porcelain response and changed content.
-    pub fingerprint: String,
-    /// Bounded display projection of changed paths.
-    pub changes: Vec<RunWorktreeChange>,
-    /// More paths existed than the display projection retained.
-    pub truncated: bool,
-}
+pub use ait_domain::{RunPartialOutput, RunWorktreeChange, RunWorktreeState};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CronView {

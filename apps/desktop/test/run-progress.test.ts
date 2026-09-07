@@ -141,3 +141,14 @@ test("renders retained partial output, error, and guarded workspace recovery sep
   assert.ok(html.includes('data-run-continue="run-a"'));
   assert.ok(html.includes("Continue with these changes"));
 });
+
+test("renders terminal inspection failures as explicit unknown state", () => {
+  const html = renderRunTerminal("failed", "Provider stopped.", "Codex", {
+    progressError: { code: "run_recovery_failed", message: "checkpoint unavailable" },
+    worktreeError: { code: "project_git_head_unavailable", message: "path raced" },
+  }, "run-a", "project-a");
+  assert.ok(html.includes("Some terminal state could not be inspected"));
+  assert.ok(html.includes("Progress archive unknown: checkpoint unavailable"));
+  assert.ok(html.includes("Workspace state unknown: path raced"));
+  assert.ok(!html.includes("Continue with these changes"));
+});

@@ -1030,6 +1030,18 @@ impl ControlStore for PausingStore {
     ) -> Result<ait_ports::DurableEventPage, ait_ports::ControlStoreError> {
         self.inner.replay_page(after, limit).await
     }
+    async fn commit_terminal(
+        &self,
+        revision: u64,
+        value: serde_json::Value,
+        events: Vec<ait_ports::PendingEvent>,
+        run_id: &str,
+        output: Option<ait_ports::RunOutputArchive>,
+    ) -> Result<ait_ports::ControlSnapshot, ait_ports::ControlStoreError> {
+        self.inner
+            .commit_terminal(revision, value, events, run_id, output)
+            .await
+    }
     async fn save_progress(
         &self,
         checkpoint: ait_ports::ProgressCheckpoint,
@@ -1041,6 +1053,12 @@ impl ControlStore for PausingStore {
         &self,
     ) -> Result<Vec<ait_ports::ProgressCheckpoint>, ait_ports::ControlStoreError> {
         self.inner.load_progress().await
+    }
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<ait_ports::RunOutputArchive>, ait_ports::ControlStoreError> {
+        self.inner.load_run_outputs(run_ids).await
     }
     async fn clear_progress(&self, run_id: &str) -> Result<(), ait_ports::ControlStoreError> {
         self.inner.clear_progress(run_id).await

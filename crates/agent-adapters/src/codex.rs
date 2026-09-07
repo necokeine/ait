@@ -3,8 +3,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ffi::OsString,
-    fs::File,
-    io::Read as _,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::Arc,
@@ -21,7 +19,6 @@ use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -1021,88 +1018,21 @@ fn ensure_clean_worktree(cwd: &Path) -> Result<Option<String>, DomainError> {
 }
 
 fn ensure_adopted_worktree(cwd: &Path, expected: &str) -> Result<Option<String>, DomainError> {
-    let head = git_head(cwd);
-    let status = git(
-        cwd,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
-    let actual = worktree_fingerprint(cwd, head.as_deref(), &status.stdout)?;
-    if status.stdout.is_empty() || actual != expected {
+    let snapshot = ait_worktree::inspect(cwd).map_err(|failure| {
+        domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            failure.to_string(),
+            false,
+        )
+    })?;
+    if snapshot.status.is_empty() || snapshot.fingerprint != expected {
         return Err(domain_error(
             ErrorCode::ProjectGitDirty,
             "the explicitly adopted Project worktree changed before Codex could continue",
             false,
         ));
     }
-    Ok(head)
-}
-
-fn worktree_fingerprint(
-    cwd: &Path,
-    head: Option<&str>,
-    status: &[u8],
-) -> Result<String, DomainError> {
-    let unstaged = git(cwd, &["diff", "--binary"])?;
-    let staged = git(cwd, &["diff", "--cached", "--binary"])?;
-    let mut digest = Sha256::new();
-    update_digest_part(&mut digest, head.unwrap_or_default().as_bytes());
-    update_digest_part(&mut digest, status);
-    update_digest_part(&mut digest, &unstaged.stdout);
-    update_digest_part(&mut digest, &staged.stdout);
-    for record in status.split(|byte| *byte == 0) {
-        if record.len() < 3 || &record[..2] != b"??" || record[2] != b' ' {
-            continue;
-        }
-        let relative = String::from_utf8_lossy(&record[3..]);
-        update_digest_part(&mut digest, relative.as_bytes());
-        let absolute = cwd.join(relative.as_ref());
-        let metadata = std::fs::symlink_metadata(&absolute).map_err(|failure| {
-            domain_error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot inspect retained path {relative}: {failure}"),
-                false,
-            )
-        })?;
-        if metadata.file_type().is_symlink() {
-            let target = std::fs::read_link(&absolute).map_err(|failure| {
-                domain_error(
-                    ErrorCode::ProjectGitHeadUnavailable,
-                    format!("cannot inspect retained symlink {relative}: {failure}"),
-                    false,
-                )
-            })?;
-            update_digest_part(&mut digest, target.to_string_lossy().as_bytes());
-        } else if metadata.is_file() {
-            digest.update(metadata.len().to_le_bytes());
-            let mut file = File::open(&absolute).map_err(|failure| {
-                domain_error(
-                    ErrorCode::ProjectGitHeadUnavailable,
-                    format!("cannot inspect retained file {relative}: {failure}"),
-                    false,
-                )
-            })?;
-            let mut buffer = [0_u8; 8 * 1024];
-            loop {
-                let read = file.read(&mut buffer).map_err(|failure| {
-                    domain_error(
-                        ErrorCode::ProjectGitHeadUnavailable,
-                        format!("cannot inspect retained file {relative}: {failure}"),
-                        false,
-                    )
-                })?;
-                if read == 0 {
-                    break;
-                }
-                digest.update(&buffer[..read]);
-            }
-        }
-    }
-    Ok(format!("{:x}", digest.finalize()))
-}
-
-fn update_digest_part(digest: &mut Sha256, value: &[u8]) {
-    digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
-    digest.update(value);
+    Ok(snapshot.head)
 }
 
 fn commit_workspace_changes(
