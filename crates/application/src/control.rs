@@ -575,12 +575,13 @@ impl LocalControlService {
     ) -> Result<RunView, ApiError> {
         let worker = self.clone();
         let worker_run_id = run_id.clone();
+        let task_control = Arc::clone(&control);
         let task = tokio::spawn(async move {
             worker
-                .execute_workspace_agent(&worker_run_id, control)
+                .execute_workspace_agent(&worker_run_id, task_control)
                 .await
         });
-        match task.await {
+        let result = match task.await {
             Ok(result) => result,
             Err(failure) => {
                 self.finish_workspace_run(
@@ -592,7 +593,9 @@ impl LocalControlService {
                 )
                 .await
             }
-        }
+        };
+        drop(control);
+        result
     }
 
     async fn set_run_running(&self, run_id: &str) -> Result<bool, ApiError> {
@@ -632,8 +635,12 @@ impl LocalControlService {
         run_id: &str,
         result: Result<WorkspaceAgentResponse, DomainError>,
     ) -> Result<RunView, ApiError> {
-        for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
+        let mut persistence_failures = 0_u32;
+        loop {
+            let Ok(snapshot) = self.store.load().await else {
+                wait_for_workspace_terminal_persistence(&mut persistence_failures).await;
+                continue;
+            };
             let mut state = decode_state(snapshot.value)?;
             let index = state
                 .runs
@@ -644,72 +651,7 @@ impl LocalControlService {
             if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
                 return Ok(run);
             }
-            match &result {
-                Ok(output) => {
-                    let operations = output
-                        .operations
-                        .iter()
-                        .map(|operation| {
-                            json!({
-                                "id": operation.id,
-                                "kind": operation.kind,
-                                "status": operation.status,
-                                "title": operation.title,
-                                "summary": operation.summary,
-                                "detail": operation.detail,
-                                "paths": operation.paths,
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    let output_items = output
-                        .output_items
-                        .iter()
-                        .map(|item| match item {
-                            WorkspaceOutputItem::Message { id, phase, text } => json!({
-                                "type": "message",
-                                "id": id,
-                                "phase": phase,
-                                "text": text,
-                            }),
-                            WorkspaceOutputItem::Operation { id } => json!({
-                                "type": "operation",
-                                "id": id,
-                            }),
-                        })
-                        .collect::<Vec<_>>();
-                    let data = (output.commit_id.is_some()
-                        || !operations.is_empty()
-                        || !output_items.is_empty())
-                    .then(|| {
-                        json!({"codex":{
-                            "commit_id": output.commit_id,
-                            "operations": operations,
-                            "output_items": output_items,
-                        }})
-                    });
-                    let parent = run
-                        .last_message_id
-                        .as_deref()
-                        .unwrap_or(&run.base_message_id)
-                        .to_owned();
-                    let reply = message(
-                        &run.project_id,
-                        Some(&parent),
-                        "assistant",
-                        "standard",
-                        Some(output.assistant_text.clone()),
-                        None,
-                        data,
-                    );
-                    append_output(&mut state, &mut run, reply);
-                    run.status = "completed".into();
-                    run.error = None;
-                }
-                Err(failure) => {
-                    run.status = "failed".into();
-                    run.error = Some(error(failure.code, &failure.message, failure.retryable));
-                }
-            }
+            apply_workspace_terminal_result(&mut state, &mut run, &result);
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.updated", Some(run_id.to_owned()), &run);
@@ -720,15 +662,17 @@ impl LocalControlService {
                 .await
             {
                 Ok(_) => return Ok(run),
-                Err(ControlStoreError::Conflict) => {}
-                Err(error) => return Err(store_error(error)),
+                Err(ControlStoreError::Conflict | ControlStoreError::Other(_)) => {
+                    // A workspace adapter may already have made its Git result
+                    // externally visible. Keep the supervisor's finalization
+                    // control and Project/Session leases until the matching
+                    // terminal Run, assistant output, and commit audit are all
+                    // durable. Returning here would reopen cancellation and
+                    // workspace admission around an unaudited integration.
+                    wait_for_workspace_terminal_persistence(&mut persistence_failures).await;
+                }
             }
         }
-        Err(error(
-            ErrorCode::RunQueueConflict,
-            "concurrent Codex completion did not settle",
-            true,
-        ))
     }
 
     /// Replays durable events after a cursor, allowing lossless reconnection.
@@ -2558,6 +2502,85 @@ fn git_top_level(path: &Path) -> Option<std::path::PathBuf> {
     Path::new(String::from_utf8_lossy(&output.stdout).trim())
         .canonicalize()
         .ok()
+}
+
+async fn wait_for_workspace_terminal_persistence(failures: &mut u32) {
+    let exponent = (*failures).min(8);
+    let delay_ms = 1_u64 << exponent;
+    *failures = failures.saturating_add(1);
+    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+}
+
+fn apply_workspace_terminal_result(
+    state: &mut State,
+    run: &mut RunView,
+    result: &Result<WorkspaceAgentResponse, DomainError>,
+) {
+    match result {
+        Ok(output) => {
+            let operations = output
+                .operations
+                .iter()
+                .map(|operation| {
+                    json!({
+                        "id": operation.id,
+                        "kind": operation.kind,
+                        "status": operation.status,
+                        "title": operation.title,
+                        "summary": operation.summary,
+                        "detail": operation.detail,
+                        "paths": operation.paths,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let output_items = output
+                .output_items
+                .iter()
+                .map(|item| match item {
+                    WorkspaceOutputItem::Message { id, phase, text } => json!({
+                        "type": "message",
+                        "id": id,
+                        "phase": phase,
+                        "text": text,
+                    }),
+                    WorkspaceOutputItem::Operation { id } => json!({
+                        "type": "operation",
+                        "id": id,
+                    }),
+                })
+                .collect::<Vec<_>>();
+            let data =
+                (output.commit_id.is_some() || !operations.is_empty() || !output_items.is_empty())
+                    .then(|| {
+                        json!({"codex":{
+                            "commit_id": output.commit_id,
+                            "operations": operations,
+                            "output_items": output_items,
+                        }})
+                    });
+            let parent = run
+                .last_message_id
+                .as_deref()
+                .unwrap_or(&run.base_message_id)
+                .to_owned();
+            let reply = message(
+                &run.project_id,
+                Some(&parent),
+                "assistant",
+                "standard",
+                Some(output.assistant_text.clone()),
+                None,
+                data,
+            );
+            append_output(state, run, reply);
+            run.status = "completed".into();
+            run.error = None;
+        }
+        Err(failure) => {
+            run.status = "failed".into();
+            run.error = Some(error(failure.code, &failure.message, failure.retryable));
+        }
+    }
 }
 
 fn pending<T: Serialize>(kind: &str, entity_id: Option<String>, body: &T) -> PendingEvent {

@@ -13,7 +13,7 @@ use ait_agent_adapters::{
 };
 use ait_ports::{
     SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceIntegrationGate, WorkspaceOutputItem,
+    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOutputItem,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -147,6 +147,135 @@ enum FinalValidationInjection {
 struct InjectingIntegrationGate {
     project: PathBuf,
     injection: FinalValidationInjection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransactionInjection {
+    StagedBeforeIndexLock,
+    UntrackedAfterWorktreeUpdate,
+    SamePathAfterWorktreeUpdate,
+    FailureAfterRefPublish,
+    UntrackedBeforeIndexPublish,
+}
+
+#[derive(Debug)]
+struct TransactionInjectingGate {
+    project: PathBuf,
+    injection: TransactionInjection,
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for TransactionInjectingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        let matches = matches!(
+            (self.injection, checkpoint),
+            (
+                TransactionInjection::StagedBeforeIndexLock,
+                WorkspaceIntegrationCheckpoint::BeforeIndexLock
+            ) | (
+                TransactionInjection::UntrackedAfterWorktreeUpdate
+                    | TransactionInjection::SamePathAfterWorktreeUpdate,
+                WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate
+            ) | (
+                TransactionInjection::FailureAfterRefPublish,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+            ) | (
+                TransactionInjection::UntrackedBeforeIndexPublish,
+                WorkspaceIntegrationCheckpoint::BeforeIndexPublish
+            )
+        );
+        if !matches {
+            return Ok(());
+        }
+        match self.injection {
+            TransactionInjection::StagedBeforeIndexLock => {
+                std::fs::write(
+                    self.project.join("external-staged.txt"),
+                    "external staged\n",
+                )
+                .unwrap();
+                assert!(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&self.project)
+                        .args(["add", "external-staged.txt"])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            TransactionInjection::UntrackedAfterWorktreeUpdate
+            | TransactionInjection::UntrackedBeforeIndexPublish => {
+                std::fs::write(
+                    self.project.join("external-untracked.txt"),
+                    "external untracked\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::SamePathAfterWorktreeUpdate => {
+                std::fs::write(
+                    self.project.join("tracked.txt"),
+                    "external same-path value\n",
+                )
+                .unwrap();
+            }
+            TransactionInjection::FailureAfterRefPublish => {
+                return Err(ait_domain::DomainError::transient(
+                    ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+                    "injected ref publication failure",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct TransactionEditingAdapter;
+
+#[async_trait]
+impl AgentAdapter for TransactionEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "transaction_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("tracked.txt"), "Run tracked value\n").unwrap();
+        std::fs::write(request.cwd.join("run-owned.txt"), "Run owned value\n").unwrap();
+        Ok(Box::pin(tokio_stream::iter([
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "transaction-final",
+                    "phase": "final_answer",
+                    "text": "Finished transactional edit."
+                }),
+            }),
+            Ok(AgentEvent::Completed {
+                turn_id: "transaction-turn".into(),
+                status: AgentRunStatus::Completed,
+                error: None,
+            }),
+        ])))
+    }
 }
 
 #[async_trait]
@@ -1075,6 +1204,110 @@ async fn final_validation_injections_preserve_the_target_ref_and_external_change
             }
         }
         let _retained_agent_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn publication_phase_failures_roll_back_run_changes_and_preserve_external_writes() {
+    for injection in [
+        TransactionInjection::StagedBeforeIndexLock,
+        TransactionInjection::UntrackedAfterWorktreeUpdate,
+        TransactionInjection::SamePathAfterWorktreeUpdate,
+        TransactionInjection::FailureAfterRefPublish,
+        TransactionInjection::UntrackedBeforeIndexPublish,
+    ] {
+        let project = initialized_project();
+        std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+        commit_all(project.path(), "add transaction fixture");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+        let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("transaction-{injection:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Replace tracked.txt and add run-owned.txt".into(),
+                project_instructions: None,
+                commit_subject: "Exercise integration rollback".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(TransactionInjectingGate {
+                    project: project.path().to_path_buf(),
+                    injection,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        let expected = if matches!(
+            injection,
+            TransactionInjection::StagedBeforeIndexLock
+                | TransactionInjection::UntrackedAfterWorktreeUpdate
+                | TransactionInjection::SamePathAfterWorktreeUpdate
+                | TransactionInjection::UntrackedBeforeIndexPublish
+        ) {
+            ait_domain::ErrorCode::ProjectGitDirty
+        } else {
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable
+        };
+        assert_eq!(failure.code, expected, "injection: {injection:?}");
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline,
+            "target ref changed for {injection:?}"
+        );
+        assert!(
+            !project.path().join("run-owned.txt").exists(),
+            "Run-owned file leaked for {injection:?}"
+        );
+        if !matches!(injection, TransactionInjection::StagedBeforeIndexLock) {
+            assert_eq!(
+                index_tree(project.path()),
+                baseline_index,
+                "canonical index retained Run state for {injection:?}"
+            );
+        }
+
+        match injection {
+            TransactionInjection::StagedBeforeIndexLock => {
+                assert_eq!(
+                    git_output(project.path(), &["diff", "--cached", "--name-only"]),
+                    "external-staged.txt"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("external-staged.txt")).unwrap(),
+                    "external staged\n"
+                );
+            }
+            TransactionInjection::UntrackedAfterWorktreeUpdate
+            | TransactionInjection::UntrackedBeforeIndexPublish => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("external-untracked.txt")).unwrap(),
+                    "external untracked\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                    "authorized baseline\n"
+                );
+            }
+            TransactionInjection::SamePathAfterWorktreeUpdate => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                    "external same-path value\n"
+                );
+            }
+            TransactionInjection::FailureAfterRefPublish => {
+                assert_eq!(
+                    std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                    "authorized baseline\n"
+                );
+                assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+            }
+        }
+        let _retained_run_commit = run_ref(project.path());
     }
 }
 

@@ -14,7 +14,8 @@ use std::{
 use ait_domain::{AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderModel};
 use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation,
+    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
     WorkspaceOutputItem,
 };
 use ait_tools::codex::CodexToolSet;
@@ -256,6 +257,7 @@ async fn invoke_isolated_workspace(
         &request.baseline_commit,
         &request.baseline_index_tree,
     )?;
+    let integration_gate = request.integration_gate.clone();
     let cancellation = request.cancellation.clone();
     let commit_subject = request.commit_subject;
     let stream = adapter
@@ -305,7 +307,7 @@ async fn invoke_isolated_workspace(
     if let Err(failure) = workspace.validate_primary() {
         return Err(workspace.retain(failure));
     }
-    if let Some(gate) = request.integration_gate {
+    if let Some(gate) = integration_gate.as_deref() {
         if let Err(failure) = gate.begin_integration().await {
             return Err(workspace.settle_failure(failure));
         }
@@ -316,7 +318,10 @@ async fn invoke_isolated_workspace(
             false,
         )));
     }
-    if let Err(failure) = workspace.integrate(commit_id.as_deref()) {
+    if let Err(failure) = workspace
+        .integrate(commit_id.as_deref(), integration_gate.as_deref())
+        .await
+    {
         return Err(workspace.retain(failure));
     }
     Ok(WorkspaceAgentResponse {
@@ -445,14 +450,10 @@ impl IsolatedWorkspace {
         )
         .and_then(|_| git(&worktree, &["reset", "--hard", baseline]));
         if let Err(failure) = setup {
-            cleanup_partial_worktree(&primary, &worktree);
-            let _ = delete_git_ref(&primary, &run_ref);
-            return Err(failure);
+            return Err(settle_setup_failure(&primary, &worktree, &run_ref, failure));
         }
         if let Err(failure) = ensure_isolated_setup(&worktree, baseline) {
-            cleanup_partial_worktree(&primary, &worktree);
-            let _ = delete_git_ref(&primary, &run_ref);
-            return Err(failure);
+            return Err(settle_setup_failure(&primary, &worktree, &run_ref, failure));
         }
         Ok(Self {
             primary,
@@ -482,7 +483,11 @@ impl IsolatedWorkspace {
         .map(|_| ())
     }
 
-    fn integrate(&mut self, commit_id: Option<&str>) -> Result<(), DomainError> {
+    async fn integrate(
+        &mut self,
+        commit_id: Option<&str>,
+        integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+    ) -> Result<(), DomainError> {
         if let Some(commit_id) = commit_id {
             ensure_descendant(&self.primary, &self.baseline, commit_id)?;
         }
@@ -497,7 +502,9 @@ impl IsolatedWorkspace {
                 &self.baseline_index_tree,
                 self.primary_head_ref.as_deref(),
                 commit_id,
-            )?;
+                integration_gate,
+            )
+            .await?;
         } else {
             ensure_primary_baseline(
                 &self.primary,
@@ -1284,13 +1291,68 @@ fn ensure_isolated_setup(worktree: &Path, baseline: &str) -> Result<(), DomainEr
     ensure_clean_worktree(worktree).map(|_| ())
 }
 
-fn cleanup_partial_worktree(primary: &Path, worktree: &Path) {
+fn cleanup_partial_worktree(primary: &Path, worktree: &Path) -> Result<(), DomainError> {
     let worktree_text = worktree.to_string_lossy().into_owned();
-    let _ = git(primary, &["worktree", "remove", "--force", &worktree_text]);
-    let _ = git(primary, &["worktree", "prune"]);
+    let remove_failure = git(primary, &["worktree", "remove", "--force", &worktree_text]).err();
+    let prune_failure = git(primary, &["worktree", "prune"]).err();
     if worktree.exists() {
-        let _ = fs::remove_dir_all(worktree);
+        fs::remove_dir_all(worktree).map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "cannot remove partial isolated workspace at {}: {failure}",
+                    worktree.display()
+                ),
+                false,
+            )
+        })?;
     }
+    let registration = git(primary, &["worktree", "list", "--porcelain"])?;
+    let registered = String::from_utf8_lossy(&registration.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .any(|path| Path::new(path) == worktree);
+    if worktree.exists() || registered {
+        let details = remove_failure.or(prune_failure).map_or_else(
+            || "cleanup did not remove the registration".to_owned(),
+            |failure| failure.message,
+        );
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "partial isolated workspace cleanup is incomplete at {}: {details}",
+                worktree.display()
+            ),
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn settle_setup_failure(
+    primary: &Path,
+    worktree: &Path,
+    run_ref: &str,
+    mut setup_failure: DomainError,
+) -> DomainError {
+    if let Err(cleanup_failure) = cleanup_partial_worktree(primary, worktree) {
+        setup_failure.code = ErrorCode::RunRecoveryFailed;
+        setup_failure.retryable = false;
+        setup_failure.message = format!(
+            "{}; {}; recovery material was retained under {run_ref}",
+            setup_failure.message, cleanup_failure.message
+        );
+        return setup_failure;
+    }
+    if let Err(cleanup_failure) = delete_git_ref(primary, run_ref) {
+        setup_failure.code = ErrorCode::RunRecoveryFailed;
+        setup_failure.retryable = false;
+        setup_failure.message = format!(
+            "{}; partial workspace was removed but {run_ref} could not be removed: {}",
+            setup_failure.message, cleanup_failure.message
+        );
+    }
+    setup_failure
 }
 
 fn symbolic_head(cwd: &Path) -> Result<Option<String>, DomainError> {
@@ -1339,7 +1401,8 @@ fn absolute_git_dir(cwd: &Path) -> Result<PathBuf, DomainError> {
 struct LockedIndex {
     index: PathBuf,
     lock: PathBuf,
-    committed: bool,
+    baseline_bytes: Vec<u8>,
+    published: bool,
 }
 
 impl LockedIndex {
@@ -1358,25 +1421,28 @@ impl LockedIndex {
                     true,
                 )
             })?;
-        let locked = Self {
-            index,
-            lock,
-            committed: false,
-        };
-        let mut source = File::open(&locked.index).map_err(|failure| {
+        let baseline_bytes = fs::read(&index).map_err(|failure| {
             domain_error(
                 ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot open Project Git index under lock: {failure}"),
+                format!("cannot read Project Git index under lock: {failure}"),
                 false,
             )
         })?;
-        std::io::copy(&mut source, &mut destination).map_err(|failure| {
-            domain_error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot snapshot Project Git index under lock: {failure}"),
-                true,
-            )
-        })?;
+        let locked = Self {
+            index,
+            lock,
+            baseline_bytes,
+            published: false,
+        };
+        destination
+            .write_all(&locked.baseline_bytes)
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    format!("cannot snapshot Project Git index under lock: {failure}"),
+                    true,
+                )
+            })?;
         destination.flush().map_err(|failure| {
             domain_error(
                 ErrorCode::ProjectGitHeadUnavailable,
@@ -1392,7 +1458,26 @@ impl LockedIndex {
         &self.lock
     }
 
-    fn commit(mut self) -> Result<(), DomainError> {
+    fn ensure_canonical_unchanged(&self) -> Result<(), DomainError> {
+        let current = fs::read(&self.index).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot verify Project canonical Git index: {failure}"),
+                true,
+            )
+        })?;
+        if current == self.baseline_bytes {
+            Ok(())
+        } else {
+            Err(domain_error(
+                ErrorCode::ProjectGitDirty,
+                "Project canonical index changed across the locked integration boundary",
+                true,
+            ))
+        }
+    }
+
+    fn publish(&mut self) -> Result<(), DomainError> {
         fs::rename(&self.lock, &self.index).map_err(|failure| {
             domain_error(
                 ErrorCode::ProjectGitHeadUnavailable,
@@ -1400,14 +1485,14 @@ impl LockedIndex {
                 true,
             )
         })?;
-        self.committed = true;
+        self.published = true;
         Ok(())
     }
 }
 
 impl Drop for LockedIndex {
     fn drop(&mut self) {
-        if !self.committed {
+        if !self.published {
             let _ = fs::remove_file(&self.lock);
         }
     }
@@ -1507,7 +1592,7 @@ impl PreparedRefTransaction {
         }
     }
 
-    fn commit(mut self) -> Result<(), DomainError> {
+    fn commit(&mut self) -> Result<(), DomainError> {
         let stdin = self.stdin.as_mut().ok_or_else(|| {
             domain_error(
                 ErrorCode::ProjectGitHeadUnavailable,
@@ -1552,35 +1637,598 @@ impl Drop for PreparedRefTransaction {
     }
 }
 
-fn integrate_primary_transaction(
+enum BaselinePath {
+    Absent,
+    Directory,
+    Symlink(PathBuf),
+    File(PathBuf),
+}
+
+struct RollbackPath {
+    relative: String,
+    baseline: BaselinePath,
+    commit_present: bool,
+}
+
+struct PrimaryWorktreeRollback {
+    primary: PathBuf,
+    backup_root: PathBuf,
+    expected_index: PathBuf,
+    paths: Vec<RollbackPath>,
+    update_started: bool,
+}
+
+impl PrimaryWorktreeRollback {
+    fn capture(
+        primary: &Path,
+        baseline_index: &Path,
+        baseline: &str,
+        commit: &str,
+    ) -> Result<Self, DomainError> {
+        let output = git(
+            primary,
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "--no-renames",
+                "-r",
+                "-z",
+                baseline,
+                commit,
+            ],
+        )?;
+        let git_dir = absolute_git_dir(primary)?;
+        let backup_parent = git_dir.join("ait").join("integration-rollbacks");
+        fs::create_dir_all(&backup_parent).map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!("cannot create integration rollback directory: {failure}"),
+                false,
+            )
+        })?;
+        let backup_root = backup_parent.join(commit);
+        fs::create_dir(&backup_root).map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "cannot reserve integration rollback material at {}: {failure}; recover or remove it before retrying",
+                    backup_root.display()
+                ),
+                false,
+            )
+        })?;
+        let expected_index = backup_root.join("expected-index");
+        fs::copy(baseline_index, &expected_index).map_err(|failure| {
+            rollback_io_error("snapshot candidate index", baseline_index, &failure)
+        })?;
+        git_with_index(primary, &expected_index, &["read-tree", commit])?;
+        let mut paths = Vec::new();
+        let mut seen = HashSet::new();
+        for raw in output.stdout.split(|byte| *byte == 0) {
+            if raw.is_empty() {
+                continue;
+            }
+            let relative = std::str::from_utf8(raw).map_err(|_| {
+                domain_error(
+                    ErrorCode::RunRecoveryFailed,
+                    "cannot safely journal a non-UTF-8 Git worktree path",
+                    false,
+                )
+            })?;
+            if !seen.insert(relative.to_owned()) {
+                continue;
+            }
+            paths.push(capture_rollback_path(
+                primary,
+                &backup_root,
+                commit,
+                relative,
+            )?);
+        }
+        paths.sort_by_key(|entry| {
+            std::cmp::Reverse(Path::new(&entry.relative).components().count())
+        });
+        Ok(Self {
+            primary: primary.to_path_buf(),
+            backup_root,
+            expected_index,
+            paths,
+            update_started: false,
+        })
+    }
+
+    fn mark_update_started(&mut self) {
+        self.update_started = true;
+    }
+
+    fn rollback(&mut self, candidate_index: &Path, baseline: &str) -> Result<(), DomainError> {
+        if !self.update_started {
+            self.discard();
+            return Ok(());
+        }
+        let candidate_root = self.backup_root.join("candidate");
+        let mut failures = Vec::new();
+        for entry in &self.paths {
+            if let Err(failure) = self.rollback_path(&candidate_root, entry) {
+                failures.push(failure.message);
+            }
+        }
+        if let Err(failure) =
+            git_with_index(&self.primary, candidate_index, &["read-tree", baseline])
+        {
+            failures.push(failure.message);
+        }
+        self.update_started = false;
+        if failures.is_empty() {
+            self.discard();
+            Ok(())
+        } else {
+            Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "primary worktree rollback is incomplete; recovery material remains at {}: {}",
+                    self.backup_root.display(),
+                    failures.join("; ")
+                ),
+                false,
+            ))
+        }
+    }
+
+    fn rollback_path(
+        &self,
+        candidate_root: &Path,
+        entry: &RollbackPath,
+    ) -> Result<(), DomainError> {
+        let target = self.primary.join(&entry.relative);
+        if !entry.commit_present {
+            if path_exists(&target)? {
+                // The Run expected this path to be absent, so a present value
+                // was introduced externally after publication began.
+                return Ok(());
+            }
+            return restore_baseline_path(&entry.baseline, &target);
+        }
+        if !worktree_path_matches_index(
+            &self.primary,
+            &self.primary,
+            &self.expected_index,
+            &entry.relative,
+        )? {
+            // The post-update value no longer equals the Run commit. Preserve
+            // it as the external writer's version instead of resetting it.
+            return Ok(());
+        }
+
+        let candidate = candidate_root.join(&entry.relative);
+        if let Some(parent) = candidate.parent() {
+            fs::create_dir_all(parent).map_err(|failure| {
+                rollback_io_error("create rollback quarantine parent", parent, &failure)
+            })?;
+        }
+        fs::rename(&target, &candidate).map_err(|failure| {
+            rollback_io_error("quarantine Run worktree path", &target, &failure)
+        })?;
+        restore_baseline_path(&entry.baseline, &target)?;
+        remove_path(&candidate)?;
+        remove_empty_parents(candidate.parent(), candidate_root);
+        remove_empty_parents(target.parent(), &self.primary);
+        Ok(())
+    }
+
+    fn discard(&mut self) {
+        self.update_started = false;
+        let _ = fs::remove_dir_all(&self.backup_root);
+    }
+}
+
+fn capture_rollback_path(
+    primary: &Path,
+    backup_root: &Path,
+    commit: &str,
+    relative: &str,
+) -> Result<RollbackPath, DomainError> {
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!("cannot safely journal Git worktree path {relative:?}"),
+            false,
+        ));
+    }
+    let source = primary.join(path);
+    let baseline = match fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.file_type().is_symlink() => BaselinePath::Symlink(
+            fs::read_link(&source)
+                .map_err(|failure| rollback_io_error("read baseline symlink", &source, &failure))?,
+        ),
+        Ok(metadata) if metadata.is_dir() => BaselinePath::Directory,
+        Ok(metadata) if metadata.is_file() => {
+            let backup = backup_root.join("baseline").join(path);
+            if let Some(parent) = backup.parent() {
+                fs::create_dir_all(parent).map_err(|failure| {
+                    rollback_io_error("create baseline backup parent", parent, &failure)
+                })?;
+            }
+            fs::copy(&source, &backup).map_err(|failure| {
+                rollback_io_error("snapshot baseline file", &source, &failure)
+            })?;
+            BaselinePath::File(backup)
+        }
+        Ok(_) => {
+            return Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "cannot journal unsupported worktree file type at {}",
+                    source.display()
+                ),
+                false,
+            ));
+        }
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => BaselinePath::Absent,
+        Err(failure) => {
+            return Err(rollback_io_error(
+                "inspect baseline worktree path",
+                &source,
+                &failure,
+            ));
+        }
+    };
+    Ok(RollbackPath {
+        relative: relative.to_owned(),
+        baseline,
+        commit_present: git_tree_contains_path(primary, commit, relative)?,
+    })
+}
+
+fn rollback_primary_integration(
+    primary: &Path,
+    baseline: &str,
+    commit: &str,
+    published_ref: Option<bool>,
+    index: &LockedIndex,
+    rollback: &mut PrimaryWorktreeRollback,
+    mut failure: DomainError,
+) -> DomainError {
+    let mut rollback_failures = Vec::new();
+    if let Some(no_deref) = published_ref
+        && let Err(ref_failure) = rollback_published_ref(primary, baseline, commit, no_deref)
+    {
+        rollback_failures.push(ref_failure.message);
+    }
+    if let Err(worktree_failure) = rollback.rollback(index.path(), baseline) {
+        rollback_failures.push(worktree_failure.message);
+    }
+    if !rollback_failures.is_empty() {
+        failure.code = ErrorCode::RunRecoveryFailed;
+        failure.retryable = false;
+        failure.message = format!(
+            "{}; integration rollback requires recovery: {}",
+            failure.message,
+            rollback_failures.join("; ")
+        );
+    }
+    failure
+}
+
+fn rollback_published_ref(
+    primary: &Path,
+    baseline: &str,
+    commit: &str,
+    no_deref: bool,
+) -> Result<(), DomainError> {
+    if no_deref {
+        git(
+            primary,
+            &["update-ref", "--no-deref", "HEAD", baseline, commit],
+        )?;
+    } else {
+        git(primary, &["update-ref", "HEAD", baseline, commit])?;
+    }
+    Ok(())
+}
+
+async fn integration_checkpoint(
+    gate: Option<&dyn WorkspaceIntegrationGate>,
+    checkpoint: WorkspaceIntegrationCheckpoint,
+) -> Result<(), DomainError> {
+    if let Some(gate) = gate {
+        gate.checkpoint(checkpoint).await?;
+    }
+    Ok(())
+}
+
+fn git_tree_contains_path(
+    primary: &Path,
+    commit: &str,
+    relative: &str,
+) -> Result<bool, DomainError> {
+    let output = git(primary, &["ls-tree", "-z", commit, "--", relative])?;
+    Ok(!output.stdout.is_empty())
+}
+
+fn worktree_path_matches_index(
+    primary: &Path,
+    worktree: &Path,
+    index: &Path,
+    relative: &str,
+) -> Result<bool, DomainError> {
+    let entry = git_with_index(primary, index, &["ls-files", "--stage", "--", relative])?;
+    let entry = String::from_utf8_lossy(&entry.stdout);
+    let mut fields = entry
+        .split('\t')
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    let Some(mode) = fields.next() else {
+        return Ok(false);
+    };
+    let Some(expected_oid) = fields.next() else {
+        return Ok(false);
+    };
+    let path = worktree.join(relative);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(failure) => {
+            return Err(rollback_io_error(
+                "inspect candidate worktree path",
+                &path,
+                &failure,
+            ));
+        }
+    };
+    if mode == "120000" {
+        if !metadata.file_type().is_symlink() {
+            return Ok(false);
+        }
+        let link = fs::read_link(&path).map_err(|failure| {
+            rollback_io_error("read candidate worktree symlink", &path, &failure)
+        })?;
+        let expected = git(primary, &["cat-file", "blob", expected_oid])?;
+        return Ok(symlink_bytes(&link) == expected.stdout);
+    }
+    if !metadata.is_file() || !worktree_mode_matches(mode, &metadata) {
+        return Ok(false);
+    }
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(primary)
+        .args(["hash-object", &format!("--path={relative}")])
+        .arg(&path)
+        .output()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!("cannot hash rollback path {relative:?}: {failure}"),
+                false,
+            )
+        })?;
+    if !output.status.success() {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            false,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim() == expected_oid)
+}
+
+#[cfg(unix)]
+fn symlink_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt as _;
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn symlink_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().as_bytes().to_vec()
+}
+
+#[cfg(unix)]
+fn worktree_mode_matches(mode: &str, metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let executable = metadata.permissions().mode() & 0o111 != 0;
+    executable == (mode == "100755")
+}
+
+#[cfg(windows)]
+fn worktree_mode_matches(_mode: &str, _metadata: &fs::Metadata) -> bool {
+    true
+}
+
+fn path_exists(path: &Path) -> Result<bool, DomainError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(failure) => Err(rollback_io_error("inspect rollback target", path, &failure)),
+    }
+}
+
+fn restore_baseline_path(baseline: &BaselinePath, target: &Path) -> Result<(), DomainError> {
+    match baseline {
+        BaselinePath::Absent => Ok(()),
+        BaselinePath::Directory => fs::create_dir(target)
+            .map_err(|failure| rollback_io_error("restore baseline directory", target, &failure)),
+        BaselinePath::Symlink(link) => create_symlink(link, target)
+            .map_err(|failure| rollback_io_error("restore baseline symlink", target, &failure)),
+        BaselinePath::File(source) => copy_file_create_only(source, target),
+    }
+}
+
+fn copy_file_create_only(source: &Path, target: &Path) -> Result<(), DomainError> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|failure| {
+            rollback_io_error("create rollback target parent", parent, &failure)
+        })?;
+    }
+    let mut source_file = File::open(source)
+        .map_err(|failure| rollback_io_error("open rollback source", source, &failure))?;
+    let mut target_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|failure| rollback_io_error("create rollback target", target, &failure))?;
+    if let Err(failure) = std::io::copy(&mut source_file, &mut target_file) {
+        let _ = fs::remove_file(target);
+        return Err(rollback_io_error("restore rollback file", target, &failure));
+    }
+    let permissions = fs::metadata(source)
+        .map_err(|failure| rollback_io_error("read rollback permissions", source, &failure))?
+        .permissions();
+    fs::set_permissions(target, permissions)
+        .map_err(|failure| rollback_io_error("restore rollback permissions", target, &failure))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(link: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(link, target)
+}
+
+#[cfg(windows)]
+fn create_symlink(link: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(link, target)
+}
+
+fn remove_path(path: &Path) -> Result<(), DomainError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|failure| rollback_io_error("inspect rollback cleanup path", path, &failure))?;
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+            .map_err(|failure| rollback_io_error("remove rollback directory", path, &failure))
+    } else {
+        fs::remove_file(path)
+            .map_err(|failure| rollback_io_error("remove rollback file", path, &failure))
+    }
+}
+
+fn remove_empty_parents(mut parent: Option<&Path>, boundary: &Path) {
+    while let Some(path) = parent {
+        if path == boundary || !path.starts_with(boundary) || fs::remove_dir(path).is_err() {
+            break;
+        }
+        parent = path.parent();
+    }
+}
+
+fn rollback_io_error(operation: &str, path: &Path, failure: &std::io::Error) -> DomainError {
+    domain_error(
+        ErrorCode::RunRecoveryFailed,
+        format!("cannot {operation} at {}: {failure}", path.display()),
+        false,
+    )
+}
+
+async fn integrate_primary_transaction(
     primary: &Path,
     baseline: &str,
     baseline_index_tree: &str,
     expected_head_ref: Option<&str>,
     commit: &str,
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
 ) -> Result<(), DomainError> {
-    let transaction = PreparedRefTransaction::prepare(
+    let mut transaction = PreparedRefTransaction::prepare(
         primary,
         "HEAD",
         baseline,
         commit,
         expected_head_ref.is_none(),
     )?;
-    let index = LockedIndex::acquire(primary)?;
-
-    ensure_primary_reference(primary, baseline, expected_head_ref)?;
-    ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
-    git_with_index(
-        primary,
-        index.path(),
-        &["read-tree", "-u", "-m", baseline, commit],
-    )?;
+    integration_checkpoint(
+        integration_gate,
+        WorkspaceIntegrationCheckpoint::BeforeIndexLock,
+    )
+    .await?;
+    let mut index = LockedIndex::acquire(primary)?;
     let commit_tree = git_commit_tree(primary, commit)?;
-    ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
+    let mut rollback = PrimaryWorktreeRollback::capture(primary, index.path(), baseline, commit)?;
+    let mut ref_published = false;
 
-    transaction.commit()?;
-    index.commit()?;
-    Ok(())
+    let outcome = async {
+        ensure_primary_reference(primary, baseline, expected_head_ref)?;
+        ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
+        index.ensure_canonical_unchanged()?;
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::BeforeWorktreeUpdate,
+        )
+        .await?;
+        ensure_primary_reference(primary, baseline, expected_head_ref)?;
+        ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
+        index.ensure_canonical_unchanged()?;
+
+        rollback.mark_update_started();
+        git_with_index(
+            primary,
+            index.path(),
+            &["read-tree", "-u", "-m", baseline, commit],
+        )?;
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate,
+        )
+        .await?;
+        ensure_primary_reference(primary, baseline, expected_head_ref)?;
+        index.ensure_canonical_unchanged()?;
+        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
+
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::BeforeRefPublish,
+        )
+        .await?;
+        ensure_primary_reference(primary, baseline, expected_head_ref)?;
+        index.ensure_canonical_unchanged()?;
+        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
+        transaction.commit()?;
+        ref_published = true;
+
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::AfterRefPublish,
+        )
+        .await?;
+        ensure_primary_reference(primary, commit, expected_head_ref)?;
+        index.ensure_canonical_unchanged()?;
+        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::BeforeIndexPublish,
+        )
+        .await?;
+        ensure_primary_reference(primary, commit, expected_head_ref)?;
+        index.ensure_canonical_unchanged()?;
+        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
+
+        // This rename is the last fallible publication step. The prepared ref
+        // remains rollbackable until it succeeds, and no fallible validation
+        // is performed after the canonical index becomes externally visible.
+        index.publish()?;
+        Ok(())
+    }
+    .await;
+
+    match outcome {
+        Ok(()) => {
+            rollback.discard();
+            Ok(())
+        }
+        Err(failure) => Err(rollback_primary_integration(
+            primary,
+            baseline,
+            commit,
+            ref_published.then_some(expected_head_ref.is_none()),
+            &index,
+            &mut rollback,
+            failure,
+        )),
+    }
 }
 
 fn ensure_primary_reference(
@@ -2496,4 +3144,69 @@ async fn send_event(
             false,
         )
     })
+}
+
+#[cfg(test)]
+mod workspace_cleanup_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_partial_worktree_cleanup_keeps_the_recovery_ref_and_reports_the_handle() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let repository = tempfile::tempdir().unwrap();
+        git(repository.path(), &["init"]).unwrap();
+        git(
+            repository.path(),
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        )
+        .unwrap();
+        let baseline = git_head(repository.path()).unwrap();
+        let run_ref = "refs/ait/runs/cleanup-failure";
+        git(repository.path(), &["update-ref", run_ref, &baseline]).unwrap();
+        let partial = repository.path().join("partial-worktree");
+        git(
+            repository.path(),
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                partial.to_str().unwrap(),
+                &baseline,
+            ],
+        )
+        .unwrap();
+        let original_permissions = fs::metadata(repository.path()).unwrap().permissions();
+        let mut unwritable = original_permissions.clone();
+        unwritable.set_mode(0o555);
+        fs::set_permissions(repository.path(), unwritable).unwrap();
+
+        let failure = settle_setup_failure(
+            repository.path(),
+            &partial,
+            run_ref,
+            domain_error(
+                ErrorCode::ProjectGitInitFailed,
+                "injected setup failure",
+                false,
+            ),
+        );
+        fs::set_permissions(repository.path(), original_permissions).unwrap();
+
+        assert_eq!(failure.code, ErrorCode::RunRecoveryFailed);
+        assert!(failure.message.contains("partial isolated workspace"));
+        assert!(failure.message.contains(run_ref));
+        assert!(git_ref_exists(repository.path(), run_ref).unwrap());
+        assert!(partial.exists());
+    }
 }

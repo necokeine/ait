@@ -144,6 +144,35 @@ pub trait WorkspaceIntegrationGate: std::fmt::Debug + Send + Sync {
     /// Once this succeeds, cancellation must not persist a cancelled terminal
     /// state. If cancellation won first, this returns [`ErrorCode::RunCancelled`].
     async fn begin_integration(&self) -> Result<(), DomainError>;
+
+    /// Observes a named integration boundary after finalization was claimed.
+    ///
+    /// Production gates normally keep the default no-op implementation. The
+    /// explicit checkpoints make failure/race injection deterministic without
+    /// teaching an adapter about a concrete persistence or test implementation.
+    async fn checkpoint(
+        &self,
+        _checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+}
+
+/// Fallible boundaries in the primary-worktree publication protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceIntegrationCheckpoint {
+    /// The ref transaction is prepared, before the canonical index is locked.
+    BeforeIndexLock,
+    /// The primary worktree is still at the admitted tree, before updating it.
+    BeforeWorktreeUpdate,
+    /// The primary worktree was updated through the locked candidate index.
+    AfterWorktreeUpdate,
+    /// All pre-publication validation passed, immediately before ref publication.
+    BeforeRefPublish,
+    /// The target ref was published while the canonical index remains unchanged.
+    AfterRefPublish,
+    /// The canonical index is about to become the candidate index.
+    BeforeIndexPublish,
 }
 
 /// One workspace-scoped invocation of a complete coding Agent harness.
