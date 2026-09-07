@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use reqwest::Client;
@@ -43,6 +43,10 @@ impl Drop for DaemonGuard {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the daemon acceptance flow intentionally remains one end-to-end scenario"
+)]
 async fn daemon_http_generates_an_assistant_response_through_codex() {
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
@@ -93,10 +97,11 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     wait_until_ready(&client, &base_url, &mut daemon).await;
     register_test_entities(&client, &base_url, &project).await;
 
+    let submitted_at = Instant::now();
     let response = post(
         &client,
         &base_url,
-        "/v1/session/send-message",
+        "/v1/session/submit-message",
         &json!({
             "session_id": "daemon-codex-session",
             "text": "Generate a response through Codex.",
@@ -105,7 +110,68 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     .await;
     assert_ok(&response);
     assert_eq!(response["result"]["kind"], "run");
-    assert_eq!(response["result"]["value"]["status"], "completed");
+    assert_eq!(response["result"]["value"]["status"], "queued");
+    assert!(submitted_at.elapsed() < Duration::from_millis(500));
+    let run_id = response["result"]["value"]["id"].as_str().unwrap();
+
+    let progress_deadline = Instant::now() + Duration::from_secs(2);
+    let progress = loop {
+        let progress: Value = client
+            .get(format!("{base_url}/v1/run/progress"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if let Some(checkpoint) = progress.as_array().and_then(|values| values.first()) {
+            break checkpoint.clone();
+        }
+        assert!(
+            Instant::now() < progress_deadline,
+            "progress was not visible"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(progress["run_id"], run_id);
+    assert!(
+        progress["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| { item["type"] == "message" && item["text"] == "Inspecting the project." })
+    );
+    assert!(progress["items"].as_array().unwrap().iter().any(|item| {
+        item["type"] == "operation" && item["operation"]["status"] == "inProgress"
+    }));
+
+    let replay = client
+        .get(format!("{base_url}/v1/event/list?after=0&limit=1000"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(replay.contains("run.progress"));
+    assert!(replay.contains("text_delta"));
+
+    let completion_deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let run = post(
+            &client,
+            &base_url,
+            "/v1/run/get",
+            &json!({"run_id": run_id}),
+        )
+        .await;
+        assert_ok(&run);
+        if run["result"]["value"]["status"] == "completed" {
+            break;
+        }
+        assert!(Instant::now() < completion_deadline, "Run did not complete");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 
     let snapshot: Value = client
         .get(format!("{base_url}/v1/workspace/snapshot"))
@@ -222,7 +288,16 @@ esac
 printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
 read_line
 printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-http-test"}}}}}}'
-printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"assistant-http-test","delta":"{ASSISTANT_RESPONSE}"}}}}'
+printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":""}}}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":"Inspecting the project."}}}}}}'
+printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"commandExecution","id":"command-http-test","status":"inProgress","command":"pwd"}}}}}}'
+sleep 0.6
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"commandExecution","id":"command-http-test","status":"completed","command":"pwd","aggregatedOutput":"project"}}}}}}'
+printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"assistant-http-test","phase":"final_answer","text":""}}}}}}'
+printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"assistant-http-test","delta":"Generated through Codex "}}}}'
+sleep 0.6
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"assistant-http-test","phase":"final_answer","text":"{ASSISTANT_RESPONSE}"}}}}}}'
 printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-http-test","turn":{{"id":"turn-http-test","items":[],"status":"completed"}}}}}}'
 "#
         ),

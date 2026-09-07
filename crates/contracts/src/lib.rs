@@ -202,8 +202,8 @@ pub struct MessageView {
 }
 
 /// Run result or query snapshot; this DTO never requests execution.
-/// New actively executed Runs return their final state. Queries and deferred
-/// Manual/approval modes can expose an intermediate state.
+/// Synchronous command routes return the final state. Explicit asynchronous
+/// submission routes and queries can expose an intermediate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunView {
     pub id: String,
@@ -320,6 +320,15 @@ pub struct Event {
     pub entity_id: Option<String>,
     pub body: Value,
     pub created_at: i64,
+}
+
+/// One bounded replay page plus retained-cursor validity metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventPage {
+    pub events: Vec<Event>,
+    pub oldest_cursor: Option<u64>,
+    pub latest_cursor: Option<u64>,
+    pub cursor_valid: bool,
 }
 
 /// Versioned desktop workspace, settings, and branch-operation DTOs.

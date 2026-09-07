@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/NEC-205/adr-001-live-run-progress-and-recovery.md`：daemon 异步 Run、Codex 统一进度事件、
+  有界 checkpoint、cursor 回放后持续监听，以及桌面端增量展示与断线状态同步。
+
 - `decisions/NEC-204/adr-001-codex-phased-output-timeline.md`：按 Codex item 聚合并持久化阶段化输出时间线，桌面端以折叠过程和独立最终答复收尾。
 
 - `decisions/NEC-203/adr-001-remove-test-provider-identities.md`：移除 Tool、Manual、ProviderFailure 与 ApprovalRequired 的生产 Provider 身份，保留 seam 测试与旧快照引用保护。

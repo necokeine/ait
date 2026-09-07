@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
     DomainError, Message, MessageId, ProjectedMessage, Run, RunAttempt, RunAttemptId, RunId,
@@ -178,6 +178,64 @@ pub struct WorkspaceAgentResponse {
     pub output_items: Vec<WorkspaceOutputItem>,
 }
 
+/// One provider-normalized, user-visible update from a workspace harness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceProgressEvent {
+    /// A provider-authored message item became visible.
+    MessageStarted {
+        /// Harness-stable item identity.
+        id: String,
+        /// Provider phase such as `commentary` or `final_answer`.
+        phase: Option<String>,
+        /// Optional initial full text.
+        text: String,
+    },
+    /// More text arrived for one message item.
+    TextDelta {
+        /// Harness-stable item identity.
+        id: String,
+        /// Ordered text suffix.
+        delta: String,
+    },
+    /// The provider supplied the authoritative full message item.
+    MessageCompleted {
+        /// Harness-stable item identity.
+        id: String,
+        /// Provider phase such as `commentary` or `final_answer`.
+        phase: Option<String>,
+        /// Authoritative full text.
+        text: String,
+    },
+    /// A native operation started or changed state.
+    OperationStarted(WorkspaceOperation),
+    /// A native operation reached a provider terminal state.
+    OperationCompleted(WorkspaceOperation),
+    /// A safe, user-visible provider warning or retry notice.
+    Warning {
+        /// Bounded diagnostic text.
+        message: String,
+        /// Whether the provider reports an automatic retry.
+        retrying: bool,
+        /// Optional provider-normalized error code.
+        code: Option<String>,
+    },
+    /// The underlying provider turn changed state.
+    TurnStatus {
+        /// Stable lowercase status.
+        status: String,
+        /// Safe terminal diagnostic, when present.
+        error: Option<String>,
+    },
+}
+
+/// Progress sink supplied by the application to a provider adapter.
+#[async_trait]
+pub trait WorkspaceProgressReporter: Send + Sync {
+    /// Accepts one ordered update. Implementations may batch persistence, but
+    /// must preserve order within a Run.
+    async fn report(&self, event: WorkspaceProgressEvent);
+}
+
 /// One ordered item in a workspace harness' durable display projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceOutputItem {
@@ -256,6 +314,16 @@ pub trait WorkspaceAgent: Send + Sync {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError>;
+
+    /// Runs the harness while forwarding normalized user-visible progress.
+    /// Adapters without streaming support retain their existing behavior.
+    async fn invoke_with_progress(
+        &self,
+        request: WorkspaceAgentInvocation,
+        _progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.invoke(request).await
+    }
 }
 
 /// A tool invocation with stable host-assigned idempotency identity.

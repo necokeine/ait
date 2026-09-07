@@ -1020,6 +1020,24 @@ impl ControlStore for PausingStore {
     ) -> Result<Vec<ait_ports::DurableEvent>, ait_ports::ControlStoreError> {
         self.inner.replay(after, limit).await
     }
+    async fn event_bounds(&self) -> Result<ait_ports::EventBounds, ait_ports::ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+    async fn save_progress(
+        &self,
+        checkpoint: ait_ports::ProgressCheckpoint,
+        events: Vec<ait_ports::PendingEvent>,
+    ) -> Result<(), ait_ports::ControlStoreError> {
+        self.inner.save_progress(checkpoint, events).await
+    }
+    async fn load_progress(
+        &self,
+    ) -> Result<Vec<ait_ports::ProgressCheckpoint>, ait_ports::ControlStoreError> {
+        self.inner.load_progress().await
+    }
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ait_ports::ControlStoreError> {
+        self.inner.clear_progress(run_id).await
+    }
     async fn commit(
         &self,
         revision: u64,

@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentView } from "./types.js";
+import type { AgentProvider, AgentView, ControlEvent, RunProgress, RunStreamUpdate } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -10,7 +10,7 @@ import {
   legacyBuiltInCodexAgentId,
   projectAgent,
 } from "./agents.js";
-import { runFailure } from "./runs.js";
+import { progressFromCheckpoint } from "./run-progress.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
@@ -43,16 +43,26 @@ interface WorkspaceView {
     active_run_id: string | null; version: number;
   }>;
   messages: WorkspaceMessage[];
-  runs: Array<{ id: string; agent_id: string; base_message_id: string; last_message_id: string | null }>;
+  runs: Array<{
+    id: string; project_id: string; session_id: string | null; agent_id: string;
+    base_message_id: string; last_message_id: string | null; status: string;
+    error?: { code?: string; message?: string } | null;
+  }>;
 }
 
 class DaemonClient {
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
   private snapshotRevision = 0;
+  private eventAbort: AbortController | undefined;
+  private eventLoop: Promise<void> | undefined;
+  private eventCursor = 0;
+  private streamConnected: boolean | undefined;
 
   ensureStarted(): Promise<void> {
-    this.startup ??= this.start().then(() => this.ensureBuiltInAgents());
+    this.startup ??= this.start().then(() => this.ensureBuiltInAgents()).then(() => {
+      this.startEventStream();
+    });
     return this.startup;
   }
 
@@ -165,20 +175,14 @@ class DaemonClient {
       return this.snapshot();
     }
     if (method === "session.send-message") {
-      const run = await this.post("/v1/session/send-message", "run", {
+      await this.post("/v1/session/submit-message", "run", {
         session_id: params.sessionId, text: params.content,
       });
-      const failure = runFailure(run);
-      if (failure) {
-        const error = new Error(failure.message) as Error & { code?: string };
-        if (failure.code) error.code = failure.code;
-        throw error;
-      }
       return this.snapshot();
     }
 
     const id = randomUUID();
-    await this.post("/v1/session/fork", "run", {
+    await this.post("/v1/session/submit-fork", "run", {
       id, project_id: params.projectId, agent_id: params.agentId,
       at_message_id: params.sourceMessageId, text: params.content,
     });
@@ -186,6 +190,9 @@ class DaemonClient {
   }
 
   stop(): void {
+    this.eventAbort?.abort();
+    this.eventAbort = undefined;
+    this.eventLoop = undefined;
     this.ownedProcess?.kill();
     this.ownedProcess = undefined;
   }
@@ -260,9 +267,87 @@ class DaemonClient {
     return envelope.result.value;
   }
 
+  private startEventStream(): void {
+    if (this.eventLoop) return;
+    this.eventAbort = new AbortController();
+    this.eventLoop = this.followEvents(this.eventAbort.signal);
+  }
+
+  private async followEvents(signal: AbortSignal): Promise<void> {
+    let retryDelay = 250;
+    while (!signal.aborted) {
+      try {
+        const response = await fetch(`${endpoint}/v1/event/stream?after=${this.eventCursor}`, { signal });
+        if (!response.ok || !response.body) throw new Error(`event stream returned HTTP ${response.status}`);
+        this.publishConnection(true);
+        retryDelay = 250;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!signal.aborted) {
+          const chunk = await reader.read();
+          buffer += decoder.decode(chunk.value, { stream: !chunk.done }).replace(/\r\n/g, "\n");
+          let boundary = buffer.indexOf("\n\n");
+          while (boundary >= 0) {
+            const frame = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            this.acceptEventFrame(frame);
+            boundary = buffer.indexOf("\n\n");
+          }
+          if (chunk.done) break;
+        }
+        if (!signal.aborted) throw new Error("event stream ended");
+      } catch (error) {
+        if (signal.aborted) break;
+        console.error(`[ait-daemon] progress stream disconnected: ${error instanceof Error ? error.message : String(error)}`);
+        this.publishConnection(false);
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, retryDelay));
+        retryDelay = Math.min(5_000, retryDelay * 2);
+      }
+    }
+  }
+
+  private acceptEventFrame(frame: string): void {
+    const data = frame.split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!data) return;
+    try {
+      const event = JSON.parse(data) as ControlEvent;
+      if (!Number.isSafeInteger(event.cursor) || typeof event.kind !== "string") return;
+      this.eventCursor = Math.max(this.eventCursor, event.cursor);
+      this.publish({ type: "event", event });
+    } catch {
+      // A malformed frame is ignored; reconnect replay remains authoritative.
+    }
+  }
+
+  private publishConnection(connected: boolean): void {
+    if (this.streamConnected === connected) return;
+    this.streamConnected = connected;
+    this.publish({ type: "connection", connected });
+  }
+
+  private publish(update: RunStreamUpdate): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send("ait:run-event", update);
+    }
+  }
+
   private async snapshot(): Promise<unknown> {
-    const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
+    const [workspace, progressValues] = await Promise.all([
+      this.get("/v1/workspace/snapshot", "workspace") as Promise<WorkspaceView>,
+      fetch(`${endpoint}/v1/run/progress`).then(async (response) => {
+        if (!response.ok) throw new Error(`Ait daemon returned HTTP ${response.status}.`);
+        return response.json() as Promise<unknown[]>;
+      }),
+    ]);
     const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
+    const activeRunIds = new Set(workspace.sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
+    const runProgress = progressValues
+      .map(progressFromCheckpoint)
+      .filter((progress): progress is RunProgress => progress !== undefined && activeRunIds.has(progress.runId));
     this.snapshotRevision += 1;
     return {
       protocolVersion: 1,
@@ -279,9 +364,21 @@ class DaemonClient {
         title: sessionDisplayTitle(session), description: session.description ?? "",
         titleGenerationStarted: session.title_generation_started ?? false,
         currentMessageId: session.current_message_id, agentId: session.agent_id,
-        version: session.version, active: session.active_run_id !== null, updatedAt: 0,
+        version: session.version, active: session.active_run_id !== null,
+        activeRunId: session.active_run_id, updatedAt: 0,
       })),
       messages: workspace.messages.map((message) => projectMessage(message, messageAgents.get(message.id) ?? null)),
+      runs: workspace.runs.map((run) => ({
+        id: run.id,
+        sessionId: run.session_id,
+        baseMessageId: run.base_message_id,
+        lastMessageId: run.last_message_id,
+        status: run.status,
+        ...(run.error?.message ? {
+          error: { message: run.error.message, ...(run.error.code ? { code: run.error.code } : {}) },
+        } : {}),
+      })),
+      runProgress,
     };
   }
 }

@@ -28,6 +28,7 @@ const session = (id: string, currentMessageId: string, updatedAt = 0): DesktopSe
   agentId: "agent",
   version: 1,
   active: false,
+  activeRunId: null,
   updatedAt,
 });
 

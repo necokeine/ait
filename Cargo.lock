@@ -68,6 +68,7 @@ dependencies = [
  "ait-domain",
  "ait-observability",
  "ait-storage-sqlite",
+ "async-stream",
  "axum",
  "http-body-util",
  "serde",

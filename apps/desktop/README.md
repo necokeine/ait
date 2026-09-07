@@ -26,6 +26,15 @@ date and time in the local timezone, including system and tool messages. Older
 records that never stored a timestamp display `Time unavailable`; loading them
 does not invent or rewrite historical times.
 
+Sending a message uses the daemon's asynchronous submission route. Electron
+main keeps one cursor-based progress stream for all windows and forwards only
+the fixed `ait:run-event` IPC channel. Active Sessions render checkpointed Codex
+messages and native operations incrementally; refresh and reconnect recover from
+the daemon without restarting the Run. Closing a renderer subscription does not
+cancel execution. A disconnected stream is shown separately from Run failure,
+and the final immutable Message replaces the transient projection after Ait has
+finished saving it.
+
 ## Packaging
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.

@@ -1,6 +1,7 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
-import { bindCodeBlockActions, renderMessage, renderMessageTime } from "./message-renderer.js";
+import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgress, renderRunTerminal } from "./message-renderer.js";
+import { applyProgressEvent } from "./run-progress.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
 import { sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
@@ -8,6 +9,7 @@ import type {
   DesktopMessage,
   DesktopSession,
   DesktopSnapshot,
+  RunStreamUpdate,
   SettingCategory,
   SettingDefinition,
   SettingsResponse,
@@ -60,12 +62,18 @@ let activePage: "sessions" | "agents" = "sessions";
 let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
 let toastTimer: number | undefined;
+let streamConnected = true;
+let renderedSessionId: string | undefined;
+let snapshotRefreshPending = false;
+const pendingTitles = new Map<string, { sessionId: string; prompt: string }>();
+const pendingStreamUpdates: RunStreamUpdate[] = [];
 const agentsPage = createAgentsPage($("#agents-page"), {
   update: (updated) => { snapshot = updated; renderAll(); },
   notify: showToast,
   configureProvider: openProviderSettings,
 });
 
+window.ait.subscribeRunEvents(handleRunStreamUpdate);
 void initialize();
 
 async function initialize(): Promise<void> {
@@ -84,6 +92,7 @@ async function initialize(): Promise<void> {
     selectedProjectId = loadedSnapshot.sessions.find((session) => session.id === newestSession)?.projectId
       ?? loadedSnapshot.projects[0]?.id;
     applyPreferences();
+    drainPendingStreamUpdates();
     renderAll();
     appShell.classList.remove("is-loading");
     const coreStatus = $("#core-status");
@@ -315,19 +324,41 @@ function renderConversation(): void {
   if (!snapshot) return;
   const session = currentSession();
   if (!session) {
+    renderedSessionId = undefined;
     $("#session-title").textContent = "No session selected";
     $("#session-breadcrumb").textContent = currentProject()?.name ?? "No Project";
     conversation.innerHTML = `<div class="empty-state"><p>${currentProject() ? "Create or choose a Session to begin." : "Create a Project to begin."}</p></div>`;
     return;
   }
   const project = snapshot.projects.find((candidate) => candidate.id === session.projectId);
+  const sameSession = renderedSessionId === session.id;
+  const shouldFollow = !sameSession
+    || conversationScroll.scrollHeight - conversationScroll.scrollTop - conversationScroll.clientHeight < 80;
+  const previousScrollTop = conversationScroll.scrollTop;
   $("#session-title").textContent = session.title;
   $("#session-breadcrumb").textContent = `${project?.name ?? "Project"} / Session v${session.version}`;
   const messages = pathToMessage(
     snapshot.messages.filter((message) => message.projectId === session.projectId),
     session.currentMessageId,
   );
-  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("");
+  const progress = session.activeRunId
+    ? snapshot.runProgress.find((candidate) => candidate.runId === session.activeRunId && candidate.sessionId === session.id)
+    : undefined;
+  const agent = snapshot.agents.find((candidate) => candidate.id === session.agentId);
+  const live = session.activeRunId
+    ? renderRunProgress(progress, agent ? agentDisplayName(agent) : "Assistant", streamConnected)
+    : "";
+  const latestRun = snapshot.runs.findLast((run) => run.sessionId === session.id);
+  const terminal = !session.activeRunId && latestRun
+    && ["failed", "cancelled", "limit_exceeded"].includes(latestRun.status)
+    && latestRun.lastMessageId === null
+    ? renderRunTerminal(
+      latestRun.status,
+      latestRun.error?.message,
+      agent ? agentDisplayName(agent) : "Assistant",
+    )
+    : "";
+  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("") + live + terminal;
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
@@ -342,9 +373,93 @@ function renderConversation(): void {
     });
   });
   requestAnimationFrame(() => {
-    const finalAnswer = conversation.querySelector<HTMLElement>(".message:last-child [data-codex-final-answer]");
-    if (finalAnswer) finalAnswer.scrollIntoView({ block: "start" });
-    else conversationScroll.scrollTop = conversationScroll.scrollHeight;
+    if (shouldFollow) {
+      const finalAnswer = conversation.querySelector<HTMLElement>(".message:last-child:not(.live-run) [data-codex-final-answer]");
+      if (finalAnswer) finalAnswer.scrollIntoView({ block: "start" });
+      else conversationScroll.scrollTop = conversationScroll.scrollHeight;
+    } else {
+      conversationScroll.scrollTop = previousScrollTop;
+    }
+  });
+  renderedSessionId = session.id;
+}
+
+function handleRunStreamUpdate(update: RunStreamUpdate): void {
+  if (update.type === "connection") {
+    streamConnected = update.connected;
+    if (currentSession()?.activeRunId) renderConversation();
+    return;
+  }
+  if (!snapshot || snapshotRefreshPending) {
+    pendingStreamUpdates.push(update);
+    if (pendingStreamUpdates.length > 2_000) pendingStreamUpdates.shift();
+    return;
+  }
+  const event = update.event;
+  if (event.kind === "run.progress" && snapshot) {
+    const body = event.body as Record<string, unknown>;
+    const runId = typeof body.run_id === "string" ? body.run_id : undefined;
+    if (!runId) return;
+    const index = snapshot.runProgress.findIndex((candidate) => candidate.runId === runId);
+    const current = index >= 0 ? snapshot.runProgress[index] : undefined;
+    const incomingSeq = typeof body.seq === "number" ? body.seq : undefined;
+    if (incomingSeq !== undefined
+      && ((current && incomingSeq > current.seq + 1) || (!current && incomingSeq > 1))) {
+      scheduleSnapshotRefresh();
+      return;
+    }
+    const next = applyProgressEvent(current, body);
+    if (!next) return;
+    if (index >= 0) snapshot.runProgress[index] = next;
+    else snapshot.runProgress.push(next);
+    if (currentSession()?.activeRunId === runId) renderConversation();
+    return;
+  }
+  if (event.kind === "run.updated") {
+    const run = event.body as Record<string, unknown>;
+    const runId = typeof run.id === "string" ? run.id : undefined;
+    const status = typeof run.status === "string" ? run.status : undefined;
+    if (runId && status === "settling" && snapshot) {
+      const progress = snapshot.runProgress.find((candidate) => candidate.runId === runId);
+      if (progress) progress.status = "settling";
+      if (currentSession()?.activeRunId === runId) renderConversation();
+    }
+    if (["completed", "failed", "cancelled", "limit_exceeded"].includes(status ?? "")) {
+      scheduleSnapshotRefresh();
+    }
+    return;
+  }
+  if (event.kind === "stream.reset_required") scheduleSnapshotRefresh();
+}
+
+function drainPendingStreamUpdates(): void {
+  for (const update of pendingStreamUpdates.splice(0)) handleRunStreamUpdate(update);
+}
+
+function scheduleSnapshotRefresh(): void {
+  if (snapshotRefreshPending) return;
+  snapshotRefreshPending = true;
+  queueMicrotask(async () => {
+    try {
+      snapshot = await window.ait.snapshot();
+      snapshotRefreshPending = false;
+      drainPendingStreamUpdates();
+      renderAll();
+      for (const [runId, request] of pendingTitles) {
+        const session = snapshot.sessions.find((candidate) => candidate.id === request.sessionId);
+        if (session && !session.active && !session.titleGenerationStarted && !session.name.trim()) {
+          pendingTitles.delete(runId);
+          void generateFirstSessionTitle(request.sessionId, request.prompt);
+        } else if (!session || !session.active) {
+          pendingTitles.delete(runId);
+        }
+      }
+    } catch {
+      streamConnected = false;
+      if (currentSession()?.activeRunId) renderConversation();
+    } finally {
+      snapshotRefreshPending = false;
+    }
   });
 }
 
@@ -476,23 +591,25 @@ async function submitMessage(): Promise<void> {
       });
       snapshot = result.snapshot;
       selectedSessionId = result.selectedSessionId;
+      const accepted = snapshot.sessions.find((candidate) => candidate.id === result.selectedSessionId);
+      if (accepted?.activeRunId && !accepted.titleGenerationStarted && !accepted.name.trim()) {
+        pendingTitles.set(accepted.activeRunId, { sessionId: accepted.id, prompt: content });
+      }
       showToast("New branch created. The original session was left unchanged.");
     } else {
       snapshot = await window.ait.sendMessage({
         sessionId: session.id,
         content,
       });
-      showToast("Message sent.");
+      const accepted = snapshot.sessions.find((candidate) => candidate.id === session.id);
+      if (accepted?.activeRunId && !accepted.titleGenerationStarted && !accepted.name.trim()) {
+        pendingTitles.set(accepted.activeRunId, { sessionId: session.id, prompt: content });
+      }
+      showToast("Message accepted.");
     }
     resetTreeView();
     messageInput.value = "";
     renderAll();
-    const titledSession = currentSession();
-    const titledHead = snapshot.messages.find((message) => message.id === titledSession?.currentMessageId);
-    if (titledSession && titledHead?.role === "assistant"
-      && !titledSession.titleGenerationStarted && !titledSession.name.trim()) {
-      void generateFirstSessionTitle(titledSession.id, content);
-    }
   } catch (error) {
     try { snapshot = await window.ait.snapshot(); renderAll(); } catch { /* Keep the last visible snapshot if disconnected. */ }
     showToast(errorMessage(error), true);

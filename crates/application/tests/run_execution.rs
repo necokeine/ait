@@ -12,13 +12,15 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProjectView, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, PendingEvent, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, EventBounds, PendingEvent,
+    ProgressCheckpoint, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceOperation, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::{sync::Semaphore, time::Duration};
 
 struct ConflictingStore {
     inner: SqliteControlStore,
@@ -63,6 +65,26 @@ impl ControlStore for ConflictingStore {
         limit: usize,
     ) -> Result<Vec<DurableEvent>, ControlStoreError> {
         self.inner.replay(after, limit).await
+    }
+
+    async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+
+    async fn save_progress(
+        &self,
+        checkpoint: ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        self.inner.save_progress(checkpoint, events).await
+    }
+
+    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress().await
+    }
+
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
+        self.inner.clear_progress(run_id).await
     }
 }
 
@@ -359,6 +381,10 @@ async fn queued_run_queries_and_duplicate_cron_triggers_never_start_execution() 
     .await;
     assert_eq!(cancelled.status, "cancelled");
     assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
+    assert_eq!(fixture.service.mark_interrupted_runs().await.unwrap(), 1);
+    let recovered = run(&fixture.service, Command::GetRun { run_id: cron.id }).await;
+    assert_eq!(recovered.status, "failed");
+    assert_eq!(recovered.error.unwrap().code, ErrorCode::RunRecoveryFailed);
 }
 
 fn config() -> ait_contracts::AgentConfiguration {
@@ -367,4 +393,260 @@ fn config() -> ait_contracts::AgentConfiguration {
         model: "gpt-5.6-sol".into(),
         reasoning_effort: Some("high".into()),
     }
+}
+
+struct SlowStreamingAgent {
+    started: Semaphore,
+    release: Semaphore,
+}
+
+#[async_trait]
+impl WorkspaceAgent for SlowStreamingAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("streaming entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        progress
+            .report(WorkspaceProgressEvent::MessageStarted {
+                id: "commentary".into(),
+                phase: Some("commentary".into()),
+                text: String::new(),
+            })
+            .await;
+        for index in 0..300 {
+            progress
+                .report(WorkspaceProgressEvent::TextDelta {
+                    id: "commentary".into(),
+                    delta: format!("{index} "),
+                })
+                .await;
+        }
+        progress
+            .report(WorkspaceProgressEvent::OperationStarted(
+                WorkspaceOperation {
+                    id: "tool".into(),
+                    kind: "read".into(),
+                    status: "inProgress".into(),
+                    title: "Read file".into(),
+                    summary: Some("src/main.rs".into()),
+                    detail: None,
+                    paths: vec!["src/main.rs".into()],
+                },
+            ))
+            .await;
+        self.started.add_permits(1);
+        self.release.acquire().await.unwrap().forget();
+        progress
+            .report(WorkspaceProgressEvent::MessageCompleted {
+                id: "final".into(),
+                phase: Some("final_answer".into()),
+                text: "done".into(),
+            })
+            .await;
+        progress
+            .report(WorkspaceProgressEvent::TurnStatus {
+                status: "completed".into(),
+                error: None,
+            })
+            .await;
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "done".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: vec![ait_ports::WorkspaceOutputItem::Message {
+                id: "final".into(),
+                phase: Some("final_answer".into()),
+                text: "done".into(),
+            }],
+        })
+    }
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one vertical-slice test keeps concurrent execution and replay assertions together"
+)]
+async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pagination() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(SlowStreamingAgent {
+        started: Semaphore::new(0),
+        release: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "live-project".into(),
+            name: "Live".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "live-agent".into(),
+            name: "Live agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "live-session".into(),
+            project_id: project.id,
+            agent_id: "live-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+
+    let accepted = tokio::time::timeout(
+        Duration::from_millis(500),
+        service.submit(Command::SendMessage {
+            session_id: "live-session".into(),
+            text: "stream it".into(),
+        }),
+    )
+    .await
+    .expect("submission must not wait for the turn");
+    let CommandResult::Run(run) = accepted.result.unwrap() else {
+        panic!("expected accepted run")
+    };
+    assert_eq!(run.status, "queued");
+    tokio::time::timeout(Duration::from_secs(2), agent.started.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let checkpoints = service.progress_checkpoints().await.unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    assert_eq!(checkpoints[0]["run_id"], run.id);
+    assert_eq!(checkpoints[0]["seq"], 302);
+    assert_eq!(
+        checkpoints[0]["items"][1]["operation"]["status"],
+        "inProgress"
+    );
+    let first_page = service.event_page(0, 128).await.unwrap();
+    assert_eq!(first_page.events.len(), 128);
+    let next_page = service
+        .event_page(first_page.events.last().unwrap().cursor, 256)
+        .await
+        .unwrap();
+    assert!(next_page.cursor_valid);
+    assert!(next_page.events.len() > 170);
+    assert!(
+        next_page
+            .events
+            .iter()
+            .filter(|event| event.kind == "run.progress")
+            .map(|event| event.body["seq"].as_u64().unwrap())
+            .is_sorted()
+    );
+
+    command(
+        &service,
+        Command::CreateSession {
+            id: "live-session-2".into(),
+            project_id: "live-project".into(),
+            agent_id: "live-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let second = service
+        .submit(Command::SendMessage {
+            session_id: "live-session-2".into(),
+            text: "stream separately".into(),
+        })
+        .await;
+    let CommandResult::Run(second) = second.result.unwrap() else {
+        panic!("expected second accepted run")
+    };
+    tokio::time::timeout(Duration::from_secs(2), agent.started.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let concurrent = service.progress_checkpoints().await.unwrap();
+    assert_eq!(concurrent.len(), 2);
+    assert!(
+        concurrent
+            .iter()
+            .any(|value| { value["run_id"] == run.id && value["session_id"] == "live-session" })
+    );
+    assert!(
+        concurrent.iter().any(|value| {
+            value["run_id"] == second.id && value["session_id"] == "live-session-2"
+        })
+    );
+
+    agent.release.add_permits(2);
+    let completed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let CommandResult::Run(run) = command(
+                &service,
+                Command::GetRun {
+                    run_id: run.id.clone(),
+                },
+            )
+            .await
+            else {
+                unreachable!()
+            };
+            if run.status == "completed" {
+                break run;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(completed.last_message_id.is_some());
+    let second_completed = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let CommandResult::Run(current) = command(
+                &service,
+                Command::GetRun {
+                    run_id: second.id.clone(),
+                },
+            )
+            .await
+            else {
+                unreachable!()
+            };
+            if current.status == "completed" {
+                break current;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(second_completed.last_message_id.is_some());
+    assert!(service.progress_checkpoints().await.unwrap().is_empty());
+    assert!(!service.event_page(u64::MAX, 10).await.unwrap().cursor_valid);
 }

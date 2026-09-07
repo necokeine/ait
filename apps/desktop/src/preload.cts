@@ -25,6 +25,11 @@ const api: AitDesktopApi = {
   setSessionTitle: (input) => invoke("session.set-title", input),
   generateSessionTitle: (input) => invoke("session.generate-title", input),
   sendMessage: (input) => invoke("session.send-message", input),
+  subscribeRunEvents: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, update: Parameters<typeof listener>[0]) => listener(update);
+    ipcRenderer.on("ait:run-event", wrapped);
+    return () => ipcRenderer.removeListener("ait:run-event", wrapped);
+  },
   fork: (input) => invoke("session.fork", input),
 };
 

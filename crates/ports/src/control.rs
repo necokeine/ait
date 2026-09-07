@@ -38,6 +38,26 @@ pub struct DurableEvent {
     pub created_at: i64,
 }
 
+/// Retained cursor range used to detect an expired or future reconnect cursor.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EventBounds {
+    /// Oldest retained cursor, absent when the outbox is empty.
+    pub oldest: Option<u64>,
+    /// Latest allocated cursor, absent when the outbox is empty.
+    pub latest: Option<u64>,
+}
+
+/// Latest bounded display projection for one active Run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProgressCheckpoint {
+    /// Owning Run identity.
+    pub run_id: String,
+    /// Versioned, transport-neutral progress projection.
+    pub body: Value,
+    /// Unix timestamp in milliseconds.
+    pub updated_at: i64,
+}
+
 /// Failures exposed by control-plane persistence adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlStoreError {
@@ -78,4 +98,21 @@ pub trait ControlStore: Send + Sync {
         cursor: u64,
         limit: usize,
     ) -> Result<Vec<DurableEvent>, ControlStoreError>;
+
+    /// Returns the retained durable cursor range.
+    async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError>;
+
+    /// Atomically appends a batch of progress events and replaces the Run's
+    /// compact progress checkpoint without rewriting the workspace snapshot.
+    async fn save_progress(
+        &self,
+        checkpoint: ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError>;
+
+    /// Loads checkpoints for active or interrupted clients to resynchronize.
+    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError>;
+
+    /// Removes transient display state after the immutable result is durable.
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError>;
 }

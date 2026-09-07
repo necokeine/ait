@@ -2,7 +2,10 @@
 
 use std::{path::Path, sync::Mutex};
 
-use ait_ports::{ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, PendingEvent};
+use ait_ports::{
+    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, EventBounds, PendingEvent,
+    ProgressCheckpoint,
+};
 use async_trait::async_trait;
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
 use serde_json::Value;
@@ -50,6 +53,11 @@ impl SqliteControlStore {
                entity_id TEXT,
                body_json TEXT NOT NULL,
                created_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS run_progress (
+               run_id TEXT PRIMARY KEY,
+               body_json TEXT NOT NULL,
+               updated_at INTEGER NOT NULL
              );",
             )
             .map_err(sql_error)?;
@@ -204,6 +212,90 @@ impl ControlStore for SqliteControlStore {
             })
         })
         .collect()
+    }
+
+    async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        let (oldest, latest) = connection
+            .query_row(
+                "SELECT MIN(cursor), MAX(cursor) FROM durable_events",
+                [],
+                |row| Ok((row.get::<_, Option<u64>>(0)?, row.get::<_, Option<u64>>(1)?)),
+            )
+            .map_err(sql_error)?;
+        Ok(EventBounds { oldest, latest })
+    }
+
+    async fn save_progress(
+        &self,
+        checkpoint: ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        const RETAINED_EVENTS: usize = 50_000;
+        let mut connection = self.connection.lock().map_err(lock_error)?;
+        let transaction = connection.transaction().map_err(sql_error)?;
+        for event in events {
+            transaction.execute(
+                "INSERT INTO durable_events(kind, entity_id, body_json, created_at) VALUES(?1, ?2, ?3, ?4)",
+                params![event.kind, event.entity_id, serde_json::to_string(&event.body).map_err(json_error)?, event.created_at],
+            ).map_err(sql_error)?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO run_progress(run_id, body_json, updated_at) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(run_id) DO UPDATE SET body_json = excluded.body_json, updated_at = excluded.updated_at",
+                params![
+                    checkpoint.run_id,
+                    serde_json::to_string(&checkpoint.body).map_err(json_error)?,
+                    checkpoint.updated_at
+                ],
+            )
+            .map_err(sql_error)?;
+        transaction
+            .execute(
+                "DELETE FROM durable_events WHERE cursor < COALESCE(
+                   (SELECT cursor FROM durable_events ORDER BY cursor DESC LIMIT 1 OFFSET ?1), 0
+                 )",
+                params![RETAINED_EVENTS.saturating_sub(1)],
+            )
+            .map_err(sql_error)?;
+        transaction.commit().map_err(sql_error)
+    }
+
+    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        let mut statement = connection
+            .prepare("SELECT run_id, body_json, updated_at FROM run_progress ORDER BY updated_at, run_id")
+            .map_err(sql_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(sql_error)?;
+        rows.map(|row| {
+            let (run_id, body, updated_at) = row.map_err(sql_error)?;
+            Ok(ProgressCheckpoint {
+                run_id,
+                body: serde_json::from_str(&body).map_err(json_error)?,
+                updated_at,
+            })
+        })
+        .collect()
+    }
+
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        connection
+            .execute(
+                "DELETE FROM run_progress WHERE run_id = ?1",
+                params![run_id],
+            )
+            .map_err(sql_error)?;
+        Ok(())
     }
 }
 

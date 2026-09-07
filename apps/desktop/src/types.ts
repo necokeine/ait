@@ -70,8 +70,46 @@ export interface DesktopSession {
   agentId: string;
   version: number;
   active: boolean;
+  activeRunId: string | null;
   updatedAt: number;
 }
+
+export type RunProgressItem =
+  | Extract<MessagePart, { type: "codex_message" }>
+  | Extract<MessagePart, { type: "operation" }>;
+
+export interface RunProgress {
+  runId: string;
+  projectId: string;
+  sessionId: string | null;
+  seq: number;
+  status: string;
+  items: RunProgressItem[];
+  warnings: Array<{ message: string; retrying: boolean; code?: string }>;
+  updatedAt: number;
+}
+
+export interface DesktopRun {
+  id: string;
+  sessionId: string | null;
+  baseMessageId: string;
+  lastMessageId: string | null;
+  status: string;
+  error?: { code?: string; message: string };
+}
+
+export interface ControlEvent {
+  api_version: number;
+  cursor: number;
+  kind: string;
+  entity_id: string | null;
+  body: unknown;
+  created_at: number;
+}
+
+export type RunStreamUpdate =
+  | { type: "event"; event: ControlEvent }
+  | { type: "connection"; connected: boolean };
 
 export interface DesktopSnapshot {
   protocolVersion: number;
@@ -81,6 +119,8 @@ export interface DesktopSnapshot {
   providers: AgentProvider[];
   sessions: DesktopSession[];
   messages: DesktopMessage[];
+  runs: DesktopRun[];
+  runProgress: RunProgress[];
 }
 
 export type SettingCategory =
@@ -165,6 +205,7 @@ export interface AitDesktopApi {
     sessionId: string;
     content: string;
   }): Promise<DesktopSnapshot>;
+  subscribeRunEvents(listener: (update: RunStreamUpdate) => void): () => void;
   fork(input: {
     projectId: string;
     sourceMessageId: string;
