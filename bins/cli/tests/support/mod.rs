@@ -8,7 +8,10 @@ use std::{
 };
 
 use ait_application::LocalControlService;
+use ait_domain::{DomainError, ErrorCode};
+use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
 use ait_storage_sqlite::SqliteControlStore;
+use async_trait::async_trait;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
@@ -21,6 +24,29 @@ pub struct Workspace {
     pub endpoint: String,
     shutdown: Option<oneshot::Sender<()>>,
     server: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct FixtureCodex;
+
+#[async_trait]
+impl WorkspaceAgent for FixtureCodex {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        if request.commit_subject == "simulate provider failure" {
+            return Err(DomainError::transient(
+                ErrorCode::ProviderFailed,
+                "fixture provider failure",
+            ));
+        }
+        Ok(WorkspaceAgentResponse {
+            assistant_text: format!("Completed: {}", request.commit_subject),
+            commit_id: None,
+            operations: Vec::new(),
+        })
+    }
 }
 
 impl Workspace {
@@ -37,7 +63,10 @@ impl Workspace {
 
     async fn start(&mut self) {
         let store = SqliteControlStore::open(self.directory.path().join("ait.sqlite3")).unwrap();
-        let service = Arc::new(LocalControlService::new(Arc::new(store)));
+        let service = Arc::new(LocalControlService::with_workspace_agent(
+            Arc::new(store),
+            Arc::new(FixtureCodex),
+        ));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         self.endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (shutdown, stopped) = oneshot::channel();
@@ -124,10 +153,14 @@ impl Workspace {
         success(&self.cli(&["snapshot"]).await)
     }
 
-    pub async fn agent(&self, id: &str, mode: &str) -> Value {
+    pub async fn agent(&self, id: &str) -> Value {
         self.command(json!({
             "type": "register_agent", "id": id, "name": id,
-            "config": { "provider_id": format!("builtin-{mode}"), "model": "default" },
+            "config": {
+                "provider_id": "builtin-codex",
+                "model": "gpt-5.6-sol",
+                "reasoning_effort": "high"
+            },
         }))
         .await
     }

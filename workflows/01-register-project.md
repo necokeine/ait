@@ -12,13 +12,14 @@ ait command "$(jq -nc --arg workdir "$WF_ROOT/project" \
   | tee "$WF_ROOT/project.json"
 export ROOT_ID="$(jq -r '.result.value.root_message_id' "$WF_ROOT/project.json")"
 
-ait command '{"type":"register_agent","id":"agent-demo","name":"本地工具演练","config":{"provider_id":"builtin-tool","model":"default"}}'
+ait command '{"type":"register_agent","id":"agent-demo","name":"Codex","config":{"provider_id":"builtin-codex","model":"gpt-5.6-sol","reasoning_effort":"high"}}'
 ait command '{"type":"set_project_default_agent","project_id":"p1","agent_id":"agent-demo"}'
 ait command '{"type":"create_session","id":"s-main","project_id":"p1","agent_id":"agent-demo"}'
 ait snapshot
 ```
 
-本例使用 `tool` 确定性工具演练模式，不访问模型。真实模型执行见 WF-10 和 WF-11。
+本例使用 host sign-in 的 `builtin-codex`；发送输入前需确保本机 Codex 可用。真实端到端生成与提交见
+WF-10，DeepSeek Provider 连接见 WF-11。
 `repo_url` 可选且只记录来源；注册不会自动克隆或下载仓库。
 
 ## 验收与失败恢复

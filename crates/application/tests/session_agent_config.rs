@@ -807,6 +807,18 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
 }
 
 #[tokio::test]
+async fn fresh_workspace_exposes_only_the_codex_builtin() {
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let providers = view(&service).await.providers;
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0].provider.id, "builtin-codex");
+    assert_eq!(providers[0].provider.kind, AgentMode::Codex);
+    for kind in RETIRED_BUILTINS {
+        assert!(serde_json::from_value::<AgentMode>(serde_json::json!(kind)).is_err());
+    }
+}
+
+#[tokio::test]
 async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(store.clone());
@@ -817,7 +829,7 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     snapshot.value["providers"]
         .as_array_mut()
         .unwrap()
-        .push(retired_builtin());
+        .extend(RETIRED_BUILTINS.map(retired_builtin));
     store
         .commit(snapshot.revision, snapshot.value, vec![])
         .await
@@ -851,46 +863,50 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
 
 #[tokio::test]
 async fn retired_provider_references_and_custom_connections_are_never_silently_removed() {
-    for reference in ["agent", "run", "credential", "custom", "url"] {
-        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-        let service = LocalControlService::new(store.clone());
-        let _directory = setup(&service, config("high")).await;
-        ok(&service, send("one")).await;
-        let mut snapshot = store.load().await.unwrap();
-        let mut retired = retired_builtin();
-        match reference {
-            "agent" => {
-                snapshot.value["agents"][0]["config"]["provider_id"] =
-                    serde_json::json!("builtin-retired")
+    for kind in RETIRED_BUILTINS {
+        for reference in ["agent", "run", "credential", "custom", "url"] {
+            let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+            let service = LocalControlService::new(store.clone());
+            let _directory = setup(&service, config("high")).await;
+            ok(&service, send("one")).await;
+            let mut snapshot = store.load().await.unwrap();
+            let id = format!("builtin-{kind}");
+            let mut retired = retired_builtin(kind);
+            match reference {
+                "agent" => {
+                    snapshot.value["agents"][0]["config"]["provider_id"] = serde_json::json!(id)
+                }
+                "run" => snapshot.value["runs"][0]["provider"] = retired["provider"].clone(),
+                "credential" => {
+                    snapshot.value["provider_credentials"][&id] =
+                        serde_json::json!("opaque-reference")
+                }
+                "custom" => retired["provider"]["id"] = serde_json::json!(format!("custom-{kind}")),
+                "url" => retired["provider"]["url"] = serde_json::json!("http://localhost:1234"),
+                _ => unreachable!(),
             }
-            "run" => snapshot.value["runs"][0]["provider"] = retired["provider"].clone(),
-            "credential" => {
-                snapshot.value["provider_credentials"]["builtin-retired"] =
-                    serde_json::json!("opaque-reference")
-            }
-            "custom" => retired["provider"]["id"] = serde_json::json!("custom-retired"),
-            "url" => retired["provider"]["url"] = serde_json::json!("http://localhost:1234"),
-            _ => unreachable!(),
+            snapshot.value["providers"]
+                .as_array_mut()
+                .unwrap()
+                .push(retired);
+            let saved = store
+                .commit(snapshot.revision, snapshot.value, vec![])
+                .await
+                .unwrap();
+            let rejected = LocalControlService::new(store.clone())
+                .execute(Command::Snapshot)
+                .await;
+            assert_eq!(rejected.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+            assert_eq!(store.load().await.unwrap().value, saved.value);
         }
-        snapshot.value["providers"]
-            .as_array_mut()
-            .unwrap()
-            .push(retired);
-        let saved = store
-            .commit(snapshot.revision, snapshot.value, vec![])
-            .await
-            .unwrap();
-        let rejected = LocalControlService::new(store.clone())
-            .execute(Command::Snapshot)
-            .await;
-        assert_eq!(rejected.error.unwrap().code, ErrorCode::RunRecoveryFailed);
-        assert_eq!(store.load().await.unwrap().value, saved.value);
     }
 }
 
-fn retired_builtin() -> serde_json::Value {
+const RETIRED_BUILTINS: [&str; 4] = ["tool", "manual", "provider_failure", "approval_required"];
+
+fn retired_builtin(kind: &str) -> serde_json::Value {
     serde_json::json!({
-        "provider": {"id": "builtin-retired", "name": "retired", "kind": "retired",
+        "provider": {"id": format!("builtin-{kind}"), "name": kind, "kind": kind,
             "url": null, "models": [{"id": "default", "name": "Default", "reasoning_efforts": []}]},
         "has_secret": false,
     })
@@ -1005,7 +1021,8 @@ impl ControlStore for PausingStore {
     ) -> Result<ait_ports::ControlSnapshot, ait_ports::ControlStoreError> {
         if value["runs"]
             .as_array()
-            .is_some_and(|runs| !runs.is_empty())
+            .and_then(|runs| runs.last())
+            .is_some_and(|run| run["status"] == "queued")
         {
             self.entered.add_permits(1);
             self.release.acquire().await.unwrap().forget();
@@ -1022,15 +1039,7 @@ async fn pessimistic_admission_rejects_a_competing_send_before_the_first_run_is_
         release: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::new(store.clone()));
-    let _directory = setup(
-        &service,
-        AgentConfiguration {
-            provider_id: "builtin-manual".into(),
-            model: "default".into(),
-            reasoning_effort: None,
-        },
-    )
-    .await;
+    let _directory = setup(&service, config("high")).await;
     let first = {
         let service = service.clone();
         tokio::spawn(async move { ok(&service, send("one")).await })

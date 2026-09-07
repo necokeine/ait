@@ -10,9 +10,9 @@
 | 编号 | 用户目标 | 自动化测试（WF-01～09 位于 `bins/cli/tests/workflows.rs`） |
 | --- | --- | --- |
 | [WF-01](01-register-project.md) | 接入工作目录、选择 Agent、创建 Session | `wf01_register_project_and_agent` |
-| [WF-02](02-send-message.md) | 发送输入并查看工具调用和最终结果 | `wf02_send_message_and_inspect_tool_history` |
+| [WF-02](02-send-message.md) | 发送输入并查看 Agent 最终结果 | `wf02_send_message_and_inspect_agent_reply` |
 | [WF-03](03-branch-and-rebind.md) | 从历史节点开分支、命名、切换 Agent | `wf03_branch_rename_and_rebind_session` |
-| [WF-04](04-run-status-and-cancel.md) | 区分失败、等待和完成，取消后继续 | `wf04_observe_failure_and_cancel_active_run` |
+| [WF-04](04-run-status-and-cancel.md) | 查看运行状态、取消活动 Run 并继续 | `wf04_observe_injected_provider_failure_and_continue`；活动取消另见 application 测试 |
 | [WF-05](05-cron.md) | 保存、启停并触发一个定时 occurrence | `wf05_cron_occurrence_is_idempotent_and_independent` |
 | [WF-06](06-events-and-restart.md) | 按游标续读事件并在重启后找回状态 | `wf06_replay_events_and_reopen_workspace` |
 | [WF-07](07-export-import.md) | 导出 Project 并导入另一个本地工作空间 | `wf07_export_and_import_project_archive` |
@@ -103,8 +103,8 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | 活动 Session 再次输入返回 `SESSION_BUSY` | ADR 要求进入现有 Run 队列；实现后需更新 WF-04 的当前行为断言并增加队列消费测试 |
 | `events` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |
 | Cron 配置和手动 occurrence 可用，daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
-| `manual` 停在 queued；等待审批没有 CLI approve/resume 入口 | 当前可查询和取消；实现审批/恢复后需验证同一 Run 继续 |
-| 启用真实 Codex 和 AI 标题生成需要外部执行环境 | WF-01～09 使用确定性 Agent；WF-10 提供明确 opt-in 的真实执行测试 |
+| 等待审批没有 CLI approve/resume 入口 | runtime 已验证同一 Run 的审批恢复；接入公共命令后补充 CLI 流程 |
+| 启用真实 Codex 和 AI 标题生成需要外部执行环境 | 手工流程使用 `builtin-codex`；WF-01～09 自动化通过 `WorkspaceAgent` port 注入 fake，WF-10 提供明确 opt-in 的真实执行测试 |
 | 原生远程 Provider 返回一轮文本，不执行工作区工具 | WF-11 原样保存模型返回的 Python 源码后独立验证；自动文件操作和工具循环需后续实现 |
 
 修改流程时同步修改表中的测试，注明哪些行为是已实现契约、哪些是待校正差距。

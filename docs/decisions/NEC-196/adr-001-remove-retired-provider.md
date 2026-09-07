@@ -4,12 +4,14 @@
 - 日期：2026-09-07
 - 来源：NEC-196，彻底移除 Echo provider。
 - 修订：NEC-174 的旧模式展示，以及 ADR-009 的快照升级范围。
+- 后续修订：NEC-203 已继续移除 Tool、Manual、ProviderFailure 与 ApprovalRequired 的 Provider 身份。
 
 ## 决策
 
 删除退役 Provider 的领域枚举值、内置注册项、固定回复执行分支和桌面特殊标签。
-不保留别名或执行回退。原有离线验收改用现有 Tool / Manual 适配器，继续验证
-消息历史、会话绑定、Cron 幂等性、取消和持久化恢复；真实模型流程仍使用 Codex / DeepSeek。
+不保留别名或执行回退。经 NEC-203 修订，离线验收改用注入的 executor/store/tool/approval
+test doubles，继续验证消息历史、会话绑定、Cron 幂等性、取消和持久化恢复；真实模型流程仍使用
+Codex / OpenAI / DeepSeek。
 
 ## 旧数据
 

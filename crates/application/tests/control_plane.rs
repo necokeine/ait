@@ -7,7 +7,7 @@ use std::sync::{
 };
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentMode, Command, CommandResult, default_settings};
+use ait_contracts::{Command, CommandResult, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
@@ -23,12 +23,33 @@ async fn run(service: &LocalControlService, command: Command) -> CommandResult {
     response.result.unwrap()
 }
 
+#[derive(Debug)]
+struct FixtureCodex;
+
+#[async_trait]
+impl WorkspaceAgent for FixtureCodex {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        Ok(WorkspaceAgentResponse {
+            assistant_text: format!("Completed: {}", request.commit_subject),
+            commit_id: None,
+            operations: Vec::new(),
+        })
+    }
+}
+
+fn fixture_service(store: Arc<SqliteControlStore>) -> LocalControlService {
+    LocalControlService::with_workspace_agent(store, Arc::new(FixtureCodex))
+}
+
 #[tokio::test]
 async fn user_message_requires_clean_git_and_records_head_commit() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
     let project = match run(
         &service,
         Command::RegisterProject {
@@ -51,9 +72,9 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
     run(
         &service,
         Command::RegisterAgent {
-            id: "tool".into(),
-            name: "Tool".into(),
-            config: config(AgentMode::Tool),
+            id: "codex".into(),
+            name: "Codex".into(),
+            config: config(),
         },
     )
     .await;
@@ -62,7 +83,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         Command::CreateSession {
             id: "git-session".into(),
             project_id: project.id.clone(),
-            agent_id: "tool".into(),
+            agent_id: "codex".into(),
             at_message_id: None,
         },
     )
@@ -156,7 +177,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()))
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()))
         .with_session_title_generator(Arc::new(SuccessfulTitleGenerator {
             calls: calls.clone(),
         }));
@@ -177,9 +198,9 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
     run(
         &service,
         Command::RegisterAgent {
-            id: "tool-agent".into(),
-            name: "Tool".into(),
-            config: config(AgentMode::Tool),
+            id: "codex-agent".into(),
+            name: "Codex".into(),
+            config: config(),
         },
     )
     .await;
@@ -188,7 +209,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         Command::CreateSession {
             id: "named-session".into(),
             project_id: project.id,
-            agent_id: "tool-agent".into(),
+            agent_id: "codex-agent".into(),
             at_message_id: None,
         },
     )
@@ -277,7 +298,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Command::RegisterAgent {
             id: "codex-agent".into(),
             name: "Codex".into(),
-            config: config(AgentMode::Codex),
+            config: config(),
         },
     )
     .await;
@@ -333,11 +354,11 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
 }
 
 #[tokio::test]
-async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
+async fn idle_session_can_rebind_between_named_agents() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
     let project = match run(
         &service,
         Command::RegisterProject {
@@ -352,17 +373,13 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         CommandResult::Project(value) => value,
         _ => panic!(),
     };
-    for id in ["tool-agent", "manual-agent"] {
+    for id in ["primary-agent", "alternate-agent"] {
         run(
             &service,
             Command::RegisterAgent {
                 id: id.into(),
                 name: id.into(),
-                config: config(if id == "tool-agent" {
-                    AgentMode::Tool
-                } else {
-                    AgentMode::Manual
-                }),
+                config: config(),
             },
         )
         .await;
@@ -372,7 +389,7 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         Command::CreateSession {
             id: "rebind-session".into(),
             project_id: project.id,
-            agent_id: "tool-agent".into(),
+            agent_id: "primary-agent".into(),
             at_message_id: None,
         },
     )
@@ -381,7 +398,7 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         &service,
         Command::SetSessionAgent {
             session_id: "rebind-session".into(),
-            agent_id: "manual-agent".into(),
+            agent_id: "alternate-agent".into(),
         },
     )
     .await
@@ -389,14 +406,14 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         CommandResult::Session(value) => value,
         _ => panic!(),
     };
-    assert_eq!(rebound.agent_id, "manual-agent");
+    assert_eq!(rebound.agent_id, "alternate-agent");
     assert_eq!(rebound.version, 2);
 
-    let queued = match run(
+    let completed = match run(
         &service,
         Command::SendMessage {
             session_id: "rebind-session".into(),
-            text: "keep this run queued".into(),
+            text: "run with the alternate agent".into(),
         },
     )
     .await
@@ -404,18 +421,12 @@ async fn idle_session_can_rebind_agent_and_active_session_rejects_rebinding() {
         CommandResult::Run(value) => value,
         _ => panic!(),
     };
-    assert_eq!(queued.agent_id, "manual-agent");
-    let busy = service
-        .execute(Command::SetSessionAgent {
-            session_id: "rebind-session".into(),
-            agent_id: "tool-agent".into(),
-        })
-        .await;
-    assert_eq!(busy.error.unwrap().code, ErrorCode::SessionBusy);
+    assert_eq!(completed.agent_id, "alternate-agent");
+    assert_eq!(completed.status, "completed");
 }
 
 #[tokio::test]
-async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
+async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() {
     let started_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -424,7 +435,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
     let database = temporary.path().join("ait.sqlite3");
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let service = fixture_service(Arc::new(SqliteControlStore::open(&database).unwrap()));
 
     let project = match run(
         &service,
@@ -443,9 +454,9 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
     run(
         &service,
         Command::RegisterAgent {
-            id: "agent-tool".into(),
-            name: "Tool agent".into(),
-            config: config(AgentMode::Tool),
+            id: "agent-codex".into(),
+            name: "Codex agent".into(),
+            config: config(),
         },
     )
     .await;
@@ -454,7 +465,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
         Command::CreateSession {
             id: "session-main".into(),
             project_id: project.id.clone(),
-            agent_id: "agent-tool".into(),
+            agent_id: "agent-codex".into(),
             at_message_id: None,
         },
     )
@@ -478,7 +489,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
         Command::CreateSession {
             id: "session-branch".into(),
             project_id: project.id.clone(),
-            agent_id: "agent-tool".into(),
+            agent_id: "agent-codex".into(),
             at_message_id: Some(project.root_message_id.clone()),
         },
     )
@@ -490,7 +501,7 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
             name: "demo cron".into(),
             project_id: project.id,
             base_message_id: project.root_message_id,
-            agent_id: "agent-tool".into(),
+            agent_id: "agent-codex".into(),
             schedule: "* * * * *".into(),
             timezone: "UTC".into(),
         },
@@ -568,42 +579,66 @@ async fn tool_session_branch_cron_events_and_restart_form_one_vertical_slice() {
     assert_eq!(workspace.runs.len(), 2);
     assert_eq!(workspace.messages, before_restart.messages);
     assert_eq!(workspace.sessions.len(), 2);
-    assert!(
-        workspace
-            .messages
-            .iter()
-            .any(|message| message.kind == "tool_result")
-    );
-    assert!(
-        workspace
-            .messages
-            .iter()
-            .filter(|message| message
-                .data
-                .as_ref()
-                .is_some_and(|data| data.get("tool_use").is_some()))
-            .count()
-            >= 2
-    );
+    assert_eq!(workspace.messages.len(), 4);
+    assert!(workspace.runs.iter().all(|run| run.status == "completed"));
 }
 
 #[tokio::test]
-async fn stable_failures_cover_configuration_provider_approval_busy_and_cancel() {
+async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persisted() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    #[derive(Debug)]
+    struct FailingCodex;
+    #[async_trait]
+    impl WorkspaceAgent for FailingCodex {
+        async fn invoke(
+            &self,
+            _: WorkspaceAgentInvocation,
+        ) -> Result<WorkspaceAgentResponse, DomainError> {
+            Err(DomainError::transient(
+                ErrorCode::ProviderFailed,
+                "fixture provider failure",
+            ))
+        }
+    }
+    let service = LocalControlService::with_workspace_agent(
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+        Arc::new(FailingCodex),
+    );
     let invalid = service
         .execute(Command::RegisterAgent {
             id: "bad".into(),
             name: "".into(),
-            config: config(AgentMode::Tool),
+            config: config(),
         })
         .await;
     assert_eq!(
         invalid.error.unwrap().code,
         ErrorCode::InvalidAgentConfiguration
     );
+    for provider_id in [
+        "builtin-tool",
+        "builtin-manual",
+        "builtin-provider_failure",
+        "builtin-approval_required",
+    ] {
+        let retired = service
+            .execute(Command::RegisterAgent {
+                id: format!("retired-{provider_id}"),
+                name: "Retired".into(),
+                config: ait_contracts::AgentConfiguration {
+                    provider_id: provider_id.into(),
+                    model: "default".into(),
+                    reasoning_effort: None,
+                },
+            })
+            .await;
+        assert_eq!(
+            retired.error.unwrap().code,
+            ErrorCode::InvalidAgentConfiguration
+        );
+    }
     let project = match run(
         &service,
         Command::RegisterProject {
@@ -619,35 +654,29 @@ async fn stable_failures_cover_configuration_provider_approval_busy_and_cancel()
         _ => panic!(),
     };
 
-    for (id, mode) in [
-        ("provider", AgentMode::ProviderFailure),
-        ("approval", AgentMode::ApprovalRequired),
-        ("manual", AgentMode::Manual),
-    ] {
-        run(
-            &service,
-            Command::RegisterAgent {
-                id: id.into(),
-                name: id.into(),
-                config: config(mode),
-            },
-        )
-        .await;
-        run(
-            &service,
-            Command::CreateSession {
-                id: format!("s-{id}"),
-                project_id: project.id.clone(),
-                agent_id: id.into(),
-                at_message_id: None,
-            },
-        )
-        .await;
-    }
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "codex".into(),
+            name: "Codex".into(),
+            config: config(),
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::CreateSession {
+            id: "session".into(),
+            project_id: project.id,
+            agent_id: "codex".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
     let provider = match run(
         &service,
         Command::SendMessage {
-            session_id: "s-provider".into(),
+            session_id: "session".into(),
             text: "go".into(),
         },
     )
@@ -656,54 +685,12 @@ async fn stable_failures_cover_configuration_provider_approval_busy_and_cancel()
         CommandResult::Run(value) => value,
         _ => panic!(),
     };
-    assert_eq!(provider.error.unwrap().code, ErrorCode::ProviderFailed);
-    let approval = match run(
-        &service,
-        Command::SendMessage {
-            session_id: "s-approval".into(),
-            text: "go".into(),
-        },
-    )
-    .await
-    {
-        CommandResult::Run(value) => value,
-        _ => panic!(),
-    };
+    assert_eq!(provider.status, "failed");
     assert_eq!(
-        approval.error.unwrap().code,
-        ErrorCode::ToolApprovalRequired
+        provider.error.as_ref().unwrap().code,
+        ErrorCode::ProviderFailed
     );
-
-    let unsupported_effort = service
-        .execute(Command::SetSessionConfig {
-            session_id: "s-manual".into(),
-            config: ait_contracts::AgentConfiguration {
-                reasoning_effort: Some("high".into()),
-                ..config(AgentMode::Manual)
-            },
-        })
-        .await;
-    assert_eq!(
-        unsupported_effort.error.unwrap().code,
-        ErrorCode::InvalidAgentConfiguration
-    );
-    let queued = match run(
-        &service,
-        Command::SendMessage {
-            session_id: "s-manual".into(),
-            text: "go".into(),
-        },
-    )
-    .await
-    {
-        CommandResult::Run(value) => value,
-        _ => panic!(),
-    };
-    let cancelled = match run(&service, Command::CancelRun { run_id: queued.id }).await {
-        CommandResult::Run(value) => value,
-        _ => panic!(),
-    };
-    assert_eq!(cancelled.error.unwrap().code, ErrorCode::RunCancelled);
+    assert!(provider.error.unwrap().retryable);
 }
 
 #[tokio::test]
@@ -713,7 +700,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     let imported_dir = temporary.path().join("imported");
     std::fs::create_dir(&source_dir).unwrap();
     std::fs::create_dir(&imported_dir).unwrap();
-    let source = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let source = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
     let project = match run(
         &source,
         Command::RegisterProject {
@@ -733,7 +720,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         Command::RegisterAgent {
             id: "portable-agent".into(),
             name: "Portable agent".into(),
-            config: config(AgentMode::Manual),
+            config: config(),
         },
     )
     .await;
@@ -784,9 +771,9 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         archive.project.default_agent_id.as_deref(),
         Some("portable-agent")
     );
-    assert_eq!(archive.sessions[0].version, 2);
+    assert_eq!(archive.sessions[0].version, 4);
     assert!(archive.sessions[0].active_run_id.is_none());
-    assert_eq!(archive.messages.len(), 2);
+    assert_eq!(archive.messages.len(), 3);
     assert!(
         archive
             .messages
@@ -829,7 +816,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
     let database = temporary.path().join("desktop.sqlite3");
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let service = fixture_service(Arc::new(SqliteControlStore::open(&database).unwrap()));
     let project = match run(
         &service,
         Command::RegisterProject {
@@ -849,7 +836,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         Command::RegisterAgent {
             id: "desktop-agent".into(),
             name: "Desktop agent".into(),
-            config: config(AgentMode::Tool),
+            config: config(),
         },
     )
     .await;
@@ -891,7 +878,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         _ => panic!(),
     };
     assert_eq!(workspace.sessions.len(), 1);
-    assert_eq!(workspace.messages.len(), 5);
+    assert_eq!(workspace.messages.len(), 3);
     let settings = match run(&recovered, Command::GetSettings).await {
         CommandResult::Settings(value) => value,
         _ => panic!(),
@@ -909,14 +896,14 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
     let project_b_dir = temporary.path().join("project-b");
     std::fs::create_dir(&project_a_dir).unwrap();
     std::fs::create_dir(&project_b_dir).unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
 
     run(
         &service,
         Command::RegisterAgent {
             id: "tool-local".into(),
             name: "Tool".into(),
-            config: config(AgentMode::Tool),
+            config: config(),
         },
     )
     .await;
@@ -1005,7 +992,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             .iter()
             .filter(|message| message.project_id == project_id)
             .collect::<Vec<_>>();
-        assert_eq!(project_messages.len(), 5);
+        assert_eq!(project_messages.len(), 3);
         assert!(
             project_messages
                 .iter()
@@ -1020,20 +1007,10 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
     }
 }
 
-fn config(mode: AgentMode) -> ait_contracts::AgentConfiguration {
-    let key = serde_json::to_value(mode).unwrap();
+fn config() -> ait_contracts::AgentConfiguration {
     ait_contracts::AgentConfiguration {
-        provider_id: format!("builtin-{}", key.as_str().unwrap()),
-        model: if mode == AgentMode::Codex {
-            "gpt-5.6-sol"
-        } else {
-            "default"
-        }
-        .into(),
-        reasoning_effort: if mode == AgentMode::Codex {
-            Some("high".into())
-        } else {
-            None
-        },
+        provider_id: "builtin-codex".into(),
+        model: "gpt-5.6-sol".into(),
+        reasoning_effort: Some("high".into()),
     }
 }

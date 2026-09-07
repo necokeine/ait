@@ -31,8 +31,8 @@ use uuid::Uuid;
 mod agents;
 use agents::{
     InvocationGuard, agent_for_session, builtin_providers, check_session_admission, migrate_state,
-    provider_kind, register_agent, require_named_agent, set_session_config, update_agent,
-    validate_config, validate_provider,
+    register_agent, require_named_agent, set_session_config, update_agent, validate_config,
+    validate_provider,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,15 +71,8 @@ enum CommandOutcome {
 }
 
 impl CommandOutcome {
-    fn for_new_run(run: RunView, mode: AgentMode) -> Self {
-        if matches!(
-            mode,
-            AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
-        ) {
-            Self::ExecuteWorkspaceRun(run.id)
-        } else {
-            Self::Ready(Box::new(CommandResult::Run(run)))
-        }
+    fn for_new_run(run: RunView) -> Self {
+        Self::ExecuteWorkspaceRun(run.id)
     }
 }
 
@@ -405,10 +398,6 @@ impl LocalControlService {
                         "Codex workspace executor is not configured",
                     )),
                 },
-                _ => Err(DomainError::invariant(
-                    ErrorCode::AgentCapabilityUnsupported,
-                    "workspace execution requires a Codex or supported API provider",
-                )),
             }
         };
         let result = tokio::select! {
@@ -1229,82 +1218,9 @@ fn send_message(
             .insert(run_id.clone(), reference.clone());
     }
     state.runs.push(run);
-    let run = apply_run_mode(state, &run_id, &agent);
+    let run = state.runs.last().expect("new run exists").clone();
     let event = pending("run.updated", Some(run_id), &run);
-    Ok((
-        CommandOutcome::for_new_run(run, provider_kind(state, &agent.config)?),
-        vec![event],
-    ))
-}
-
-/// Applies the local mode's state changes without invoking an external Agent.
-fn apply_run_mode(state: &mut State, run_id: &str, agent: &AgentView) -> RunView {
-    let index = state
-        .runs
-        .iter()
-        .position(|run| run.id == run_id)
-        .expect("new run exists");
-    let mut run = state.runs[index].clone();
-    match provider_kind(state, &agent.config).expect("validated provider") {
-        AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Manual => {}
-        AgentMode::ProviderFailure => {
-            run.status = "failed".into();
-            run.error = Some(error(
-                ErrorCode::ProviderFailed,
-                "provider invocation failed",
-                true,
-            ));
-            release_session(state, &run);
-        }
-        AgentMode::ApprovalRequired => {
-            run.status = "waiting_approval".into();
-            run.error = Some(error(
-                ErrorCode::ToolApprovalRequired,
-                "tool execution requires approval",
-                false,
-            ));
-        }
-        AgentMode::Tool => {
-            let tool = message(
-                &run.project_id,
-                Some(&run.base_message_id),
-                "assistant",
-                "standard",
-                None,
-                None,
-                Some(
-                    json!({"tool_use":{"call_id":"call-1","tool_name":"echo","arguments":{"text":"hello from tool"}}}),
-                ),
-            );
-            append_output(state, &mut run, tool);
-            let result = message(
-                &run.project_id,
-                run.last_message_id.as_deref(),
-                "user",
-                "tool_result",
-                None,
-                None,
-                Some(
-                    json!({"tool_result":{"call_id":"call-1","status":"succeeded","output":"hello from tool"}}),
-                ),
-            );
-            append_output(state, &mut run, result);
-            let reply = message(
-                &run.project_id,
-                run.last_message_id.as_deref(),
-                "assistant",
-                "standard",
-                Some("tool call completed".into()),
-                None,
-                None,
-            );
-            append_output(state, &mut run, reply);
-            run.status = "completed".into();
-            release_session(state, &run);
-        }
-    }
-    state.runs[index] = run.clone();
-    run
+    Ok((CommandOutcome::for_new_run(run), vec![event]))
 }
 
 fn codex_prompt(state: &State, head_id: &str) -> Result<(Option<String>, String), ApiError> {
@@ -1545,12 +1461,9 @@ fn trigger_cron(
         status: "queued".into(),
         error: None,
     });
-    let run = apply_run_mode(state, &run_id, &agent);
+    let run = state.runs.last().expect("new run exists").clone();
     let event = pending("cron.run_triggered", Some(run_id), &run);
-    Ok((
-        CommandOutcome::for_new_run(run, provider_kind(state, &agent.config)?),
-        vec![event],
-    ))
+    Ok((CommandOutcome::for_new_run(run), vec![event]))
 }
 
 fn export_project(
