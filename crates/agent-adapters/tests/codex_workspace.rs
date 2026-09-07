@@ -1,6 +1,9 @@
 //! Workspace execution and Git commit coverage for the Codex adapter.
 
-use std::{process::Command, sync::Arc};
+use std::{
+    process::Command,
+    sync::{Arc, Mutex},
+};
 
 use ait_agent_adapters::{
     AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
@@ -9,7 +12,7 @@ use ait_agent_adapters::{
 };
 use ait_ports::{
     SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceOutputItem,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -173,6 +176,84 @@ struct ScriptedAdapter {
     events: Vec<AgentEvent>,
 }
 
+#[derive(Default)]
+struct RecordingProgress(Mutex<Vec<WorkspaceProgressEvent>>);
+
+#[async_trait]
+impl WorkspaceProgressReporter for RecordingProgress {
+    async fn report(&self, event: WorkspaceProgressEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FaultEnding {
+    Failed,
+    Eof,
+    StreamError,
+}
+
+#[derive(Debug)]
+struct FaultingAdapter(FaultEnding);
+
+#[async_trait]
+impl AgentAdapter for FaultingAdapter {
+    fn driver(&self) -> &'static str {
+        "faulting_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("retained.txt"), "retained\n").unwrap();
+        let mut events = vec![
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "confirmed-commentary",
+                    "phase": "commentary",
+                    "text": "Confirmed before failure."
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "fileChange",
+                    "id": "confirmed-change",
+                    "status": "completed",
+                    "changes": [{"path": "retained.txt", "kind": "add"}]
+                }),
+            }),
+            Ok(AgentEvent::MessageDelta {
+                item_id: "unfinished-final".into(),
+                delta: "Unfinished answer".into(),
+            }),
+        ];
+        match self.0 {
+            FaultEnding::Failed => events.push(Ok(AgentEvent::Completed {
+                turn_id: "failed-turn".into(),
+                status: AgentRunStatus::Failed,
+                error: Some("injected failure".into()),
+            })),
+            FaultEnding::Eof => {}
+            FaultEnding::StreamError => events.push(Err(AdapterError::new(
+                ait_agent_adapters::AdapterErrorKind::ProcessExited,
+                "injected stream error",
+                true,
+            ))),
+        }
+        Ok(Box::pin(tokio_stream::iter(events)))
+    }
+}
+
 #[async_trait]
 impl AgentAdapter for ScriptedAdapter {
     fn driver(&self) -> &'static str {
@@ -222,6 +303,7 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
             project_instructions: None,
             commit_subject: "Return a result".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree_fingerprint: None,
             cancellation: CancellationToken::new(),
         })
         .await
@@ -268,6 +350,7 @@ async fn returns_assistant_result_and_commits_generated_changes() {
             project_instructions: Some("Keep generated files small.".into()),
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree_fingerprint: None,
             cancellation: CancellationToken::new(),
         })
         .await
@@ -462,6 +545,7 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
             project_instructions: None,
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree_fingerprint: None,
             cancellation: CancellationToken::new(),
         })
         .await
@@ -469,4 +553,96 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
 
     assert_eq!(error.code, ait_domain::ErrorCode::InvalidConfiguration);
     assert!(!project.path().join("answer.txt").exists());
+}
+
+#[tokio::test]
+async fn reports_confirmed_and_unfinished_items_before_failed_eof_and_stream_errors() {
+    for ending in [
+        FaultEnding::Failed,
+        FaultEnding::Eof,
+        FaultEnding::StreamError,
+    ] {
+        let project = initialized_project();
+        let progress = Arc::new(RecordingProgress::default());
+        let error = CodexWorkspaceAgent::new(Arc::new(FaultingAdapter(ending)))
+            .invoke_with_progress(
+                WorkspaceAgentInvocation {
+                    request_id: "faulting-run".into(),
+                    model: "test-model".into(),
+                    reasoning_effort: None,
+                    prompt: "write then fail".into(),
+                    project_instructions: None,
+                    commit_subject: "write then fail".into(),
+                    cwd: project.path().to_path_buf(),
+                    adopted_worktree_fingerprint: None,
+                    cancellation: CancellationToken::new(),
+                },
+                progress.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ait_domain::ErrorCode::ProviderFailed);
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("retained.txt")).unwrap(),
+            "retained\n"
+        );
+        let events = progress.0.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkspaceProgressEvent::MessageCompleted { id, .. }
+                if id == "confirmed-commentary"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkspaceProgressEvent::OperationCompleted(operation)
+                if operation.id == "confirmed-change"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkspaceProgressEvent::TextDelta { id, .. } if id == "unfinished-final"
+        )));
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reports_output_and_leaves_staged_changes_when_git_commit_fails() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let project = initialized_project();
+    let hook = project.path().join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&hook, permissions).unwrap();
+    let progress = Arc::new(RecordingProgress::default());
+    let error = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke_with_progress(
+            WorkspaceAgentInvocation {
+                request_id: "commit-failure".into(),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Create answer.txt".into(),
+                project_instructions: Some("Keep generated files small.".into()),
+                commit_subject: "Create answer.txt".into(),
+                cwd: project.path().to_path_buf(),
+                adopted_worktree_fingerprint: None,
+                cancellation: CancellationToken::new(),
+            },
+            progress.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ait_domain::ErrorCode::ProjectGitInitFailed);
+    assert!(progress.0.lock().unwrap().iter().any(|event| matches!(
+        event,
+        WorkspaceProgressEvent::MessageCompleted { id, .. } if id == "final-1"
+    )));
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["status", "--porcelain=v1"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&status.stdout).contains("A  answer.txt"));
 }

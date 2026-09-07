@@ -92,7 +92,11 @@ struct ProgressProjection {
 }
 
 enum ProjectedItem {
-    Message { phase: Option<String>, text: String },
+    Message {
+        phase: Option<String>,
+        text: String,
+        completed: bool,
+    },
     Operation(WorkspaceOperation),
 }
 
@@ -150,6 +154,7 @@ impl ProgressProjection {
                     ProjectedItem::Message {
                         phase: phase.clone(),
                         text: bounded(text),
+                        completed: false,
                     },
                 );
                 envelope(
@@ -171,6 +176,7 @@ impl ProgressProjection {
                     .or_insert_with(|| ProjectedItem::Message {
                         phase: None,
                         text: String::new(),
+                        completed: false,
                     });
                 let mut accepted = String::new();
                 if let ProjectedItem::Message { text, .. } = item {
@@ -193,6 +199,7 @@ impl ProgressProjection {
                     ProjectedItem::Message {
                         phase: phase.clone(),
                         text: text.clone(),
+                        completed: true,
                     },
                 );
                 envelope(
@@ -281,11 +288,16 @@ impl ProgressProjection {
             .order
             .iter()
             .filter_map(|id| match self.items.get(id) {
-                Some(ProjectedItem::Message { phase, text }) => Some(json!({
+                Some(ProjectedItem::Message {
+                    phase,
+                    text,
+                    completed,
+                }) => Some(json!({
                     "type": "message",
                     "id": id,
                     "phase": phase,
                     "text": text,
+                    "completed": completed,
                 })),
                 Some(ProjectedItem::Operation(operation)) => {
                     Some(json!({"type": "operation", "operation": operation_value(operation)}))
@@ -390,6 +402,7 @@ mod tests {
                 ProjectedItem::Message {
                     phase: None,
                     text: String::new(),
+                    completed: false,
                 },
             );
         }

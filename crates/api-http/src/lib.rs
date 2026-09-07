@@ -66,6 +66,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/session/submit-fork", post(submit_fork_session))
         .route("/v1/run/get", post(get_run))
         .route("/v1/run/cancel", post(cancel_run))
+        .route("/v1/run/continue", post(continue_run))
         .route("/v1/cron/create", post(create_cron))
         .route("/v1/cron/set-enabled", post(set_cron_enabled))
         .route("/v1/cron/trigger", post(trigger_cron))
@@ -414,6 +415,27 @@ async fn cancel_run(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ContinueRunRequest {
+    run_id: String,
+    expected_worktree_fingerprint: String,
+}
+
+async fn continue_run(
+    State(state): State<ApiState>,
+    Json(request): Json<ContinueRunRequest>,
+) -> Json<Response> {
+    submit_command(
+        state,
+        Command::ContinueRun {
+            run_id: request.run_id,
+            expected_worktree_fingerprint: request.expected_worktree_fingerprint,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CreateCronRequest {
     id: String,
     name: String,
@@ -717,7 +739,9 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::SendMessage { session_id, .. } => {
             correlation.session_id = Some(session_id.clone());
         }
-        Command::GetRun { run_id } | Command::CancelRun { run_id } => {
+        Command::GetRun { run_id }
+        | Command::CancelRun { run_id }
+        | Command::ContinueRun { run_id, .. } => {
             correlation.run_id = Some(run_id.clone());
         }
         Command::SetProjectDefaultAgent { project_id, .. }
@@ -804,6 +828,7 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::ForkSession { .. } => "fork_session",
         Command::GetRun { .. } => "get_run",
         Command::CancelRun { .. } => "cancel_run",
+        Command::ContinueRun { .. } => "continue_run",
         Command::CreateCron { .. } => "create_cron",
         Command::SetCronEnabled { .. } => "set_cron_enabled",
         Command::TriggerCron { .. } => "trigger_cron",

@@ -153,6 +153,9 @@ pub struct WorkspaceAgentInvocation {
     pub commit_subject: String,
     /// Canonical Project Git root and sandbox boundary.
     pub cwd: PathBuf,
+    /// Exact failed-Run worktree snapshot explicitly adopted by the member.
+    /// Ordinary invocations leave this absent and require a clean worktree.
+    pub adopted_worktree_fingerprint: Option<String>,
     /// Cooperative cancellation shared with the caller.
     pub cancellation: CancellationToken,
 }

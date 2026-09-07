@@ -2,6 +2,7 @@
 
 use std::{
     collections::VecDeque,
+    process::Command as ProcessCommand,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -406,6 +407,388 @@ fn config() -> ait_contracts::AgentConfiguration {
 struct SlowStreamingAgent {
     started: Semaphore,
     release: Semaphore,
+}
+
+struct PartialThenContinuingAgent {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl WorkspaceAgent for PartialThenContinuingAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("progress entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if call == 0 {
+            assert!(request.adopted_worktree_fingerprint.is_none());
+            std::fs::write(request.cwd.join("partial.txt"), "retained output\n").unwrap();
+            progress
+                .report(WorkspaceProgressEvent::MessageCompleted {
+                    id: "commentary".into(),
+                    phase: Some("commentary".into()),
+                    text: "The file was written.".into(),
+                })
+                .await;
+            progress
+                .report(WorkspaceProgressEvent::OperationCompleted(
+                    WorkspaceOperation {
+                        id: "file-change".into(),
+                        kind: "file_change".into(),
+                        status: "completed".into(),
+                        title: "Changed partial.txt".into(),
+                        summary: None,
+                        detail: None,
+                        paths: vec!["partial.txt".into()],
+                    },
+                ))
+                .await;
+            progress
+                .report(WorkspaceProgressEvent::MessageStarted {
+                    id: "unfinished-final".into(),
+                    phase: Some("final_answer".into()),
+                    text: "This answer did not finish".into(),
+                })
+                .await;
+            progress
+                .report(WorkspaceProgressEvent::TurnStatus {
+                    status: "failed".into(),
+                    error: Some("fixture stream failure".into()),
+                })
+                .await;
+            return Err(DomainError::invariant(
+                ErrorCode::ProviderFailed,
+                "fixture stream failure",
+            ));
+        }
+
+        assert!(request.adopted_worktree_fingerprint.is_some());
+        assert!(
+            request
+                .project_instructions
+                .as_deref()
+                .is_some_and(|value| value.contains("explicitly chose to continue"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(request.cwd.join("partial.txt")).unwrap(),
+            "retained output\n"
+        );
+        let added = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(&request.cwd)
+            .args(["add", "--all"])
+            .status()
+            .unwrap();
+        assert!(added.success());
+        let committed = ProcessCommand::new("git")
+            .arg("-C")
+            .arg(&request.cwd)
+            .args([
+                "-c",
+                "user.name=Ait Test",
+                "-c",
+                "user.email=ait-test@localhost",
+                "commit",
+                "--no-gpg-sign",
+                "-m",
+                "continue retained changes",
+            ])
+            .status()
+            .unwrap();
+        assert!(committed.success());
+        progress
+            .report(WorkspaceProgressEvent::MessageCompleted {
+                id: "continued-final".into(),
+                phase: Some("final_answer".into()),
+                text: "The retained work is complete.".into(),
+            })
+            .await;
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "The retained work is complete.".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: vec![ait_ports::WorkspaceOutputItem::Message {
+                id: "continued-final".into(),
+                phase: Some("final_answer".into()),
+                text: "The retained work is complete.".into(),
+            }],
+        })
+    }
+}
+
+#[tokio::test]
+async fn terminal_partial_output_survives_reload_and_requires_exact_worktree_confirmation() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("partial-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(PartialThenContinuingAgent {
+        calls: AtomicUsize::new(0),
+    });
+    let service = LocalControlService::with_workspace_agent(store.clone(), agent.clone());
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "partial-project".into(),
+            name: "Partial".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "partial-agent".into(),
+            name: "Partial agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "partial-session".into(),
+            project_id: project.id,
+            agent_id: "partial-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+
+    let failed = run(
+        &service,
+        Command::SendMessage {
+            session_id: "partial-session".into(),
+            text: "write then fail".into(),
+        },
+    )
+    .await;
+    assert_eq!(failed.status, "failed");
+    assert!(failed.last_message_id.is_none());
+    let partial = failed.partial_output.as_ref().expect("partial output");
+    let progress = partial.progress.as_ref().expect("progress checkpoint");
+    assert_eq!(progress["items"][0]["completed"], true);
+    assert_eq!(progress["items"][2]["completed"], false);
+    let worktree = partial.worktree.as_ref().expect("worktree state");
+    assert!(worktree.dirty);
+    assert_eq!(worktree.changes[0].path, "partial.txt");
+    let fingerprint = worktree.fingerprint.clone();
+
+    let reopened = LocalControlService::with_workspace_agent(store.clone(), agent);
+    let reloaded = run(
+        &reopened,
+        Command::GetRun {
+            run_id: failed.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(reloaded.partial_output, failed.partial_output);
+
+    std::fs::write(project_dir.join("partial.txt"), "changed after failure\n").unwrap();
+    let rejected = reopened
+        .execute(Command::ContinueRun {
+            run_id: failed.id.clone(),
+            expected_worktree_fingerprint: fingerprint.clone(),
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::ProjectGitDirty);
+    assert_eq!(agent_calls(&reopened, &failed.id).await, 0);
+
+    std::fs::write(project_dir.join("partial.txt"), "retained output\n").unwrap();
+    let continued = run(
+        &reopened,
+        Command::ContinueRun {
+            run_id: failed.id.clone(),
+            expected_worktree_fingerprint: fingerprint,
+        },
+    )
+    .await;
+    assert_eq!(continued.status, "completed");
+    assert_eq!(
+        continued.recovery_of_run_id.as_deref(),
+        Some(failed.id.as_str())
+    );
+    assert!(continued.last_message_id.is_some());
+    let status = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(["status", "--porcelain=v1"])
+        .output()
+        .unwrap();
+    assert!(status.stdout.is_empty());
+}
+
+async fn agent_calls(service: &LocalControlService, source_run_id: &str) -> usize {
+    let CommandResult::Workspace(workspace) = command(service, Command::Snapshot).await else {
+        unreachable!()
+    };
+    workspace
+        .runs
+        .iter()
+        .filter(|run| run.recovery_of_run_id.as_deref() == Some(source_run_id))
+        .count()
+}
+
+struct CancellablePartialAgent {
+    started: Semaphore,
+}
+
+#[async_trait]
+impl WorkspaceAgent for CancellablePartialAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("progress entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        std::fs::write(request.cwd.join("cancelled.txt"), "kept\n").unwrap();
+        progress
+            .report(WorkspaceProgressEvent::MessageCompleted {
+                id: "before-cancel".into(),
+                phase: Some("commentary".into()),
+                text: "Completed before cancellation.".into(),
+            })
+            .await;
+        progress
+            .report(WorkspaceProgressEvent::OperationCompleted(
+                WorkspaceOperation {
+                    id: "cancelled-file-change".into(),
+                    kind: "file_change".into(),
+                    status: "completed".into(),
+                    title: "Changed cancelled.txt".into(),
+                    summary: None,
+                    detail: None,
+                    paths: vec!["cancelled.txt".into()],
+                },
+            ))
+            .await;
+        progress
+            .report(WorkspaceProgressEvent::MessageStarted {
+                id: "during-cancel".into(),
+                phase: Some("final_answer".into()),
+                text: "Unfinished".into(),
+            })
+            .await;
+        self.started.add_permits(1);
+        std::future::pending::<()>().await;
+        unreachable!()
+    }
+}
+
+#[tokio::test]
+async fn cancellation_retains_confirmed_and_unfinished_output_with_workspace_state() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("cancel-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(CancellablePartialAgent {
+        started: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "cancel-project".into(),
+            name: "Cancel".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "cancel-agent".into(),
+            name: "Cancel agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    command(
+        &service,
+        Command::CreateSession {
+            id: "cancel-session".into(),
+            project_id: project.id,
+            agent_id: "cancel-agent".into(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let executing = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            run(
+                &service,
+                Command::SendMessage {
+                    session_id: "cancel-session".into(),
+                    text: "write then wait".into(),
+                },
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(2), agent.started.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let CommandResult::Workspace(workspace) = command(&service, Command::Snapshot).await else {
+        unreachable!()
+    };
+    let run_id = workspace.runs[0].id.clone();
+    command(
+        &service,
+        Command::CancelRun {
+            run_id: run_id.clone(),
+        },
+    )
+    .await;
+    let cancelled = tokio::time::timeout(Duration::from_secs(2), executing)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(cancelled.last_message_id.is_none());
+    let partial = cancelled.partial_output.expect("partial output");
+    assert_eq!(
+        partial.progress.as_ref().unwrap()["items"][0]["completed"],
+        true
+    );
+    assert_eq!(
+        partial.progress.as_ref().unwrap()["items"][1]["operation"]["status"],
+        "completed"
+    );
+    assert_eq!(
+        partial.progress.as_ref().unwrap()["items"][2]["completed"],
+        false
+    );
+    assert!(partial.worktree.as_ref().is_some_and(|state| state.dirty));
+    assert_eq!(partial.worktree.unwrap().changes[0].path, "cancelled.txt");
+    assert!(service.progress_checkpoints().await.unwrap().is_empty());
 }
 
 #[async_trait]

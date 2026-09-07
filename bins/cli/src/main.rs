@@ -159,6 +159,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::ForkSession { .. } => "/v1/session/fork",
         Command::GetRun { .. } => "/v1/run/get",
         Command::CancelRun { .. } => "/v1/run/cancel",
+        Command::ContinueRun { .. } => "/v1/run/continue",
         Command::CreateCron { .. } => "/v1/cron/create",
         Command::SetCronEnabled { .. } => "/v1/cron/set-enabled",
         Command::TriggerCron { .. } => "/v1/cron/trigger",

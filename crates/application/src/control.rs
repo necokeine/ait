@@ -3,6 +3,8 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
+    fs::File,
+    io::Read as _,
     path::Path,
     process::Command as ProcessCommand,
     sync::{Arc, Mutex, Weak},
@@ -12,9 +14,9 @@ use std::{
 use ait_contracts::{
     API_VERSION, AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView,
     ApiError, Command, CommandResult, CronView, Event, EventPage, MessageView,
-    PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunView,
-    SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView, default_settings,
-    settings_schema,
+    PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunPartialOutput,
+    RunView, RunWorktreeChange, RunWorktreeState, SessionView, SettingKind, SettingsDocument,
+    SettingsView, WorkspaceView, default_settings, settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
@@ -27,6 +29,7 @@ use ait_ports::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod agents;
@@ -203,11 +206,11 @@ impl LocalControlService {
     async fn try_submit(self: &Arc<Self>, command: Command) -> Result<CommandResult, ApiError> {
         if !matches!(
             command,
-            Command::SendMessage { .. } | Command::ForkSession { .. }
+            Command::SendMessage { .. } | Command::ForkSession { .. } | Command::ContinueRun { .. }
         ) {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                "only interactive Run commands support asynchronous submission",
+                "only interactive and recovery Run commands support asynchronous submission",
                 false,
             ));
         }
@@ -409,7 +412,7 @@ impl LocalControlService {
                 AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, run).await,
                 AgentMode::Codex => match &self.workspace_agent {
                     Some(executor) => {
-                        let (project_instructions, prompt) =
+                        let (mut project_instructions, prompt) =
                             codex_prompt(&state, &run.base_message_id).map_err(|error| {
                                 DomainError {
                                     code: error.code,
@@ -419,6 +422,13 @@ impl LocalControlService {
                                     cause_id: None,
                                 }
                             })?;
+                        if run.recovery_of_run_id.is_some() {
+                            let recovery = "The member explicitly chose to continue a failed Codex Run with its existing workspace changes. Inspect and preserve the current worktree before editing. Continue toward the original request without redoing completed external side effects, and do not discard or reset existing changes.";
+                            project_instructions = Some(match project_instructions {
+                                Some(instructions) => format!("{instructions}\n\n{recovery}"),
+                                None => recovery.into(),
+                            });
+                        }
                         executor
                             .invoke_with_progress(
                                 WorkspaceAgentInvocation {
@@ -428,7 +438,10 @@ impl LocalControlService {
                                     project_instructions,
                                     prompt,
                                     commit_subject: user_text,
-                                    cwd: workdir,
+                                    cwd: workdir.clone(),
+                                    adopted_worktree_fingerprint: recovery_worktree_fingerprint(
+                                        &state, run,
+                                    ),
                                     cancellation: cancellation.clone(),
                                 },
                                 reporter.clone(),
@@ -450,10 +463,16 @@ impl LocalControlService {
         // Progress storage is deliberately best-effort: a display-channel
         // failure must not prevent the immutable result and Run terminal state.
         let _ = progress.finish().await;
+        let partial_output = if result.is_err() {
+            self.partial_output(run_id, &workdir).await
+        } else {
+            None
+        };
         if result.is_ok() {
             let _ = self.set_run_settling(&run.id).await?;
         }
-        self.finish_workspace_run(&run.id, result).await
+        self.finish_workspace_run(&run.id, result, partial_output)
+            .await
     }
 
     async fn set_run_running(&self, run_id: &str) -> Result<bool, ApiError> {
@@ -528,6 +547,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
         result: Result<WorkspaceAgentResponse, DomainError>,
+        partial_output: Option<Box<RunPartialOutput>>,
     ) -> Result<RunView, ApiError> {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
@@ -542,6 +562,24 @@ impl LocalControlService {
                 run.status.as_str(),
                 "completed" | "failed" | "cancelled" | "limit_exceeded"
             ) {
+                if run.partial_output.is_none() && partial_output.is_some() {
+                    run.partial_output.clone_from(&partial_output);
+                    state.runs[index] = run.clone();
+                    let event = pending("run.updated", Some(run_id.to_owned()), &run);
+                    let value = serde_json::to_value(&state).map_err(serialization_error)?;
+                    match self
+                        .store
+                        .commit(snapshot.revision, value, vec![event])
+                        .await
+                    {
+                        Ok(_) => {
+                            let _ = self.store.clear_progress(run_id).await;
+                            return Ok(run);
+                        }
+                        Err(ControlStoreError::Conflict) => continue,
+                        Err(error) => return Err(store_error(error)),
+                    }
+                }
                 let _ = self.store.clear_progress(run_id).await;
                 return Ok(run);
             }
@@ -616,6 +654,7 @@ impl LocalControlService {
                     }
                     .into();
                     run.error = Some(error(failure.code, &failure.message, failure.retryable));
+                    run.partial_output.clone_from(&partial_output);
                 }
             }
             release_session(&mut state, &run);
@@ -711,6 +750,31 @@ impl LocalControlService {
             .map(|values| values.into_iter().map(|value| value.body).collect())
     }
 
+    async fn partial_output(&self, run_id: &str, workdir: &Path) -> Option<Box<RunPartialOutput>> {
+        let progress = self
+            .store
+            .load_progress()
+            .await
+            .ok()
+            .and_then(|checkpoints| {
+                checkpoints
+                    .into_iter()
+                    .find(|checkpoint| checkpoint.run_id == run_id)
+                    .map(|checkpoint| checkpoint.body)
+            });
+        let worktree = inspect_worktree(workdir).ok();
+        let has_progress = progress.as_ref().is_some_and(|checkpoint| {
+            checkpoint["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+                || checkpoint["warnings"]
+                    .as_array()
+                    .is_some_and(|warnings| !warnings.is_empty())
+        });
+        let has_changes = worktree.as_ref().is_some_and(|state| state.dirty);
+        (has_progress || has_changes).then(|| Box::new(RunPartialOutput { progress, worktree }))
+    }
+
     /// Marks Runs left active by a previous daemon process as explicitly
     /// unrecovered. Automatic provider-thread resume is outside this slice.
     ///
@@ -797,16 +861,13 @@ impl LocalControlService {
             CommandOutcome::Ready(result) => {
                 if let CommandResult::Run(run) = result.as_ref()
                     && run.status == "cancelled"
-                {
-                    if let Some(token) = self
+                    && let Some(token) = self
                         .cancellations
                         .lock()
                         .expect("cancellations")
                         .get(&run.id)
-                    {
-                        token.cancel();
-                    }
-                    let _ = self.store.clear_progress(&run.id).await;
+                {
+                    token.cancel();
                 }
                 Ok(*result)
             }
@@ -822,6 +883,7 @@ impl LocalControlService {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
             check_session_admission(&state, &command)?;
+            validate_continue_worktree(&state, &command)?;
             let git_commit = user_message_git_commit(&state, &command)?;
             let (result, events) =
                 apply_command(&mut state, command.clone(), git_commit.as_deref())?;
@@ -929,6 +991,12 @@ fn apply_command(
             );
         }
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
+        Command::ContinueRun {
+            run_id,
+            expected_worktree_fingerprint,
+        } => {
+            return continue_run(state, &run_id, &expected_worktree_fingerprint);
+        }
         Command::CreateCron {
             id,
             name,
@@ -1433,6 +1501,8 @@ fn send_message(
         scheduled_at: None,
         status: "queued".into(),
         error: None,
+        partial_output: None,
+        recovery_of_run_id: None,
     };
     if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
         state
@@ -1479,6 +1549,19 @@ fn codex_prompt(state: &State, head_id: &str) -> Result<(Option<String>, String)
         (!instructions.is_empty()).then(|| instructions.join("\n\n")),
         prompt,
     ))
+}
+
+fn recovery_worktree_fingerprint(state: &State, run: &RunView) -> Option<String> {
+    let source_id = run.recovery_of_run_id.as_deref()?;
+    state
+        .runs
+        .iter()
+        .find(|candidate| candidate.id == source_id)?
+        .partial_output
+        .as_ref()?
+        .worktree
+        .as_ref()
+        .map(|worktree| worktree.fingerprint.clone())
 }
 
 fn append_output(state: &mut State, run: &mut RunView, output: MessageView) {
@@ -1533,6 +1616,149 @@ fn cancel_run(
     Ok((
         CommandResult::Run(run.clone()),
         vec![pending("run.cancelled", Some(run.id.clone()), &run)],
+    ))
+}
+
+fn validate_continue_worktree(state: &State, command: &Command) -> Result<(), ApiError> {
+    let Command::ContinueRun {
+        run_id,
+        expected_worktree_fingerprint,
+    } = command
+    else {
+        return Ok(());
+    };
+    let run = state
+        .runs
+        .iter()
+        .find(|run| run.id == *run_id)
+        .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    if !matches!(
+        run.status.as_str(),
+        "failed" | "cancelled" | "limit_exceeded"
+    ) || run.provider.kind != AgentMode::Codex
+        || run.last_message_id.is_some()
+    {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "only an unfinished terminal Codex Run can continue from workspace changes",
+            false,
+        ));
+    }
+    if state
+        .runs
+        .iter()
+        .any(|candidate| candidate.recovery_of_run_id.as_deref() == Some(run_id))
+    {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "this Run already has a continuation",
+            false,
+        ));
+    }
+    let recorded = run
+        .partial_output
+        .as_ref()
+        .and_then(|partial| partial.worktree.as_ref())
+        .filter(|worktree| worktree.dirty)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::RunNotResumable,
+                "the Run has no recorded workspace changes to continue",
+                false,
+            )
+        })?;
+    if expected_worktree_fingerprint.is_empty()
+        || expected_worktree_fingerprint != &recorded.fingerprint
+    {
+        return Err(error(
+            ErrorCode::ProjectGitDirty,
+            "the requested workspace snapshot does not match the failed Run",
+            false,
+        ));
+    }
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == run.project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    let current = inspect_worktree(Path::new(&project.workdir))?;
+    if !current.dirty || current.fingerprint != recorded.fingerprint {
+        return Err(error(
+            ErrorCode::ProjectGitDirty,
+            "the Project worktree changed after this Run stopped; inspect it again before continuing",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn continue_run(
+    state: &mut State,
+    source_run_id: &str,
+    _expected_worktree_fingerprint: &str,
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
+    let source = state
+        .runs
+        .iter()
+        .find(|run| run.id == source_run_id)
+        .cloned()
+        .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    let session_id = source.session_id.clone().ok_or_else(|| {
+        error(
+            ErrorCode::RunNotResumable,
+            "a Run without a Session cannot be continued interactively",
+            false,
+        )
+    })?;
+    let session_index = state
+        .sessions
+        .iter()
+        .position(|session| session.id == session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    let session = &state.sessions[session_index];
+    if session.active_run_id.is_some() {
+        return Err(error(
+            ErrorCode::SessionBusy,
+            "session already has an active run",
+            false,
+        ));
+    }
+    if session.current_message_id != source.base_message_id {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "the Session moved after the failed Run",
+            false,
+        ));
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    state.sessions[session_index].active_run_id = Some(run_id.clone());
+    state.sessions[session_index].version += 1;
+    let run = RunView {
+        id: run_id.clone(),
+        project_id: source.project_id,
+        base_message_id: source.base_message_id,
+        last_message_id: None,
+        session_id: Some(session_id),
+        agent_id: source.agent_id,
+        agent_revision: source.agent_revision,
+        config: source.config,
+        provider: source.provider,
+        trigger: "recovery".into(),
+        cron_id: None,
+        scheduled_at: None,
+        status: "queued".into(),
+        error: None,
+        partial_output: None,
+        recovery_of_run_id: Some(source_run_id.to_owned()),
+    };
+    if let Some(reference) = state.run_credentials.get(source_run_id).cloned() {
+        state.run_credentials.insert(run_id.clone(), reference);
+    }
+    state.runs.push(run.clone());
+    Ok((
+        CommandOutcome::for_new_run(run.clone()),
+        vec![pending("run.recovery_started", Some(run_id), &run)],
     ))
 }
 
@@ -1682,6 +1908,8 @@ fn trigger_cron(
         scheduled_at: Some(scheduled_at),
         status: "queued".into(),
         error: None,
+        partial_output: None,
+        recovery_of_run_id: None,
     });
     let run = state.runs.last().expect("new run exists").clone();
     let event = pending("cron.run_triggered", Some(run_id), &run);
@@ -2166,6 +2394,170 @@ fn clean_git_head(path: &Path) -> Result<String, ApiError> {
         ));
     }
     Ok(after)
+}
+
+const MAX_WORKTREE_CHANGES: usize = 256;
+const MAX_WORKTREE_PATH_CHARS: usize = 4_096;
+
+fn inspect_worktree(path: &Path) -> Result<RunWorktreeState, ApiError> {
+    let head = git_head(path)?;
+    let status = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+    if !status.status.success() {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&status.stderr).trim(),
+            false,
+        ));
+    }
+
+    let fingerprint = worktree_fingerprint(path, head.as_deref(), &status.stdout)?;
+    let records = status
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let mut changes = Vec::new();
+    let mut index = 0;
+    let mut total = 0;
+    while index < records.len() {
+        let record = records[index];
+        if record.len() < 3 || record[2] != b' ' {
+            index += 1;
+            continue;
+        }
+        total += 1;
+        if changes.len() < MAX_WORKTREE_CHANGES {
+            changes.push(RunWorktreeChange {
+                status: String::from_utf8_lossy(&record[..2]).into_owned(),
+                path: bounded_chars(
+                    &String::from_utf8_lossy(&record[3..]),
+                    MAX_WORKTREE_PATH_CHARS,
+                ),
+            });
+        }
+        let renamed = record[..2]
+            .iter()
+            .any(|status| matches!(*status, b'R' | b'C'));
+        index += if renamed { 2 } else { 1 };
+    }
+    Ok(RunWorktreeState {
+        head,
+        dirty: !status.stdout.is_empty(),
+        fingerprint,
+        changes,
+        truncated: total > MAX_WORKTREE_CHANGES,
+    })
+}
+
+fn worktree_fingerprint(
+    path: &Path,
+    head: Option<&str>,
+    status: &[u8],
+) -> Result<String, ApiError> {
+    let unstaged = git_for_fingerprint(path, &["diff", "--binary"])?;
+    let staged = git_for_fingerprint(path, &["diff", "--cached", "--binary"])?;
+    let mut digest = Sha256::new();
+    update_digest_part(&mut digest, head.unwrap_or_default().as_bytes());
+    update_digest_part(&mut digest, status);
+    update_digest_part(&mut digest, &unstaged);
+    update_digest_part(&mut digest, &staged);
+    for record in status.split(|byte| *byte == 0) {
+        if record.len() < 3 || &record[..2] != b"??" || record[2] != b' ' {
+            continue;
+        }
+        let relative = String::from_utf8_lossy(&record[3..]);
+        update_digest_part(&mut digest, relative.as_bytes());
+        let absolute = path.join(relative.as_ref());
+        let metadata = std::fs::symlink_metadata(&absolute).map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot inspect retained path {relative}: {failure}"),
+                false,
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&absolute).map_err(|failure| {
+                error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    format!("cannot inspect retained symlink {relative}: {failure}"),
+                    false,
+                )
+            })?;
+            update_digest_part(&mut digest, target.to_string_lossy().as_bytes());
+        } else if metadata.is_file() {
+            digest.update(metadata.len().to_le_bytes());
+            let mut file = File::open(&absolute).map_err(|failure| {
+                error(
+                    ErrorCode::ProjectGitHeadUnavailable,
+                    format!("cannot inspect retained file {relative}: {failure}"),
+                    false,
+                )
+            })?;
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                let read = file.read(&mut buffer).map_err(|failure| {
+                    error(
+                        ErrorCode::ProjectGitHeadUnavailable,
+                        format!("cannot inspect retained file {relative}: {failure}"),
+                        false,
+                    )
+                })?;
+                if read == 0 {
+                    break;
+                }
+                digest.update(&buffer[..read]);
+            }
+        }
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn git_for_fingerprint(path: &Path, arguments: &[&str]) -> Result<Vec<u8>, ApiError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(arguments)
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            false,
+        ))
+    }
+}
+
+fn update_digest_part(digest: &mut Sha256, value: &[u8]) {
+    digest.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_le_bytes());
+    digest.update(value);
+}
+
+fn bounded_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        value.to_owned()
+    } else {
+        value.chars().take(limit).collect()
+    }
 }
 
 fn git_head(path: &Path) -> Result<Option<String>, ApiError> {

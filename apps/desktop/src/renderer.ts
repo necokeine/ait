@@ -357,9 +357,18 @@ function renderConversation(): void {
       latestRun.status,
       latestRun.error?.message,
       agent ? agentDisplayName(agent) : "Assistant",
+      latestRun.partialOutput,
+      latestRun.id,
+      session.projectId,
     )
     : "";
   conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("") + live + terminal;
+  conversation.querySelectorAll<HTMLButtonElement>("[data-run-inspect-project]").forEach((button) => {
+    button.addEventListener("click", () => void inspectRetainedWorktree(button));
+  });
+  conversation.querySelectorAll<HTMLButtonElement>("[data-run-continue]").forEach((button) => {
+    button.addEventListener("click", () => void continueRetainedWorktree(button));
+  });
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
@@ -481,6 +490,44 @@ function startReadySessionTitles(): void {
   if (!snapshot) return;
   for (const request of pendingTitles.takeReady(snapshot.sessions, snapshot.runs)) {
     void generateFirstSessionTitle(request.sessionId, request.prompt);
+  }
+}
+
+async function inspectRetainedWorktree(button: HTMLButtonElement): Promise<void> {
+  const projectId = button.dataset.runInspectProject;
+  if (!projectId) return;
+  button.disabled = true;
+  try {
+    await window.ait.openProjectFile({ projectId, path: "." });
+    showToast("Opened the Project folder. Review the retained changes before continuing.");
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function continueRetainedWorktree(button: HTMLButtonElement): Promise<void> {
+  const runId = button.dataset.runContinue;
+  const expectedWorktreeFingerprint = button.dataset.worktreeFingerprint;
+  const session = currentSession();
+  if (!snapshot || !runId || !expectedWorktreeFingerprint || !session) return;
+  if (!window.confirm("Continue from the retained workspace changes? Codex will inspect and preserve them; Ait will not discard or reset files.")) return;
+  pendingSessions.add(session.id);
+  updateComposerState();
+  button.disabled = true;
+  try {
+    const result = await window.ait.continueRun({ runId, expectedWorktreeFingerprint });
+    snapshot = result.snapshot;
+    renderAll();
+    scheduleSnapshotRefresh();
+    showToast("Continuation started from the confirmed workspace snapshot.");
+  } catch (error) {
+    try { snapshot = await window.ait.snapshot(); renderAll(); } catch { /* Keep the last visible snapshot if disconnected. */ }
+    showToast(errorMessage(error), true);
+  } finally {
+    pendingSessions.delete(session.id);
+    updateComposerState();
   }
 }
 

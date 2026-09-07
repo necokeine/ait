@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentView, ControlEvent, RunProgress, RunStreamUpdate } from "./types.js";
+import type { AgentProvider, AgentView, ControlEvent, RunProgress, RunStreamUpdate, RunWorktreeState } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,7 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
+  "run.continue",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -48,6 +49,8 @@ interface WorkspaceView {
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
     error?: { code?: string; message?: string } | null;
+    partial_output?: { progress?: unknown; worktree?: unknown } | null;
+    recovery_of_run_id?: string | null;
   }>;
 }
 
@@ -180,6 +183,13 @@ class DaemonClient {
     if (method === "session.send-message") {
       const run = await this.post("/v1/session/submit-message", "run", {
         session_id: params.sessionId, text: params.content,
+      }) as { id: string };
+      return { snapshot: await this.snapshot(), runId: run.id };
+    }
+    if (method === "run.continue") {
+      const run = await this.post("/v1/run/continue", "run", {
+        run_id: params.runId,
+        expected_worktree_fingerprint: params.expectedWorktreeFingerprint,
       }) as { id: string };
       return { snapshot: await this.snapshot(), runId: run.id };
     }
@@ -409,10 +419,38 @@ class DaemonClient {
         ...(run.error?.message ? {
           error: { message: run.error.message, ...(run.error.code ? { code: run.error.code } : {}) },
         } : {}),
+        ...(partialOutput(run.partial_output) ? { partialOutput: partialOutput(run.partial_output) } : {}),
+        ...(run.recovery_of_run_id ? { recoveryOfRunId: run.recovery_of_run_id } : {}),
       })),
       runProgress,
     };
   }
+}
+
+function partialOutput(value: unknown): { progress?: RunProgress; worktree?: RunWorktreeState } | undefined {
+  const partial = objectParams(value);
+  const progress = progressFromCheckpoint(partial.progress);
+  const rawWorktree = objectParams(partial.worktree);
+  const fingerprint = typeof rawWorktree.fingerprint === "string" ? rawWorktree.fingerprint : "";
+  const changes = Array.isArray(rawWorktree.changes)
+    ? rawWorktree.changes.flatMap((value) => {
+      const change = objectParams(value);
+      return typeof change.status === "string" && typeof change.path === "string"
+        ? [{ status: change.status, path: change.path }]
+        : [];
+    }).slice(0, 256)
+    : [];
+  const worktree = fingerprint ? {
+    head: typeof rawWorktree.head === "string" ? rawWorktree.head : null,
+    dirty: rawWorktree.dirty === true,
+    fingerprint,
+    changes,
+    truncated: rawWorktree.truncated === true,
+  } : undefined;
+  return progress || worktree ? {
+    ...(progress ? { progress } : {}),
+    ...(worktree ? { worktree } : {}),
+  } : undefined;
 }
 
 function objectParams(value: unknown): Record<string, unknown> {
