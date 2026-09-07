@@ -2,9 +2,10 @@ import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
 import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgress, renderRunTerminal } from "./message-renderer.js";
 import { applyProgressEvent } from "./run-progress.js";
+import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
-import { sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
+import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -65,15 +66,15 @@ let toastTimer: number | undefined;
 let streamConnected = true;
 let renderedSessionId: string | undefined;
 let snapshotRefreshPending = false;
-const pendingTitles = new Map<string, { sessionId: string; prompt: string }>();
-const pendingStreamUpdates: RunStreamUpdate[] = [];
+const pendingTitles = new PendingSessionTitles();
+const pendingStream = new BoundedRunStreamBacklog();
 const agentsPage = createAgentsPage($("#agents-page"), {
   update: (updated) => { snapshot = updated; renderAll(); },
   notify: showToast,
   configureProvider: openProviderSettings,
 });
 
-window.ait.subscribeRunEvents(handleRunStreamUpdate);
+window.ait.subscribeRunEvents(handleRunStreamFrame);
 void initialize();
 
 async function initialize(): Promise<void> {
@@ -384,83 +385,103 @@ function renderConversation(): void {
   renderedSessionId = session.id;
 }
 
-function handleRunStreamUpdate(update: RunStreamUpdate): void {
-  if (update.type === "connection") {
-    streamConnected = update.connected;
-    if (currentSession()?.activeRunId) renderConversation();
-    return;
-  }
+function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
   if (!snapshot || snapshotRefreshPending) {
-    pendingStreamUpdates.push(update);
-    if (pendingStreamUpdates.length > 2_000) pendingStreamUpdates.shift();
+    queuePendingStreamUpdates(updates);
     return;
   }
-  const event = update.event;
-  if (event.kind === "run.progress" && snapshot) {
-    const body = event.body as Record<string, unknown>;
-    const runId = typeof body.run_id === "string" ? body.run_id : undefined;
-    if (!runId) return;
-    const index = snapshot.runProgress.findIndex((candidate) => candidate.runId === runId);
-    const current = index >= 0 ? snapshot.runProgress[index] : undefined;
-    const incomingSeq = typeof body.seq === "number" ? body.seq : undefined;
-    if (incomingSeq !== undefined
-      && ((current && incomingSeq > current.seq + 1) || (!current && incomingSeq > 1))) {
-      scheduleSnapshotRefresh();
-      return;
+  let refresh = false;
+  let renderCurrent = false;
+  const gappedRuns = new Set<string>();
+  for (const update of updates) {
+    if (update.type === "connection") {
+      streamConnected = update.connected;
+      renderCurrent ||= Boolean(currentSession()?.activeRunId);
+      continue;
     }
-    const next = applyProgressEvent(current, body);
-    if (!next) return;
-    if (index >= 0) snapshot.runProgress[index] = next;
-    else snapshot.runProgress.push(next);
-    if (currentSession()?.activeRunId === runId) renderConversation();
-    return;
+    if (update.type === "resync") {
+      refresh = true;
+      continue;
+    }
+    const event = update.event;
+    if (event.kind === "run.progress") {
+      const body = event.body as Record<string, unknown>;
+      const runId = typeof body.run_id === "string" ? body.run_id : undefined;
+      if (!runId || gappedRuns.has(runId)) continue;
+      const index = snapshot.runProgress.findIndex((candidate) => candidate.runId === runId);
+      const current = index >= 0 ? snapshot.runProgress[index] : undefined;
+      const incomingSeq = typeof body.seq === "number" ? body.seq : undefined;
+      if (incomingSeq !== undefined
+        && ((current && incomingSeq > current.seq + 1) || (!current && incomingSeq > 1))) {
+        gappedRuns.add(runId);
+        refresh = true;
+        continue;
+      }
+      const next = applyProgressEvent(current, body);
+      if (!next) continue;
+      if (index >= 0) snapshot.runProgress[index] = next;
+      else snapshot.runProgress.push(next);
+      renderCurrent ||= currentSession()?.activeRunId === runId;
+      continue;
+    }
+    if (event.kind === "run.updated") {
+      const run = event.body as Record<string, unknown>;
+      const runId = typeof run.id === "string" ? run.id : undefined;
+      const status = typeof run.status === "string" ? run.status : undefined;
+      if (runId && status === "settling") {
+        const progress = snapshot.runProgress.find((candidate) => candidate.runId === runId);
+        if (progress) progress.status = "settling";
+        renderCurrent ||= currentSession()?.activeRunId === runId;
+      }
+      if (["completed", "failed", "cancelled", "limit_exceeded"].includes(status ?? "")) {
+        refresh = true;
+      }
+      continue;
+    }
+    if (event.kind === "stream.reset_required") refresh = true;
   }
-  if (event.kind === "run.updated") {
-    const run = event.body as Record<string, unknown>;
-    const runId = typeof run.id === "string" ? run.id : undefined;
-    const status = typeof run.status === "string" ? run.status : undefined;
-    if (runId && status === "settling" && snapshot) {
-      const progress = snapshot.runProgress.find((candidate) => candidate.runId === runId);
-      if (progress) progress.status = "settling";
-      if (currentSession()?.activeRunId === runId) renderConversation();
-    }
-    if (["completed", "failed", "cancelled", "limit_exceeded"].includes(status ?? "")) {
-      scheduleSnapshotRefresh();
-    }
-    return;
-  }
-  if (event.kind === "stream.reset_required") scheduleSnapshotRefresh();
+  if (refresh) scheduleSnapshotRefresh();
+  else if (renderCurrent) renderConversation();
+}
+
+function queuePendingStreamUpdates(updates: RunStreamUpdate[]): void {
+  pendingStream.push(updates);
 }
 
 function drainPendingStreamUpdates(): void {
-  for (const update of pendingStreamUpdates.splice(0)) handleRunStreamUpdate(update);
+  const pending = pendingStream.drain();
+  if (pending.resync) {
+    scheduleSnapshotRefresh();
+    return;
+  }
+  if (pending.updates.length > 0) handleRunStreamFrame(pending.updates);
 }
 
 function scheduleSnapshotRefresh(): void {
   if (snapshotRefreshPending) return;
   snapshotRefreshPending = true;
   queueMicrotask(async () => {
+    let refreshed = false;
     try {
       snapshot = await window.ait.snapshot();
-      snapshotRefreshPending = false;
-      drainPendingStreamUpdates();
+      refreshed = true;
       renderAll();
-      for (const [runId, request] of pendingTitles) {
-        const session = snapshot.sessions.find((candidate) => candidate.id === request.sessionId);
-        if (session && !session.active && !session.titleGenerationStarted && !session.name.trim()) {
-          pendingTitles.delete(runId);
-          void generateFirstSessionTitle(request.sessionId, request.prompt);
-        } else if (!session || !session.active) {
-          pendingTitles.delete(runId);
-        }
-      }
+      startReadySessionTitles();
     } catch {
       streamConnected = false;
       if (currentSession()?.activeRunId) renderConversation();
     } finally {
       snapshotRefreshPending = false;
     }
+    if (refreshed) drainPendingStreamUpdates();
   });
+}
+
+function startReadySessionTitles(): void {
+  if (!snapshot) return;
+  for (const request of pendingTitles.takeReady(snapshot.sessions, snapshot.runs)) {
+    void generateFirstSessionTitle(request.sessionId, request.prompt);
+  }
 }
 
 function renderTree(): void {
@@ -591,22 +612,19 @@ async function submitMessage(): Promise<void> {
       });
       snapshot = result.snapshot;
       selectedSessionId = result.selectedSessionId;
-      const accepted = snapshot.sessions.find((candidate) => candidate.id === result.selectedSessionId);
-      if (accepted?.activeRunId && !accepted.titleGenerationStarted && !accepted.name.trim()) {
-        pendingTitles.set(accepted.activeRunId, { sessionId: accepted.id, prompt: content });
-      }
+      pendingTitles.register(result.runId, result.selectedSessionId, content);
       showToast("New branch created. The original session was left unchanged.");
     } else {
-      snapshot = await window.ait.sendMessage({
+      const result = await window.ait.sendMessage({
         sessionId: session.id,
         content,
       });
-      const accepted = snapshot.sessions.find((candidate) => candidate.id === session.id);
-      if (accepted?.activeRunId && !accepted.titleGenerationStarted && !accepted.name.trim()) {
-        pendingTitles.set(accepted.activeRunId, { sessionId: session.id, prompt: content });
-      }
+      snapshot = result.snapshot;
+      pendingTitles.register(result.runId, session.id, content);
       showToast("Message accepted.");
     }
+    startReadySessionTitles();
+    scheduleSnapshotRefresh();
     resetTreeView();
     messageInput.value = "";
     renderAll();

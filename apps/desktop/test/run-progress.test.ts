@@ -71,6 +71,21 @@ test("renders live process, partial final answer, and disconnected state separat
   assert.ok(!html.includes("Run failed"));
 });
 
+test("keeps commentary-only live output in Process until an explicit final phase arrives", () => {
+  const progress = progressFromCheckpoint({
+    ...base,
+    seq: 1,
+    status: "running",
+    updated_at: 10,
+    warnings: [],
+    items: [{ type: "message", id: "commentary", phase: "commentary", text: "Still inspecting." }],
+  });
+  const html = renderRunProgress(progress, "Codex", true);
+  assert.ok(html.includes('class="codex-process"'));
+  assert.ok(html.includes("Still inspecting."));
+  assert.ok(!html.includes("data-codex-final-answer"));
+});
+
 test("renders failure and cancellation as terminal states rather than connection loss", () => {
   const failed = renderRunTerminal("failed", "Provider stopped.", "Codex");
   assert.ok(failed.includes("Run failed"));

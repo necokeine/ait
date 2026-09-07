@@ -395,7 +395,7 @@ function renderPart(part: DesktopMessage["parts"][number], isInput = false): str
 function renderCodexOutput(parts: DesktopMessage["parts"], live = false): string {
   const hasExplicitFinal = parts.some((part) =>
     part.type === "codex_message" && part.phase === "final_answer");
-  const fallbackFinalIndex = hasExplicitFinal ? -1 : parts.findLastIndex((part) =>
+  const fallbackFinalIndex = hasExplicitFinal || live ? -1 : parts.findLastIndex((part) =>
     part.type === "codex_message");
   const isFinal = (part: DesktopMessage["parts"][number], index: number): boolean =>
     part.type === "codex_message"

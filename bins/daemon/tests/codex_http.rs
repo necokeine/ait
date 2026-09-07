@@ -97,6 +97,16 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     wait_until_ready(&client, &base_url, &mut daemon).await;
     register_test_entities(&client, &base_url, &project).await;
 
+    // Keep one SSE response completely unread. Its socket can back up while
+    // the provider emits thousands of deltas, but Run persistence must remain
+    // independent of subscriber consumption.
+    let stalled_stream = client
+        .get(format!("{base_url}/v1/event/stream?after=0"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stalled_stream.status(), reqwest::StatusCode::OK);
+
     let submitted_at = Instant::now();
     let response = post(
         &client,
@@ -192,6 +202,7 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     assert!(protocol.contains("\"method\":\"turn/start\""));
     assert!(protocol.contains("\"effort\":\"high\""));
     assert!(protocol.contains("Generate a response through Codex."));
+    drop(stalled_stream);
 }
 
 fn unused_loopback_address() -> SocketAddr {
@@ -292,6 +303,13 @@ printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test
 printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
 printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":"Inspecting the project."}}}}}}'
 printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"commandExecution","id":"command-http-test","status":"inProgress","command":"pwd"}}}}}}'
+printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"stress-http-test","phase":"commentary","text":""}}}}}}'
+i=0
+while [ "$i" -lt 4000 ]; do
+  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"stress-http-test","delta":"x"}}}}'
+  i=$((i + 1))
+done
+printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"stress-http-test","phase":"commentary","text":"Stress replay complete."}}}}}}'
 sleep 0.6
 printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"commandExecution","id":"command-http-test","status":"completed","command":"pwd","aggregatedOutput":"project"}}}}}}'
 printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"assistant-http-test","phase":"final_answer","text":""}}}}}}'

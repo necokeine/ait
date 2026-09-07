@@ -28,12 +28,16 @@ does not invent or rewrite historical times.
 
 Sending a message uses the daemon's asynchronous submission route. Electron
 main keeps one cursor-based progress stream for all windows and forwards only
-the fixed `ait:run-event` IPC channel. Active Sessions render checkpointed Codex
-messages and native operations incrementally; refresh and reconnect recover from
-the daemon without restarting the Run. Closing a renderer subscription does not
-cancel execution. A disconnected stream is shown separately from Run failure,
-and the final immutable Message replaces the transient projection after Ait has
-finished saving it.
+the fixed `ait:run-event-frame` IPC channel. Each window has at most one
+acknowledged frame in flight and a 512-update/1 MiB main-process buffer; the
+renderer uses the same limits while a snapshot is in flight. Overflow converges
+through a fresh checkpoint instead of accumulating IPC messages. Active Sessions
+render each frame once, preserving commentary as process output until an explicit
+final phase arrives. Refresh and reconnect
+recover from the daemon without restarting the Run. Closing a renderer
+subscription does not cancel execution. A disconnected stream is shown
+separately from Run failure, and the final immutable Message replaces the
+transient projection after Ait has finished saving it.
 
 ## Packaging
 

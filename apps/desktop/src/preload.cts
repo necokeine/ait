@@ -1,8 +1,19 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AitDesktopApi } from "./types.js";
+import type { AitDesktopApi, RunStreamFrame, RunStreamUpdate } from "./types.js";
 
 const invoke = <T,>(method: string, params: unknown = {}): Promise<T> =>
   ipcRenderer.invoke("ait:request", method, params) as Promise<T>;
+
+const runEventListeners = new Set<(updates: RunStreamUpdate[]) => void>();
+ipcRenderer.on("ait:run-event-frame", (_event, value: unknown) => {
+  const frame = value as Partial<RunStreamFrame>;
+  if (!Number.isSafeInteger(frame.id) || !Array.isArray(frame.updates)) return;
+  try {
+    for (const listener of runEventListeners) listener(frame.updates);
+  } finally {
+    ipcRenderer.send("ait:run-event-ack", frame.id);
+  }
+});
 
 const api: AitDesktopApi = {
   snapshot: () => invoke("workspace.snapshot"),
@@ -26,9 +37,8 @@ const api: AitDesktopApi = {
   generateSessionTitle: (input) => invoke("session.generate-title", input),
   sendMessage: (input) => invoke("session.send-message", input),
   subscribeRunEvents: (listener) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, update: Parameters<typeof listener>[0]) => listener(update);
-    ipcRenderer.on("ait:run-event", wrapped);
-    return () => ipcRenderer.removeListener("ait:run-event", wrapped);
+    runEventListeners.add(listener);
+    return () => runEventListeners.delete(listener);
   },
   fork: (input) => invoke("session.fork", input),
 };

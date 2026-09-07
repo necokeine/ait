@@ -20,10 +20,13 @@
 4. `/v1/event/stream` 先按 cursor 分页回放，再持续查询同一 durable outbox。回放和监听没有两个数据源，
    因而交接期间到达的事件由后续 cursor 查询读取；客户端按全局 cursor 和 Run-local `seq` 去重。
    outbox 只保留最近 50,000 项；非零 cursor 落在保留窗口之外或指向未来时，服务发送
-   `stream.reset_required`，客户端重新读取 snapshot 和 active Run checkpoint。
-5. Electron main 只建立一条受控事件流，并通过固定 IPC channel 广播给 renderer。renderer 只把
-   `activeRunId` 匹配当前 Session 的 checkpoint/事件投影为临时消息；Session 切换不创建重复订阅。
-   处于底部时跟随增量，向上阅读时保留 `scrollTop`。连接断开是独立的重连状态，不改变 Run 终态。
+   `stream.reset_required`，客户端直接采纳服务端 cursor 并重新读取 snapshot 和 active Run checkpoint。
+   cursor bounds 与 replay page 在 SQLite 同一锁快照内读取，裁剪不能在校验与取页之间制造静默缺口。
+5. Electron main 只建立一条受控事件流，并通过固定 IPC channel 广播给 renderer。每个窗口至多有一帧
+   未确认 IPC，main 与 snapshot 期间的 renderer backlog 均限制为 512 项/1 MiB；溢出时丢弃临时投影并要求
+   snapshot resync。renderer 每帧合并应用事件且最多重绘一次，只把 `activeRunId` 匹配当前 Session 的
+   checkpoint/事件投影为临时消息；Session 切换不创建重复订阅。处于底部时跟随增量，向上阅读时保留
+   `scrollTop`。连接断开是独立的重连状态，不改变 Run 终态。
 6. provider turn 完成后 Run 先进入 `settling`，最终 Message 和 Run 终态持久化后才清除 checkpoint。
    renderer 收到终态事件后重新读取 snapshot，以不可变 Message 替换临时投影，避免重复回答。
 7. daemon 启动时把遗留的 `queued | running | settling` Run 明确标记为
@@ -42,4 +45,7 @@
   工具运行态 checkpoint、最终清理与不可变结果收尾。
 - HTTP 测试覆盖回放切到持续监听时恰好提交的新事件。
 - desktop 测试覆盖 checkpoint 恢复、重复序号过滤、工具状态替换、部分 final answer 和断线状态。
-- 真实 Codex 桌面验收覆盖异步接受、48 个顺序进度事件、运行中操作卡片，以及最终 Message/文件落盘。
+- desktop 压力与竞态测试覆盖 50,000 事件慢消费者、有界 frame/backlog、future cursor 收敛、
+  commentary-only phase、即时完成与 terminal-before-submit 标题顺序。
+- SQLite 并发裁剪测试保证边界读取只会得到连续 terminal event 或显式 cursor reset。
+- 真实 Codex 桌面验收覆盖异步接受、53 个顺序进度事件、运行中操作卡片、自动标题，以及最终 Message/文件落盘。

@@ -12,9 +12,9 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProjectView, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, EventBounds, PendingEvent,
-    ProgressCheckpoint, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-    WorkspaceOperation, WorkspaceProgressEvent, WorkspaceProgressReporter,
+    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
+    PendingEvent, ProgressCheckpoint, WorkspaceAgent, WorkspaceAgentInvocation,
+    WorkspaceAgentResponse, WorkspaceOperation, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -69,6 +69,14 @@ impl ControlStore for ConflictingStore {
 
     async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError> {
         self.inner.event_bounds().await
+    }
+
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<DurableEventPage, ControlStoreError> {
+        self.inner.replay_page(after, limit).await
     }
 
     async fn save_progress(

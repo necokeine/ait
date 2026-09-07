@@ -1023,6 +1023,13 @@ impl ControlStore for PausingStore {
     async fn event_bounds(&self) -> Result<ait_ports::EventBounds, ait_ports::ControlStoreError> {
         self.inner.event_bounds().await
     }
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<ait_ports::DurableEventPage, ait_ports::ControlStoreError> {
+        self.inner.replay_page(after, limit).await
+    }
     async fn save_progress(
         &self,
         checkpoint: ait_ports::ProgressCheckpoint,

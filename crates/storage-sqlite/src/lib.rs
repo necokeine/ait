@@ -3,12 +3,14 @@
 use std::{path::Path, sync::Mutex};
 
 use ait_ports::{
-    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, EventBounds, PendingEvent,
-    ProgressCheckpoint,
+    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
+    PendingEvent, ProgressCheckpoint,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, params};
 use serde_json::Value;
+
+const RETAINED_EVENTS: usize = 50_000;
 
 /// SQLite-backed application snapshot and transactional durable event outbox.
 pub struct SqliteControlStore {
@@ -187,43 +189,36 @@ impl ControlStore for SqliteControlStore {
         limit: usize,
     ) -> Result<Vec<DurableEvent>, ControlStoreError> {
         let connection = self.connection.lock().map_err(lock_error)?;
-        let mut statement = connection.prepare(
-            "SELECT cursor, kind, entity_id, body_json, created_at FROM durable_events WHERE cursor > ?1 ORDER BY cursor LIMIT ?2",
-        ).map_err(sql_error)?;
-        let rows = statement
-            .query_map(params![cursor, limit], |row| {
-                Ok((
-                    row.get::<_, u64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            })
-            .map_err(sql_error)?;
-        rows.map(|row| {
-            let (cursor, kind, entity_id, body, created_at) = row.map_err(sql_error)?;
-            Ok(DurableEvent {
-                cursor,
-                kind,
-                entity_id,
-                body: serde_json::from_str(&body).map_err(json_error)?,
-                created_at,
-            })
-        })
-        .collect()
+        replay_locked(&connection, cursor, limit)
     }
 
     async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError> {
         let connection = self.connection.lock().map_err(lock_error)?;
-        let (oldest, latest) = connection
-            .query_row(
-                "SELECT MIN(cursor), MAX(cursor) FROM durable_events",
-                [],
-                |row| Ok((row.get::<_, Option<u64>>(0)?, row.get::<_, Option<u64>>(1)?)),
-            )
-            .map_err(sql_error)?;
-        Ok(EventBounds { oldest, latest })
+        event_bounds_locked(&connection)
+    }
+
+    async fn replay_page(
+        &self,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<DurableEventPage, ControlStoreError> {
+        let connection = self.connection.lock().map_err(lock_error)?;
+        let bounds = event_bounds_locked(&connection)?;
+        let cursor_valid = cursor == 0
+            || bounds
+                .oldest
+                .is_some_and(|oldest| cursor >= oldest.saturating_sub(1))
+                && bounds.latest.is_some_and(|latest| cursor <= latest);
+        let events = if cursor_valid {
+            replay_locked(&connection, cursor, limit)?
+        } else {
+            Vec::new()
+        };
+        Ok(DurableEventPage {
+            bounds,
+            events,
+            cursor_valid,
+        })
     }
 
     async fn save_progress(
@@ -231,7 +226,6 @@ impl ControlStore for SqliteControlStore {
         checkpoint: ProgressCheckpoint,
         events: Vec<PendingEvent>,
     ) -> Result<(), ControlStoreError> {
-        const RETAINED_EVENTS: usize = 50_000;
         let mut connection = self.connection.lock().map_err(lock_error)?;
         let transaction = connection.transaction().map_err(sql_error)?;
         for event in events {
@@ -299,6 +293,49 @@ impl ControlStore for SqliteControlStore {
     }
 }
 
+fn event_bounds_locked(connection: &Connection) -> Result<EventBounds, ControlStoreError> {
+    let (oldest, latest) = connection
+        .query_row(
+            "SELECT MIN(cursor), MAX(cursor) FROM durable_events",
+            [],
+            |row| Ok((row.get::<_, Option<u64>>(0)?, row.get::<_, Option<u64>>(1)?)),
+        )
+        .map_err(sql_error)?;
+    Ok(EventBounds { oldest, latest })
+}
+
+fn replay_locked(
+    connection: &Connection,
+    cursor: u64,
+    limit: usize,
+) -> Result<Vec<DurableEvent>, ControlStoreError> {
+    let mut statement = connection.prepare(
+        "SELECT cursor, kind, entity_id, body_json, created_at FROM durable_events WHERE cursor > ?1 ORDER BY cursor LIMIT ?2",
+    ).map_err(sql_error)?;
+    let rows = statement
+        .query_map(params![cursor, limit], |row| {
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(sql_error)?;
+    rows.map(|row| {
+        let (cursor, kind, entity_id, body, created_at) = row.map_err(sql_error)?;
+        Ok(DurableEvent {
+            cursor,
+            kind,
+            entity_id,
+            body: serde_json::from_str(&body).map_err(json_error)?,
+            created_at,
+        })
+    })
+    .collect()
+}
+
 #[allow(clippy::needless_pass_by_value)]
 fn sql_error(error: rusqlite::Error) -> ControlStoreError {
     ControlStoreError::Other(error.to_string())
@@ -314,6 +351,8 @@ fn lock_error<T>(error: std::sync::PoisonError<T>) -> ControlStoreError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[tokio::test]
@@ -347,5 +386,78 @@ mod tests {
         assert_eq!(recovered.revision, 1);
         assert_eq!(recovered.value["state"], "backed-up");
         assert_eq!(store.replay(0, 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_boundary_is_contiguous_or_resets_during_concurrent_retention() {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let initial = (0..=RETAINED_EVENTS)
+            .map(|index| PendingEvent {
+                kind: if index == 1 {
+                    "run.updated".into()
+                } else {
+                    "run.progress".into()
+                },
+                entity_id: Some("run-a".into()),
+                body: serde_json::json!({"index": index}),
+                created_at: 1,
+            })
+            .collect();
+        store
+            .save_progress(
+                ProgressCheckpoint {
+                    run_id: "run-a".into(),
+                    body: serde_json::json!({"seq": RETAINED_EVENTS}),
+                    updated_at: 1,
+                },
+                initial,
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.event_bounds().await.unwrap().oldest, Some(2));
+
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let reader_store = store.clone();
+        let reader_barrier = barrier.clone();
+        let reader = tokio::spawn(async move {
+            reader_barrier.wait().await;
+            reader_store.replay_page(1, 8).await.unwrap()
+        });
+        let writer = tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .save_progress(
+                    ProgressCheckpoint {
+                        run_id: "run-a".into(),
+                        body: serde_json::json!({"seq": RETAINED_EVENTS + 64}),
+                        updated_at: 2,
+                    },
+                    (0..64)
+                        .map(|index| PendingEvent {
+                            kind: "run.progress".into(),
+                            entity_id: Some("run-a".into()),
+                            body: serde_json::json!({"new": index}),
+                            created_at: 2,
+                        })
+                        .collect(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let (page, writer) = tokio::join!(reader, writer);
+        writer.unwrap();
+        let page = page.unwrap();
+        if page.cursor_valid {
+            let first = page
+                .events
+                .first()
+                .expect("valid page has the boundary event");
+            assert_eq!(first.cursor, 2);
+            assert_eq!(first.kind, "run.updated");
+        } else {
+            assert!(page.events.is_empty());
+            assert!(page.bounds.oldest.is_some_and(|oldest| oldest > 2));
+        }
     }
 }

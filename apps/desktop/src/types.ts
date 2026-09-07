@@ -109,7 +109,18 @@ export interface ControlEvent {
 
 export type RunStreamUpdate =
   | { type: "event"; event: ControlEvent }
-  | { type: "connection"; connected: boolean };
+  | { type: "connection"; connected: boolean }
+  | { type: "resync"; cursor: number };
+
+export interface RunStreamFrame {
+  id: number;
+  updates: RunStreamUpdate[];
+}
+
+export interface RunSubmission {
+  snapshot: DesktopSnapshot;
+  runId: string;
+}
 
 export interface DesktopSnapshot {
   protocolVersion: number;
@@ -204,14 +215,14 @@ export interface AitDesktopApi {
   sendMessage(input: {
     sessionId: string;
     content: string;
-  }): Promise<DesktopSnapshot>;
-  subscribeRunEvents(listener: (update: RunStreamUpdate) => void): () => void;
+  }): Promise<RunSubmission>;
+  subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {
     projectId: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
-  }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
+  }): Promise<RunSubmission & { selectedSessionId: string }>;
 }
 
 declare global {

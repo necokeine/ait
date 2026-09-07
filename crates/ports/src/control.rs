@@ -47,6 +47,17 @@ pub struct EventBounds {
     pub latest: Option<u64>,
 }
 
+/// One cursor-validated replay page read from a single storage snapshot.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DurableEventPage {
+    /// Retained range observed atomically with `events`.
+    pub bounds: EventBounds,
+    /// Ordered events strictly after the requested cursor.
+    pub events: Vec<DurableEvent>,
+    /// Whether the requested cursor belonged to the observed retained range.
+    pub cursor_valid: bool,
+}
+
 /// Latest bounded display projection for one active Run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgressCheckpoint {
@@ -101,6 +112,14 @@ pub trait ControlStore: Send + Sync {
 
     /// Returns the retained durable cursor range.
     async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError>;
+
+    /// Atomically validates a cursor against the retained range and reads the
+    /// following page so concurrent retention cannot create a silent gap.
+    async fn replay_page(
+        &self,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<DurableEventPage, ControlStoreError>;
 
     /// Atomically appends a batch of progress events and replaces the Run's
     /// compact progress checkpoint without rewriting the workspace snapshot.

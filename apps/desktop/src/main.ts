@@ -11,6 +11,7 @@ import {
   projectAgent,
 } from "./agents.js";
 import { progressFromCheckpoint } from "./run-progress.js";
+import { BoundedRunEventDelivery, cursorAfterEvent } from "./run-event-delivery.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
@@ -54,10 +55,12 @@ class DaemonClient {
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
   private snapshotRevision = 0;
+  private snapshotQueue: Promise<void> = Promise.resolve();
   private eventAbort: AbortController | undefined;
   private eventLoop: Promise<void> | undefined;
   private eventCursor = 0;
   private streamConnected: boolean | undefined;
+  private readonly deliveries = new Map<number, BoundedRunEventDelivery>();
 
   ensureStarted(): Promise<void> {
     this.startup ??= this.start().then(() => this.ensureBuiltInAgents()).then(() => {
@@ -175,24 +178,26 @@ class DaemonClient {
       return this.snapshot();
     }
     if (method === "session.send-message") {
-      await this.post("/v1/session/submit-message", "run", {
+      const run = await this.post("/v1/session/submit-message", "run", {
         session_id: params.sessionId, text: params.content,
-      });
-      return this.snapshot();
+      }) as { id: string };
+      return { snapshot: await this.snapshot(), runId: run.id };
     }
 
     const id = randomUUID();
-    await this.post("/v1/session/submit-fork", "run", {
+    const run = await this.post("/v1/session/submit-fork", "run", {
       id, project_id: params.projectId, agent_id: params.agentId,
       at_message_id: params.sourceMessageId, text: params.content,
-    });
-    return { snapshot: await this.snapshot(), selectedSessionId: id };
+    }) as { id: string };
+    return { snapshot: await this.snapshot(), selectedSessionId: id, runId: run.id };
   }
 
   stop(): void {
     this.eventAbort?.abort();
     this.eventAbort = undefined;
     this.eventLoop = undefined;
+    for (const delivery of this.deliveries.values()) delivery.close();
+    this.deliveries.clear();
     this.ownedProcess?.kill();
     this.ownedProcess = undefined;
   }
@@ -316,7 +321,7 @@ class DaemonClient {
     try {
       const event = JSON.parse(data) as ControlEvent;
       if (!Number.isSafeInteger(event.cursor) || typeof event.kind !== "string") return;
-      this.eventCursor = Math.max(this.eventCursor, event.cursor);
+      this.eventCursor = cursorAfterEvent(this.eventCursor, event);
       this.publish({ type: "event", event });
     } catch {
       // A malformed frame is ignored; reconnect replay remains authoritative.
@@ -331,11 +336,38 @@ class DaemonClient {
 
   private publish(update: RunStreamUpdate): void {
     for (const window of BrowserWindow.getAllWindows()) {
-      if (!window.isDestroyed()) window.webContents.send("ait:run-event", update);
+      if (window.isDestroyed()) continue;
+      const webContents = window.webContents;
+      let delivery = this.deliveries.get(webContents.id);
+      if (!delivery) {
+        delivery = new BoundedRunEventDelivery((frame) => {
+          if (!webContents.isDestroyed()) webContents.send("ait:run-event-frame", frame);
+        });
+        this.deliveries.set(webContents.id, delivery);
+        const cleanup = () => {
+          this.deliveries.get(webContents.id)?.close();
+          this.deliveries.delete(webContents.id);
+          webContents.removeListener("did-start-loading", cleanup);
+          webContents.removeListener("destroyed", cleanup);
+        };
+        webContents.once("did-start-loading", cleanup);
+        webContents.once("destroyed", cleanup);
+      }
+      delivery.enqueue(update);
     }
   }
 
-  private async snapshot(): Promise<unknown> {
+  acknowledge(webContentsId: number, frameId: number): void {
+    if (Number.isSafeInteger(frameId)) this.deliveries.get(webContentsId)?.acknowledge(frameId);
+  }
+
+  private snapshot(): Promise<unknown> {
+    const result = this.snapshotQueue.then(() => this.readSnapshot());
+    this.snapshotQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async readSnapshot(): Promise<unknown> {
     const [workspace, progressValues] = await Promise.all([
       this.get("/v1/workspace/snapshot", "workspace") as Promise<WorkspaceView>,
       fetch(`${endpoint}/v1/run/progress`).then(async (response) => {
@@ -415,6 +447,9 @@ app.whenReady().then(() => {
   ipcMain.handle("ait:request", (_event, method: unknown, params: unknown) => {
     if (typeof method !== "string") throw new Error("Unsupported desktop operation.");
     return daemon.request(method, params ?? {});
+  });
+  ipcMain.on("ait:run-event-ack", (event, frameId: unknown) => {
+    if (typeof frameId === "number") daemon.acknowledge(event.sender.id, frameId);
   });
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

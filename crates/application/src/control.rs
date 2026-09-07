@@ -674,22 +674,27 @@ impl LocalControlService {
     ///
     /// Returns a stable persistence error when bounds or events cannot be read.
     pub async fn event_page(&self, after: u64, limit: usize) -> Result<EventPage, ApiError> {
-        let bounds = self.store.event_bounds().await.map_err(store_error)?;
-        let cursor_valid = after == 0
-            || bounds
-                .oldest
-                .is_some_and(|oldest| after >= oldest.saturating_sub(1))
-                && bounds.latest.is_some_and(|latest| after <= latest);
-        let events = if cursor_valid {
-            self.replay_events(after, limit).await?
-        } else {
-            Vec::new()
-        };
+        let page = self
+            .store
+            .replay_page(after, limit.clamp(1, 1_000))
+            .await
+            .map_err(store_error)?;
         Ok(EventPage {
-            events,
-            oldest_cursor: bounds.oldest,
-            latest_cursor: bounds.latest,
-            cursor_valid,
+            events: page
+                .events
+                .into_iter()
+                .map(|event| Event {
+                    api_version: API_VERSION,
+                    cursor: event.cursor,
+                    kind: event.kind,
+                    entity_id: event.entity_id,
+                    body: event.body,
+                    created_at: event.created_at,
+                })
+                .collect(),
+            oldest_cursor: page.bounds.oldest,
+            latest_cursor: page.bounds.latest,
+            cursor_valid: page.cursor_valid,
         })
     }
 
