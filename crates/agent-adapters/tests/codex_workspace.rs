@@ -1,9 +1,11 @@
 //! Workspace execution and Git commit coverage for the Codex adapter.
 
 use std::{
+    fs::{File, OpenOptions},
+    io::Write as _,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use ait_agent_adapters::{
@@ -163,6 +165,7 @@ enum TransactionInjection {
     SamePathBeforeRollback,
     DirectoryBeforeRollback,
     BaselineRefAdvanceBeforeLock,
+    EarlyRootCollision,
 }
 
 #[derive(Debug)]
@@ -315,6 +318,13 @@ impl TransactionInjectingGate {
             TransactionInjection::BaselineRefAdvanceBeforeLock => {
                 self.advance_baseline_ref();
             }
+            TransactionInjection::EarlyRootCollision => {
+                std::fs::write(
+                    self.project.join("a-new.txt"),
+                    b"external early collision\0bytes\n",
+                )
+                .unwrap();
+            }
         }
         Ok(())
     }
@@ -351,7 +361,8 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
                 TransactionInjection::UntrackedBeforeIndexPublish,
                 WorkspaceIntegrationCheckpoint::BeforeIndexPublish
             ) | (
-                TransactionInjection::IgnoredBeforeWorktreeMutation,
+                TransactionInjection::IgnoredBeforeWorktreeMutation
+                    | TransactionInjection::EarlyRootCollision,
                 WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation
             ) | (
                 TransactionInjection::SamePathBeforeRollback
@@ -372,7 +383,149 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
 }
 
 #[derive(Debug)]
+enum OpenHandleWriter {
+    File(Mutex<File>),
+    #[cfg(unix)]
+    Directory(File),
+}
+
+#[derive(Debug)]
+struct OpenHandleWritingGate {
+    writer: OpenHandleWriter,
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for OpenHandleWritingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        if checkpoint != WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate {
+            return Ok(());
+        }
+        match &self.writer {
+            OpenHandleWriter::File(file) => {
+                let mut file = file.lock().unwrap();
+                file.set_len(0).unwrap();
+                file.write_all(b"external open-file write\0bytes\n")
+                    .unwrap();
+                file.sync_all().unwrap();
+            }
+            #[cfg(unix)]
+            OpenHandleWriter::Directory(directory) => {
+                write_through_directory_handle(
+                    directory,
+                    "external-open-dir.bin",
+                    b"external open-directory write\0bytes\n",
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn write_through_directory_handle(directory: &File, name: &str, bytes: &[u8]) {
+    let opened = rustix::fs::openat(
+        directory,
+        name,
+        rustix::fs::OFlags::CREATE | rustix::fs::OFlags::TRUNC | rustix::fs::OFlags::WRONLY,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .unwrap();
+    let mut file = File::from(opened);
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AncestorSwapPhase {
+    BeforeMutation,
+    BeforeRollback,
+}
+
+#[derive(Debug)]
+struct AncestorSwappingGate {
+    project: PathBuf,
+    outside: PathBuf,
+    phase: AncestorSwapPhase,
+}
+
+impl AncestorSwappingGate {
+    fn swap_ancestor(&self) -> Result<(), ait_domain::DomainError> {
+        std::fs::rename(self.project.join("dir"), self.project.join("dir.external")).map_err(
+            |failure| {
+                ait_domain::DomainError::invariant(
+                    ait_domain::ErrorCode::RunRecoveryFailed,
+                    format!(
+                        "capability-bound ancestor could not be replaced (safe failure): {failure}"
+                    ),
+                )
+            },
+        )?;
+        create_directory_link(&self.outside, &self.project.join("dir"));
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl WorkspaceIntegrationGate for AncestorSwappingGate {
+    async fn begin_integration(&self) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
+        match (self.phase, checkpoint) {
+            (
+                AncestorSwapPhase::BeforeMutation,
+                WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation,
+            )
+            | (
+                AncestorSwapPhase::BeforeRollback,
+                WorkspaceIntegrationCheckpoint::BeforeWorktreeRollback,
+            ) => self.swap_ancestor(),
+            (
+                AncestorSwapPhase::BeforeRollback,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish,
+            ) => TransactionInjectingGate::injected_failure(
+                "injected failure before ancestor-bound rollback",
+            ),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn create_directory_link(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(windows)]
+fn create_directory_link(target: &Path, link: &Path) {
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cannot create Windows junction fixture");
+}
+
+#[derive(Debug)]
 struct TransactionEditingAdapter;
+
+#[derive(Debug)]
+struct NestedEditingAdapter;
+
+#[derive(Debug)]
+struct MultiRootEditingAdapter;
 
 #[derive(Clone, Copy, Debug)]
 enum DirectoryFileDirection {
@@ -562,6 +715,60 @@ impl AgentAdapter for TransactionEditingAdapter {
                 error: None,
             }),
         ])))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for NestedEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "nested_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("dir/tracked.txt"), "Run nested value\n").unwrap();
+        Ok(test_completion_stream(
+            "nested-editing-final",
+            "Finished nested edit.",
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentAdapter for MultiRootEditingAdapter {
+    fn driver(&self) -> &'static str {
+        "multi_root_editing_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::remove_file(request.cwd.join(".gitignore")).unwrap();
+        std::fs::write(request.cwd.join("a-new.txt"), "Run early root\n").unwrap();
+        std::fs::write(request.cwd.join("z-tracked.txt"), "Run late root\n").unwrap();
+        Ok(test_completion_stream(
+            "multi-root-final",
+            "Finished multi-root edit.",
+        ))
     }
 }
 
@@ -1648,7 +1855,8 @@ fn assert_transaction_rollback(
         TransactionInjection::IgnoredBeforeWorktreeMutation
         | TransactionInjection::SamePathBeforeRollback
         | TransactionInjection::DirectoryBeforeRollback
-        | TransactionInjection::BaselineRefAdvanceBeforeLock => {
+        | TransactionInjection::BaselineRefAdvanceBeforeLock
+        | TransactionInjection::EarlyRootCollision => {
             unreachable!("the TOCTOU injections have dedicated assertions")
         }
     }
@@ -1992,6 +2200,382 @@ async fn baseline_ref_reconciliation_locks_before_confirming_the_noop() {
         "authorized baseline\n"
     );
     assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn open_file_handle_writes_after_quarantine_are_detected_and_restored() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add open file handle fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+    let open_file = OpenOptions::new()
+        .write(true)
+        .open(project.path().join("tracked.txt"))
+        .unwrap();
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "open-file-handle-write".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Race a write through an already-open file".into(),
+            project_instructions: None,
+            commit_subject: "Exercise open file handle protection".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(OpenHandleWritingGate {
+                writer: OpenHandleWriter::File(Mutex::new(open_file)),
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("tracked.txt")).unwrap(),
+        b"external open-file write\0bytes\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_directory_handle_writes_after_quarantine_are_detected_and_restored() {
+    let project = initialized_project();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "authorized baseline\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add open directory handle fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+    let open_directory = File::open(project.path().join("shape")).unwrap();
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::DirectoryToFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "open-directory-handle-write".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Race a write through an already-open directory".into(),
+        project_instructions: None,
+        commit_subject: "Exercise open directory handle protection".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(OpenHandleWritingGate {
+            writer: OpenHandleWriter::Directory(open_directory),
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("shape/external-open-dir.bin")).unwrap(),
+        b"external open-directory write\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn successful_publication_retains_an_inode_for_writes_after_return() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add successful open handle fixture");
+    let mut open_file = OpenOptions::new()
+        .write(true)
+        .open(project.path().join("tracked.txt"))
+        .unwrap();
+
+    let result = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "successful-open-file-handle".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Publish while a baseline file remains open".into(),
+            project_instructions: None,
+            commit_subject: "Retain successful publication inode".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: head(project.path()),
+            baseline_index_tree: index_tree(project.path()),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+    let commit = result.commit_id.unwrap();
+
+    open_file.set_len(0).unwrap();
+    open_file
+        .write_all(b"external write after successful return\0bytes\n")
+        .unwrap();
+    open_file.sync_all().unwrap();
+
+    assert_eq!(
+        std::fs::read(
+            project
+                .path()
+                .join(".git/ait/integration-rollbacks")
+                .join(commit)
+                .join("original/tracked.txt")
+        )
+        .unwrap(),
+        b"external write after successful return\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "Run tracked value\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn successful_df_publication_retains_an_open_directory_inode() {
+    let project = initialized_project();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "authorized baseline\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add successful open directory fixture");
+    let open_directory = File::open(project.path().join("shape")).unwrap();
+
+    let result = CodexWorkspaceAgent::new(Arc::new(DirectoryFileEditingAdapter {
+        direction: DirectoryFileDirection::DirectoryToFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "successful-open-directory-handle".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Publish while a baseline directory remains open".into(),
+        project_instructions: None,
+        commit_subject: "Retain successful directory inode".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: head(project.path()),
+        baseline_index_tree: index_tree(project.path()),
+        cancellation: CancellationToken::new(),
+        integration_gate: None,
+    })
+    .await
+    .unwrap();
+    let commit = result.commit_id.unwrap();
+
+    write_through_directory_handle(
+        &open_directory,
+        "external-after-return.bin",
+        b"external directory write after successful return\0bytes\n",
+    );
+
+    assert_eq!(
+        std::fs::read(
+            project
+                .path()
+                .join(".git/ait/integration-rollbacks")
+                .join(commit)
+                .join("original/shape/external-after-return.bin")
+        )
+        .unwrap(),
+        b"external directory write after successful return\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape")).unwrap(),
+        "Run file value\n"
+    );
+    assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn ancestor_links_never_redirect_publication_or_rollback_outside_the_project() {
+    for phase in [
+        AncestorSwapPhase::BeforeMutation,
+        AncestorSwapPhase::BeforeRollback,
+    ] {
+        let project = initialized_project();
+        std::fs::create_dir(project.path().join("dir")).unwrap();
+        std::fs::write(
+            project.path().join("dir/tracked.txt"),
+            "authorized nested baseline\n",
+        )
+        .unwrap();
+        commit_all(project.path(), "add bound ancestor fixture");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+        let outside = TempDir::new().unwrap();
+        std::fs::write(
+            outside.path().join("tracked.txt"),
+            b"outside sentinel\0must remain exact\n",
+        )
+        .unwrap();
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(NestedEditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("ancestor-link-{phase:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Race an ancestor link against publication".into(),
+                project_instructions: None,
+                commit_subject: "Exercise capability-bound publication".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(AncestorSwappingGate {
+                    project: project.path().to_path_buf(),
+                    outside: outside.path().to_path_buf(),
+                    phase,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "phase: {phase:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        assert_eq!(
+            std::fs::read(project.path().join(".git/index")).unwrap(),
+            baseline_index_bytes
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("tracked.txt")).unwrap(),
+            b"outside sentinel\0must remain exact\n"
+        );
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("dir.external/tracked.txt")).unwrap(),
+                if matches!(phase, AncestorSwapPhase::BeforeMutation) {
+                    "authorized nested baseline\n"
+                } else {
+                    "Run nested value\n"
+                }
+            );
+            if matches!(phase, AncestorSwapPhase::BeforeMutation) {
+                assert_rollback_journal_empty(project.path());
+            } else {
+                assert_rollback_journal_retained(project.path());
+            }
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("dir/tracked.txt")).unwrap(),
+                "authorized nested baseline\n"
+            );
+            assert_rollback_journal_empty(project.path());
+        }
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn untouched_later_roots_do_not_turn_an_early_collision_into_recovery_failure() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitignore"), "a-new.txt\n").unwrap();
+    std::fs::write(
+        project.path().join("z-tracked.txt"),
+        "authorized late root\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add partial apply state fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(MultiRootEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "partial-apply-untouched-root".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Collide before a later baseline root is applied".into(),
+            project_instructions: None,
+            commit_subject: "Exercise per-root publication state".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::EarlyRootCollision,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("a-new.txt")).unwrap(),
+        b"external early collision\0bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("z-tracked.txt")).unwrap(),
+        "authorized late root\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".gitignore")).unwrap(),
+        "a-new.txt\n"
+    );
     assert_rollback_journal_empty(project.path());
     let _retained_run_commit = run_ref(project.path());
 }

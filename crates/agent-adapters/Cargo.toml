@@ -10,6 +10,8 @@ ait-ports = { path = "../ports" }
 ait-tools = { path = "../tools" }
 async-trait = "0.1"
 bytes = "1"
+cap-fs-ext = "4.0"
+cap-std = "4.0"
 futures-core = "0.3"
 keyring = "4.2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
@@ -26,7 +28,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 rustix = { version = "1.1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 axum = "0.8"

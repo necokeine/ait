@@ -20,6 +20,8 @@ use ait_ports::{
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
+use cap_fs_ext::DirExt as _;
+use cap_std::{ambient_authority, fs::Dir as CapDir};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1718,12 +1720,111 @@ enum LivePathSnapshot {
     Present([u8; 32]),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RootPublicationState {
+    Untouched,
+    Quarantined,
+    Applied,
+}
+
+struct BoundPath {
+    root_path: PathBuf,
+    ancestors: Vec<OsString>,
+    chain: Vec<CapDir>,
+    leaf: OsString,
+    display: PathBuf,
+}
+
+impl BoundPath {
+    fn bind(root_path: &Path, root: &CapDir, relative: &Path) -> Result<Self, DomainError> {
+        let components = relative
+            .components()
+            .map(|component| match component {
+                std::path::Component::Normal(component) => Ok(component.to_os_string()),
+                _ => Err(domain_error(
+                    ErrorCode::RunRecoveryFailed,
+                    format!(
+                        "cannot capability-bind unsafe worktree path {}",
+                        relative.display()
+                    ),
+                    false,
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (leaf, ancestors) = components.split_last().ok_or_else(|| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                "cannot capability-bind an empty worktree path",
+                false,
+            )
+        })?;
+        let mut chain =
+            vec![root.try_clone().map_err(|failure| {
+                rollback_io_error("clone capability root", root_path, &failure)
+            })?];
+        let mut display = root_path.to_path_buf();
+        for ancestor in ancestors {
+            display.push(ancestor);
+            let opened = chain
+                .last()
+                .expect("bound directory chain always has a root")
+                .open_dir_nofollow(ancestor)
+                .map_err(|failure| {
+                    rollback_io_error("bind worktree path ancestor", &display, &failure)
+                })?;
+            ensure_opened_directory_matches_path(&opened, &display)?;
+            chain.push(opened);
+        }
+        let mut target = display;
+        target.push(leaf);
+        Ok(Self {
+            root_path: root_path.to_path_buf(),
+            ancestors: ancestors.to_vec(),
+            chain,
+            leaf: leaf.clone(),
+            display: target,
+        })
+    }
+
+    fn parent(&self) -> &CapDir {
+        self.chain
+            .last()
+            .expect("bound directory chain always has a parent")
+    }
+
+    fn attest_parent(&self) -> Result<(), DomainError> {
+        let root = open_bound_root(&self.root_path)?;
+        ensure_same_open_directory(
+            self.chain
+                .first()
+                .expect("bound directory chain always has a root"),
+            &root,
+            &self.root_path,
+        )?;
+        let mut rebound = root;
+        let mut display = self.root_path.clone();
+        for (index, ancestor) in self.ancestors.iter().enumerate() {
+            display.push(ancestor);
+            let opened = rebound.open_dir_nofollow(ancestor).map_err(|failure| {
+                rollback_io_error("rebind worktree path ancestor", &display, &failure)
+            })?;
+            ensure_same_open_directory(&self.chain[index + 1], &opened, &display)?;
+            rebound = opened;
+        }
+        Ok(())
+    }
+}
+
 struct RollbackPath {
     relative: String,
     baseline_snapshot: LivePathSnapshot,
     candidate_snapshot: LivePathSnapshot,
+    live: BoundPath,
+    original: BoundPath,
+    candidate: BoundPath,
+    rollback_live: BoundPath,
+    state: RootPublicationState,
     original_quarantined: bool,
-    candidate_applied: bool,
 }
 
 struct PrimaryWorktreeRollback {
@@ -1733,6 +1834,39 @@ struct PrimaryWorktreeRollback {
     update_started: bool,
 }
 
+fn reserve_rollback_root(
+    primary: &Path,
+    baseline_index: &Path,
+    commit: &str,
+) -> Result<(PathBuf, PathBuf), DomainError> {
+    let git_dir = absolute_git_dir(primary)?;
+    let backup_parent = git_dir.join("ait").join("integration-rollbacks");
+    fs::create_dir_all(&backup_parent).map_err(|failure| {
+        domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!("cannot create integration rollback directory: {failure}"),
+            false,
+        )
+    })?;
+    let backup_root = backup_parent.join(commit);
+    fs::create_dir(&backup_root).map_err(|failure| {
+        domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "cannot reserve integration rollback material at {}: {failure}; recover or remove it before retrying",
+                backup_root.display()
+            ),
+            false,
+        )
+    })?;
+    let expected_index = backup_root.join("expected-index");
+    fs::copy(baseline_index, &expected_index).map_err(|failure| {
+        rollback_io_error("snapshot candidate index", baseline_index, &failure)
+    })?;
+    git_with_index(primary, &expected_index, &["read-tree", commit])?;
+    Ok((backup_root, expected_index))
+}
+
 impl PrimaryWorktreeRollback {
     fn capture(
         primary: &Path,
@@ -1740,31 +1874,7 @@ impl PrimaryWorktreeRollback {
         baseline: &str,
         commit: &str,
     ) -> Result<Self, DomainError> {
-        let git_dir = absolute_git_dir(primary)?;
-        let backup_parent = git_dir.join("ait").join("integration-rollbacks");
-        fs::create_dir_all(&backup_parent).map_err(|failure| {
-            domain_error(
-                ErrorCode::RunRecoveryFailed,
-                format!("cannot create integration rollback directory: {failure}"),
-                false,
-            )
-        })?;
-        let backup_root = backup_parent.join(commit);
-        fs::create_dir(&backup_root).map_err(|failure| {
-            domain_error(
-                ErrorCode::RunRecoveryFailed,
-                format!(
-                    "cannot reserve integration rollback material at {}: {failure}; recover or remove it before retrying",
-                    backup_root.display()
-                ),
-                false,
-            )
-        })?;
-        let expected_index = backup_root.join("expected-index");
-        fs::copy(baseline_index, &expected_index).map_err(|failure| {
-            rollback_io_error("snapshot candidate index", baseline_index, &failure)
-        })?;
-        git_with_index(primary, &expected_index, &["read-tree", commit])?;
+        let (backup_root, expected_index) = reserve_rollback_root(primary, baseline_index, commit)?;
         let (changed_paths, direct_paths) = changed_worktree_paths(primary, baseline, commit)?;
         let mut changed_paths = changed_paths.into_iter().collect::<Vec<_>>();
         changed_paths.sort_by(|left, right| {
@@ -1807,15 +1917,41 @@ impl PrimaryWorktreeRollback {
             .map(|(relative, _)| relative.clone())
             .collect::<Vec<_>>();
         materialize_candidate_tree(primary, &expected_index, &candidate_root, &roots)?;
+        let live_root = open_bound_root(primary)?;
+        let backup_root_handle = open_bound_root(&backup_root)?;
         let paths = selected
             .into_iter()
             .map(|(relative, baseline_snapshot)| {
+                let relative_path = Path::new(&relative);
+                for namespace in ["original", "candidate-tree", "rollback-live"] {
+                    let parent = backup_root.join(namespace).join(relative_path);
+                    let parent = parent.parent().expect("journal path always has a parent");
+                    fs::create_dir_all(parent).map_err(|failure| {
+                        rollback_io_error("create bound journal parent", parent, &failure)
+                    })?;
+                }
                 Ok(RollbackPath {
                     candidate_snapshot: live_path_snapshot(&candidate_root.join(&relative))?,
+                    live: BoundPath::bind(primary, &live_root, relative_path)?,
+                    original: BoundPath::bind(
+                        &backup_root,
+                        &backup_root_handle,
+                        &Path::new("original").join(relative_path),
+                    )?,
+                    candidate: BoundPath::bind(
+                        &backup_root,
+                        &backup_root_handle,
+                        &Path::new("candidate-tree").join(relative_path),
+                    )?,
+                    rollback_live: BoundPath::bind(
+                        &backup_root,
+                        &backup_root_handle,
+                        &Path::new("rollback-live").join(relative_path),
+                    )?,
                     relative,
                     baseline_snapshot,
+                    state: RootPublicationState::Untouched,
                     original_quarantined: false,
-                    candidate_applied: false,
                 })
             })
             .collect::<Result<Vec<_>, DomainError>>()?;
@@ -1833,14 +1969,8 @@ impl PrimaryWorktreeRollback {
 
     fn apply_candidate(&mut self) -> Result<(), DomainError> {
         for entry in &mut self.paths {
-            let target = self.primary.join(&entry.relative);
-            let original = self.backup_root.join("original").join(&entry.relative);
-            if let Some(parent) = original.parent() {
-                fs::create_dir_all(parent).map_err(|failure| {
-                    rollback_io_error("create original quarantine parent", parent, &failure)
-                })?;
-            }
-            match fs::rename(&target, &original) {
+            entry.live.attest_parent()?;
+            match rename_bound_noreplace(&entry.live, &entry.original) {
                 Ok(()) => entry.original_quarantined = true,
                 Err(failure)
                     if matches!(
@@ -1850,13 +1980,14 @@ impl PrimaryWorktreeRollback {
                 Err(failure) => {
                     return Err(rollback_io_error(
                         "quarantine primary worktree path",
-                        &target,
+                        &entry.live.display,
                         &failure,
                     ));
                 }
             }
+            entry.state = RootPublicationState::Quarantined;
             let isolated = if entry.original_quarantined {
-                live_path_snapshot(&original)?
+                live_path_snapshot(&entry.original.display)?
             } else {
                 LivePathSnapshot::Absent
             };
@@ -1864,24 +1995,42 @@ impl PrimaryWorktreeRollback {
                 return Err(candidate_collision_error(&entry.relative));
             }
             if entry.candidate_snapshot == LivePathSnapshot::Absent {
-                entry.candidate_applied = true;
+                entry.state = RootPublicationState::Applied;
                 continue;
             }
-            let candidate = self
-                .backup_root
-                .join("candidate-tree")
-                .join(&entry.relative);
-            rename_noreplace(&candidate, &target).map_err(|failure| {
+            rename_bound_noreplace(&entry.candidate, &entry.live).map_err(|failure| {
                 if matches!(
                     failure.kind(),
                     std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
                 ) {
                     candidate_collision_error(&entry.relative)
                 } else {
-                    rollback_io_error("install candidate worktree path", &target, &failure)
+                    rollback_io_error(
+                        "install candidate worktree path",
+                        &entry.live.display,
+                        &failure,
+                    )
                 }
             })?;
-            entry.candidate_applied = true;
+            entry.state = RootPublicationState::Applied;
+        }
+        Ok(())
+    }
+
+    fn ensure_original_quarantines_unchanged(&self) -> Result<(), DomainError> {
+        for entry in &self.paths {
+            if entry.original_quarantined
+                && live_path_snapshot(&entry.original.display)? != entry.baseline_snapshot
+            {
+                return Err(domain_error(
+                    ErrorCode::ProjectGitDirty,
+                    format!(
+                        "Project path {:?} changed through an open handle after it was quarantined; the external bytes will be restored",
+                        entry.relative
+                    ),
+                    true,
+                ));
+            }
         }
         Ok(())
     }
@@ -1893,8 +2042,7 @@ impl PrimaryWorktreeRollback {
         }
         let mut failures = Vec::new();
         for entry in &mut self.paths {
-            if let Err(failure) = rollback_quarantined_path(&self.primary, &self.backup_root, entry)
-            {
+            if let Err(failure) = rollback_quarantined_path(entry) {
                 failures.push(failure.message);
             }
         }
@@ -1924,29 +2072,33 @@ impl PrimaryWorktreeRollback {
         self.update_started = false;
         let _ = fs::remove_dir_all(&self.backup_root);
     }
+
+    fn complete(&mut self) {
+        self.update_started = false;
+        if self.paths.iter().any(|entry| entry.original_quarantined) {
+            // An editor may still hold a writable descriptor to a baseline inode
+            // after its directory entry was quarantined. There is no portable
+            // way to prove all such handles are closed, so successful publication
+            // retains the exact inode/tree as durable recovery material.
+            return;
+        }
+        self.discard();
+    }
 }
 
-fn rollback_quarantined_path(
-    primary: &Path,
-    backup_root: &Path,
-    entry: &mut RollbackPath,
-) -> Result<(), DomainError> {
-    let target = primary.join(&entry.relative);
-    let original = backup_root.join("original").join(&entry.relative);
-    if !entry.candidate_applied {
-        if path_exists(&target)? {
-            return Err(external_rollback_path_error(&entry.relative));
+fn rollback_quarantined_path(entry: &mut RollbackPath) -> Result<(), DomainError> {
+    match entry.state {
+        RootPublicationState::Untouched => return Ok(()),
+        RootPublicationState::Quarantined => {
+            restore_original_quarantine(entry)?;
+            entry.state = RootPublicationState::Untouched;
+            return Ok(());
         }
-        return restore_original_quarantine(entry, &original, &target);
+        RootPublicationState::Applied => {}
     }
 
-    let live = backup_root.join("rollback-live").join(&entry.relative);
-    if let Some(parent) = live.parent() {
-        fs::create_dir_all(parent).map_err(|failure| {
-            rollback_io_error("create live rollback quarantine parent", parent, &failure)
-        })?;
-    }
-    let live_moved = match fs::rename(&target, &live) {
+    entry.live.attest_parent()?;
+    let live_moved = match rename_bound_noreplace(&entry.live, &entry.rollback_live) {
         Ok(()) => true,
         Err(failure)
             if matches!(
@@ -1959,43 +2111,49 @@ fn rollback_quarantined_path(
         Err(failure) => {
             return Err(rollback_io_error(
                 "quarantine live rollback path",
-                &target,
+                &entry.live.display,
                 &failure,
             ));
         }
     };
     let isolated = if live_moved {
-        live_path_snapshot(&live)?
+        live_path_snapshot(&entry.rollback_live.display)?
     } else {
         LivePathSnapshot::Absent
     };
     if isolated != entry.candidate_snapshot {
         if live_moved {
-            rename_noreplace(&live, &target).map_err(|failure| {
-                rollback_io_error("restore external rollback path", &target, &failure)
+            rename_bound_noreplace(&entry.rollback_live, &entry.live).map_err(|failure| {
+                rollback_io_error(
+                    "restore external rollback path",
+                    &entry.live.display,
+                    &failure,
+                )
             })?;
         }
         return Err(external_rollback_path_error(&entry.relative));
     }
 
-    restore_original_quarantine(entry, &original, &target)?;
+    restore_original_quarantine(entry)?;
     if live_moved {
-        remove_path(&live)?;
+        remove_path(&entry.rollback_live.display)?;
     }
-    entry.candidate_applied = false;
+    entry.state = RootPublicationState::Untouched;
     Ok(())
 }
 
-fn restore_original_quarantine(
-    entry: &mut RollbackPath,
-    original: &Path,
-    target: &Path,
-) -> Result<(), DomainError> {
+fn restore_original_quarantine(entry: &mut RollbackPath) -> Result<(), DomainError> {
     if !entry.original_quarantined {
         return Ok(());
     }
-    rename_noreplace(original, target)
-        .map_err(|failure| rollback_io_error("restore original worktree path", target, &failure))?;
+    entry.live.attest_parent()?;
+    rename_bound_noreplace(&entry.original, &entry.live).map_err(|failure| {
+        rollback_io_error(
+            "restore original worktree path",
+            &entry.live.display,
+            &failure,
+        )
+    })?;
     entry.original_quarantined = false;
     Ok(())
 }
@@ -2008,6 +2166,125 @@ fn external_rollback_path_error(relative: &str) -> DomainError {
         ),
         false,
     )
+}
+
+fn open_bound_root(path: &Path) -> Result<CapDir, DomainError> {
+    let before = fs::symlink_metadata(path)
+        .map_err(|failure| rollback_io_error("inspect capability root", path, &failure))?;
+    if !safe_directory_metadata(&before) {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "cannot capability-bind {} because it is a symlink, reparse point, or non-directory",
+                path.display()
+            ),
+            false,
+        ));
+    }
+    let opened = CapDir::open_ambient_dir(path, ambient_authority())
+        .map_err(|failure| rollback_io_error("open capability root", path, &failure))?;
+    ensure_opened_directory_matches_metadata(&opened, &before, path)?;
+    ensure_opened_directory_matches_path(&opened, path)?;
+    Ok(opened)
+}
+
+fn ensure_opened_directory_matches_path(opened: &CapDir, path: &Path) -> Result<(), DomainError> {
+    let lexical = fs::symlink_metadata(path)
+        .map_err(|failure| rollback_io_error("attest bound directory", path, &failure))?;
+    if !safe_directory_metadata(&lexical) {
+        return Err(bound_directory_changed_error(path));
+    }
+    ensure_opened_directory_matches_metadata(opened, &lexical, path)
+}
+
+fn ensure_opened_directory_matches_metadata(
+    opened: &CapDir,
+    lexical: &fs::Metadata,
+    path: &Path,
+) -> Result<(), DomainError> {
+    let handle = opened
+        .try_clone()
+        .and_then(|directory| directory.into_std_file().metadata())
+        .map_err(|failure| rollback_io_error("inspect bound directory handle", path, &failure))?;
+    if same_directory_identity(lexical, &handle) {
+        Ok(())
+    } else {
+        Err(bound_directory_changed_error(path))
+    }
+}
+
+fn ensure_same_open_directory(
+    expected: &CapDir,
+    observed: &CapDir,
+    path: &Path,
+) -> Result<(), DomainError> {
+    let expected = expected
+        .try_clone()
+        .and_then(|directory| directory.into_std_file().metadata())
+        .map_err(|failure| {
+            rollback_io_error("inspect expected directory handle", path, &failure)
+        })?;
+    let observed = observed
+        .try_clone()
+        .and_then(|directory| directory.into_std_file().metadata())
+        .map_err(|failure| {
+            rollback_io_error("inspect observed directory handle", path, &failure)
+        })?;
+    if same_directory_identity(&expected, &observed) {
+        Ok(())
+    } else {
+        Err(bound_directory_changed_error(path))
+    }
+}
+
+fn bound_directory_changed_error(path: &Path) -> DomainError {
+    domain_error(
+        ErrorCode::RunRecoveryFailed,
+        format!(
+            "capability-bound Project directory changed at {}; no replacement path was followed",
+            path.display()
+        ),
+        false,
+    )
+}
+
+#[cfg(windows)]
+fn safe_directory_metadata(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.is_dir()
+        && !metadata.file_type().is_symlink()
+        && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+}
+
+#[cfg(not(windows))]
+fn safe_directory_metadata(metadata: &fs::Metadata) -> bool {
+    metadata.is_dir() && !metadata.file_type().is_symlink()
+}
+
+#[cfg(unix)]
+fn same_directory_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    left.is_dir() && right.is_dir() && left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+#[cfg(windows)]
+fn same_directory_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    left.is_dir()
+        && right.is_dir()
+        && left.volume_serial_number().is_some()
+        && left.volume_serial_number() == right.volume_serial_number()
+        && left.file_index().is_some()
+        && left.file_index() == right.file_index()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_directory_identity(_left: &fs::Metadata, _right: &fs::Metadata) -> bool {
+    false
 }
 
 fn materialize_candidate_tree(
@@ -2229,35 +2506,68 @@ fn hash_os_str(value: &OsStr, digest: &mut Sha256) {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-fn rename_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
+fn rename_bound_noreplace_platform(source: &BoundPath, target: &BoundPath) -> std::io::Result<()> {
     rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        source,
-        rustix::fs::CWD,
-        target,
+        source.parent(),
+        &source.leaf,
+        target.parent(),
+        &target.leaf,
         rustix::fs::RenameFlags::NOREPLACE,
     )
     .map_err(std::io::Error::from)
 }
 
 #[cfg(windows)]
-fn rename_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
+fn rename_bound_noreplace_platform(source: &BoundPath, target: &BoundPath) -> std::io::Result<()> {
+    use std::{
+        mem::size_of,
+        os::windows::{ffi::OsStrExt as _, io::AsRawHandle as _},
+    };
 
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let target = target
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // Omitting MOVEFILE_REPLACE_EXISTING makes a concurrently-created target
-    // fail atomically rather than overwriting that directory entry.
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt as _, OpenOptionsMaybeDirExt as _};
+    use cap_std::fs::{OpenOptions, OpenOptionsExt as _};
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_RENAME_INFO,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo, SetFileInformationByHandle,
+        },
+    };
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .access_mode(DELETE)
+        // Once the exact source entry is open, do not allow a concurrent
+        // delete/rename to detach that object before the handle-relative move.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true);
+    let source_file = source.parent().open_with(&source.leaf, &options)?;
+    let destination_name = target.leaf.encode_wide().collect::<Vec<_>>();
+    let buffer_size = size_of::<FILE_RENAME_INFO>()
+        .checked_add(destination_name.len().saturating_sub(1) * size_of::<u16>())
+        .ok_or_else(|| std::io::Error::other("Windows rename buffer size overflow"))?;
+    let mut buffer = vec![0_usize; buffer_size.div_ceil(size_of::<usize>())];
+    let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = target.parent().as_raw_handle() as HANDLE;
+        (*information).FileNameLength = (destination_name.len() * size_of::<u16>()) as u32;
+        std::ptr::copy_nonoverlapping(
+            destination_name.as_ptr(),
+            std::ptr::addr_of_mut!((*information).FileName).cast::<u16>(),
+            destination_name.len(),
+        );
+    }
     let moved = unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
+        SetFileInformationByHandle(
+            source_file.as_raw_handle() as HANDLE,
+            FileRenameInfo,
+            information.cast(),
+            buffer_size as u32,
+        )
     };
     if moved == 0 {
         Err(std::io::Error::last_os_error())
@@ -2267,11 +2577,24 @@ fn rename_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
-fn rename_noreplace(_source: &Path, _target: &Path) -> std::io::Result<()> {
+fn rename_bound_noreplace_platform(
+    _source: &BoundPath,
+    _target: &BoundPath,
+) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "atomic no-replace rename is unavailable on this platform",
     ))
+}
+
+fn rename_bound_noreplace(source: &BoundPath, target: &BoundPath) -> std::io::Result<()> {
+    source
+        .attest_parent()
+        .map_err(|failure| std::io::Error::other(failure.message))?;
+    target
+        .attest_parent()
+        .map_err(|failure| std::io::Error::other(failure.message))?;
+    rename_bound_noreplace_platform(source, target)
 }
 
 fn changed_worktree_paths(
@@ -2665,6 +2988,86 @@ fn rollback_io_error(operation: &str, path: &Path, failure: &std::io::Error) -> 
     )
 }
 
+fn ensure_candidate_publication_state(
+    primary: &Path,
+    index: &LockedIndex,
+    rollback: &PrimaryWorktreeRollback,
+    expected_ref_oid: &str,
+    expected_head_ref: Option<&str>,
+    expected_index_tree: &str,
+) -> Result<(), DomainError> {
+    rollback.ensure_original_quarantines_unchanged()?;
+    ensure_primary_reference(primary, expected_ref_oid, expected_head_ref)?;
+    index.ensure_canonical_unchanged()?;
+    ensure_index_and_worktree(primary, index.path(), expected_index_tree)
+}
+
+#[derive(Clone, Copy)]
+struct CandidatePublicationExpectation<'a> {
+    ref_oid: &'a str,
+    head_ref: Option<&'a str>,
+    index_tree: &'a str,
+}
+
+async fn checkpoint_candidate_publication(
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+    checkpoint: WorkspaceIntegrationCheckpoint,
+    primary: &Path,
+    index: &LockedIndex,
+    rollback: &PrimaryWorktreeRollback,
+    expected: CandidatePublicationExpectation<'_>,
+) -> Result<(), DomainError> {
+    integration_checkpoint(integration_gate, checkpoint).await?;
+    ensure_candidate_publication_state(
+        primary,
+        index,
+        rollback,
+        expected.ref_oid,
+        expected.head_ref,
+        expected.index_tree,
+    )
+}
+
+async fn validate_before_worktree_mutation(
+    primary: &Path,
+    baseline: &str,
+    baseline_index_tree: &str,
+    expected_head_ref: Option<&str>,
+    commit: &str,
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+    index: &LockedIndex,
+) -> Result<(), DomainError> {
+    ensure_primary_reference(primary, baseline, expected_head_ref)?;
+    ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
+    index.ensure_canonical_unchanged()?;
+    integration_checkpoint(
+        integration_gate,
+        WorkspaceIntegrationCheckpoint::BeforeWorktreeUpdate,
+    )
+    .await?;
+    ensure_primary_reference(primary, baseline, expected_head_ref)?;
+    ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
+    index.ensure_canonical_unchanged()?;
+    ensure_no_candidate_filesystem_collisions(primary, index.path(), baseline, commit)?;
+    integration_checkpoint(
+        integration_gate,
+        WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation,
+    )
+    .await
+}
+
+async fn acquire_integration_index(
+    primary: &Path,
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+) -> Result<LockedIndex, DomainError> {
+    integration_checkpoint(
+        integration_gate,
+        WorkspaceIntegrationCheckpoint::BeforeIndexLock,
+    )
+    .await?;
+    LockedIndex::acquire(primary)
+}
+
 async fn integrate_primary_transaction(
     primary: &Path,
     baseline: &str,
@@ -2677,32 +3080,30 @@ async fn integrate_primary_transaction(
     let mut transaction =
         PreparedRefTransaction::prepare(primary, &target_ref, baseline, commit, true)?;
     ensure_direct_ref_identity(primary, &target_ref)?;
-    integration_checkpoint(
-        integration_gate,
-        WorkspaceIntegrationCheckpoint::BeforeIndexLock,
-    )
-    .await?;
-    let mut index = LockedIndex::acquire(primary)?;
+    let mut index = acquire_integration_index(primary, integration_gate).await?;
     let commit_tree = git_commit_tree(primary, commit)?;
     let mut rollback = PrimaryWorktreeRollback::capture(primary, index.path(), baseline, commit)?;
     let mut ref_attempted = false;
+    let before_ref = CandidatePublicationExpectation {
+        ref_oid: baseline,
+        head_ref: expected_head_ref,
+        index_tree: &commit_tree,
+    };
+    let after_ref = CandidatePublicationExpectation {
+        ref_oid: commit,
+        head_ref: expected_head_ref,
+        index_tree: &commit_tree,
+    };
 
     let outcome = async {
-        ensure_primary_reference(primary, baseline, expected_head_ref)?;
-        ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
-        index.ensure_canonical_unchanged()?;
-        integration_checkpoint(
+        validate_before_worktree_mutation(
+            primary,
+            baseline,
+            baseline_index_tree,
+            expected_head_ref,
+            commit,
             integration_gate,
-            WorkspaceIntegrationCheckpoint::BeforeWorktreeUpdate,
-        )
-        .await?;
-        ensure_primary_reference(primary, baseline, expected_head_ref)?;
-        ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
-        index.ensure_canonical_unchanged()?;
-        ensure_no_candidate_filesystem_collisions(primary, index.path(), baseline, commit)?;
-        integration_checkpoint(
-            integration_gate,
-            WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation,
+            &index,
         )
         .await?;
         git_with_index(primary, index.path(), &["read-tree", commit])?;
@@ -2710,23 +3111,25 @@ async fn integrate_primary_transaction(
         rollback.mark_update_started();
         rollback.apply_candidate()?;
         git_with_index(primary, index.path(), &["update-index", "--refresh"])?;
-        integration_checkpoint(
+        checkpoint_candidate_publication(
             integration_gate,
             WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate,
+            primary,
+            &index,
+            &rollback,
+            before_ref,
         )
         .await?;
-        ensure_primary_reference(primary, baseline, expected_head_ref)?;
-        index.ensure_canonical_unchanged()?;
-        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
 
-        integration_checkpoint(
+        checkpoint_candidate_publication(
             integration_gate,
             WorkspaceIntegrationCheckpoint::BeforeRefPublish,
+            primary,
+            &index,
+            &rollback,
+            before_ref,
         )
         .await?;
-        ensure_primary_reference(primary, baseline, expected_head_ref)?;
-        index.ensure_canonical_unchanged()?;
-        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
         ref_attempted = true;
         let confirmation = transaction.commit()?;
         integration_checkpoint(
@@ -2736,22 +3139,24 @@ async fn integrate_primary_transaction(
         .await?;
         confirmation.confirm()?;
 
-        integration_checkpoint(
+        checkpoint_candidate_publication(
             integration_gate,
             WorkspaceIntegrationCheckpoint::AfterRefPublish,
+            primary,
+            &index,
+            &rollback,
+            after_ref,
         )
         .await?;
-        ensure_primary_reference(primary, commit, expected_head_ref)?;
-        index.ensure_canonical_unchanged()?;
-        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
-        integration_checkpoint(
+        checkpoint_candidate_publication(
             integration_gate,
             WorkspaceIntegrationCheckpoint::BeforeIndexPublish,
+            primary,
+            &index,
+            &rollback,
+            after_ref,
         )
         .await?;
-        ensure_primary_reference(primary, commit, expected_head_ref)?;
-        index.ensure_canonical_unchanged()?;
-        ensure_index_and_worktree(primary, index.path(), &commit_tree)?;
 
         // This rename is the last fallible publication step. The prepared ref
         // remains rollbackable until it succeeds, and no fallible validation
@@ -2763,7 +3168,7 @@ async fn integrate_primary_transaction(
 
     match outcome {
         Ok(()) => {
-            rollback.discard();
+            rollback.complete();
             Ok(())
         }
         Err(failure) => Err(rollback_primary_integration(
@@ -3710,6 +4115,37 @@ async fn send_event(
 #[cfg(test)]
 mod workspace_cleanup_tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn capability_binding_rejects_windows_junction_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(
+            outside.path().join("sentinel.txt"),
+            b"outside exact\0bytes\n",
+        )
+        .unwrap();
+        let junction = root.path().join("junction");
+        let status = ProcessCommand::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(outside.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "cannot create Windows junction fixture");
+
+        let capability = open_bound_root(root.path()).unwrap();
+        let failure = BoundPath::bind(root.path(), &capability, Path::new("junction/sentinel.txt"))
+            .err()
+            .expect("junction ancestor must be rejected");
+
+        assert_eq!(failure.code, ErrorCode::RunRecoveryFailed);
+        assert_eq!(
+            fs::read(outside.path().join("sentinel.txt")).unwrap(),
+            b"outside exact\0bytes\n"
+        );
+    }
 
     #[cfg(unix)]
     #[test]
