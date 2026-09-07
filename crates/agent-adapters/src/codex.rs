@@ -2,9 +2,9 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
-    io::{BufRead as _, BufReader as StdBufReader, Write as _},
+    io::{BufRead as _, BufReader as StdBufReader, Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Child as ProcessChild, ChildStdin, Command as ProcessCommand, Stdio},
     sync::Arc,
@@ -1541,6 +1541,23 @@ impl PreparedRefTransaction {
         commit: &str,
         no_deref: bool,
     ) -> Result<Self, DomainError> {
+        Self::prepare_command(
+            primary,
+            &format!("update {target} {commit} {baseline}"),
+            no_deref,
+        )
+    }
+
+    fn prepare_verify(
+        primary: &Path,
+        target: &str,
+        expected: &str,
+        no_deref: bool,
+    ) -> Result<Self, DomainError> {
+        Self::prepare_command(primary, &format!("verify {target} {expected}"), no_deref)
+    }
+
+    fn prepare_command(primary: &Path, command: &str, no_deref: bool) -> Result<Self, DomainError> {
         let mut child = ProcessCommand::new("git")
             .arg("-C")
             .arg(primary)
@@ -1575,7 +1592,7 @@ impl PreparedRefTransaction {
                 if no_deref {
                     writeln!(stdin, "option no-deref")?;
                 }
-                writeln!(stdin, "update {target} {commit} {baseline}")?;
+                writeln!(stdin, "{command}")?;
                 writeln!(stdin, "prepare")?;
                 stdin.flush()
             })
@@ -1687,13 +1704,6 @@ impl Drop for PreparedRefTransaction {
     }
 }
 
-enum BaselinePath {
-    Absent,
-    Directory,
-    File(PathBuf),
-    Symlink(PathBuf),
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TreePathKind {
     Absent,
@@ -1702,16 +1712,23 @@ enum TreePathKind {
     Symlink,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LivePathSnapshot {
+    Absent,
+    Present([u8; 32]),
+}
+
 struct RollbackPath {
     relative: String,
-    baseline: BaselinePath,
-    candidate: TreePathKind,
+    baseline_snapshot: LivePathSnapshot,
+    candidate_snapshot: LivePathSnapshot,
+    original_quarantined: bool,
+    candidate_applied: bool,
 }
 
 struct PrimaryWorktreeRollback {
     primary: PathBuf,
     backup_root: PathBuf,
-    expected_index: PathBuf,
     paths: Vec<RollbackPath>,
     update_started: bool,
 }
@@ -1749,29 +1766,62 @@ impl PrimaryWorktreeRollback {
         })?;
         git_with_index(primary, &expected_index, &["read-tree", commit])?;
         let (changed_paths, direct_paths) = changed_worktree_paths(primary, baseline, commit)?;
-        let mut paths = changed_paths
+        let mut changed_paths = changed_paths.into_iter().collect::<Vec<_>>();
+        changed_paths.sort_by(|left, right| {
+            Path::new(left)
+                .components()
+                .count()
+                .cmp(&Path::new(right).components().count())
+                .then_with(|| left.cmp(right))
+        });
+        let mut structural_roots = Vec::<String>::new();
+        let mut selected = Vec::new();
+        for relative in changed_paths {
+            if structural_roots
+                .iter()
+                .any(|root| Path::new(&relative).starts_with(root))
+            {
+                continue;
+            }
+            let baseline_kind = git_tree_path_kind(primary, baseline, &relative)?;
+            let candidate_kind = git_tree_path_kind(primary, commit, &relative)?;
+            let structural = baseline_kind != candidate_kind
+                && (baseline_kind == TreePathKind::Directory
+                    || candidate_kind == TreePathKind::Directory);
+            if !structural && !direct_paths.contains(&relative) {
+                continue;
+            }
+            if structural {
+                structural_roots.push(relative.clone());
+            }
+            let baseline_snapshot = if baseline_kind == TreePathKind::Absent {
+                LivePathSnapshot::Absent
+            } else {
+                live_path_snapshot(&primary.join(&relative))?
+            };
+            selected.push((relative, baseline_snapshot));
+        }
+        let candidate_root = backup_root.join("candidate-tree");
+        let roots = selected
+            .iter()
+            .map(|(relative, _)| relative.clone())
+            .collect::<Vec<_>>();
+        materialize_candidate_tree(primary, &expected_index, &candidate_root, &roots)?;
+        let paths = selected
             .into_iter()
-            .map(|relative| {
-                capture_rollback_path(primary, &backup_root, baseline, commit, &relative)
+            .map(|(relative, baseline_snapshot)| {
+                Ok(RollbackPath {
+                    candidate_snapshot: live_path_snapshot(&candidate_root.join(&relative))?,
+                    relative,
+                    baseline_snapshot,
+                    original_quarantined: false,
+                    candidate_applied: false,
+                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        // Unchanged directory ancestors are only structural context and must
-        // never be removed by rollback. D/F ancestors differ in kind and stay.
-        paths.retain(|entry| {
-            baseline_path_kind(&entry.baseline) != entry.candidate
-                || direct_paths.contains(&entry.relative)
-        });
-        paths.sort_by(|left, right| {
-            std::cmp::Reverse(Path::new(&left.relative).components().count())
-                .cmp(&std::cmp::Reverse(
-                    Path::new(&right.relative).components().count(),
-                ))
-                .then_with(|| left.relative.cmp(&right.relative))
-        });
+            .collect::<Result<Vec<_>, DomainError>>()?;
         Ok(Self {
             primary: primary.to_path_buf(),
             backup_root,
-            expected_index,
             paths,
             update_started: false,
         })
@@ -1781,48 +1831,71 @@ impl PrimaryWorktreeRollback {
         self.update_started = true;
     }
 
+    fn apply_candidate(&mut self) -> Result<(), DomainError> {
+        for entry in &mut self.paths {
+            let target = self.primary.join(&entry.relative);
+            let original = self.backup_root.join("original").join(&entry.relative);
+            if let Some(parent) = original.parent() {
+                fs::create_dir_all(parent).map_err(|failure| {
+                    rollback_io_error("create original quarantine parent", parent, &failure)
+                })?;
+            }
+            match fs::rename(&target, &original) {
+                Ok(()) => entry.original_quarantined = true,
+                Err(failure)
+                    if matches!(
+                        failure.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) => {}
+                Err(failure) => {
+                    return Err(rollback_io_error(
+                        "quarantine primary worktree path",
+                        &target,
+                        &failure,
+                    ));
+                }
+            }
+            let isolated = if entry.original_quarantined {
+                live_path_snapshot(&original)?
+            } else {
+                LivePathSnapshot::Absent
+            };
+            if isolated != entry.baseline_snapshot {
+                return Err(candidate_collision_error(&entry.relative));
+            }
+            if entry.candidate_snapshot == LivePathSnapshot::Absent {
+                entry.candidate_applied = true;
+                continue;
+            }
+            let candidate = self
+                .backup_root
+                .join("candidate-tree")
+                .join(&entry.relative);
+            rename_noreplace(&candidate, &target).map_err(|failure| {
+                if matches!(
+                    failure.kind(),
+                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
+                ) {
+                    candidate_collision_error(&entry.relative)
+                } else {
+                    rollback_io_error("install candidate worktree path", &target, &failure)
+                }
+            })?;
+            entry.candidate_applied = true;
+        }
+        Ok(())
+    }
+
     fn rollback(&mut self, candidate_index: &Path, baseline: &str) -> Result<(), DomainError> {
         if !self.update_started {
             self.discard();
             return Ok(());
         }
         let mut failures = Vec::new();
-        // Candidate ownership can depend on the candidate .gitattributes and
-        // clean filters. Freeze every decision before removing any path so the
-        // classification view cannot change halfway through compensation.
-        let mut candidate_owned = Vec::with_capacity(self.paths.len());
-        for entry in &self.paths {
-            match self.candidate_path_is_owned(entry) {
-                Ok(owned) => candidate_owned.push(owned),
-                Err(failure) => {
-                    failures.push(failure.message);
-                    candidate_owned.push(false);
-                }
-            }
-        }
-        let mut can_restore = Vec::with_capacity(self.paths.len());
-        for (entry, owned) in self.paths.iter().zip(candidate_owned) {
-            match self.remove_candidate_path(entry, owned) {
-                Ok(restore) => can_restore.push(restore),
-                Err(failure) => {
-                    failures.push(failure.message);
-                    can_restore.push(false);
-                }
-            }
-        }
-        let mut blocked_roots = Vec::<String>::new();
-        for (entry, restore) in self.paths.iter().zip(can_restore).rev() {
-            let blocked_by_ancestor = blocked_roots
-                .iter()
-                .any(|root| Path::new(&entry.relative).starts_with(Path::new(root)));
-            if !restore || blocked_by_ancestor {
-                blocked_roots.push(entry.relative.clone());
-                continue;
-            }
-            let target = self.primary.join(&entry.relative);
-            if let Err(failure) = restore_baseline_path(&entry.baseline, &target) {
+        for entry in &mut self.paths {
+            if let Err(failure) = rollback_quarantined_path(&self.primary, &self.backup_root, entry)
+            {
                 failures.push(failure.message);
-                blocked_roots.push(entry.relative.clone());
             }
         }
         if let Err(failure) =
@@ -1847,81 +1920,358 @@ impl PrimaryWorktreeRollback {
         }
     }
 
-    fn candidate_path_is_owned(&self, entry: &RollbackPath) -> Result<bool, DomainError> {
-        let target = self.primary.join(&entry.relative);
-        match entry.candidate {
-            TreePathKind::Absent => Ok(!path_exists(&target)?),
-            TreePathKind::Directory => match fs::symlink_metadata(&target) {
-                Ok(metadata) => Ok(metadata.is_dir() && !metadata.file_type().is_symlink()),
-                Err(failure)
-                    if matches!(
-                        failure.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    Ok(false)
-                }
-                Err(failure) => Err(rollback_io_error(
-                    "inspect candidate rollback directory",
-                    &target,
-                    &failure,
-                )),
-            },
-            TreePathKind::File | TreePathKind::Symlink => {
-                worktree_path_matches_index(&self.primary, &self.expected_index, &entry.relative)
-            }
-        }
-    }
-
-    fn remove_candidate_path(
-        &self,
-        entry: &RollbackPath,
-        candidate_owned: bool,
-    ) -> Result<bool, DomainError> {
-        if !candidate_owned {
-            // The post-update value no longer equals the Run commit. Preserve
-            // it as the external writer's version.
-            return Ok(false);
-        }
-        let target = self.primary.join(&entry.relative);
-        match entry.candidate {
-            TreePathKind::Absent => Ok(true),
-            TreePathKind::Directory => match fs::remove_dir(&target) {
-                Ok(()) => Ok(true),
-                Err(failure) if failure.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-                    // An unjournalled external child remains; preserve the
-                    // resulting D/F shape rather than deleting recursively.
-                    Ok(false)
-                }
-                Err(failure)
-                    if matches!(
-                        failure.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    Ok(true)
-                }
-                Err(failure) => Err(rollback_io_error(
-                    "remove candidate rollback directory",
-                    &target,
-                    &failure,
-                )),
-            },
-            TreePathKind::File | TreePathKind::Symlink => {
-                if let Err(failure) = remove_path(&target)
-                    && path_exists(&target)?
-                {
-                    return Err(failure);
-                }
-                Ok(true)
-            }
-        }
-    }
-
     fn discard(&mut self) {
         self.update_started = false;
         let _ = fs::remove_dir_all(&self.backup_root);
     }
+}
+
+fn rollback_quarantined_path(
+    primary: &Path,
+    backup_root: &Path,
+    entry: &mut RollbackPath,
+) -> Result<(), DomainError> {
+    let target = primary.join(&entry.relative);
+    let original = backup_root.join("original").join(&entry.relative);
+    if !entry.candidate_applied {
+        if path_exists(&target)? {
+            return Err(external_rollback_path_error(&entry.relative));
+        }
+        return restore_original_quarantine(entry, &original, &target);
+    }
+
+    let live = backup_root.join("rollback-live").join(&entry.relative);
+    if let Some(parent) = live.parent() {
+        fs::create_dir_all(parent).map_err(|failure| {
+            rollback_io_error("create live rollback quarantine parent", parent, &failure)
+        })?;
+    }
+    let live_moved = match fs::rename(&target, &live) {
+        Ok(()) => true,
+        Err(failure)
+            if matches!(
+                failure.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            false
+        }
+        Err(failure) => {
+            return Err(rollback_io_error(
+                "quarantine live rollback path",
+                &target,
+                &failure,
+            ));
+        }
+    };
+    let isolated = if live_moved {
+        live_path_snapshot(&live)?
+    } else {
+        LivePathSnapshot::Absent
+    };
+    if isolated != entry.candidate_snapshot {
+        if live_moved {
+            rename_noreplace(&live, &target).map_err(|failure| {
+                rollback_io_error("restore external rollback path", &target, &failure)
+            })?;
+        }
+        return Err(external_rollback_path_error(&entry.relative));
+    }
+
+    restore_original_quarantine(entry, &original, &target)?;
+    if live_moved {
+        remove_path(&live)?;
+    }
+    entry.candidate_applied = false;
+    Ok(())
+}
+
+fn restore_original_quarantine(
+    entry: &mut RollbackPath,
+    original: &Path,
+    target: &Path,
+) -> Result<(), DomainError> {
+    if !entry.original_quarantined {
+        return Ok(());
+    }
+    rename_noreplace(original, target)
+        .map_err(|failure| rollback_io_error("restore original worktree path", target, &failure))?;
+    entry.original_quarantined = false;
+    Ok(())
+}
+
+fn external_rollback_path_error(relative: &str) -> DomainError {
+    domain_error(
+        ErrorCode::RunRecoveryFailed,
+        format!(
+            "Project path {relative:?} changed before rollback; the external directory entry was preserved"
+        ),
+        false,
+    )
+}
+
+fn materialize_candidate_tree(
+    primary: &Path,
+    index: &Path,
+    candidate_root: &Path,
+    roots: &[String],
+) -> Result<(), DomainError> {
+    fs::create_dir(candidate_root).map_err(|failure| {
+        rollback_io_error(
+            "create candidate materialization root",
+            candidate_root,
+            &failure,
+        )
+    })?;
+    let entries = git_with_index(primary, index, &["ls-files", "-z"])?;
+    let selected = entries
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| {
+            !path.is_empty()
+                && roots.iter().any(|root| {
+                    let root = root.as_bytes();
+                    *path == root
+                        || path
+                            .strip_prefix(root)
+                            .is_some_and(|suffix| suffix.first() == Some(&b'/'))
+                })
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let mut prefix = candidate_root.as_os_str().to_os_string();
+    prefix.push(std::path::MAIN_SEPARATOR.to_string());
+    let mut child = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(primary)
+        .args(["checkout-index", "--force", "-z", "--stdin", "--prefix"])
+        .arg(prefix)
+        .env("GIT_INDEX_FILE", index)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!("cannot start candidate worktree materialization: {failure}"),
+                false,
+            )
+        })?;
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            "candidate worktree materialization stdin is unavailable",
+            false,
+        ));
+    };
+    let write_result = selected.into_iter().try_for_each(|path| {
+        stdin
+            .write_all(path)
+            .and_then(|()| stdin.write_all(&[0]))
+            .map_err(|failure| {
+                domain_error(
+                    ErrorCode::RunRecoveryFailed,
+                    format!("cannot select candidate worktree paths: {failure}"),
+                    false,
+                )
+            })
+    });
+    drop(stdin);
+    let output = child.wait_with_output().map_err(|failure| {
+        domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!("cannot settle candidate worktree materialization: {failure}"),
+            false,
+        )
+    })?;
+    write_result?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "cannot materialize candidate worktree: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+            false,
+        ))
+    }
+}
+
+fn live_path_snapshot(path: &Path) -> Result<LivePathSnapshot, DomainError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => {
+            let mut digest = Sha256::new();
+            hash_live_path(path, &mut digest)?;
+            Ok(LivePathSnapshot::Present(digest.finalize().into()))
+        }
+        Err(failure)
+            if matches!(
+                failure.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(LivePathSnapshot::Absent)
+        }
+        Err(failure) => Err(rollback_io_error(
+            "snapshot live worktree path",
+            path,
+            &failure,
+        )),
+    }
+}
+
+fn hash_live_path(path: &Path, digest: &mut Sha256) -> Result<(), DomainError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|failure| rollback_io_error("inspect live worktree snapshot", path, &failure))?;
+    hash_live_permissions(&metadata, digest);
+    if metadata.file_type().is_symlink() {
+        digest.update(b"symlink\0");
+        let link = fs::read_link(path)
+            .map_err(|failure| rollback_io_error("read live worktree symlink", path, &failure))?;
+        hash_os_str(link.as_os_str(), digest);
+        return Ok(());
+    }
+    if metadata.is_file() {
+        digest.update(b"file\0");
+        let mut file = File::open(path)
+            .map_err(|failure| rollback_io_error("open live worktree snapshot", path, &failure))?;
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(|failure| {
+                rollback_io_error("read live worktree snapshot", path, &failure)
+            })?;
+            if read == 0 {
+                break;
+            }
+            digest.update(&buffer[..read]);
+        }
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        digest.update(b"directory\0");
+        let mut entries = fs::read_dir(path)
+            .map_err(|failure| rollback_io_error("list live worktree snapshot", path, &failure))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|failure| rollback_io_error("read live worktree snapshot", path, &failure))?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            hash_os_str(&entry.file_name(), digest);
+            hash_live_path(&entry.path(), digest)?;
+        }
+        return Ok(());
+    }
+    Err(domain_error(
+        ErrorCode::RunRecoveryFailed,
+        format!(
+            "cannot safely snapshot unsupported filesystem entry at {}",
+            path.display()
+        ),
+        false,
+    ))
+}
+
+#[cfg(unix)]
+fn hash_live_permissions(metadata: &fs::Metadata, digest: &mut Sha256) {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    digest.update(metadata.dev().to_le_bytes());
+    digest.update(metadata.ino().to_le_bytes());
+    digest.update(metadata.permissions().mode().to_le_bytes());
+}
+
+#[cfg(windows)]
+fn hash_live_permissions(metadata: &fs::Metadata, digest: &mut Sha256) {
+    use std::os::windows::fs::MetadataExt as _;
+    digest.update(
+        metadata
+            .volume_serial_number()
+            .unwrap_or_default()
+            .to_le_bytes(),
+    );
+    digest.update(metadata.file_index().unwrap_or_default().to_le_bytes());
+    digest.update(metadata.file_attributes().to_le_bytes());
+}
+
+#[cfg(not(any(unix, windows)))]
+fn hash_live_permissions(_metadata: &fs::Metadata, digest: &mut Sha256) {
+    digest.update([0]);
+}
+
+#[cfg(unix)]
+fn hash_os_str(value: &OsStr, digest: &mut Sha256) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = value.as_bytes();
+    digest.update(bytes.len().to_le_bytes());
+    digest.update(bytes);
+}
+
+#[cfg(windows)]
+fn hash_os_str(value: &OsStr, digest: &mut Sha256) {
+    use std::os::windows::ffi::OsStrExt as _;
+    let units = value.encode_wide().collect::<Vec<_>>();
+    digest.update(units.len().to_le_bytes());
+    for unit in units {
+        digest.update(unit.to_le_bytes());
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn hash_os_str(value: &OsStr, digest: &mut Sha256) {
+    let value = value.to_string_lossy();
+    digest.update(value.len().to_le_bytes());
+    digest.update(value.as_bytes());
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+fn rename_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        source,
+        rustix::fs::CWD,
+        target,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(std::io::Error::from)
+}
+
+#[cfg(windows)]
+fn rename_noreplace(source: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // Omitting MOVEFILE_REPLACE_EXISTING makes a concurrently-created target
+    // fail atomically rather than overwriting that directory entry.
+    let moved = unsafe {
+        windows_sys::Win32::Storage::FileSystem::MoveFileExW(source.as_ptr(), target.as_ptr(), 0)
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+fn rename_noreplace(_source: &Path, _target: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unavailable on this platform",
+    ))
 }
 
 fn changed_worktree_paths(
@@ -1976,42 +2326,6 @@ fn changed_worktree_paths(
     Ok((changed_paths, direct_paths))
 }
 
-fn capture_rollback_path(
-    primary: &Path,
-    backup_root: &Path,
-    baseline_commit: &str,
-    commit: &str,
-    relative: &str,
-) -> Result<RollbackPath, DomainError> {
-    validate_rollback_relative_path(relative)?;
-    let path = Path::new(relative);
-    let source = primary.join(path);
-    let baseline_kind = git_tree_path_kind(primary, baseline_commit, relative)?;
-    let baseline = match baseline_kind {
-        TreePathKind::Absent => BaselinePath::Absent,
-        TreePathKind::Directory => BaselinePath::Directory,
-        TreePathKind::File | TreePathKind::Symlink => {
-            let backup = backup_root.join("baseline").join(path);
-            if let Some(parent) = backup.parent() {
-                fs::create_dir_all(parent).map_err(|failure| {
-                    rollback_io_error("create baseline backup parent", parent, &failure)
-                })?;
-            }
-            copy_path_snapshot(&source, &backup)?;
-            if baseline_kind == TreePathKind::Symlink {
-                BaselinePath::Symlink(backup)
-            } else {
-                BaselinePath::File(backup)
-            }
-        }
-    };
-    Ok(RollbackPath {
-        relative: relative.to_owned(),
-        baseline,
-        candidate: git_tree_path_kind(primary, commit, relative)?,
-    })
-}
-
 fn validate_rollback_relative_path(relative: &str) -> Result<(), DomainError> {
     let path = Path::new(relative);
     if path.is_absolute()
@@ -2026,15 +2340,6 @@ fn validate_rollback_relative_path(relative: &str) -> Result<(), DomainError> {
         ));
     }
     Ok(())
-}
-
-fn baseline_path_kind(path: &BaselinePath) -> TreePathKind {
-    match path {
-        BaselinePath::Absent => TreePathKind::Absent,
-        BaselinePath::Directory => TreePathKind::Directory,
-        BaselinePath::File(_) => TreePathKind::File,
-        BaselinePath::Symlink(_) => TreePathKind::Symlink,
-    }
 }
 
 fn git_tree_path_kind(
@@ -2174,18 +2479,27 @@ fn candidate_collision_error(relative: &str) -> DomainError {
     )
 }
 
-fn rollback_primary_integration(
+async fn rollback_primary_integration(
     primary: &Path,
     baseline: &str,
-    commit: &str,
-    attempted_ref: Option<&str>,
+    attempted_ref: Option<(&str, &str)>,
     index: &LockedIndex,
     rollback: &mut PrimaryWorktreeRollback,
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
     mut failure: DomainError,
 ) -> DomainError {
     let mut rollback_failures = Vec::new();
-    if let Some(target_ref) = attempted_ref
-        && let Err(ref_failure) = reconcile_attempted_ref(primary, target_ref, baseline, commit)
+    if let Err(checkpoint_failure) = integration_checkpoint(
+        integration_gate,
+        WorkspaceIntegrationCheckpoint::BeforeWorktreeRollback,
+    )
+    .await
+    {
+        rollback_failures.push(checkpoint_failure.message);
+    }
+    if let Some((target_ref, commit)) = attempted_ref
+        && let Err(ref_failure) =
+            reconcile_attempted_ref(primary, target_ref, baseline, commit, integration_gate).await
     {
         rollback_failures.push(ref_failure.message);
     }
@@ -2204,15 +2518,32 @@ fn rollback_primary_integration(
     failure
 }
 
-fn reconcile_attempted_ref(
+async fn reconcile_attempted_ref(
     primary: &Path,
     target_ref: &str,
     baseline: &str,
     commit: &str,
+    integration_gate: Option<&dyn WorkspaceIntegrationGate>,
 ) -> Result<(), DomainError> {
     let current = exact_ref_oid(primary, target_ref)?;
     match current.as_deref() {
         Some(current) if current == baseline => {
+            integration_checkpoint(
+                integration_gate,
+                WorkspaceIntegrationCheckpoint::BeforeBaselineRefReconciliationLock,
+            )
+            .await?;
+            let _transaction =
+                PreparedRefTransaction::prepare_verify(primary, target_ref, baseline, true)?;
+            if exact_ref_oid(primary, target_ref)?.as_deref() != Some(baseline) {
+                return Err(domain_error(
+                    ErrorCode::RunRecoveryFailed,
+                    format!(
+                        "Project ref {target_ref} changed after its baseline reconciliation lock was requested; the external ref was preserved"
+                    ),
+                    false,
+                ));
+            }
             if let Some(symbolic_target) = symbolic_ref(primary, target_ref)? {
                 Err(changed_ref_identity_error(target_ref, &symbolic_target))
             } else {
@@ -2299,103 +2630,6 @@ async fn integration_checkpoint(
     Ok(())
 }
 
-fn worktree_path_matches_index(
-    primary: &Path,
-    index: &Path,
-    relative: &str,
-) -> Result<bool, DomainError> {
-    let literal = format!(":(literal){relative}");
-    let entry = git_with_index(primary, index, &["ls-files", "--stage", "--", &literal])?;
-    let entry = String::from_utf8_lossy(&entry.stdout);
-    let mut fields = entry
-        .split('\t')
-        .next()
-        .unwrap_or_default()
-        .split_whitespace();
-    let Some(mode) = fields.next() else {
-        return Ok(false);
-    };
-    let Some(expected_oid) = fields.next() else {
-        return Ok(false);
-    };
-    let path = primary.join(relative);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(failure)
-            if matches!(
-                failure.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            return Ok(false);
-        }
-        Err(failure) => {
-            return Err(rollback_io_error(
-                "inspect candidate worktree path",
-                &path,
-                &failure,
-            ));
-        }
-    };
-    if mode == "120000" {
-        if !metadata.file_type().is_symlink() {
-            return Ok(false);
-        }
-        let link = fs::read_link(&path).map_err(|failure| {
-            rollback_io_error("read candidate worktree symlink", &path, &failure)
-        })?;
-        let expected = git(primary, &["cat-file", "blob", expected_oid])?;
-        return Ok(symlink_bytes(&link) == expected.stdout);
-    }
-    if !metadata.is_file() || !worktree_mode_matches(mode, &metadata) {
-        return Ok(false);
-    }
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(primary)
-        .args(["hash-object", &format!("--path={relative}")])
-        .arg(&path)
-        .output()
-        .map_err(|failure| {
-            domain_error(
-                ErrorCode::RunRecoveryFailed,
-                format!("cannot hash rollback path {relative:?}: {failure}"),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(domain_error(
-            ErrorCode::RunRecoveryFailed,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            false,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim() == expected_oid)
-}
-
-#[cfg(unix)]
-fn symlink_bytes(path: &Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt as _;
-    path.as_os_str().as_bytes().to_vec()
-}
-
-#[cfg(windows)]
-fn symlink_bytes(path: &Path) -> Vec<u8> {
-    path.to_string_lossy().as_bytes().to_vec()
-}
-
-#[cfg(unix)]
-fn worktree_mode_matches(mode: &str, metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    let executable = metadata.permissions().mode() & 0o111 != 0;
-    executable == (mode == "100755")
-}
-
-#[cfg(windows)]
-fn worktree_mode_matches(_mode: &str, _metadata: &fs::Metadata) -> bool {
-    true
-}
-
 fn path_exists(path: &Path) -> Result<bool, DomainError> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -2409,125 +2643,6 @@ fn path_exists(path: &Path) -> Result<bool, DomainError> {
         }
         Err(failure) => Err(rollback_io_error("inspect rollback target", path, &failure)),
     }
-}
-
-fn restore_baseline_path(baseline: &BaselinePath, target: &Path) -> Result<(), DomainError> {
-    match baseline {
-        BaselinePath::Absent => Ok(()),
-        BaselinePath::Directory => match fs::symlink_metadata(target) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
-            Ok(_) => Err(domain_error(
-                ErrorCode::RunRecoveryFailed,
-                format!(
-                    "cannot restore baseline directory at {} because an external path is present",
-                    target.display()
-                ),
-                false,
-            )),
-            Err(failure)
-                if matches!(
-                    failure.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-            {
-                if let Some(parent) = target.parent() {
-                    fs::create_dir_all(parent).map_err(|failure| {
-                        rollback_io_error("create baseline directory parent", parent, &failure)
-                    })?;
-                }
-                fs::create_dir(target).map_err(|failure| {
-                    rollback_io_error("restore baseline directory", target, &failure)
-                })
-            }
-            Err(failure) => Err(rollback_io_error(
-                "inspect baseline directory target",
-                target,
-                &failure,
-            )),
-        },
-        BaselinePath::File(source) | BaselinePath::Symlink(source) => {
-            copy_path_snapshot(source, target)
-        }
-    }
-}
-
-fn copy_path_snapshot(source: &Path, target: &Path) -> Result<(), DomainError> {
-    let metadata = fs::symlink_metadata(source).map_err(|failure| {
-        rollback_io_error("inspect rollback snapshot source", source, &failure)
-    })?;
-    if metadata.file_type().is_symlink() {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|failure| {
-                rollback_io_error("create rollback symlink parent", parent, &failure)
-            })?;
-        }
-        let link = fs::read_link(source)
-            .map_err(|failure| rollback_io_error("read rollback symlink", source, &failure))?;
-        return create_symlink(&link, target)
-            .map_err(|failure| rollback_io_error("copy rollback symlink", target, &failure));
-    }
-    if metadata.is_file() {
-        return copy_file_create_only(source, target);
-    }
-    if !metadata.is_dir() {
-        return Err(domain_error(
-            ErrorCode::RunRecoveryFailed,
-            format!(
-                "cannot copy unsupported rollback file type at {}",
-                source.display()
-            ),
-            false,
-        ));
-    }
-    fs::create_dir(target)
-        .map_err(|failure| rollback_io_error("create rollback directory", target, &failure))?;
-    let entries = fs::read_dir(source)
-        .map_err(|failure| rollback_io_error("read rollback directory", source, &failure))?;
-    for entry in entries {
-        let entry = entry.map_err(|failure| {
-            rollback_io_error("read rollback directory entry", source, &failure)
-        })?;
-        copy_path_snapshot(&entry.path(), &target.join(entry.file_name()))?;
-    }
-    fs::set_permissions(target, metadata.permissions()).map_err(|failure| {
-        rollback_io_error("copy rollback directory permissions", target, &failure)
-    })?;
-    Ok(())
-}
-
-fn copy_file_create_only(source: &Path, target: &Path) -> Result<(), DomainError> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|failure| {
-            rollback_io_error("create rollback target parent", parent, &failure)
-        })?;
-    }
-    let mut source_file = File::open(source)
-        .map_err(|failure| rollback_io_error("open rollback source", source, &failure))?;
-    let mut target_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(target)
-        .map_err(|failure| rollback_io_error("create rollback target", target, &failure))?;
-    if let Err(failure) = std::io::copy(&mut source_file, &mut target_file) {
-        let _ = fs::remove_file(target);
-        return Err(rollback_io_error("restore rollback file", target, &failure));
-    }
-    let permissions = fs::metadata(source)
-        .map_err(|failure| rollback_io_error("read rollback permissions", source, &failure))?
-        .permissions();
-    fs::set_permissions(target, permissions)
-        .map_err(|failure| rollback_io_error("restore rollback permissions", target, &failure))?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn create_symlink(link: &Path, target: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(link, target)
-}
-
-#[cfg(windows)]
-fn create_symlink(link: &Path, target: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(link, target)
 }
 
 fn remove_path(path: &Path) -> Result<(), DomainError> {
@@ -2585,13 +2700,16 @@ async fn integrate_primary_transaction(
         ensure_index_and_worktree(primary, index.path(), baseline_index_tree)?;
         index.ensure_canonical_unchanged()?;
         ensure_no_candidate_filesystem_collisions(primary, index.path(), baseline, commit)?;
+        integration_checkpoint(
+            integration_gate,
+            WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation,
+        )
+        .await?;
+        git_with_index(primary, index.path(), &["read-tree", commit])?;
 
         rollback.mark_update_started();
-        git_with_index(
-            primary,
-            index.path(),
-            &["read-tree", "-u", "-m", baseline, commit],
-        )?;
+        rollback.apply_candidate()?;
+        git_with_index(primary, index.path(), &["update-index", "--refresh"])?;
         integration_checkpoint(
             integration_gate,
             WorkspaceIntegrationCheckpoint::AfterWorktreeUpdate,
@@ -2651,12 +2769,13 @@ async fn integrate_primary_transaction(
         Err(failure) => Err(rollback_primary_integration(
             primary,
             baseline,
-            commit,
-            ref_attempted.then_some(target_ref.as_str()),
+            ref_attempted.then_some((target_ref.as_str(), commit)),
             &index,
             &mut rollback,
+            integration_gate,
             failure,
-        )),
+        )
+        .await),
     }
 }
 

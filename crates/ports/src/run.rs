@@ -165,6 +165,8 @@ pub enum WorkspaceIntegrationCheckpoint {
     BeforeIndexLock,
     /// The primary worktree is still at the admitted tree, before updating it.
     BeforeWorktreeUpdate,
+    /// Collision scanning is complete, immediately before paths are quarantined.
+    BeforeWorktreeMutation,
     /// The primary worktree was updated through the locked candidate index.
     AfterWorktreeUpdate,
     /// All pre-publication validation passed, immediately before ref publication.
@@ -173,6 +175,10 @@ pub enum WorkspaceIntegrationCheckpoint {
     BeforeRefCommitConfirmation,
     /// The target ref was published while the canonical index remains unchanged.
     AfterRefPublish,
+    /// A baseline ref was observed, before its exact target lock is acquired.
+    BeforeBaselineRefReconciliationLock,
+    /// The candidate view is fixed, immediately before rollback isolates live paths.
+    BeforeWorktreeRollback,
     /// The canonical index is about to become the candidate index.
     BeforeIndexPublish,
 }

@@ -159,6 +159,10 @@ enum TransactionInjection {
     RefConfirmationFailure,
     FailureAfterRefPublish,
     UntrackedBeforeIndexPublish,
+    IgnoredBeforeWorktreeMutation,
+    SamePathBeforeRollback,
+    DirectoryBeforeRollback,
+    BaselineRefAdvanceBeforeLock,
 }
 
 #[derive(Debug)]
@@ -168,7 +172,76 @@ struct TransactionInjectingGate {
 }
 
 impl TransactionInjectingGate {
-    fn inject(&self) -> Result<(), ait_domain::DomainError> {
+    fn switch_branch_after_publication(&self) {
+        let candidate = git_output(&self.project, &["rev-parse", "HEAD"]);
+        let baseline = git_output(&self.project, &["rev-parse", &format!("{candidate}^")]);
+        assert_git_success(
+            &self.project,
+            &[
+                "update-ref",
+                "refs/heads/injected-after-publication",
+                &baseline,
+            ],
+        );
+        assert_git_success(
+            &self.project,
+            &[
+                "symbolic-ref",
+                "HEAD",
+                "refs/heads/injected-after-publication",
+            ],
+        );
+        std::fs::write(
+            self.project.join("tracked.txt"),
+            "external branch-switch value\n",
+        )
+        .unwrap();
+    }
+
+    fn replace_target_with_symref(&self) {
+        let target_ref = git_output(&self.project, &["symbolic-ref", "HEAD"]);
+        let candidate = head(&self.project);
+        assert_git_success(
+            &self.project,
+            &["update-ref", "refs/heads/injected-ref-target", &candidate],
+        );
+        assert_git_success(
+            &self.project,
+            &[
+                "symbolic-ref",
+                &target_ref,
+                "refs/heads/injected-ref-target",
+            ],
+        );
+    }
+
+    fn advance_baseline_ref(&self) {
+        let target_ref = git_output(&self.project, &["symbolic-ref", "HEAD"]);
+        let current = head(&self.project);
+        let replacement = git_output(&self.project, &["rev-parse", &format!("{current}^")]);
+        assert_git_success(
+            &self.project,
+            &[
+                "update-ref",
+                "--no-deref",
+                &target_ref,
+                &replacement,
+                &current,
+            ],
+        );
+    }
+
+    fn injected_failure(message: &str) -> Result<(), ait_domain::DomainError> {
+        Err(ait_domain::DomainError::transient(
+            ait_domain::ErrorCode::ProjectGitHeadUnavailable,
+            message,
+        ))
+    }
+
+    fn inject(
+        &self,
+        checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), ait_domain::DomainError> {
         match self.injection {
             TransactionInjection::StagedBeforeIndexLock => {
                 std::fs::write(
@@ -194,57 +267,53 @@ impl TransactionInjectingGate {
                 .unwrap();
             }
             TransactionInjection::BranchSwitchAfterRefPublish => {
-                let candidate = git_output(&self.project, &["rev-parse", "HEAD"]);
-                let baseline = git_output(&self.project, &["rev-parse", &format!("{candidate}^")]);
-                assert_git_success(
-                    &self.project,
-                    &[
-                        "update-ref",
-                        "refs/heads/injected-after-publication",
-                        &baseline,
-                    ],
-                );
-                assert_git_success(
-                    &self.project,
-                    &[
-                        "symbolic-ref",
-                        "HEAD",
-                        "refs/heads/injected-after-publication",
-                    ],
-                );
+                self.switch_branch_after_publication();
+            }
+            TransactionInjection::TargetSymrefAfterRefPublish => {
+                self.replace_target_with_symref();
+            }
+            TransactionInjection::RefConfirmationFailure => {
+                return Self::injected_failure("injected ref confirmation read failure");
+            }
+            TransactionInjection::FailureAfterRefPublish => {
+                return Self::injected_failure("injected ref publication failure");
+            }
+            TransactionInjection::IgnoredBeforeWorktreeMutation => {
+                let path = if self.project.join("shape").is_dir() {
+                    self.project.join("shape/ignored.bin")
+                } else {
+                    self.project.join("generated.txt")
+                };
+                std::fs::write(path, b"external ignored race\0with bytes\n").unwrap();
+            }
+            TransactionInjection::SamePathBeforeRollback
+                if checkpoint == WorkspaceIntegrationCheckpoint::AfterRefPublish =>
+            {
+                return Self::injected_failure("injected failure before same-path rollback race");
+            }
+            TransactionInjection::SamePathBeforeRollback => {
                 std::fs::write(
                     self.project.join("tracked.txt"),
-                    "external branch-switch value\n",
+                    "external value before rollback isolation\n",
                 )
                 .unwrap();
             }
-            TransactionInjection::TargetSymrefAfterRefPublish => {
-                let target_ref = git_output(&self.project, &["symbolic-ref", "HEAD"]);
-                let candidate = head(&self.project);
-                assert_git_success(
-                    &self.project,
-                    &["update-ref", "refs/heads/injected-ref-target", &candidate],
-                );
-                assert_git_success(
-                    &self.project,
-                    &[
-                        "symbolic-ref",
-                        &target_ref,
-                        "refs/heads/injected-ref-target",
-                    ],
-                );
+            TransactionInjection::DirectoryBeforeRollback
+                if checkpoint == WorkspaceIntegrationCheckpoint::AfterRefPublish =>
+            {
+                return Self::injected_failure("injected failure before directory rollback race");
             }
-            TransactionInjection::RefConfirmationFailure => {
-                return Err(ait_domain::DomainError::transient(
-                    ait_domain::ErrorCode::ProjectGitHeadUnavailable,
-                    "injected ref confirmation read failure",
-                ));
+            TransactionInjection::DirectoryBeforeRollback => {
+                std::fs::remove_file(self.project.join("tracked.txt")).unwrap();
+                std::fs::create_dir(self.project.join("tracked.txt")).unwrap();
+                std::fs::write(
+                    self.project.join("tracked.txt/external.bin"),
+                    b"external directory race\0with bytes\n",
+                )
+                .unwrap();
             }
-            TransactionInjection::FailureAfterRefPublish => {
-                return Err(ait_domain::DomainError::transient(
-                    ait_domain::ErrorCode::ProjectGitHeadUnavailable,
-                    "injected ref publication failure",
-                ));
+            TransactionInjection::BaselineRefAdvanceBeforeLock => {
+                self.advance_baseline_ref();
             }
         }
         Ok(())
@@ -281,12 +350,24 @@ impl WorkspaceIntegrationGate for TransactionInjectingGate {
             ) | (
                 TransactionInjection::UntrackedBeforeIndexPublish,
                 WorkspaceIntegrationCheckpoint::BeforeIndexPublish
+            ) | (
+                TransactionInjection::IgnoredBeforeWorktreeMutation,
+                WorkspaceIntegrationCheckpoint::BeforeWorktreeMutation
+            ) | (
+                TransactionInjection::SamePathBeforeRollback
+                    | TransactionInjection::DirectoryBeforeRollback,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+                    | WorkspaceIntegrationCheckpoint::BeforeWorktreeRollback
+            ) | (
+                TransactionInjection::BaselineRefAdvanceBeforeLock,
+                WorkspaceIntegrationCheckpoint::AfterRefPublish
+                    | WorkspaceIntegrationCheckpoint::BeforeBaselineRefReconciliationLock
             )
         );
         if !matches {
             return Ok(());
         }
-        self.inject()
+        self.inject(checkpoint)
     }
 }
 
@@ -1484,9 +1565,14 @@ fn assert_transaction_rollback(
 ) {
     let expected = if matches!(
         injection,
+        TransactionInjection::SamePathAfterWorktreeUpdate
+            | TransactionInjection::BranchSwitchAfterRefPublish
+    ) {
+        ait_domain::ErrorCode::RunRecoveryFailed
+    } else if matches!(
+        injection,
         TransactionInjection::StagedBeforeIndexLock
             | TransactionInjection::UntrackedAfterWorktreeUpdate
-            | TransactionInjection::SamePathAfterWorktreeUpdate
             | TransactionInjection::UntrackedBeforeIndexPublish
     ) {
         ait_domain::ErrorCode::ProjectGitDirty
@@ -1558,6 +1644,12 @@ fn assert_transaction_rollback(
         }
         TransactionInjection::TargetSymrefAfterRefPublish => {
             unreachable!("the ref-identity injection has dedicated assertions")
+        }
+        TransactionInjection::IgnoredBeforeWorktreeMutation
+        | TransactionInjection::SamePathBeforeRollback
+        | TransactionInjection::DirectoryBeforeRollback
+        | TransactionInjection::BaselineRefAdvanceBeforeLock => {
+            unreachable!("the TOCTOU injections have dedicated assertions")
         }
     }
     let _retained_run_commit = run_ref(project);
@@ -1660,6 +1752,248 @@ async fn ignored_files_that_candidate_paths_would_replace_are_rejected_before_mu
         assert_rollback_journal_empty(project.path());
         let _retained_run_commit = run_ref(project.path());
     }
+}
+
+#[tokio::test]
+async fn ignored_file_created_after_collision_scan_is_quarantined_and_restored_byte_exact() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitignore"), "generated.txt\n").unwrap();
+    commit_all(project.path(), "ignore generated race fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(IgnoredCollisionAdapter {
+        kind: IgnoredCollisionKind::TrackIgnoredFile,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "ignored-after-collision-scan".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Race an ignored file after collision scanning".into(),
+        project_instructions: None,
+        commit_subject: "Exercise atomic ignored quarantine".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(TransactionInjectingGate {
+            project: project.path().to_path_buf(),
+            injection: TransactionInjection::IgnoredBeforeWorktreeMutation,
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("generated.txt")).unwrap(),
+        b"external ignored race\0with bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".gitignore")).unwrap(),
+        "generated.txt\n"
+    );
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn ignored_child_created_after_df_scan_is_restored_with_its_directory() {
+    let project = initialized_project();
+    std::fs::write(project.path().join(".gitignore"), "shape/ignored.bin\n").unwrap();
+    std::fs::create_dir(project.path().join("shape")).unwrap();
+    std::fs::write(
+        project.path().join("shape/tracked.txt"),
+        "baseline tracked child\n",
+    )
+    .unwrap();
+    commit_all(project.path(), "add D/F ignored race fixture");
+    let baseline = head(project.path());
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(IgnoredCollisionAdapter {
+        kind: IgnoredCollisionKind::ReplaceDirectory,
+    }))
+    .invoke(WorkspaceAgentInvocation {
+        request_id: "ignored-df-after-collision-scan".into(),
+        model: "test-model".into(),
+        reasoning_effort: None,
+        prompt: "Race an ignored D/F child after collision scanning".into(),
+        project_instructions: None,
+        commit_subject: "Exercise atomic D/F quarantine".into(),
+        cwd: project.path().to_path_buf(),
+        baseline_commit: baseline.clone(),
+        baseline_index_tree: baseline_index.clone(),
+        cancellation: CancellationToken::new(),
+        integration_gate: Some(Arc::new(TransactionInjectingGate {
+            project: project.path().to_path_buf(),
+            injection: TransactionInjection::IgnoredBeforeWorktreeMutation,
+        })),
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        baseline
+    );
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read(project.path().join("shape/ignored.bin")).unwrap(),
+        b"external ignored race\0with bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("shape/tracked.txt")).unwrap(),
+        "baseline tracked child\n"
+    );
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
+}
+
+#[tokio::test]
+async fn rollback_atomically_isolates_live_file_or_directory_before_candidate_validation() {
+    for injection in [
+        TransactionInjection::SamePathBeforeRollback,
+        TransactionInjection::DirectoryBeforeRollback,
+    ] {
+        let project = initialized_project();
+        std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+        commit_all(project.path(), "add rollback isolation fixture");
+        let baseline = head(project.path());
+        let baseline_index = index_tree(project.path());
+        let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+        let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+        let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+            .invoke(WorkspaceAgentInvocation {
+                request_id: format!("atomic-rollback-isolation-{injection:?}"),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Race a live path before rollback isolation".into(),
+                project_instructions: None,
+                commit_subject: "Exercise atomic rollback isolation".into(),
+                cwd: project.path().to_path_buf(),
+                baseline_commit: baseline.clone(),
+                baseline_index_tree: baseline_index.clone(),
+                cancellation: CancellationToken::new(),
+                integration_gate: Some(Arc::new(TransactionInjectingGate {
+                    project: project.path().to_path_buf(),
+                    injection,
+                })),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "injection: {injection:?}: {}",
+            failure.message
+        );
+        assert_eq!(
+            git_output(project.path(), &["rev-parse", &target_ref]),
+            baseline
+        );
+        assert_eq!(index_tree(project.path()), baseline_index);
+        assert_eq!(
+            std::fs::read(project.path().join(".git/index")).unwrap(),
+            baseline_index_bytes
+        );
+        match injection {
+            TransactionInjection::SamePathBeforeRollback => assert_eq!(
+                std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+                "external value before rollback isolation\n"
+            ),
+            TransactionInjection::DirectoryBeforeRollback => assert_eq!(
+                std::fs::read(project.path().join("tracked.txt/external.bin")).unwrap(),
+                b"external directory race\0with bytes\n"
+            ),
+            _ => unreachable!(),
+        }
+        assert!(!project.path().join("run-owned.txt").exists());
+        assert_rollback_journal_retained(project.path());
+        let _retained_run_commit = run_ref(project.path());
+    }
+}
+
+#[tokio::test]
+async fn baseline_ref_reconciliation_locks_before_confirming_the_noop() {
+    let project = initialized_project();
+    std::fs::write(project.path().join("tracked.txt"), "authorized baseline\n").unwrap();
+    commit_all(project.path(), "add baseline ref race fixture");
+    let baseline = head(project.path());
+    let external = git_output(project.path(), &["rev-parse", &format!("{baseline}^")]);
+    let baseline_index = index_tree(project.path());
+    let baseline_index_bytes = std::fs::read(project.path().join(".git/index")).unwrap();
+    let target_ref = git_output(project.path(), &["symbolic-ref", "HEAD"]);
+
+    let failure = CodexWorkspaceAgent::new(Arc::new(TransactionEditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "baseline-ref-reconciliation-lock".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "Race the baseline ref reconciliation lock".into(),
+            project_instructions: None,
+            commit_subject: "Exercise baseline ref reconciliation lock".into(),
+            cwd: project.path().to_path_buf(),
+            baseline_commit: baseline.clone(),
+            baseline_index_tree: baseline_index.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: Some(Arc::new(TransactionInjectingGate {
+                project: project.path().to_path_buf(),
+                injection: TransactionInjection::BaselineRefAdvanceBeforeLock,
+            })),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        failure.code,
+        ait_domain::ErrorCode::RunRecoveryFailed,
+        "{}",
+        failure.message
+    );
+    assert_eq!(
+        git_output(project.path(), &["rev-parse", &target_ref]),
+        external
+    );
+    let symbolic_target = Command::new("git")
+        .arg("-C")
+        .arg(project.path())
+        .args(["symbolic-ref", &target_ref])
+        .output()
+        .unwrap();
+    assert!(!symbolic_target.status.success());
+    assert_eq!(index_tree(project.path()), baseline_index);
+    assert_eq!(
+        std::fs::read(project.path().join(".git/index")).unwrap(),
+        baseline_index_bytes
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("tracked.txt")).unwrap(),
+        "authorized baseline\n"
+    );
+    assert!(!project.path().join("run-owned.txt").exists());
+    assert_rollback_journal_empty(project.path());
+    let _retained_run_commit = run_ref(project.path());
 }
 
 #[tokio::test]
@@ -1915,6 +2249,14 @@ fn assert_rollback_journal_empty(project: &Path) {
     assert!(
         !rollback_root.exists() || std::fs::read_dir(rollback_root).unwrap().next().is_none(),
         "rollback material leaked"
+    );
+}
+
+fn assert_rollback_journal_retained(project: &Path) {
+    let rollback_root = project.join(".git/ait/integration-rollbacks");
+    assert!(
+        rollback_root.exists() && std::fs::read_dir(rollback_root).unwrap().next().is_some(),
+        "rollback recovery material was discarded"
     );
 }
 

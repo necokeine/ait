@@ -50,6 +50,7 @@ dependencies = [
  "keyring",
  "reqwest 0.13.4",
  "rig-core",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -58,6 +59,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
