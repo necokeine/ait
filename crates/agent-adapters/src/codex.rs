@@ -29,6 +29,7 @@ use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, Command},
     sync::mpsc,
+    task::{AbortHandle, JoinSet},
 };
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
@@ -4123,11 +4124,17 @@ where
     .await?;
 
     let mut deferred = VecDeque::from(deferred);
+    let mut approval_tasks = JoinSet::<ApprovalResolution>::new();
+    let mut pending_approvals = HashMap::<String, AbortHandle>::new();
+    let mut seen_server_requests = HashSet::new();
+    let mut answered_server_requests = HashSet::new();
     loop {
         let message = if let Some(message) = deferred.pop_front() {
-            message
+            Some(message)
         } else {
+            // A buffered invalidation must revoke a request before a ready handler can answer it.
             tokio::select! {
+                biased;
                 () = request.cancellation.cancelled() => {
                     write_message(
                         &mut writer,
@@ -4135,10 +4142,90 @@ where
                     ).await?;
                     return Err(AdapterError::cancelled());
                 }
-                message = read_message(&mut lines) => message?,
+                message = read_message(&mut lines) => Some(message?),
+                resolution = approval_tasks.join_next(), if !approval_tasks.is_empty() => {
+                    let Some(resolution) = resolution else {
+                        continue;
+                    };
+                    match resolution {
+                        Ok(resolution) => {
+                            if pending_approvals.remove(&resolution.request_key).is_none() {
+                                continue;
+                            }
+                            match approval_response(&resolution.method, resolution.decision) {
+                                Ok(result) => {
+                                    write_message(
+                                        &mut writer,
+                                        &json!({"id": resolution.request_id, "result": result}),
+                                    )
+                                    .await?;
+                                }
+                                Err(error) => {
+                                    send_event(
+                                        sender,
+                                        AgentEvent::AdapterWarning {
+                                            message: format!(
+                                                "Codex server request {} was rejected: {}",
+                                                resolution.method, error.message
+                                            ),
+                                            retrying: false,
+                                            code: Some("CODEX_SERVER_REQUEST_INVALID_RESPONSE".into()),
+                                        },
+                                    )
+                                    .await?;
+                                    write_rpc_error(
+                                        &mut writer,
+                                        &resolution.request_id,
+                                        -32602,
+                                        error.message,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            answered_server_requests.insert(resolution.request_key);
+                        }
+                        Err(error) if error.is_cancelled() => {}
+                        Err(error) => {
+                            return Err(AdapterError::new(
+                                AdapterErrorKind::Protocol,
+                                format!("Codex approval handler task failed: {error}"),
+                                false,
+                            ));
+                        }
+                    }
+                    None
+                }
             }
         };
-        if handle_message(&message, &mut writer, &turn_id, approvals.as_ref(), sender).await? {
+        let Some(message) = message else {
+            continue;
+        };
+        let method = message.get("method").and_then(Value::as_str);
+        if method == Some("serverRequest/resolved")
+            && let Some(request_id) = message.pointer("/params/requestId")
+            && let Some(request_key) = server_request_key(request_id)
+            && let Some(task) = pending_approvals.remove(&request_key)
+        {
+            task.abort();
+        }
+        if let (Some(method), Some(request_id)) = (method, message.get("id")) {
+            let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+            handle_server_request(
+                request_id,
+                method,
+                params,
+                &mut writer,
+                Arc::clone(&approvals),
+                sender,
+                &mut approval_tasks,
+                &mut pending_approvals,
+                &mut seen_server_requests,
+                &mut answered_server_requests,
+            )
+            .await?;
+            continue;
+        }
+        if handle_message(&message, &turn_id, sender).await? {
             return Ok(());
         }
     }
@@ -4217,40 +4304,15 @@ where
 }
 
 #[allow(clippy::too_many_lines)]
-async fn handle_message<W>(
+async fn handle_message(
     message: &Value,
-    writer: &mut W,
     turn_id: &str,
-    approvals: &dyn ApprovalHandler,
     sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
-) -> Result<bool, AdapterError>
-where
-    W: AsyncWrite + Unpin,
-{
+) -> Result<bool, AdapterError> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return Ok(false);
     };
     let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-    if let Some(request_id) = message.get("id") {
-        let request = ApprovalRequest {
-            request_id: request_id.clone(),
-            method: method.to_owned(),
-            kind: approval_kind(method),
-            params,
-        };
-        send_event(
-            sender,
-            AgentEvent::ApprovalRequested {
-                request: request.clone(),
-            },
-        )
-        .await?;
-        let decision = approvals.decide(&request).await;
-        let result = approval_response(method, decision)?;
-        write_message(writer, &json!({"id": request_id, "result": result})).await?;
-        return Ok(false);
-    }
-
     match method {
         "item/agentMessage/delta" => {
             send_event(
@@ -4354,15 +4416,250 @@ where
     Ok(false)
 }
 
-fn approval_kind(method: &str) -> ApprovalKind {
-    match method {
-        "item/commandExecution/requestApproval" => ApprovalKind::CommandExecution,
-        "item/fileChange/requestApproval" => ApprovalKind::FileChange,
-        "item/permissions/requestApproval" => ApprovalKind::Permissions,
-        "execCommandApproval" => ApprovalKind::LegacyCommand,
-        "applyPatchApproval" => ApprovalKind::LegacyPatch,
-        _ => ApprovalKind::Unsupported,
+#[derive(Debug, Clone)]
+struct ApprovalResolution {
+    request_id: Value,
+    request_key: String,
+    method: String,
+    decision: ApprovalDecision,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerRequestKind {
+    Approval(ApprovalKind),
+    McpElicitation,
+    UserInput,
+    DynamicTool,
+    AuthTokenRefresh,
+    Attestation,
+    Unsupported,
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn handle_server_request<W>(
+    request_id: &Value,
+    method: &str,
+    params: Value,
+    writer: &mut W,
+    approvals: Arc<dyn ApprovalHandler>,
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+    approval_tasks: &mut JoinSet<ApprovalResolution>,
+    pending_approvals: &mut HashMap<String, AbortHandle>,
+    seen_server_requests: &mut HashSet<String>,
+    answered_server_requests: &mut HashSet<String>,
+) -> Result<(), AdapterError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let Some(request_key) = server_request_key(request_id) else {
+        write_rpc_error(
+            writer,
+            request_id,
+            -32600,
+            "Codex server request id must be a string or integer",
+        )
+        .await?;
+        return Ok(());
+    };
+    if !seen_server_requests.insert(request_key.clone()) {
+        send_server_request_warning(
+            sender,
+            method,
+            "used a duplicate request id",
+            "CODEX_SERVER_REQUEST_DUPLICATE",
+        )
+        .await?;
+        if !answered_server_requests.contains(&request_key)
+            && let Some(task) = pending_approvals.remove(&request_key)
+        {
+            task.abort();
+            write_rpc_error(
+                writer,
+                request_id,
+                -32600,
+                format!("duplicate Codex server request id for method {method}"),
+            )
+            .await?;
+            answered_server_requests.insert(request_key);
+        }
+        return Ok(());
     }
+
+    let request_kind = server_request_kind(method);
+    match request_kind {
+        ServerRequestKind::Approval(kind) => {
+            let request = ApprovalRequest {
+                request_id: request_id.clone(),
+                method: method.to_owned(),
+                kind,
+                params,
+            };
+            send_event(
+                sender,
+                AgentEvent::ApprovalRequested {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+            let task_request_key = request_key.clone();
+            let task_method = method.to_owned();
+            let task = approval_tasks.spawn(async move {
+                let decision = approvals.decide(&request).await;
+                ApprovalResolution {
+                    request_id: request.request_id,
+                    request_key: task_request_key,
+                    method: task_method,
+                    decision,
+                }
+            });
+            pending_approvals.insert(request_key.clone(), task);
+        }
+        ServerRequestKind::McpElicitation => {
+            write_message(
+                writer,
+                &json!({
+                    "id": request_id,
+                    "result": {"action": "decline", "content": null}
+                }),
+            )
+            .await?;
+            send_server_request_warning(
+                sender,
+                method,
+                "was declined because interactive MCP elicitation is not configured",
+                "CODEX_MCP_ELICITATION_DECLINED",
+            )
+            .await?;
+        }
+        ServerRequestKind::UserInput | ServerRequestKind::DynamicTool => {
+            reject_unsupported_server_request(
+                writer,
+                sender,
+                request_id,
+                method,
+                "experimentalApi is disabled and no experimental handler is configured",
+            )
+            .await?;
+        }
+        ServerRequestKind::AuthTokenRefresh => {
+            reject_unsupported_server_request(
+                writer,
+                sender,
+                request_id,
+                method,
+                "external ChatGPT token management is not configured",
+            )
+            .await?;
+        }
+        ServerRequestKind::Attestation => {
+            reject_unsupported_server_request(
+                writer,
+                sender,
+                request_id,
+                method,
+                "requestAttestation capability is not enabled",
+            )
+            .await?;
+        }
+        ServerRequestKind::Unsupported => {
+            reject_unsupported_server_request(
+                writer,
+                sender,
+                request_id,
+                method,
+                "the request method is not supported by this adapter",
+            )
+            .await?;
+        }
+    }
+    if !matches!(request_kind, ServerRequestKind::Approval(_)) {
+        answered_server_requests.insert(request_key);
+    }
+    Ok(())
+}
+
+fn server_request_kind(method: &str) -> ServerRequestKind {
+    match method {
+        "item/commandExecution/requestApproval" => {
+            ServerRequestKind::Approval(ApprovalKind::CommandExecution)
+        }
+        "item/fileChange/requestApproval" => ServerRequestKind::Approval(ApprovalKind::FileChange),
+        "item/permissions/requestApproval" => {
+            ServerRequestKind::Approval(ApprovalKind::Permissions)
+        }
+        "execCommandApproval" => ServerRequestKind::Approval(ApprovalKind::LegacyCommand),
+        "applyPatchApproval" => ServerRequestKind::Approval(ApprovalKind::LegacyPatch),
+        "mcpServer/elicitation/request" => ServerRequestKind::McpElicitation,
+        "item/tool/requestUserInput" => ServerRequestKind::UserInput,
+        "item/tool/call" => ServerRequestKind::DynamicTool,
+        "account/chatgptAuthTokens/refresh" => ServerRequestKind::AuthTokenRefresh,
+        "attestation/generate" => ServerRequestKind::Attestation,
+        _ => ServerRequestKind::Unsupported,
+    }
+}
+
+fn server_request_key(request_id: &Value) -> Option<String> {
+    match request_id {
+        Value::String(value) => Some(format!("string:{value}")),
+        Value::Number(value) if value.is_i64() => Some(format!("integer:{value}")),
+        _ => None,
+    }
+}
+
+async fn reject_unsupported_server_request<W>(
+    writer: &mut W,
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+    request_id: &Value,
+    method: &str,
+    reason: &str,
+) -> Result<(), AdapterError>
+where
+    W: AsyncWrite + Unpin,
+{
+    send_server_request_warning(sender, method, reason, "CODEX_SERVER_REQUEST_UNSUPPORTED").await?;
+    write_rpc_error(
+        writer,
+        request_id,
+        -32601,
+        format!("unsupported Codex server request {method}: {reason}"),
+    )
+    .await
+}
+
+async fn send_server_request_warning(
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+    method: &str,
+    reason: &str,
+    code: &str,
+) -> Result<(), AdapterError> {
+    send_event(
+        sender,
+        AgentEvent::AdapterWarning {
+            message: format!("Codex server request {method} {reason}"),
+            retrying: false,
+            code: Some(code.to_owned()),
+        },
+    )
+    .await
+}
+
+async fn write_rpc_error<W>(
+    writer: &mut W,
+    request_id: &Value,
+    code: i64,
+    message: impl Into<String>,
+) -> Result<(), AdapterError>
+where
+    W: AsyncWrite + Unpin,
+{
+    write_message(
+        writer,
+        &json!({
+            "id": request_id,
+            "error": {"code": code, "message": message.into()}
+        }),
+    )
+    .await
 }
 
 fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, AdapterError> {
