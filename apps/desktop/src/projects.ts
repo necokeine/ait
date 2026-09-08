@@ -1,4 +1,4 @@
-import type { AgentSummary, DesktopProject, DesktopSession, DesktopSnapshot } from "./types.js";
+import type { AgentSummary, DesktopProject, DesktopSession, DesktopView } from "./types.js";
 
 export interface ProjectGroup {
   project: DesktopProject;
@@ -18,10 +18,10 @@ export function agentLabel(agent: AgentSummary): string {
   return `${agentDisplayName(agent)} · ${agent.model}`;
 }
 
-export function groupProjects(snapshot: DesktopSnapshot): ProjectGroup[] {
-  return snapshot.projects.map((project) => ({
+export function groupProjects(view: DesktopView): ProjectGroup[] {
+  return view.projects.map((project) => ({
     project,
-    sessions: snapshot.sessions
+    sessions: view.sessions
       .filter((session) => session.projectId === project.id)
       .toSorted((left, right) => right.updatedAt - left.updatedAt),
   }));

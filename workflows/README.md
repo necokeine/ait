@@ -29,7 +29,7 @@ cargo test -p ait-cli --test workflows wf03_
 
 WF-01～09 的测试启动实际的 `ait-cli` 子进程，经随机 loopback 端口访问生产 HTTP router、application
 service 和独立的临时 SQLite 文件；目录含空格、中文内容和换行也在覆盖范围内。
-每个流程自行准备数据，通过 CLI 的退出码、stdout、文件和后续快照核对结果。
+每个流程自行准备数据，通过 CLI 的退出码、stdout、文件和后续实体查询核对结果。
 CLI 子进程有 20 秒测试超时，服务显式停止并等待退出，断言失败时也会取消服务。
 测试不依赖已启动的 daemon、固定端口、用户数据、模型凭据或 jq。
 现有 CI 的 `cargo test --workspace` 会自动包含这些测试。
@@ -67,7 +67,7 @@ printf '演练目录：%s\n' "$WF_ROOT"
 target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1:17314
 ```
 
-看到监听地址后，在终端 A 执行 `ait snapshot`。若端口已被占用，给本次演练选择另一个端口，
+看到监听地址后，在终端 A 执行 `ait command '{"type":"list_projects"}'`。若端口已被占用，给本次演练选择另一个端口，
 同时修改 `AIT_ENDPOINT` 和 `--listen`。演练结束后在终端 B 按 Ctrl-C 停止本次服务。
 数据库、响应文件、归档都放在 `$WF_ROOT` 下，位于 Project 的 Git 工作目录之外，避免让发送输入的 Git 检查失败。
 
@@ -76,13 +76,13 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 ## 公共输入输出约定
 
-目前命令入口为 `command '<JSON>'`（或 `command -` 从 stdin 读取）、`snapshot`、`events --after <cursor>`、
+目前命令入口为 `command '<JSON>'`（或 `command -` 从 stdin 读取）、`events --after <cursor>`、
 `export --project-id <id> --output <file>`、`import --input <file> --workdir <dir>`。
 `--endpoint` 写在子命令前。不要假设已有 `ait project create` 等实体子命令。
 业务 command 的完整字段定义见 [contracts](../crates/contracts/src/lib.rs)，HTTP 映射见
 [实体操作 API](../docs/decisions/NEC-166/entity-operation-http-api.md)。
 
-`command`、`snapshot` 和成功的 `import` 输出一个 JSON 信封：
+`command` 和成功的 `import` 输出一个 JSON 信封：
 
 ```json
 {"api_version":1,"ok":true,"result":{"kind":"session","value":{"id":"示意，实际还有其他字段"}}}

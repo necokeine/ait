@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     fs::{File, OpenOptions},
     panic::AssertUnwindSafe,
@@ -18,15 +18,15 @@ use ait_contracts::{
     API_VERSION, AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView,
     ApiError, Command, CommandResult, CronView, Event, EventPage, MessageView,
     PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunView,
-    SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView, default_settings,
-    settings_schema,
+    SessionView, SettingKind, SettingsDocument, SettingsView, default_settings, settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
     MessageId, ProjectId, TimestampMs,
 };
 use ait_ports::{
-    AgentProviderGateway, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
+    AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
+    ControlRecordKind, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
     ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationGate,
     WorkspaceOutputItem, WorkspaceResultSink,
@@ -46,22 +46,28 @@ use agents::{
 use progress::ProgressPump;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct State {
+struct WorkingSet {
+    #[serde(default)]
     projects: Vec<ProjectView>,
+    #[serde(default)]
     agents: Vec<AgentView>,
-    #[serde(default = "builtin_providers")]
+    #[serde(default)]
     providers: Vec<AgentProviderView>,
     #[serde(default)]
     provider_credentials: HashMap<String, String>,
     #[serde(default)]
     run_credentials: HashMap<String, String>,
+    #[serde(default)]
     sessions: Vec<SessionView>,
+    #[serde(default)]
     messages: Vec<MessageView>,
+    #[serde(default)]
     runs: Vec<RunView>,
     /// Durable completed Agent responses keyed by Run id. The production Codex
     /// adapter writes this checkpoint before publishing its isolated commit.
     #[serde(default)]
     workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
+    #[serde(default)]
     crons: Vec<CronView>,
     #[serde(default = "default_settings")]
     settings: SettingsDocument,
@@ -291,7 +297,7 @@ impl CommandOutcome {
     }
 }
 
-impl Default for State {
+impl Default for WorkingSet {
     fn default() -> Self {
         Self {
             projects: Vec::new(),
@@ -314,18 +320,9 @@ const fn default_settings_revision() -> u64 {
     1
 }
 
-impl From<State> for WorkspaceView {
-    fn from(state: State) -> Self {
-        Self {
-            projects: state.projects,
-            agents: state.agents,
-            providers: state.providers,
-            sessions: state.sessions,
-            messages: state.messages,
-            runs: state.runs,
-            crons: state.crons,
-        }
-    }
+struct LoadedWorkingSet {
+    revision: u64,
+    original: WorkingSet,
 }
 
 /// Shared application entry point used by every transport adapter.
@@ -401,6 +398,222 @@ impl LocalControlService {
     ) -> Self {
         self.session_title_generator = Some(generator);
         self
+    }
+
+    async fn read_records(
+        &self,
+        filters: Vec<ControlFilter>,
+    ) -> Result<LoadedWorkingSet, ApiError> {
+        decode_records(self.store.read(&filters).await.map_err(store_error)?)
+    }
+
+    async fn persist_records(
+        &self,
+        loaded: &LoadedWorkingSet,
+        updated: &WorkingSet,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        self.store
+            .apply(
+                loaded.revision,
+                record_changes(&loaded.original, updated)
+                    .map_err(|failure| ControlStoreError::Other(failure.message))?,
+                events,
+            )
+            .await
+            .map(|_| ())
+    }
+
+    async fn related_project_id(
+        &self,
+        kind: ControlRecordKind,
+        id: &str,
+    ) -> Result<String, ApiError> {
+        let read = self
+            .store
+            .read(&[ControlFilter::id(kind, id)])
+            .await
+            .map_err(store_error)?;
+        read.records
+            .into_iter()
+            .next()
+            .and_then(|record| record.project_id)
+            .ok_or_else(|| match kind {
+                ControlRecordKind::Session => {
+                    error(ErrorCode::SessionNotFound, "session not found", false)
+                }
+                ControlRecordKind::Run => error(ErrorCode::InvalidRun, "run not found", false),
+                ControlRecordKind::Cron => error(ErrorCode::InvalidCron, "cron not found", false),
+                _ => error(
+                    ErrorCode::InvalidProject,
+                    "project context not found",
+                    false,
+                ),
+            })
+    }
+
+    async fn read_project_records(&self, project_id: &str) -> Result<LoadedWorkingSet, ApiError> {
+        self.read_project_records_with(project_id, Vec::new()).await
+    }
+
+    async fn read_project_records_with(
+        &self,
+        project_id: &str,
+        extra: Vec<ControlFilter>,
+    ) -> Result<LoadedWorkingSet, ApiError> {
+        use ControlRecordKind as Kind;
+        let mut filters = vec![
+            ControlFilter::id(Kind::Project, project_id),
+            ControlFilter::all(Kind::Agent),
+            ControlFilter::all(Kind::Provider),
+            ControlFilter::all(Kind::ProviderCredential),
+            ControlFilter::project(Kind::RunCredential, project_id),
+            ControlFilter::project(Kind::Session, project_id),
+            ControlFilter::project(Kind::Message, project_id),
+            ControlFilter::project(Kind::Run, project_id),
+            ControlFilter::project(Kind::WorkspaceRunJournal, project_id),
+            ControlFilter::project(Kind::Cron, project_id),
+            ControlFilter::all(Kind::Settings),
+        ];
+        filters.extend(extra);
+        self.read_records(filters).await
+    }
+
+    async fn read_catalog_records(&self) -> Result<LoadedWorkingSet, ApiError> {
+        use ControlRecordKind as Kind;
+        self.read_records(vec![
+            ControlFilter::all(Kind::Agent),
+            ControlFilter::all(Kind::Provider),
+            ControlFilter::all(Kind::ProviderCredential),
+        ])
+        .await
+    }
+
+    async fn read_session_records(&self, session_id: &str) -> Result<LoadedWorkingSet, ApiError> {
+        let project_id = self
+            .related_project_id(ControlRecordKind::Session, session_id)
+            .await?;
+        self.read_project_records(&project_id).await
+    }
+
+    async fn read_run_records(&self, run_id: &str) -> Result<LoadedWorkingSet, ApiError> {
+        let project_id = self
+            .related_project_id(ControlRecordKind::Run, run_id)
+            .await?;
+        self.read_project_records(&project_id).await
+    }
+
+    async fn read_cron_records(&self, cron_id: &str) -> Result<LoadedWorkingSet, ApiError> {
+        let project_id = self
+            .related_project_id(ControlRecordKind::Cron, cron_id)
+            .await?;
+        self.read_project_records(&project_id).await
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn read_command_records(&self, command: &Command) -> Result<LoadedWorkingSet, ApiError> {
+        use ControlRecordKind as Kind;
+        match command {
+            Command::RegisterProject { .. } | Command::ListProjects => {
+                self.read_records(vec![ControlFilter::all(Kind::Project)])
+                    .await
+            }
+            Command::RegisterAgent { .. }
+            | Command::UpdateAgent { .. }
+            | Command::SaveAgentProvider { .. }
+            | Command::DiscoverProviderModels { .. }
+            | Command::RefreshProviderModels { .. } => self.read_catalog_records().await,
+            Command::ListAgents => {
+                self.read_records(vec![ControlFilter::all(Kind::Agent)])
+                    .await
+            }
+            Command::ListAgentProviders => {
+                self.read_records(vec![
+                    ControlFilter::all(Kind::Provider),
+                    ControlFilter::all(Kind::ProviderCredential),
+                ])
+                .await
+            }
+            Command::SetProjectDefaultAgent { project_id, .. }
+            | Command::CreateCron { project_id, .. }
+            | Command::ExportProject { project_id }
+            | Command::ListMessages { project_id }
+            | Command::ListRuns { project_id } => self.read_project_records(project_id).await,
+            Command::CreateSession {
+                project_id,
+                at_message_id,
+                ..
+            } => {
+                self.read_project_records_with(
+                    project_id,
+                    at_message_id
+                        .iter()
+                        .map(|id| ControlFilter::id(Kind::Message, id))
+                        .collect(),
+                )
+                .await
+            }
+            Command::ForkSession {
+                project_id,
+                at_message_id,
+                ..
+            } => {
+                self.read_project_records_with(
+                    project_id,
+                    vec![ControlFilter::id(Kind::Message, at_message_id)],
+                )
+                .await
+            }
+            Command::SetSessionConfig { session_id, .. }
+            | Command::SetSessionAgent { session_id, .. }
+            | Command::RenameSession { session_id, .. }
+            | Command::SetSessionTitle { session_id, .. }
+            | Command::SendMessage { session_id, .. } => {
+                self.read_session_records(session_id).await
+            }
+            Command::GetRun { run_id } | Command::CancelRun { run_id } => {
+                self.read_run_records(run_id).await
+            }
+            Command::SetCronEnabled { cron_id, .. } | Command::TriggerCron { cron_id, .. } => {
+                self.read_cron_records(cron_id).await
+            }
+            Command::GetSettings | Command::SaveSettings { .. } | Command::ResetSettings => {
+                self.read_records(vec![ControlFilter::all(Kind::Settings)])
+                    .await
+            }
+            Command::ListSessions { project_id } => {
+                self.read_records(vec![project_id.as_ref().map_or_else(
+                    || ControlFilter::all(Kind::Session),
+                    |id| ControlFilter::project(Kind::Session, id),
+                )])
+                .await
+            }
+            Command::ListCrons => {
+                self.read_records(vec![ControlFilter::all(Kind::Cron)])
+                    .await
+            }
+            Command::ImportProject { archive, .. } => {
+                let mut filters = vec![
+                    ControlFilter::all(Kind::Project),
+                    ControlFilter::all(Kind::Agent),
+                    ControlFilter::all(Kind::Provider),
+                    ControlFilter::all(Kind::ProviderCredential),
+                ];
+                filters.extend(
+                    archive
+                        .messages
+                        .iter()
+                        .map(|message| ControlFilter::id(Kind::Message, &message.id)),
+                );
+                filters.extend(
+                    archive
+                        .sessions
+                        .iter()
+                        .map(|session| ControlFilter::id(Kind::Session, &session.id)),
+                );
+                self.read_records(filters).await
+            }
+        }
     }
 
     /// Executes one versioned command and returns a stable response envelope.
@@ -521,8 +734,8 @@ impl LocalControlService {
         session_id: &str,
     ) -> Result<(SessionView, String, bool), ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_session_records(session_id).await?;
+            let mut state = loaded.original.clone();
             let index = state
                 .sessions
                 .iter()
@@ -551,13 +764,8 @@ impl LocalControlService {
                 Some(session_id.to_owned()),
                 &session,
             );
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => return Ok((session, project.workdir.clone(), true)),
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok((session, project.workdir.clone(), true)),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -576,8 +784,8 @@ impl LocalControlService {
         description: String,
     ) -> Result<SessionView, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_session_records(session_id).await?;
+            let mut state = loaded.original.clone();
             let session = state
                 .sessions
                 .iter_mut()
@@ -591,13 +799,8 @@ impl LocalControlService {
                 Some(session_id.to_owned()),
                 &session,
             );
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => return Ok(session),
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok(session),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -614,8 +817,8 @@ impl LocalControlService {
         run_id: &str,
         control: Arc<WorkspaceRunControl>,
     ) -> Result<RunView, ApiError> {
-        let snapshot = self.store.load().await.map_err(store_error)?;
-        let state = decode_state(snapshot.value)?;
+        let loaded = self.read_run_records(run_id).await?;
+        let state = loaded.original;
         let run = state
             .runs
             .iter()
@@ -623,8 +826,7 @@ impl LocalControlService {
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
         let Some(lease) = self.set_run_running(&run.id).await? else {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let state = decode_state(snapshot.value)?;
+            let state = self.read_run_records(&run.id).await?.original;
             return state
                 .runs
                 .into_iter()
@@ -712,7 +914,7 @@ impl LocalControlService {
     )]
     async fn invoke_codex_workspace_checkpointed(
         &self,
-        state: &State,
+        state: &WorkingSet,
         run: &RunView,
         control: Arc<WorkspaceRunControl>,
         progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,
@@ -773,8 +975,8 @@ impl LocalControlService {
         run_id: &str,
     ) -> Result<Option<WorkspaceExecutionLease>, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_run_records(run_id).await?;
+            let mut state = loaded.original.clone();
             let index = state
                 .runs
                 .iter()
@@ -814,13 +1016,8 @@ impl LocalControlService {
                 },
             );
             let event = pending("run.updated", Some(run_id.to_owned()), run);
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => {
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => {
                     return Ok(Some(WorkspaceExecutionLease {
                         run_id: run_id.to_owned(),
                         operation_id,
@@ -844,8 +1041,8 @@ impl LocalControlService {
         result: WorkspaceAgentResponse,
     ) -> Result<RunView, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_run_records(&lease.run_id).await?;
+            let mut state = loaded.original.clone();
             let index = state
                 .runs
                 .iter()
@@ -883,13 +1080,8 @@ impl LocalControlService {
             run.error = None;
             state.runs[index] = run.clone();
             let event = pending("run.result_persisted", Some(lease.run_id.clone()), &run);
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => return Ok(run),
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok(run),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -906,8 +1098,8 @@ impl LocalControlService {
         lease: &WorkspaceExecutionLease,
     ) -> Result<RunView, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_run_records(&lease.run_id).await?;
+            let mut state = loaded.original.clone();
             let index = state
                 .runs
                 .iter()
@@ -939,13 +1131,8 @@ impl LocalControlService {
             run.error = None;
             state.runs[index] = run.clone();
             let event = pending("run.integration_claimed", Some(lease.run_id.clone()), &run);
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => return Ok(run),
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok(run),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -961,8 +1148,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
     ) -> Result<WorkspaceExecutionLease, ApiError> {
-        let snapshot = self.store.load().await.map_err(store_error)?;
-        let state = decode_state(snapshot.value)?;
+        let state = self.read_run_records(run_id).await?.original;
         let run = state
             .runs
             .iter()
@@ -991,8 +1177,8 @@ impl LocalControlService {
 
     async fn set_run_settling(&self, lease: &WorkspaceExecutionLease) -> Result<bool, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_run_records(&lease.run_id).await?;
+            let mut state = loaded.original.clone();
             let run = state
                 .runs
                 .iter_mut()
@@ -1005,13 +1191,8 @@ impl LocalControlService {
             run.status = "settling".into();
             run.phase = Some("settling".into());
             let event = pending("run.updated", Some(lease.run_id.clone()), run);
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => return Ok(true),
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok(true),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -1034,11 +1215,11 @@ impl LocalControlService {
     ) -> Result<RunView, ApiError> {
         let mut persistence_failures = 0_u32;
         loop {
-            let Ok(snapshot) = self.store.load().await else {
+            let Ok(loaded) = self.read_run_records(&lease.run_id).await else {
                 wait_for_workspace_terminal_persistence(&mut persistence_failures).await;
                 continue;
             };
-            let mut state = decode_state(snapshot.value)?;
+            let mut state = loaded.original.clone();
             let index = state
                 .runs
                 .iter()
@@ -1078,13 +1259,8 @@ impl LocalControlService {
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.updated", Some(lease.run_id.clone()), &run);
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => {
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => {
                     let _ = self.store.clear_progress(&lease.run_id).await;
                     return Ok(run);
                 }
@@ -1176,10 +1352,12 @@ impl LocalControlService {
     ///
     /// # Errors
     ///
-    /// Returns a persistence error when the global snapshot cannot be read.
+    /// Returns a persistence error when the Run index cannot be read.
     pub async fn prepare_startup_recovery(&self) -> Result<StartupRecoveryPlan, ApiError> {
-        let snapshot = self.store.load().await.map_err(store_error)?;
-        let state = decode_state(snapshot.value)?;
+        let state = self
+            .read_records(vec![ControlFilter::all(ControlRecordKind::Run)])
+            .await?
+            .original;
         Ok(StartupRecoveryPlan {
             run_ids: state
                 .runs
@@ -1264,8 +1442,8 @@ impl LocalControlService {
         run_id: &str,
     ) -> Result<WorkspaceRecoveryClaim, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_run_records(run_id).await?;
+            let mut state = loaded.original.clone();
             let index = state
                 .runs
                 .iter()
@@ -1367,13 +1545,8 @@ impl LocalControlService {
                 Some(run.id.clone()),
                 run,
             );
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => return Ok(claim),
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok(claim),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -1400,8 +1573,7 @@ impl LocalControlService {
         lease: &WorkspaceExecutionLease,
         control: Arc<WorkspaceRunControl>,
     ) -> Result<RunView, ApiError> {
-        let snapshot = self.store.load().await.map_err(store_error)?;
-        let state = decode_state(snapshot.value)?;
+        let state = self.read_run_records(&lease.run_id).await?.original;
         let run = state
             .runs
             .iter()
@@ -1449,8 +1621,8 @@ impl LocalControlService {
         failure: &ApiError,
     ) -> Result<RunView, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_run_records(run_id).await?;
+            let mut state = loaded.original.clone();
             let index = state
                 .runs
                 .iter()
@@ -1470,13 +1642,8 @@ impl LocalControlService {
             let run = state.runs[index].clone();
             release_session(&mut state, &run);
             let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self
-                .store
-                .commit(snapshot.revision, value, vec![event])
-                .await
-            {
-                Ok(_) => {
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => {
                     let _ = self.store.clear_progress(run_id).await;
                     return Ok(run);
                 }
@@ -1494,14 +1661,19 @@ impl LocalControlService {
     async fn try_execute(&self, command: Command) -> Result<CommandResult, ApiError> {
         if matches!(
             command,
-            Command::Snapshot
-                | Command::GetRun { .. }
+            Command::GetRun { .. }
                 | Command::ExportProject { .. }
                 | Command::GetSettings
+                | Command::ListProjects
+                | Command::ListAgents
+                | Command::ListAgentProviders
+                | Command::ListSessions { .. }
+                | Command::ListMessages { .. }
+                | Command::ListRuns { .. }
+                | Command::ListCrons
         ) {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let state = decode_state(snapshot.value)?;
-            return read_command(state, snapshot.revision, command);
+            let loaded = self.read_command_records(&command).await?;
+            return read_command(loaded.original, loaded.revision, command);
         }
 
         // A Session request never waits behind a running turn: reject it immediately.
@@ -1618,8 +1790,8 @@ impl LocalControlService {
         has_workspace_lease: bool,
     ) -> Result<CommandOutcome, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_command_records(&command).await?;
+            let mut state = loaded.original.clone();
             check_session_admission(&state, &command)?;
             if !has_workspace_lease && workspace_write_path(&state, &command)?.is_some() {
                 return Err(error(
@@ -1631,9 +1803,8 @@ impl LocalControlService {
             let git_baseline = command_git_baseline(&state, &command)?;
             let (result, events) =
                 apply_command(&mut state, command.clone(), git_baseline.as_ref())?;
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self.store.commit(snapshot.revision, value, events).await {
-                Ok(_) => return Ok(result),
+            match self.persist_records(&loaded, &state, events).await {
+                Ok(()) => return Ok(result),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -1649,8 +1820,7 @@ impl LocalControlService {
         &self,
         command: &Command,
     ) -> Result<Option<WorkspaceWriteLease>, ApiError> {
-        let snapshot = self.store.load().await.map_err(store_error)?;
-        let state = decode_state(snapshot.value)?;
+        let state = self.read_command_records(command).await?.original;
         check_session_admission(&state, command)?;
         let Some(workdir) = workspace_write_path(&state, command)? else {
             return Ok(None);
@@ -1662,8 +1832,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
     ) -> Result<WorkspaceWriteLease, ApiError> {
-        let snapshot = self.store.load().await.map_err(store_error)?;
-        let state = decode_state(snapshot.value)?;
+        let state = self.read_run_records(run_id).await?.original;
         let run = state
             .runs
             .iter()
@@ -1749,7 +1918,7 @@ impl LocalControlService {
 }
 
 fn workspace_invocation(
-    state: &State,
+    state: &WorkingSet,
     run: &RunView,
     control: Arc<WorkspaceRunControl>,
 ) -> Result<WorkspaceAgentInvocation, DomainError> {
@@ -1830,7 +1999,7 @@ fn recovery_error(message: &str) -> ApiError {
     error(ErrorCode::RunRecoveryFailed, message, false)
 }
 
-fn recovery_policy(state: &State) -> RecoveryPolicy {
+fn recovery_policy(state: &WorkingSet) -> RecoveryPolicy {
     match state
         .settings
         .0
@@ -1865,7 +2034,7 @@ fn is_local_recovery_failure(code: ErrorCode) -> bool {
     )
 }
 
-fn settle_recovered_run(state: &mut State, index: usize, status: &str, message: &str) {
+fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, message: &str) {
     let mut run = state.runs[index].clone();
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
@@ -1886,7 +2055,10 @@ fn settle_recovered_run(state: &mut State, index: usize, status: &str, message: 
     state.runs[index] = run;
 }
 
-fn workspace_write_path(state: &State, command: &Command) -> Result<Option<PathBuf>, ApiError> {
+fn workspace_write_path(
+    state: &WorkingSet,
+    command: &Command,
+) -> Result<Option<PathBuf>, ApiError> {
     let target = match command {
         Command::SendMessage { session_id, .. } => {
             let session = state
@@ -2004,9 +2176,12 @@ fn api_domain_error(error: ApiError) -> DomainError {
     }
 }
 
-fn read_command(state: State, revision: u64, command: Command) -> Result<CommandResult, ApiError> {
+fn read_command(
+    state: WorkingSet,
+    revision: u64,
+    command: Command,
+) -> Result<CommandResult, ApiError> {
     match command {
-        Command::Snapshot => Ok(CommandResult::Workspace(state.into())),
         Command::GetRun { run_id } => state
             .runs
             .into_iter()
@@ -2017,6 +2192,13 @@ fn read_command(state: State, revision: u64, command: Command) -> Result<Command
             export_project(&state, revision, &project_id).map(CommandResult::ProjectExport)
         }
         Command::GetSettings => Ok(CommandResult::Settings(settings_view(&state))),
+        Command::ListProjects => Ok(CommandResult::Projects(state.projects)),
+        Command::ListAgents => Ok(CommandResult::Agents(state.agents)),
+        Command::ListAgentProviders => Ok(CommandResult::AgentProviders(state.providers)),
+        Command::ListSessions { .. } => Ok(CommandResult::Sessions(state.sessions)),
+        Command::ListMessages { .. } => Ok(CommandResult::Messages(state.messages)),
+        Command::ListRuns { .. } => Ok(CommandResult::Runs(state.runs)),
+        Command::ListCrons => Ok(CommandResult::Crons(state.crons)),
         _ => unreachable!("mutating command routed to read path"),
     }
 }
@@ -2026,7 +2208,7 @@ fn read_command(state: State, revision: u64, command: Command) -> Result<Command
     reason = "Keep exhaustive command dispatch together"
 )]
 fn apply_command(
-    state: &mut State,
+    state: &mut WorkingSet,
     command: Command,
     user_git_baseline: Option<&GitBaseline>,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
@@ -2122,16 +2304,22 @@ fn apply_command(
             values,
         } => save_settings(state, expected_revision, values),
         Command::ResetSettings => Ok(reset_settings(state)),
-        Command::Snapshot
-        | Command::GetRun { .. }
+        Command::GetRun { .. }
         | Command::ExportProject { .. }
-        | Command::GetSettings => unreachable!("read command routed to write path"),
+        | Command::GetSettings
+        | Command::ListProjects
+        | Command::ListAgents
+        | Command::ListAgentProviders
+        | Command::ListSessions { .. }
+        | Command::ListMessages { .. }
+        | Command::ListRuns { .. }
+        | Command::ListCrons => unreachable!("read command routed to write path"),
     }?;
     Ok((CommandOutcome::Ready(Box::new(result)), events))
 }
 
 fn set_project_default_agent(
-    state: &mut State,
+    state: &mut WorkingSet,
     project_id: &str,
     agent_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -2155,7 +2343,7 @@ fn set_project_default_agent(
 }
 
 fn fork_session(
-    state: &mut State,
+    state: &mut WorkingSet,
     input: ForkSessionInput,
     git_baseline: &GitBaseline,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
@@ -2181,7 +2369,7 @@ fn require_user_git_baseline(baseline: Option<&GitBaseline>) -> Result<&GitBasel
     })
 }
 
-fn settings_view(state: &State) -> SettingsView {
+fn settings_view(state: &WorkingSet) -> SettingsView {
     SettingsView {
         schema: settings_schema(),
         values: state.settings.clone(),
@@ -2190,7 +2378,7 @@ fn settings_view(state: &State) -> SettingsView {
 }
 
 fn save_settings(
-    state: &mut State,
+    state: &mut WorkingSet,
     expected_revision: u64,
     values: SettingsDocument,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -2211,7 +2399,7 @@ fn save_settings(
     ))
 }
 
-fn reset_settings(state: &mut State) -> (CommandResult, Vec<PendingEvent>) {
+fn reset_settings(state: &mut WorkingSet) -> (CommandResult, Vec<PendingEvent>) {
     state.settings = default_settings();
     state.settings_revision = state.settings_revision.saturating_add(1);
     let view = settings_view(state);
@@ -2267,7 +2455,7 @@ fn validate_settings(values: &SettingsDocument) -> Result<(), ApiError> {
 }
 
 fn register_project(
-    state: &mut State,
+    state: &mut WorkingSet,
     id: String,
     name: String,
     workdir: &str,
@@ -2341,7 +2529,7 @@ fn register_project(
 }
 
 fn create_session(
-    state: &mut State,
+    state: &mut WorkingSet,
     id: String,
     project_id: String,
     agent_id: &str,
@@ -2400,7 +2588,7 @@ fn create_session(
 }
 
 fn rename_session(
-    state: &mut State,
+    state: &mut WorkingSet,
     session_id: &str,
     name: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -2430,7 +2618,7 @@ fn rename_session(
 }
 
 fn set_session_title(
-    state: &mut State,
+    state: &mut WorkingSet,
     session_id: &str,
     title: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -2461,7 +2649,7 @@ fn set_session_title(
     ))
 }
 
-fn is_first_completed_interaction(state: &State, session: &SessionView) -> bool {
+fn is_first_completed_interaction(state: &WorkingSet, session: &SessionView) -> bool {
     let head_is_assistant = state
         .messages
         .iter()
@@ -2505,7 +2693,7 @@ fn validate_session_metadata(title: &str, description: &str) -> Result<(), ApiEr
 }
 
 fn set_session_agent(
-    state: &mut State,
+    state: &mut WorkingSet,
     session_id: &str,
     agent_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -2539,7 +2727,7 @@ fn set_session_agent(
 }
 
 fn send_message(
-    state: &mut State,
+    state: &mut WorkingSet,
     session_id: String,
     text: String,
     git_baseline: &GitBaseline,
@@ -2618,7 +2806,7 @@ fn send_message(
     Ok((CommandOutcome::for_new_run(run), vec![event]))
 }
 
-fn codex_prompt(state: &State, head_id: &str) -> Result<(Option<String>, String), ApiError> {
+fn codex_prompt(state: &WorkingSet, head_id: &str) -> Result<(Option<String>, String), ApiError> {
     let mut path = Vec::new();
     let mut current = Some(head_id);
     while let Some(id) = current {
@@ -2654,7 +2842,7 @@ fn codex_prompt(state: &State, head_id: &str) -> Result<(Option<String>, String)
     ))
 }
 
-fn append_output(state: &mut State, run: &mut RunView, output: MessageView) {
+fn append_output(state: &mut WorkingSet, run: &mut RunView, output: MessageView) {
     run.last_message_id = Some(output.id.clone());
     if let Some(session_id) = &run.session_id
         && let Some(session) = state
@@ -2668,7 +2856,7 @@ fn append_output(state: &mut State, run: &mut RunView, output: MessageView) {
     state.messages.push(output);
 }
 
-fn release_session(state: &mut State, run: &RunView) {
+fn release_session(state: &mut WorkingSet, run: &RunView) {
     if let Some(session_id) = &run.session_id
         && let Some(session) = state.sessions.iter_mut().find(|session| {
             &session.id == session_id && session.active_run_id.as_deref() == Some(run.id.as_str())
@@ -2680,7 +2868,7 @@ fn release_session(state: &mut State, run: &RunView) {
 }
 
 fn cancel_run(
-    state: &mut State,
+    state: &mut WorkingSet,
     run_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let index = state
@@ -2723,7 +2911,7 @@ fn cancel_run(
 
 #[allow(clippy::too_many_arguments)]
 fn create_cron(
-    state: &mut State,
+    state: &mut WorkingSet,
     id: String,
     name: String,
     project_id: String,
@@ -2805,7 +2993,7 @@ fn create_cron(
 }
 
 fn set_cron_enabled(
-    state: &mut State,
+    state: &mut WorkingSet,
     cron_id: &str,
     enabled: bool,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -2827,7 +3015,7 @@ fn set_cron_enabled(
 }
 
 fn trigger_cron(
-    state: &mut State,
+    state: &mut WorkingSet,
     cron_id: &str,
     scheduled_at: i64,
     workspace_baseline: Option<&GitBaseline>,
@@ -2889,7 +3077,7 @@ fn trigger_cron(
 }
 
 fn export_project(
-    state: &State,
+    state: &WorkingSet,
     source_revision: u64,
     project_id: &str,
 ) -> Result<ProjectExport, ApiError> {
@@ -2950,7 +3138,7 @@ fn export_project(
 }
 
 fn import_project(
-    state: &mut State,
+    state: &mut WorkingSet,
     archive: ProjectExport,
     workdir: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -3153,7 +3341,7 @@ fn invalid_archive(message: impl Into<String>) -> ApiError {
     error(ErrorCode::InvalidProject, message, false)
 }
 
-fn require_agent<'a>(state: &'a State, id: &str) -> Result<&'a AgentView, ApiError> {
+fn require_agent<'a>(state: &'a WorkingSet, id: &str) -> Result<&'a AgentView, ApiError> {
     state
         .agents
         .iter()
@@ -3292,7 +3480,10 @@ fn ensure_git_head(path: &Path) -> Result<String, ApiError> {
     })
 }
 
-fn command_git_baseline(state: &State, command: &Command) -> Result<Option<GitBaseline>, ApiError> {
+fn command_git_baseline(
+    state: &WorkingSet,
+    command: &Command,
+) -> Result<Option<GitBaseline>, ApiError> {
     let project_id = match command {
         Command::SendMessage { session_id, .. } => Some(
             state
@@ -3516,7 +3707,7 @@ async fn wait_for_workspace_terminal_persistence(failures: &mut u32) {
 }
 
 fn apply_workspace_terminal_result(
-    state: &mut State,
+    state: &mut WorkingSet,
     run: &mut RunView,
     result: &Result<WorkspaceAgentResponse, DomainError>,
 ) {
@@ -3625,15 +3816,223 @@ fn store_error(failure: ControlStoreError) -> ApiError {
 fn serialization_error(failure: serde_json::Error) -> ApiError {
     error(ErrorCode::RunRecoveryFailed, failure.to_string(), false)
 }
-fn decode_state(value: Value) -> Result<State, ApiError> {
-    if value.is_null() {
-        Ok(State::default())
-    } else {
-        let mut state: State =
-            serde_json::from_value(migrate_state(value)?).map_err(serialization_error)?;
-        state.settings.0.retain(|id, _| !id.starts_with("models."));
-        Ok(state)
+fn decode_records(read: ControlRead) -> Result<LoadedWorkingSet, ApiError> {
+    let mut value = json!({
+        "projects": [],
+        "agents": [],
+        "providers": [],
+        "provider_credentials": {},
+        "run_credentials": {},
+        "sessions": [],
+        "messages": [],
+        "runs": [],
+        "workspace_run_journals": {},
+        "crons": [],
+        "settings": default_settings(),
+        "settings_revision": default_settings_revision(),
+    });
+    for record in read.records {
+        match record.kind {
+            ControlRecordKind::Project => value["projects"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::Agent => value["agents"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::Provider => value["providers"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::ProviderCredential => {
+                value["provider_credentials"][record.id] = record.value;
+            }
+            ControlRecordKind::RunCredential => {
+                value["run_credentials"][record.id] = record.value;
+            }
+            ControlRecordKind::Session => value["sessions"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::Message => value["messages"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::Run => value["runs"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::WorkspaceRunJournal => {
+                value["workspace_run_journals"][record.id] = record.value;
+            }
+            ControlRecordKind::Cron => value["crons"]
+                .as_array_mut()
+                .expect("record array")
+                .push(record.value),
+            ControlRecordKind::Settings => {
+                value["settings"] = record.value["values"].clone();
+                value["settings_revision"] = record.value["revision"].clone();
+            }
+        }
     }
+    if value["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|agent| agent.get("config").is_none())
+    {
+        value
+            .as_object_mut()
+            .expect("record object")
+            .remove("providers");
+    }
+    value = migrate_state(value)?;
+    let mut state: WorkingSet = serde_json::from_value(value).map_err(serialization_error)?;
+    for provider in builtin_providers() {
+        if !state
+            .providers
+            .iter()
+            .any(|existing| existing.provider.id == provider.provider.id)
+        {
+            state.providers.push(provider);
+        }
+    }
+    state.settings.0.retain(|id, _| !id.starts_with("models."));
+    Ok(LoadedWorkingSet {
+        revision: read.revision,
+        original: state,
+    })
+}
+
+fn record_changes(
+    original: &WorkingSet,
+    updated: &WorkingSet,
+) -> Result<Vec<ControlChange>, ApiError> {
+    let original = encode_records(original)?;
+    let updated = encode_records(updated)?;
+    let mut changes = Vec::new();
+    for (key, record) in &updated {
+        if original.get(key) != Some(record) {
+            changes.push(ControlChange::Put(record.clone()));
+        }
+    }
+    for ((kind, id), _) in original {
+        if !updated.contains_key(&(kind, id.clone())) {
+            changes.push(ControlChange::Delete { kind, id });
+        }
+    }
+    Ok(changes)
+}
+
+#[allow(clippy::too_many_lines)]
+fn encode_records(
+    state: &WorkingSet,
+) -> Result<BTreeMap<(ControlRecordKind, String), ControlRecord>, ApiError> {
+    let mut records = BTreeMap::new();
+    let mut insert = |kind, id: String, project_id: Option<String>, value| {
+        records.insert(
+            (kind, id.clone()),
+            ControlRecord {
+                kind,
+                id,
+                project_id,
+                value,
+            },
+        );
+    };
+    for project in &state.projects {
+        insert(
+            ControlRecordKind::Project,
+            project.id.clone(),
+            Some(project.id.clone()),
+            serde_json::to_value(project).map_err(serialization_error)?,
+        );
+    }
+    for agent in &state.agents {
+        insert(
+            ControlRecordKind::Agent,
+            agent.id.clone(),
+            None,
+            serde_json::to_value(agent).map_err(serialization_error)?,
+        );
+    }
+    for provider in &state.providers {
+        insert(
+            ControlRecordKind::Provider,
+            provider.provider.id.clone(),
+            None,
+            serde_json::to_value(provider).map_err(serialization_error)?,
+        );
+    }
+    for (id, reference) in &state.provider_credentials {
+        insert(
+            ControlRecordKind::ProviderCredential,
+            id.clone(),
+            None,
+            json!(reference),
+        );
+    }
+    let run_projects = state
+        .runs
+        .iter()
+        .map(|run| (run.id.as_str(), run.project_id.as_str()))
+        .collect::<HashMap<_, _>>();
+    for (id, reference) in &state.run_credentials {
+        insert(
+            ControlRecordKind::RunCredential,
+            id.clone(),
+            run_projects.get(id.as_str()).map(|id| (*id).to_owned()),
+            json!(reference),
+        );
+    }
+    for session in &state.sessions {
+        insert(
+            ControlRecordKind::Session,
+            session.id.clone(),
+            Some(session.project_id.clone()),
+            serde_json::to_value(session).map_err(serialization_error)?,
+        );
+    }
+    for message in &state.messages {
+        insert(
+            ControlRecordKind::Message,
+            message.id.clone(),
+            Some(message.project_id.clone()),
+            serde_json::to_value(message).map_err(serialization_error)?,
+        );
+    }
+    for run in &state.runs {
+        insert(
+            ControlRecordKind::Run,
+            run.id.clone(),
+            Some(run.project_id.clone()),
+            serde_json::to_value(run).map_err(serialization_error)?,
+        );
+    }
+    for (id, journal) in &state.workspace_run_journals {
+        insert(
+            ControlRecordKind::WorkspaceRunJournal,
+            id.clone(),
+            run_projects.get(id.as_str()).map(|id| (*id).to_owned()),
+            serde_json::to_value(journal).map_err(serialization_error)?,
+        );
+    }
+    for cron in &state.crons {
+        insert(
+            ControlRecordKind::Cron,
+            cron.id.clone(),
+            Some(cron.project_id.clone()),
+            serde_json::to_value(cron).map_err(serialization_error)?,
+        );
+    }
+    insert(
+        ControlRecordKind::Settings,
+        "settings".into(),
+        None,
+        json!({"values": state.settings, "revision": state.settings_revision}),
+    );
+    Ok(records)
 }
 
 fn validate_archive_catalog(archive: &ProjectExport) -> Result<(), ApiError> {

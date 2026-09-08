@@ -31,7 +31,7 @@
 时先构建对应 daemon，或通过 `AIT_WORKFLOW_DAEMON_BIN` 指定它的路径。
 
 测试先确认新临时目录为空，再以它为 cwd 启动真实 daemon，使用 `127.0.0.1:0`
-让操作系统分配端口，从启动日志取得实际地址并通过 CLI 检查空快照。
+让操作系统分配端口，从启动日志取得实际地址并通过 CLI 检查各实体列表为空。
 随后依次执行下面五步。启动最多等 10 秒，普通命令 20 秒，真实 Codex 请求 600 秒，
 最后独立 Cargo 验证 120 秒。成功、断言失败或超时时都会停止并回收本次 daemon，
 同时终止其独立进程组中的 Codex 子进程。
@@ -65,8 +65,14 @@ cd '演练目录'
 '/AIT仓库绝对路径/target/debug/ait-daemon' --database ait.sqlite3 --listen 127.0.0.1:17315
 ```
 
-终端 A 执行 `ait snapshot`，确认 `projects`、`agents`、`sessions`、`messages`、`runs`
-均为空。若端口占用，修改本次 `--listen` 和 `AIT_ENDPOINT`，重新启动。
+终端 A 依次执行下列命令，确认返回数组均为空。若端口占用，修改本次 `--listen` 和
+`AIT_ENDPOINT`，重新启动。
+
+```bash
+ait command '{"type":"list_projects"}'
+ait command '{"type":"list_agents"}'
+ait command '{"type":"list_sessions","project_id":null}'
+```
 
 ### 3. 创建 example-project 和第一个空提交
 
@@ -111,7 +117,9 @@ ait command "$(jq -nc \
     text:"Create a minimal Rust binary package named example-project at the repository root, with Cargo.toml, Cargo.lock, src/main.rs and .gitignore ignoring /target/. Use no external dependencies. cargo run --offline --quiet must print exactly Hello, world! followed by a newline. Verify it. Do not create a Git commit; AIT will commit your changes."}')" \
   | tee "$WF_ROOT/run.json"
 jq -e '.ok == true and .result.value.status == "completed" and .result.value.error == null' "$WF_ROOT/run.json"
-ait snapshot | tee "$WF_ROOT/final-snapshot.json"
+ait command '{"type":"list_sessions","project_id":"example-project"}' | tee "$WF_ROOT/final-sessions.json"
+ait command '{"type":"list_messages","project_id":"example-project"}' | tee "$WF_ROOT/final-messages.json"
+ait command '{"type":"list_runs","project_id":"example-project"}' | tee "$WF_ROOT/final-runs.json"
 git -C "$WF_ROOT/example-project" log --oneline
 git -C "$WF_ROOT/example-project" status --porcelain=v1
 (
@@ -128,7 +136,7 @@ AIT 通过 [Codex app-server](https://developers.openai.com/codex/app-server) �
 
 ## 验收
 
-- 初始快照为空；daemon 数据库和日志位于示例项目之外。
+- 初始实体列表为空；daemon 数据库和日志位于示例项目之外。
 - Project 的 `base_commit` 等于手动创建的空提交；注册不移动 Git HEAD。
 - Codex 的 Run 完成，包含非空 assistant 输出；Session 指向最终 Message 且 `active_run_id=null`。
 - user Message 的 `git_commit` 等于初始提交；assistant Message 的

@@ -18,8 +18,6 @@ struct Arguments {
 enum CliCommand {
     /// Execute JSON, or use `-` to read it from stdin without exposing secrets in argv.
     Command { json: String },
-    /// Print the complete durable workspace projection.
-    Snapshot,
     /// Replay durable Server-Sent Events after a cursor.
     Events {
         #[arg(long, default_value_t = 0)]
@@ -64,9 +62,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
             })?;
             print_response(&send(&client, &arguments.endpoint, &command).await?);
-        }
-        CliCommand::Snapshot => {
-            print_response(&send(&client, &arguments.endpoint, &Command::Snapshot).await?);
         }
         CliCommand::Events { after } => {
             let body = client
@@ -117,14 +112,27 @@ async fn send(
     endpoint: &str,
     command: &Command,
 ) -> Result<Response, reqwest::Error> {
-    if matches!(command, Command::Snapshot | Command::GetSettings) {
-        return client
-            .get(format!("{endpoint}{}", operation_path(command)))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await;
+    if matches!(
+        command,
+        Command::GetSettings
+            | Command::ListProjects
+            | Command::ListAgents
+            | Command::ListAgentProviders
+            | Command::ListSessions { .. }
+            | Command::ListMessages { .. }
+            | Command::ListRuns { .. }
+            | Command::ListCrons
+    ) {
+        let request = client.get(format!("{endpoint}{}", operation_path(command)));
+        let request = match command {
+            Command::ListSessions {
+                project_id: Some(project_id),
+            }
+            | Command::ListMessages { project_id }
+            | Command::ListRuns { project_id } => request.query(&[("project_id", project_id)]),
+            _ => request,
+        };
+        return request.send().await?.error_for_status()?.json().await;
     }
 
     let mut body = serde_json::to_value(command).expect("command serializes");
@@ -167,7 +175,13 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::GetSettings => "/v1/settings",
         Command::SaveSettings { .. } => "/v1/settings/save",
         Command::ResetSettings => "/v1/settings/reset",
-        Command::Snapshot => "/v1/workspace/snapshot",
+        Command::ListProjects => "/v1/project/list",
+        Command::ListAgents => "/v1/agent/list",
+        Command::ListAgentProviders => "/v1/agent-provider/list",
+        Command::ListSessions { .. } => "/v1/session/list",
+        Command::ListMessages { .. } => "/v1/message/list",
+        Command::ListRuns { .. } => "/v1/run/list",
+        Command::ListCrons => "/v1/cron/list",
     }
 }
 

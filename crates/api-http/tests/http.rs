@@ -121,7 +121,13 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
     }
 
     for route in [
-        "/v1/workspace/snapshot",
+        "/v1/project/list",
+        "/v1/agent/list",
+        "/v1/agent-provider/list",
+        "/v1/session/list",
+        "/v1/message/list?project_id=p",
+        "/v1/run/list?project_id=p",
+        "/v1/cron/list",
         "/v1/settings",
         "/v1/event/list",
         "/v1/event/stream",

@@ -1,5 +1,5 @@
 import { modelChoices, selectedModels, type ModelChoice } from "./provider-models.js";
-import type { AgentProvider, DesktopSnapshot, ProviderInput } from "./types.js";
+import type { AgentProvider, DesktopView, ProviderInput } from "./types.js";
 
 export const escapeCatalog = (value: string): string => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 export const catalogOption = (id: string, name: string, selected = ""): string => `<option value="${escapeCatalog(id)}"${id === selected ? " selected" : ""}>${escapeCatalog(name)}</option>`;
@@ -11,8 +11,8 @@ export function providerChoices(providers: AgentProvider[]): AgentProvider[] {
 
 export function renderProviderSettings(
   container: Element,
-  snapshot: DesktopSnapshot,
-  update: (snapshot: DesktopSnapshot, refreshSettings: boolean) => void,
+  view: DesktopView,
+  update: (view: DesktopView, refreshSettings: boolean) => void,
   notify: (message: string, failure?: boolean) => void,
   initialProviderId?: string,
 ): () => void {
@@ -32,11 +32,11 @@ export function renderProviderSettings(
     generation++;
     secret = "";
     panel.innerHTML = `<header class="catalog-heading"><div><h3>Agent providers</h3><p>Connect an API, then choose the models available to your Agents.</p></div><button id="provider-add" class="primary-button" type="button">Add provider</button></header>
-      <div class="provider-settings-list">${snapshot.providers.map((provider) => `<button class="provider-settings-item" type="button" data-provider="${escapeCatalog(provider.id)}"><span><strong>${escapeCatalog(provider.name)}</strong><small>${escapeCatalog(provider.url ?? (provider.kind === "codex" ? "Host sign-in" : provider.kind))}</small></span><span>${provider.models.length} models <span aria-hidden="true">›</span></span></button>`).join("") || '<p>No providers yet. Add a connection to get started.</p>'}</div>`;
+      <div class="provider-settings-list">${view.providers.map((provider) => `<button class="provider-settings-item" type="button" data-provider="${escapeCatalog(provider.id)}"><span><strong>${escapeCatalog(provider.name)}</strong><small>${escapeCatalog(provider.url ?? (provider.kind === "codex" ? "Host sign-in" : provider.kind))}</small></span><span>${provider.models.length} models <span aria-hidden="true">›</span></span></button>`).join("") || '<p>No providers yet. Add a connection to get started.</p>'}</div>`;
     get("#provider-add").addEventListener("click", () => edit());
     scrollToTop();
     panel.querySelectorAll<HTMLElement>("[data-provider]").forEach((button) => {
-      button.addEventListener("click", () => edit(snapshot.providers.find((provider) => provider.id === button.dataset.provider)));
+      button.addEventListener("click", () => edit(view.providers.find((provider) => provider.id === button.dataset.provider)));
     });
   };
 
@@ -100,7 +100,7 @@ export function renderProviderSettings(
           ? await window.ait.discoverProviderModels(request())
           : provider.models;
         if (!live()) return;
-        choices = modelChoices(discovered, existing?.models ?? [], snapshot.agents.filter((agent) => agent.config.provider_id === provider.id).map((agent) => agent.config), choices);
+        choices = modelChoices(discovered, existing?.models ?? [], view.agents.filter((agent) => agent.config.provider_id === provider.id).map((agent) => agent.config), choices);
         selection(discovered.length);
       } catch (failure) {
         if (!live()) return;
@@ -170,7 +170,7 @@ export function renderProviderSettings(
     connection();
   };
 
-  if (initialProviderId !== undefined) edit(snapshot.providers.find((provider) => provider.id === initialProviderId));
+  if (initialProviderId !== undefined) edit(view.providers.find((provider) => provider.id === initialProviderId));
   else overview();
   return () => { disposed = true; generation++; secret = ""; panel.remove(); };
 }

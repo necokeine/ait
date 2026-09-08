@@ -20,7 +20,7 @@ ipcRenderer.on("ait:run-event-frame", (_event, value: unknown) => {
 });
 
 const api: AitDesktopApi = {
-  snapshot: () => invoke("workspace.snapshot"),
+  view: (projectId) => invoke("workspace.view", { projectId }),
   saveProvider: (input) => invoke("provider.save", input),
   discoverProviderModels: (input) => invoke("provider.discover-models", input),
   refreshProviderModels: (providerId) => invoke("provider.refresh-models", { providerId }),

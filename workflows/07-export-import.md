@@ -24,7 +24,10 @@ target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.
 ```bash
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
   import --input "$WF_ROOT/project-archive.json" --workdir "$WF_ROOT/imported-project"
-"$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 snapshot
+"$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
+  command '{"type":"list_sessions","project_id":"p1"}'
+"$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
+  command '{"type":"list_messages","project_id":"p1"}'
 ```
 
 演练结束后在第三个终端按 Ctrl-C 停止目标服务。
@@ -47,4 +50,4 @@ target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.
 - JSON 损坏或输入文件不存在属于本地错误，退出码 1，详情在 stderr。
 
 自动化：[`wf07_export_and_import_project_archive`](../bins/cli/tests/workflows.rs)，
-通过真实文件和两个隔离服务验证分支往返、活动引用清理、失败导出保护文件、重复/非法归档拒绝和源快照不变。
+通过真实文件和两个隔离服务验证分支往返、活动引用清理、失败导出保护文件、重复/非法归档拒绝和源记录不变。

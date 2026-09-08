@@ -9,13 +9,13 @@
 
 当前 control-plane 由 Codex adapter 在每 Run 隔离 worktree 中创建 commit，并通过 NEC-209 的锁定补偿协议发布到主 Project；application 随后才把 assistant Message 和 Run 终态写入 SQLite。daemon 在发布与最终落库之间退出时，代码可能已经可见，但 Run 仍为 `running`/`settling` 且 Session 一直被 `active_run_id` 占用；若直接重放 Codex，又可能重复模型、工具或 Git 副作用。
 
-控制面已有 `runtime.recovery = resume_safe | ask | fail` 设置，但启动入口没有扫描遗留 Run，也没有把该设置落实为行为。查询快照和 `GetRun` 必须继续保持只读，不能成为隐式执行入口。
+控制面已有 `runtime.recovery = resume_safe | ask | fail` 设置，但启动入口没有扫描遗留 Run，也没有把该设置落实为行为。实体查询和 `GetRun` 必须继续保持只读，不能成为隐式执行入口。
 
 ## 决策
 
 ### 持久执行身份与结果日志
 
-每个新 Run 在 `queued` 时获得稳定的 `operation_id = workspace-<run_id>`。开始执行时以 SQLite snapshot CAS 把 Run 切到 `running/calling_agent`、递增 `lease_epoch`，并原子创建 `workspace_run_journals[run_id]`。日志保存：
+每个新 Run 在 `queued` 时获得稳定的 `operation_id = workspace-<run_id>`。开始执行时以 SQLite record CAS 把 Run 切到 `running/calling_agent`、递增 `lease_epoch`，并原子创建对应 workspace journal 记录。日志保存：
 
 - `operation_id` 与当前 `lease_epoch`；
 - Agent 准入时的 symbolic ref（HEAD 与精确 index tree 已由 Run 的 NEC-209 baseline 字段保存）；
@@ -41,9 +41,9 @@ checkpoint/finalize 才作为幂等成功。`commit_id` 只由受信任的 works
 
 daemon 必须先成功 bind；bind 失败不得读取后改写任何 Run。`prepare_startup_recovery` 在 bind 后只做
 store 只读扫描，不推进 epoch、phase 或终态。受 daemon Tokio 生命周期管理的 supervisor 对每个
-候选 Run 先取得 NEC-209 Project advisory lock，再按最新 snapshot claim lease 或写恢复终态；若锁由
-活跃旧执行者持有，则跳过该 Run、保持其 snapshot 不变并继续处理其他 Project。只有这组显式启动
-入口可以触发恢复；`Snapshot`、`GetRun` 和其他查询不执行 Run。
+候选 Run 先取得 NEC-209 Project advisory lock，再按最新记录 claim lease 或写恢复终态；若锁由
+活跃旧执行者持有，则跳过该 Run、保持其记录不变并继续处理其他 Project。只有这组显式启动
+入口可以触发恢复；`GetRun` 和其他实体查询不执行 Run。
 
 | 遗留状态 | `resume_safe` | `ask` | `fail` |
 | --- | --- | --- | --- |
@@ -57,17 +57,17 @@ store 只读扫描，不推进 epoch、phase 或终态。受 daemon Tokio 生命
 
 单个 Run 的 missing workdir、invalid repository、不可读 HEAD/ref、`RUN_RECOVERY_FAILED` 或 Git identity 不匹配都转为
 `interrupted` 并条件释放 Session，supervisor 继续下一项；只有全局 control store 无法读取或提交
-claim/终态时才停止本轮恢复。Desktop snapshot 将所有 `interrupted` Run 投影成包含
+claim/终态时才停止本轮恢复。Desktop view 将所有 `interrupted` Run 投影成包含
 Project/Session/Run 定位信息的持久处理提示。
 
 ## 边界与后果
 
 - Message 历史仍只追加；恢复日志不是 Message，也不把 Codex 原生 operation 伪装成 Ait ToolUse/ToolResult。
-- 结果日志暂随 control snapshot 保留，便于审计 commit 与最终 Message 的关联；后续拆表或迁入统一 invoker 时必须保留 operation/lease/结果的幂等语义。
+- 结果日志保存在独立 workspace journal 记录中，便于审计 commit 与最终 Message 的关联；迁入统一 invoker 时必须保留 operation/lease/结果的幂等语义。
 - daemon readiness 不等待安全 queued/settling 长任务；NEC-209 工作区租约使 supervisor 中同一
   Project 的任务串行，不同 Project 可独立恢复。
 - 若结果 checkpoint 本身不可写，adapter 不进入主 worktree 发布；隔离 worktree/Run ref 按 NEC-209 保留，Run 供下一次启动明确标记或恢复。
 
 ## 验证
 
-离线 fake 注入覆盖 queued、ask/fail、未知 running、完整 checkpoint、稳定 lease fencing、Session 释放、单一 Message 和只读查询。production Codex Git adapter 与 application 的组合故障注入覆盖发布前拒绝、ref 发布后补偿和 rollback 不确定态，断言未证明发布的结果绝不成为 `completed`；branch、Run ref、index/worktree、rollback material 四类恢复歧义分别与健康 Run 混合，断言只中断所属 Run、继续恢复且不重跑 Agent。已发布快路径在 final store 前并发跨 service cancel，验证 durable `integrating` phase 拒绝取消并只追加一个 Message/outbox 终态。双 service 测试令旧执行者停在 checkpoint 后，验证第二 recovery 无法抢 epoch、旧 lease 可安全完成；daemon 端口冲突测试验证 bind 失败 snapshot 字节不变。daemon readiness 测试仍让 fake Agent 阻塞超过 desktop 15 秒窗口；Desktop 测试覆盖带 Project/Session/Run 定位的持久 `interrupted` 提示。真实 Codex thread 续接仍归 NEC-206，不作为本 ADR 的自动测试前置。
+离线 fake 注入覆盖 queued、ask/fail、未知 running、完整 checkpoint、稳定 lease fencing、Session 释放、单一 Message 和只读查询。production Codex Git adapter 与 application 的组合故障注入覆盖发布前拒绝、ref 发布后补偿和 rollback 不确定态，断言未证明发布的结果绝不成为 `completed`；branch、Run ref、index/worktree、rollback material 四类恢复歧义分别与健康 Run 混合，断言只中断所属 Run、继续恢复且不重跑 Agent。已发布快路径在 final store 前并发跨 service cancel，验证 durable `integrating` phase 拒绝取消并只追加一个 Message/outbox 终态。双 service 测试令旧执行者停在 checkpoint 后，验证第二 recovery 无法抢 epoch、旧 lease 可安全完成；daemon 端口冲突测试验证 bind 失败时记录与 revision 不变。daemon readiness 测试仍让 fake Agent 阻塞超过 desktop 15 秒窗口；Desktop 测试覆盖带 Project/Session/Run 定位的持久 `interrupted` 提示。真实 Codex thread 续接仍归 NEC-206，不作为本 ADR 的自动测试前置。

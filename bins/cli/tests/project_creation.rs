@@ -122,6 +122,63 @@ impl Workflow {
         self.cli(name, &["command", &value.to_string()], seconds)
             .await
     }
+
+    async fn view(&self, name: &str) -> Value {
+        let projects = self
+            .command(
+                &format!("{name}-projects"),
+                json!({"type": "list_projects"}),
+                20,
+            )
+            .await;
+        let agents = self
+            .command(
+                &format!("{name}-agents"),
+                json!({"type": "list_agents"}),
+                20,
+            )
+            .await;
+        let sessions = self
+            .command(
+                &format!("{name}-sessions"),
+                json!({"type": "list_sessions", "project_id": null}),
+                20,
+            )
+            .await;
+        let mut messages = Vec::new();
+        let mut runs = Vec::new();
+        for project in projects.as_array().unwrap() {
+            let project_id = project["id"].as_str().unwrap();
+            messages.extend(
+                self.command(
+                    &format!("{name}-messages"),
+                    json!({"type": "list_messages", "project_id": project_id}),
+                    20,
+                )
+                .await
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
+            runs.extend(
+                self.command(
+                    &format!("{name}-runs"),
+                    json!({"type": "list_runs", "project_id": project_id}),
+                    20,
+                )
+                .await
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
+        }
+        json!({
+            "projects": projects, "agents": agents, "sessions": sessions,
+            "messages": messages, "runs": runs,
+        })
+    }
 }
 
 async fn checked_output(command: &mut Command, seconds: u64) -> String {
@@ -196,7 +253,7 @@ async fn initialize_project(directory: &Path) -> String {
 #[ignore = "requires real Codex credentials/model access and a built ait-daemon; see WF-10"]
 async fn wf10_create_project_with_real_codex_and_commit() {
     let workflow = Workflow::start().await;
-    let empty = workflow.cli("initial-snapshot", &["snapshot"], 20).await;
+    let empty = workflow.view("initial-view").await;
     for collection in ["projects", "agents", "sessions", "messages", "runs"] {
         assert_eq!(empty[collection], json!([]));
     }
@@ -256,7 +313,7 @@ async fn wf10_create_project_with_real_codex_and_commit() {
         .await;
     assert_eq!(run["status"], "completed", "{run}");
     assert!(run["error"].is_null(), "{run}");
-    let snapshot = workflow.cli("final-snapshot", &["snapshot"], 20).await;
+    let snapshot = workflow.view("final-view").await;
     assert_eq!(entity(&snapshot, "runs", &run["id"]), &run);
     let assistant = entity(&snapshot, "messages", &run["last_message_id"]);
     assert_eq!(assistant["role"], "assistant");

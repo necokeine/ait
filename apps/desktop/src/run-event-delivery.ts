@@ -14,7 +14,7 @@ interface DeliveryOptions {
   cancel?: (handle: ReturnType<typeof setTimeout>) => void;
 }
 
-/** Bounded renderer-side queue used while an authoritative snapshot is in flight. */
+/** Bounded renderer-side queue used while an authoritative view is in flight. */
 export class BoundedRunStreamBacklog {
   private readonly updates: RunStreamUpdate[] = [];
   private resync = false;
@@ -58,7 +58,7 @@ export class BoundedRunStreamBacklog {
 
 /**
  * Per-renderer delivery with one acknowledged frame in flight and a bounded
- * main-process backlog. Overflow converges through an authoritative snapshot.
+ * main-process backlog. Overflow converges through an authoritative view.
  */
 export class BoundedRunEventDelivery {
   private readonly limit: number;

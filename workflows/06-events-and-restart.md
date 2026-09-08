@@ -11,15 +11,27 @@ CURSOR="$(awk '/^id:/ { cursor=$2 } END { print cursor+0 }' "$WF_ROOT/events.sse
 ait command '{"type":"create_session","id":"s-events","project_id":"p1","agent_id":"agent-demo"}'
 ait command '{"type":"send_message","session_id":"s-events","text":"保存重启前的状态"}'
 ait events --after "$CURSOR" | tee "$WF_ROOT/events-after.sse"
-ait snapshot > "$WF_ROOT/before-restart.json"
+for query in \
+  '{"type":"list_projects"}' \
+  '{"type":"list_agents"}' \
+  '{"type":"list_sessions","project_id":"p1"}' \
+  '{"type":"list_messages","project_id":"p1"}' \
+  '{"type":"list_runs","project_id":"p1"}'
+do ait command "$query"; done > "$WF_ROOT/before-restart.jsonl"
 ```
 
 在运行本次 daemon 的终端 B 按 Ctrl-C，然后使用同一数据库路径和端口重新运行原启动命令。
 看到监听提示后回到终端 A：
 
 ```bash
-ait snapshot > "$WF_ROOT/after-restart.json"
-diff "$WF_ROOT/before-restart.json" "$WF_ROOT/after-restart.json"
+for query in \
+  '{"type":"list_projects"}' \
+  '{"type":"list_agents"}' \
+  '{"type":"list_sessions","project_id":"p1"}' \
+  '{"type":"list_messages","project_id":"p1"}' \
+  '{"type":"list_runs","project_id":"p1"}'
+do ait command "$query"; done > "$WF_ROOT/after-restart.jsonl"
+diff "$WF_ROOT/before-restart.jsonl" "$WF_ROOT/after-restart.jsonl"
 ait events --after "$CURSOR"
 ```
 
@@ -33,11 +45,11 @@ SSE 帧包含 `id`（cursor）、`event`（事件种类）和 `data`（JSON）�
 历史较多时反复以本批最后一个 cursor 续读，直到输出为空；空结果不是错误。
 这组自动化覆盖小批次的排他续读，不宣称覆盖超过 256 条的全量分页或网络半帧中断。
 
-重启后，在没有其他写入时，快照相同，已保存 Run 可查，同一旧 cursor 的后续事件仍可回放。
-事件是恢复视图的辅助，最终状态以 `snapshot` / `get_run` 为准。
-若快照意外为空，先检查是否启动了错误数据库或连接了错误 endpoint，避免重新注册已有数据。
+重启后，在没有其他写入时，各实体查询相同，已保存 Run 可查，同一旧 cursor 的后续事件仍可回放。
+事件是恢复视图的辅助，最终状态以对应的实体 list command / `get_run` 为准。
+若实体列表意外为空，先检查是否启动了错误数据库或连接了错误 endpoint，避免重新注册已有数据。
 
 此处恢复的是持久化数据，不代表中断中的 worker、工具调用或模型请求已自动恢复执行。
 
 自动化：[`wf06_replay_events_and_reopen_workspace`](../bins/cli/tests/workflows.rs)，
-关闭 HTTP 服务和 store 后重开同一 SQLite 文件，验证快照、Run 和游标续读保持一致。
+关闭 HTTP 服务和 store 后重开同一 SQLite 文件，验证实体记录、Run 和游标续读保持一致。

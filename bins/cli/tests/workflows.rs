@@ -16,7 +16,7 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
             .await,
     );
     assert_eq!(agent["name"], "中文\nAgent");
-    let before = workspace.snapshot().await;
+    let before = workspace.view().await;
     for input in [
         "",
         "{",
@@ -41,7 +41,7 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
             .unwrap()
             .contains("sk-must-stay-private")
     );
-    assert_eq!(workspace.snapshot().await, before);
+    assert_eq!(workspace.view().await, before);
     workspace.stop().await;
 }
 
@@ -49,7 +49,7 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
 #[tokio::test]
 async fn wf01_register_project_and_agent() {
     let mut workspace = Workspace::new().await;
-    assert_eq!(workspace.snapshot().await["projects"], json!([]));
+    assert_eq!(workspace.view().await["projects"], json!([]));
     let project = workspace.project("project with spaces").await;
     assert_eq!(
         project["workdir"],
@@ -72,7 +72,7 @@ async fn wf01_register_project_and_agent() {
         project["base_commit"],
         String::from_utf8(head.stdout).unwrap().trim()
     );
-    let before = workspace.snapshot().await;
+    let before = workspace.view().await;
     workspace
         .reject(
             json!({
@@ -99,7 +99,7 @@ async fn wf01_register_project_and_agent() {
             "INVALID_AGENT_CONFIGURATION",
         )
         .await;
-    assert_eq!(workspace.snapshot().await, before);
+    assert_eq!(workspace.view().await, before);
 
     let agent = workspace.agent("primary").await;
     let default = workspace
@@ -119,15 +119,11 @@ async fn wf01_register_project_and_agent() {
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["version"], 1);
     assert_eq!(session["name"], "");
-    let snapshot = workspace.snapshot().await;
+    let snapshot = workspace.view().await;
     assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
     let root = entity(&snapshot, "messages", &project["root_message_id"]);
     assert_eq!(root["role"], "system");
     assert!(root["parent_message_id"].is_null());
-    assert_eq!(
-        workspace.command(json!({"type": "snapshot"})).await,
-        snapshot
-    );
     workspace.stop().await;
 }
 
@@ -138,12 +134,12 @@ async fn wf02_send_message_and_inspect_agent_reply() {
     let project = workspace.project("project").await;
     let agent = workspace.agent("codex").await;
     workspace.session("main", "project", "codex").await;
-    let before = workspace.snapshot().await;
+    let before = workspace.view().await;
     workspace.reject(json!({
         "type": "set_session_config", "session_id": "main",
         "config": {"provider_id": "builtin-codex", "model": "gpt-5.6-sol", "reasoning_effort": "unsupported"}
     }), "INVALID_AGENT_CONFIGURATION").await;
-    assert_eq!(workspace.snapshot().await, before);
+    assert_eq!(workspace.view().await, before);
     let dirty = workspace.path("project/untracked.txt");
     std::fs::write(&dirty, "unsaved work").unwrap();
     workspace
@@ -154,7 +150,7 @@ async fn wf02_send_message_and_inspect_agent_reply() {
             "PROJECT_GIT_DIRTY",
         )
         .await;
-    assert_eq!(workspace.snapshot().await, before);
+    assert_eq!(workspace.view().await, before);
     std::fs::remove_file(dirty).unwrap();
 
     let text = "检查工具输出：\"hello\"\n第二行";
@@ -169,7 +165,7 @@ async fn wf02_send_message_and_inspect_agent_reply() {
             .await,
         run
     );
-    let snapshot = workspace.snapshot().await;
+    let snapshot = workspace.view().await;
     let messages = snapshot["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 3);
     let user = entity(&snapshot, "messages", &run["base_message_id"]);
@@ -196,7 +192,7 @@ async fn wf03_branch_rename_and_rebind_session() {
     workspace.agent("alternate").await;
     workspace.session("main", "project", "primary").await;
     let run = workspace.send("main", 1, "original").await;
-    let before = workspace.snapshot().await;
+    let before = workspace.view().await;
     let original = entity(&before, "sessions", &json!("main")).clone();
     let branch = workspace
         .command(json!({
@@ -205,7 +201,7 @@ async fn wf03_branch_rename_and_rebind_session() {
         }))
         .await;
     assert_eq!(branch["current_message_id"], run["last_message_id"]);
-    assert_eq!(workspace.snapshot().await["messages"], before["messages"]);
+    assert_eq!(workspace.view().await["messages"], before["messages"]);
     let titled = workspace
         .command(json!({"type": "set_session_title", "session_id": "branch", "title": "临时标题"}))
         .await;
@@ -234,7 +230,7 @@ async fn wf03_branch_rename_and_rebind_session() {
         }))
         .await;
     assert_eq!(fork["status"], "completed");
-    let after = workspace.snapshot().await;
+    let after = workspace.view().await;
     assert_eq!(entity(&after, "sessions", &json!("main")), &original);
     assert_eq!(
         entity(&after, "messages", &fork["base_message_id"])["parent_message_id"],
@@ -244,12 +240,12 @@ async fn wf03_branch_rename_and_rebind_session() {
         assert_eq!(entity(&after, "messages", &old_message["id"]), old_message);
     }
     let other = workspace.project("other").await;
-    let before_rejection = workspace.snapshot().await;
+    let before_rejection = workspace.view().await;
     workspace.reject(json!({
         "type": "fork_session", "id": "invalid-fork", "project_id": "project", "agent_id": "primary",
         "at_message_id": other["root_message_id"], "text": "cross-project input"
     }), "SESSION_MESSAGE_PROJECT_MISMATCH").await;
-    assert_eq!(workspace.snapshot().await, before_rejection);
+    assert_eq!(workspace.view().await, before_rejection);
     workspace.stop().await;
 }
 
@@ -264,7 +260,7 @@ async fn wf04_observe_injected_provider_failure_and_continue() {
     assert_eq!(failed["status"], "failed");
     assert_eq!(failed["error"]["code"], "PROVIDER_FAILED");
     assert_eq!(failed["error"]["retryable"], true);
-    let snapshot = workspace.snapshot().await;
+    let snapshot = workspace.view().await;
     assert!(entity(&snapshot, "sessions", &json!("main"))["active_run_id"].is_null());
     assert_eq!(
         workspace
@@ -284,7 +280,7 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     let project = workspace.project("project").await;
     workspace.agent("primary").await;
     workspace.session("main", "project", "primary").await;
-    let sessions = workspace.snapshot().await["sessions"].clone();
+    let sessions = workspace.view().await["sessions"].clone();
     workspace
         .command(json!({
             "type": "create_cron", "id": "daily", "name": "Daily summary", "project_id": "project",
@@ -297,9 +293,9 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
         .await;
     let trigger =
         json!({"type": "trigger_cron", "cron_id": "daily", "scheduled_at": 1_788_480_000_000_i64});
-    let disabled = workspace.snapshot().await;
+    let disabled = workspace.view().await;
     workspace.reject(trigger.clone(), "INVALID_CRON").await;
-    assert_eq!(workspace.snapshot().await, disabled);
+    assert_eq!(workspace.view().await, disabled);
     workspace
         .command(json!({"type": "set_cron_enabled", "cron_id": "daily", "enabled": true}))
         .await;
@@ -308,10 +304,10 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     assert_eq!(run["trigger"], "cron");
     assert_eq!(run["status"], "completed");
     assert!(run["session_id"].is_null());
-    let once = workspace.snapshot().await;
+    let once = workspace.view().await;
     let event_count = events(&workspace.cli(&["events"]).await).len();
     assert_eq!(workspace.command(trigger).await, run);
-    assert_eq!(workspace.snapshot().await, once);
+    assert_eq!(workspace.view().await, once);
     assert_eq!(events(&workspace.cli(&["events"]).await).len(), event_count);
     let second = workspace
         .command(json!({
@@ -319,7 +315,7 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
         }))
         .await;
     assert_ne!(second["id"], run["id"]);
-    let after = workspace.snapshot().await;
+    let after = workspace.view().await;
     assert_eq!(after["sessions"], sessions);
     assert_eq!(after["runs"].as_array().unwrap().len(), 2);
     assert_eq!(after["messages"].as_array().unwrap().len(), 3);
@@ -352,9 +348,9 @@ async fn wf06_replay_events_and_reopen_workspace() {
     assert!(!rest.is_empty());
     assert!(rest.iter().all(|(next, _)| *next > cursor));
     assert_eq!([first, rest.clone()].concat(), all);
-    let snapshot = workspace.snapshot().await;
+    let snapshot = workspace.view().await;
     workspace.restart().await;
-    assert_eq!(workspace.snapshot().await, snapshot);
+    assert_eq!(workspace.view().await, snapshot);
     assert_eq!(
         workspace
             .command(json!({"type": "get_run", "run_id": run["id"]}))
@@ -418,7 +414,7 @@ async fn wf07_export_and_import_project_archive() {
             .all(|session| session["active_run_id"].is_null())
     );
     assert!(archive.get("runs").is_none() && archive.get("crons").is_none());
-    let before = source.snapshot().await;
+    let before = source.view().await;
     assert!(entity(&before, "sessions", &json!("main"))["active_run_id"].is_null());
     assert_eq!(
         source
@@ -457,14 +453,14 @@ async fn wf07_export_and_import_project_archive() {
         imported_dir.canonicalize().unwrap().to_str().unwrap()
     );
     assert_eq!(imported["default_agent_id"], "portable");
-    let restored = target.snapshot().await;
+    let restored = target.view().await;
     assert_eq!(restored["messages"], archive["messages"]);
     assert_eq!(restored["sessions"], archive["sessions"]);
     assert_eq!(restored["agents"], archive["agents"]);
     assert_eq!(restored["runs"], json!([]));
     assert_eq!(restored["crons"], json!([]));
     failure(&target.cli(&arguments).await, "INVALID_PROJECT");
-    assert_eq!(target.snapshot().await, restored);
+    assert_eq!(target.view().await, restored);
 
     let mut invalid = archive;
     invalid["format_version"] = json!(999);
@@ -481,8 +477,8 @@ async fn wf07_export_and_import_project_archive() {
             .await,
         "INVALID_PROJECT",
     );
-    assert_eq!(target.snapshot().await, restored);
-    assert_eq!(source.snapshot().await, before);
+    assert_eq!(target.view().await, restored);
+    assert_eq!(source.view().await, before);
     target.stop().await;
     source.stop().await;
 }
@@ -524,18 +520,11 @@ async fn wf08_save_reset_and_recover_settings() {
 #[tokio::test]
 async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     let mut workspace = Workspace::new().await;
-    let initial = workspace.snapshot().await;
+    let initial = workspace.view().await;
     let help = workspace.cli(&["--help"]).await;
     assert_eq!(help.status.code(), Some(0));
     let help_text = String::from_utf8(help.stdout).unwrap();
-    for command in [
-        "command",
-        "snapshot",
-        "events",
-        "export",
-        "import",
-        "--endpoint",
-    ] {
+    for command in ["command", "events", "export", "import", "--endpoint"] {
         assert!(
             help_text.contains(command),
             "missing {command}: {help_text}"
@@ -568,9 +557,11 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
             "INVALID_RUN",
         )
         .await;
-    assert_eq!(workspace.snapshot().await, initial);
+    assert_eq!(workspace.view().await, initial);
     workspace.stop().await;
-    let unavailable = workspace.cli(&["snapshot"]).await;
+    let unavailable = workspace
+        .cli(&["command", r#"{"type":"list_projects"}"#])
+        .await;
     assert_eq!(unavailable.status.code(), Some(1), "{unavailable:?}");
     assert!(unavailable.stdout.is_empty() && !unavailable.stderr.is_empty());
 }

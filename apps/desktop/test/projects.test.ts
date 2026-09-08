@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "../src/projects.js";
-import type { DesktopProject, DesktopSession, DesktopSnapshot } from "../src/types.js";
+import type { DesktopProject, DesktopSession, DesktopView } from "../src/types.js";
 
 const project = (id: string): DesktopProject => ({
   id,
@@ -26,7 +26,7 @@ const session = (id: string, projectId: string, updatedAt: number): DesktopSessi
 });
 
 test("keeps every Project visible and groups Sessions beneath their owner", () => {
-  const snapshot: DesktopSnapshot = {
+  const view: DesktopView = {
     protocolVersion: 1,
     revision: 1,
     projects: [project("project-a"), project("project-b")],
@@ -41,7 +41,7 @@ test("keeps every Project visible and groups Sessions beneath their owner", () =
     runProgress: [],
   };
 
-  const groups = groupProjects(snapshot);
+  const groups = groupProjects(view);
 
   assert.deepEqual(groups.map(({ project: item }) => item.id), ["project-a", "project-b"]);
   assert.deepEqual(groups[0]?.sessions.map(({ id }) => id), ["a-newer", "a-older"]);

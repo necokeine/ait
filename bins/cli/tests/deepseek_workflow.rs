@@ -223,25 +223,6 @@ impl Workflow {
         String::from_utf8(output.stdout).unwrap()
     }
 
-    async fn cli(&self, name: &str, args: &[&str], seconds: u64) -> Value {
-        let output = self
-            .output(
-                Command::new(env!("CARGO_BIN_EXE_ait-cli"))
-                    .args(["--endpoint", &self.endpoint])
-                    .args(args)
-                    .current_dir(&self.root)
-                    .env("NO_PROXY", "*")
-                    .env("no_proxy", "*"),
-                seconds,
-            )
-            .await;
-        fs::write(self.root.join(format!("{name}.json")), &output).unwrap();
-        let response: Value = serde_json::from_str(&output).expect("CLI JSON envelope");
-        assert_eq!(response["api_version"], 1);
-        assert_eq!(response["ok"], true, "{response}");
-        response["result"]["value"].clone()
-    }
-
     async fn command(&self, name: &str, body: Value, seconds: u64) -> Value {
         let mut child = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
             .args(["--endpoint", &self.endpoint, "command", "-"])
@@ -273,6 +254,63 @@ impl Workflow {
         assert_eq!(response["api_version"], 1);
         assert_eq!(response["ok"], true, "{response}");
         response["result"]["value"].clone()
+    }
+
+    async fn view(&self, name: &str) -> Value {
+        let projects = self
+            .command(
+                &format!("{name}-projects"),
+                json!({"type": "list_projects"}),
+                20,
+            )
+            .await;
+        let agents = self
+            .command(
+                &format!("{name}-agents"),
+                json!({"type": "list_agents"}),
+                20,
+            )
+            .await;
+        let sessions = self
+            .command(
+                &format!("{name}-sessions"),
+                json!({"type": "list_sessions", "project_id": null}),
+                20,
+            )
+            .await;
+        let mut messages = Vec::new();
+        let mut runs = Vec::new();
+        for project in projects.as_array().unwrap() {
+            let project_id = project["id"].as_str().unwrap();
+            messages.extend(
+                self.command(
+                    &format!("{name}-messages"),
+                    json!({"type": "list_messages", "project_id": project_id}),
+                    20,
+                )
+                .await
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
+            runs.extend(
+                self.command(
+                    &format!("{name}-runs"),
+                    json!({"type": "list_runs", "project_id": project_id}),
+                    20,
+                )
+                .await
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
+        }
+        json!({
+            "projects": projects, "agents": agents, "sessions": sessions,
+            "messages": messages, "runs": runs,
+        })
     }
 
     async fn git(&self, args: &[&str]) -> String {
@@ -313,7 +351,7 @@ async fn wf11_real_deepseek_python_hello_world() {
         "AIT_DEEPSEEK_MODEL must name a DeepSeek model"
     );
     let mut workflow = Workflow::start(credential).await;
-    let initial = workflow.cli("initial-snapshot", &["snapshot"], 20).await;
+    let initial = workflow.view("initial-view").await;
     for collection in ["projects", "agents", "sessions", "messages", "runs"] {
         assert_eq!(initial[collection], json!([]));
     }
@@ -408,7 +446,7 @@ async fn verify_run(
     assert_eq!(run["agent_revision"], agent["revision"]);
     assert_eq!(run["provider"]["kind"], "deepseek");
     assert_eq!(run["config"], agent["config"]);
-    let snapshot = workflow.cli("final-snapshot", &["snapshot"], 20).await;
+    let snapshot = workflow.view("final-view").await;
     assert_eq!(
         entity(&snapshot, "projects", &project["id"])["default_agent_id"],
         agent["id"]

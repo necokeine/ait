@@ -13,7 +13,7 @@ export interface RecoveryNotice {
   message: string;
 }
 
-interface StartupWorkspaceSnapshot {
+interface StartupWorkspaceView {
   projects: Array<{ id: string; name: string }>;
   sessions: Array<{ id: string; project_id: string; name?: string; title?: string | null }>;
   runs: Array<{
@@ -23,7 +23,7 @@ interface StartupWorkspaceSnapshot {
 }
 
 /** Projects startup-recovered Runs into persistent, location-aware UI notices. */
-export function startupRecoveryNotices(workspace: StartupWorkspaceSnapshot): RecoveryNotice[] {
+export function startupRecoveryNotices(workspace: StartupWorkspaceView): RecoveryNotice[] {
   return workspace.runs.flatMap((run) => {
     if (run.status !== "interrupted") return [];
     const project = workspace.projects.find((candidate) => candidate.id === run.project_id);

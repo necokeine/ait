@@ -9,7 +9,7 @@ import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } fr
 import type {
   DesktopMessage,
   DesktopSession,
-  DesktopSnapshot,
+  DesktopView,
   RunStreamUpdate,
   SettingCategory,
   SettingDefinition,
@@ -45,7 +45,7 @@ const sessionDialog = $("#session-dialog");
 const renameSessionDialog = $("#rename-session-dialog");
 const sessionContextMenu = $<HTMLElement>("#session-context-menu");
 
-let snapshot: DesktopSnapshot | undefined;
+let view: DesktopView | undefined;
 let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
 let selectedNodeId: string | undefined;
@@ -65,11 +65,11 @@ let disposeProviderSettings: (() => void) | undefined;
 let toastTimer: number | undefined;
 let streamConnected = true;
 let renderedSessionId: string | undefined;
-let snapshotRefreshPending = false;
+let viewRefreshPending = false;
 const pendingTitles = new PendingSessionTitles();
 const pendingStream = new BoundedRunStreamBacklog();
 const agentsPage = createAgentsPage($("#agents-page"), {
-  update: (updated) => { snapshot = updated; renderAll(); },
+  update: (updated) => { view = updated; renderAll(); },
   notify: showToast,
   configureProvider: openProviderSettings,
 });
@@ -80,18 +80,18 @@ void initialize();
 async function initialize(): Promise<void> {
   bindInteractions();
   try {
-    const [loadedSnapshot, loadedSettings] = await Promise.all([
-      window.ait.snapshot(),
+    const [loadedView, loadedSettings] = await Promise.all([
+      window.ait.view(),
       window.ait.settings(),
     ]);
-    snapshot = loadedSnapshot;
+    view = loadedView;
     settings = loadedSettings;
     settingsDraft = structuredClone(loadedSettings.values);
-    const newestSession = loadedSnapshot.sessions
+    const newestSession = loadedView.sessions
       .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
     selectedSessionId = newestSession;
-    selectedProjectId = loadedSnapshot.sessions.find((session) => session.id === newestSession)?.projectId
-      ?? loadedSnapshot.projects[0]?.id;
+    selectedProjectId = loadedView.sessions.find((session) => session.id === newestSession)?.projectId
+      ?? loadedView.projects[0]?.id;
     applyPreferences();
     drainPendingStreamUpdates();
     renderAll();
@@ -202,20 +202,20 @@ function bindInteractions(): void {
 }
 
 function renderAll(): void {
-  if (!snapshot) return;
+  if (!view) return;
   renderRecoveryNotices();
   renderProjects();
   renderAgents();
   renderConversation();
   renderTree();
   updateComposerState();
-  agentsPage.render(snapshot);
+  agentsPage.render(view);
 }
 
 function renderRecoveryNotices(): void {
-  if (!snapshot) return;
+  if (!view) return;
   const container = $<HTMLElement>("#recovery-notices");
-  const notices = snapshot.recoveryNotices ?? [];
+  const notices = view.recoveryNotices ?? [];
   container.classList.toggle("is-hidden", notices.length === 0);
   container.innerHTML = notices.map((notice) => `<button type="button" class="recovery-notice" data-recovery-project="${escapeAttribute(notice.projectId)}"${notice.sessionId ? ` data-recovery-session="${escapeAttribute(notice.sessionId)}"` : ""}>
     <strong>Workspace recovery needs review</strong>
@@ -250,12 +250,12 @@ function showPage(page: "sessions" | "agents"): void {
 }
 
 function currentSession(): DesktopSession | undefined {
-  return snapshot?.sessions.find((session) =>
+  return view?.sessions.find((session) =>
     session.id === selectedSessionId && session.projectId === selectedProjectId);
 }
 
 function currentProject() {
-  return snapshot?.projects.find((project) => project.id === selectedProjectId);
+  return view?.projects.find((project) => project.id === selectedProjectId);
 }
 
 function resetTreeView(): void {
@@ -265,15 +265,15 @@ function resetTreeView(): void {
 }
 
 function renderProjects(): void {
-  if (!snapshot) return;
-  if (snapshot.projects.length === 0) {
+  if (!view) return;
+  if (view.projects.length === 0) {
     projectList.innerHTML = '<div class="project-list-empty"><p>No Projects yet</p><small>Use + above to add a local workspace.</small></div>';
     return;
   }
-  projectList.innerHTML = groupProjects(snapshot).map(({ project, sessions }) => {
+  projectList.innerHTML = groupProjects(view).map(({ project, sessions }) => {
     const projectSelected = project.id === selectedProjectId;
     const sessionRows = sessions.map((session) => {
-      const agent = snapshot?.agents.find((candidate) => candidate.id === session.agentId);
+      const agent = view?.agents.find((candidate) => candidate.id === session.agentId);
       const selected = session.id === selectedSessionId;
       return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}">
         <span class="session-symbol">${session.active ? "◉" : "⑂"}</span>
@@ -296,11 +296,14 @@ function renderProjects(): void {
     </section>`;
   }).join("");
   projectList.querySelectorAll<HTMLElement>("[data-project-id]").forEach((button) => {
-    button.addEventListener("click", () => selectProject(button.dataset.projectId));
+    button.addEventListener("click", () => { void selectProject(button.dataset.projectId); });
   });
   projectList.querySelectorAll<HTMLElement>("[data-session-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
+    button.addEventListener("click", async () => {
+      const session = view?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
+      if (session?.projectId !== selectedProjectId) {
+        view = await window.ait.view(session?.projectId);
+      }
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
       resetTreeView();
@@ -321,20 +324,20 @@ function renderProjects(): void {
 }
 
 function renderAgents(): void {
-  if (!snapshot) return;
+  if (!view) return;
   const current = currentSession();
-  composerAgent.innerHTML = snapshot.agents
+  composerAgent.innerHTML = view.agents
     .filter((agent) => agent.enabled && (!agent.ownerSessionId || agent.id === current?.agentId))
     .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agent.ownerSessionId ? "Custom configuration" : agentLabel(agent))}</option>`)
     .join("");
   composerAgent.disabled = !current || current.active;
-  const agent = snapshot.agents.find((candidate) => candidate.id === current?.agentId);
+  const agent = view.agents.find((candidate) => candidate.id === current?.agentId);
   const label = agent ? agentLabel(agent) : "No Agent";
   $("#agent-chip").textContent = label;
   $("#composer-config-label").textContent = label;
   composerConfigTrigger.title = `Configure Agent: ${label}`;
-  composerProvider.innerHTML = snapshot.providers.filter((p) => providerChoices([p]).length > 0 || p.id === agent?.config.provider_id).map((p) => `<option value="${escapeAttribute(p.id)}"${p.id === agent?.config.provider_id ? " selected" : ""}>${escapeHtml(p.name)}</option>`).join("");
-  const provider = snapshot.providers.find((item) => item.id === agent?.config.provider_id);
+  composerProvider.innerHTML = view.providers.filter((p) => providerChoices([p]).length > 0 || p.id === agent?.config.provider_id).map((p) => `<option value="${escapeAttribute(p.id)}"${p.id === agent?.config.provider_id ? " selected" : ""}>${escapeHtml(p.name)}</option>`).join("");
+  const provider = view.providers.find((item) => item.id === agent?.config.provider_id);
   composerModel.innerHTML = provider?.models.map((model) => `<option value="${escapeAttribute(model.id)}"${model.id === agent?.config.model ? " selected" : ""}>${escapeHtml(model.name)}</option>`).join("") ?? "";
   const efforts = agent?.supportedReasoningEfforts ?? [];
   composerReasoning.innerHTML = `<option value="">Reasoning: Default</option>` + efforts
@@ -344,7 +347,7 @@ function renderAgents(): void {
 }
 
 function renderConversation(): void {
-  if (!snapshot) return;
+  if (!view) return;
   const session = currentSession();
   if (!session) {
     renderedSessionId = undefined;
@@ -353,7 +356,7 @@ function renderConversation(): void {
     conversation.innerHTML = `<div class="empty-state"><p>${currentProject() ? "Create or choose a Session to begin." : "Create a Project to begin."}</p></div>`;
     return;
   }
-  const project = snapshot.projects.find((candidate) => candidate.id === session.projectId);
+  const project = view.projects.find((candidate) => candidate.id === session.projectId);
   const sameSession = renderedSessionId === session.id;
   const shouldFollow = !sameSession
     || conversationScroll.scrollHeight - conversationScroll.scrollTop - conversationScroll.clientHeight < 80;
@@ -361,17 +364,17 @@ function renderConversation(): void {
   $("#session-title").textContent = session.title;
   $("#session-breadcrumb").textContent = `${project?.name ?? "Project"} / Session v${session.version}`;
   const messages = pathToMessage(
-    snapshot.messages.filter((message) => message.projectId === session.projectId),
+    view.messages.filter((message) => message.projectId === session.projectId),
     session.currentMessageId,
   );
   const progress = session.activeRunId
-    ? snapshot.runProgress.find((candidate) => candidate.runId === session.activeRunId && candidate.sessionId === session.id)
+    ? view.runProgress.find((candidate) => candidate.runId === session.activeRunId && candidate.sessionId === session.id)
     : undefined;
-  const agent = snapshot.agents.find((candidate) => candidate.id === session.agentId);
+  const agent = view.agents.find((candidate) => candidate.id === session.agentId);
   const live = session.activeRunId
     ? renderRunProgress(progress, agent ? agentDisplayName(agent) : "Assistant", streamConnected)
     : "";
-  const latestRun = terminalRunForSession(snapshot, session.id);
+  const latestRun = terminalRunForSession(view, session.id);
   const terminal = latestRun
     ? renderRunTerminal(
       latestRun.status,
@@ -379,7 +382,7 @@ function renderConversation(): void {
       agent ? agentDisplayName(agent) : "Assistant",
     )
     : "";
-  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("") + live + terminal;
+  conversation.innerHTML = messages.map((message) => renderMessage(message, view!.agents, message.id === selectedNodeId)).join("") + live + terminal;
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
@@ -406,7 +409,7 @@ function renderConversation(): void {
 }
 
 function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
-  if (!snapshot || snapshotRefreshPending) {
+  if (!view || viewRefreshPending) {
     queuePendingStreamUpdates(updates);
     return;
   }
@@ -428,8 +431,8 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       const body = event.body as Record<string, unknown>;
       const runId = typeof body.run_id === "string" ? body.run_id : undefined;
       if (!runId || gappedRuns.has(runId)) continue;
-      const index = snapshot.runProgress.findIndex((candidate) => candidate.runId === runId);
-      const current = index >= 0 ? snapshot.runProgress[index] : undefined;
+      const index = view.runProgress.findIndex((candidate) => candidate.runId === runId);
+      const current = index >= 0 ? view.runProgress[index] : undefined;
       const incomingSeq = typeof body.seq === "number" ? body.seq : undefined;
       if (incomingSeq !== undefined
         && ((current && incomingSeq > current.seq + 1) || (!current && incomingSeq > 1))) {
@@ -439,8 +442,8 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       }
       const next = applyProgressEvent(current, body);
       if (!next) continue;
-      if (index >= 0) snapshot.runProgress[index] = next;
-      else snapshot.runProgress.push(next);
+      if (index >= 0) view.runProgress[index] = next;
+      else view.runProgress.push(next);
       renderCurrent ||= currentSession()?.activeRunId === runId;
       continue;
     }
@@ -449,7 +452,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       const runId = typeof run.id === "string" ? run.id : undefined;
       const status = typeof run.status === "string" ? run.status : undefined;
       if (runId && status === "settling") {
-        const progress = snapshot.runProgress.find((candidate) => candidate.runId === runId);
+        const progress = view.runProgress.find((candidate) => candidate.runId === runId);
         if (progress) progress.status = "settling";
         renderCurrent ||= currentSession()?.activeRunId === runId;
       }
@@ -460,7 +463,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
     }
     if (event.kind === "stream.reset_required") refresh = true;
   }
-  if (refresh) scheduleSnapshotRefresh();
+  if (refresh) scheduleViewRefresh();
   else if (renderCurrent) renderConversation();
 }
 
@@ -471,19 +474,19 @@ function queuePendingStreamUpdates(updates: RunStreamUpdate[]): void {
 function drainPendingStreamUpdates(): void {
   const pending = pendingStream.drain();
   if (pending.resync) {
-    scheduleSnapshotRefresh();
+    scheduleViewRefresh();
     return;
   }
   if (pending.updates.length > 0) handleRunStreamFrame(pending.updates);
 }
 
-function scheduleSnapshotRefresh(): void {
-  if (snapshotRefreshPending) return;
-  snapshotRefreshPending = true;
+function scheduleViewRefresh(): void {
+  if (viewRefreshPending) return;
+  viewRefreshPending = true;
   queueMicrotask(async () => {
     let refreshed = false;
     try {
-      snapshot = await window.ait.snapshot();
+      view = await window.ait.view(selectedProjectId);
       refreshed = true;
       renderAll();
       startReadySessionTitles();
@@ -491,23 +494,23 @@ function scheduleSnapshotRefresh(): void {
       streamConnected = false;
       if (currentSession()?.activeRunId) renderConversation();
     } finally {
-      snapshotRefreshPending = false;
+      viewRefreshPending = false;
     }
     if (refreshed) drainPendingStreamUpdates();
   });
 }
 
 function startReadySessionTitles(): void {
-  if (!snapshot) return;
-  for (const request of pendingTitles.takeReady(snapshot.sessions, snapshot.runs)) {
+  if (!view) return;
+  for (const request of pendingTitles.takeReady(view.sessions, view.runs)) {
     void generateFirstSessionTitle(request.sessionId, request.prompt);
   }
 }
 
 function renderTree(): void {
-  if (!snapshot) return;
+  if (!view) return;
   const session = currentSession();
-  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
+  const messages = view.messages.filter((message) => message.projectId === selectedProjectId);
   timeline = buildMessageTimeline(messages, session, viewedTreeHeadId, selectedNodeId);
   const visible = timeline.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
@@ -550,10 +553,10 @@ function renderTree(): void {
 }
 
 function selectTreeNode(id: string | undefined, focusTree = true): void {
-  if (!id || !snapshot || !selectedProjectId) return;
+  if (!id || !view || !selectedProjectId) return;
   selectedNodeId = id;
-  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
-  const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
+  const messages = view.messages.filter((message) => message.projectId === selectedProjectId);
+  const sessions = view.sessions.filter((session) => session.projectId === selectedProjectId);
   const session = sessionForMessage(messages, sessions, id, selectedSessionId);
   const sessionChanged = session !== undefined && session.id !== selectedSessionId;
   if (session) selectedSessionId = session.id;
@@ -578,9 +581,9 @@ function syncMessageSelection(): void {
 }
 
 function switchTreeBranch(branchRootId: string | undefined): void {
-  if (!snapshot || !branchRootId || !selectedProjectId) return;
-  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
-  const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
+  if (!view || !branchRootId || !selectedProjectId) return;
+  const messages = view.messages.filter((message) => message.projectId === selectedProjectId);
+  const sessions = view.sessions.filter((session) => session.projectId === selectedProjectId);
   const headId = resolveBranchHead(messages, sessions, branchRootId);
   if (!headId) return;
   const session = sessionForMessage(messages, sessions, branchRootId, selectedSessionId);
@@ -593,7 +596,7 @@ function switchTreeBranch(branchRootId: string | undefined): void {
 }
 
 function renderNodeDetails(): void {
-  const selected = snapshot?.messages.find((message) => message.id === selectedNodeId);
+  const selected = view?.messages.find((message) => message.id === selectedNodeId);
   if (!selected) {
     nodeDetails.innerHTML = '<div class="empty-details"><span>⑂</span><p>Select a node to inspect it and start a branch.</p></div>';
     $("#branch-context").classList.add("is-hidden");
@@ -617,7 +620,7 @@ function clearNodeSelection(): void {
 async function submitMessage(): Promise<void> {
   const session = currentSession();
   const content = messageInput.value.trim();
-  if (!snapshot || !session || !content || sendButton.disabled) return;
+  if (!view || !session || !content || sendButton.disabled) return;
   pendingSessions.add(session.id);
   updateComposerState();
   sendButton.disabled = true;
@@ -630,7 +633,7 @@ async function submitMessage(): Promise<void> {
         agentId: composerAgent.value,
         content,
       });
-      snapshot = result.snapshot;
+      view = result.view;
       selectedSessionId = result.selectedSessionId;
       pendingTitles.register(result.runId, result.selectedSessionId, content);
       showToast("New branch created. The original session was left unchanged.");
@@ -639,17 +642,17 @@ async function submitMessage(): Promise<void> {
         sessionId: session.id,
         content,
       });
-      snapshot = result.snapshot;
+      view = result.view;
       pendingTitles.register(result.runId, session.id, content);
       showToast("Message accepted.");
     }
     startReadySessionTitles();
-    scheduleSnapshotRefresh();
+    scheduleViewRefresh();
     resetTreeView();
     messageInput.value = "";
     renderAll();
   } catch (error) {
-    try { snapshot = await window.ait.snapshot(); renderAll(); } catch { /* Keep the last visible snapshot if disconnected. */ }
+    try { view = await window.ait.view(selectedProjectId); renderAll(); } catch { /* Keep the last visible view if disconnected. */ }
     showToast(errorMessage(error), true);
   } finally {
     pendingSessions.delete(session.id);
@@ -661,11 +664,11 @@ async function submitMessage(): Promise<void> {
 async function generateFirstSessionTitle(sessionId: string, prompt: string): Promise<void> {
   const title = temporarySessionTitle(prompt);
   const modelPrompt = sanitizeSessionPrompt(prompt);
-  if (!snapshot || !title || !modelPrompt) return;
+  if (!view || !title || !modelPrompt) return;
   try {
-    snapshot = await window.ait.setSessionTitle({ sessionId, title });
+    view = await window.ait.setSessionTitle({ sessionId, title });
     renderAll();
-    snapshot = await window.ait.generateSessionTitle({ sessionId, prompt: modelPrompt });
+    view = await window.ait.generateSessionTitle({ sessionId, prompt: modelPrompt });
     renderAll();
   } catch (error) {
     console.warn("Session title generation failed; keeping the temporary title.", error);
@@ -688,7 +691,7 @@ function closeSessionContextMenu(): void {
 }
 
 function openRenameSessionDialog(): void {
-  const session = snapshot?.sessions.find((candidate) => candidate.id === renamingSessionId);
+  const session = view?.sessions.find((candidate) => candidate.id === renamingSessionId);
   closeSessionContextMenu();
   if (!session) return;
   const input = $<HTMLInputElement>("#rename-session-name");
@@ -706,7 +709,7 @@ async function renameSession(): Promise<void> {
   const button = $<HTMLButtonElement>("#rename-session-submit");
   button.disabled = true;
   try {
-    snapshot = await window.ait.renameSession({
+    view = await window.ait.renameSession({
       sessionId: renamingSessionId,
       name: $<HTMLInputElement>("#rename-session-name").value,
     });
@@ -744,12 +747,12 @@ async function changeSessionAgent(): Promise<void> {
   composerAgent.disabled = true;
   sendButton.disabled = true;
   try {
-    snapshot = await window.ait.setSessionAgent({
+    view = await window.ait.setSessionAgent({
       sessionId: session.id,
       agentId,
     });
     renderAll();
-    const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
+    const agent = view.agents.find((candidate) => candidate.id === agentId);
     showToast(`Session Agent changed to ${agent ? agentDisplayName(agent) : "Agent"}.`);
   } catch (error) {
     renderAll();
@@ -784,9 +787,9 @@ function updateComposerState(): void {
 
 async function changeSessionConfig(modelChanged: boolean, providerChanged = false): Promise<void> {
   const session = currentSession();
-  const agent = snapshot?.agents.find((candidate) => candidate.id === session?.agentId);
+  const agent = view?.agents.find((candidate) => candidate.id === session?.agentId);
   if (!session || !agent || session.active || pendingSessions.has(session.id)) return;
-  const provider = snapshot?.providers.find((p) => p.id === composerProvider.value);
+  const provider = view?.providers.find((p) => p.id === composerProvider.value);
   const model = providerChanged ? provider?.models[0] : provider?.models.find((m) => m.id === composerModel.value);
   if (!provider || !model) { renderAgents(); showToast("Configure models for this provider in Settings first.", true); return; }
   const effort = modelChanged ? agent.config.reasoning_effort : composerReasoning.value || null;
@@ -794,7 +797,7 @@ async function changeSessionConfig(modelChanged: boolean, providerChanged = fals
   pendingSessions.add(session.id);
   updateComposerState();
   try {
-    snapshot = await window.ait.setSessionConfig({ sessionId: session.id, config });
+    view = await window.ait.setSessionConfig({ sessionId: session.id, config });
   } catch (error) { showToast(errorMessage(error), true); }
   finally { pendingSessions.delete(session.id); renderAll(); }
 }
@@ -847,7 +850,7 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
 }
 
 function openProjectDialog(): void {
-  if (!snapshot) return;
+  if (!view) return;
   const agent = $<HTMLSelectElement>("#project-create-agent");
   agent.innerHTML = agentOptions();
   projectDialog.classList.remove("is-hidden");
@@ -859,7 +862,7 @@ function closeProjectDialog(): void {
 }
 
 function openProjectSettingsDialog(projectId: string | undefined): void {
-  const project = snapshot?.projects.find((candidate) => candidate.id === projectId);
+  const project = view?.projects.find((candidate) => candidate.id === projectId);
   if (!project) return;
   configuringProjectId = project.id;
   const options = agentOptions();
@@ -878,10 +881,11 @@ function closeProjectSettingsDialog(): void {
   configuringProjectId = undefined;
 }
 
-function selectProject(projectId: string | undefined): void {
-  if (!snapshot || !projectId || !snapshot.projects.some((project) => project.id === projectId)) return;
+async function selectProject(projectId: string | undefined): Promise<void> {
+  if (!view || !projectId || !view.projects.some((project) => project.id === projectId)) return;
+  view = await window.ait.view(projectId);
   selectedProjectId = projectId;
-  selectedSessionId = snapshot.sessions
+  selectedSessionId = view.sessions
     .filter((session) => session.projectId === projectId)
     .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
   resetTreeView();
@@ -908,7 +912,7 @@ async function createProject(): Promise<void> {
   button.textContent = "Creating…";
   try {
     const result = await window.ait.createProject({ name, workdir, agentId });
-    snapshot = result.snapshot;
+    view = result.view;
     selectedProjectId = result.selectedProjectId;
     selectedSessionId = undefined;
     resetTreeView();
@@ -927,11 +931,11 @@ async function createProject(): Promise<void> {
 }
 
 async function saveProjectBackend(): Promise<void> {
-  const project = snapshot?.projects.find((candidate) => candidate.id === configuringProjectId);
+  const project = view?.projects.find((candidate) => candidate.id === configuringProjectId);
   const agentId = $<HTMLSelectElement>("#project-backend").value;
   if (!project || !agentId) return;
   try {
-    snapshot = await window.ait.setProjectDefaultAgent({ projectId: project.id, agentId });
+    view = await window.ait.setProjectDefaultAgent({ projectId: project.id, agentId });
     renderAll();
     closeProjectSettingsDialog();
     showToast(`${project.name} backend updated.`);
@@ -967,7 +971,7 @@ async function createSession(): Promise<void> {
   button.textContent = "Creating…";
   try {
     const result = await window.ait.createSession({ projectId: project.id, agentId });
-    snapshot = result.snapshot;
+    view = result.view;
     selectedSessionId = result.selectedSessionId;
     resetTreeView();
     closeSessionDialog();
@@ -984,7 +988,7 @@ async function createSession(): Promise<void> {
 }
 
 function agentOptions(): string {
-  return snapshot?.agents
+  return view?.agents
     .filter((agent) => agent.enabled && !agent.ownerSessionId)
     .map((agent) => `<option value="${escapeAttribute(agent.id)}">${escapeHtml(agentLabel(agent))}</option>`)
     .join("") ?? "";
@@ -1039,9 +1043,9 @@ function renderSettings(): void {
     control.addEventListener("change", () => readSettingControl(control));
     control.addEventListener("input", () => readSettingControl(control));
   });
-  if (snapshot && settingsCategory === "models") {
-    disposeProviderSettings = renderProviderSettings($("#settings-fields"), snapshot, (updated, refreshSettings) => {
-      snapshot = updated;
+  if (view && settingsCategory === "models") {
+    disposeProviderSettings = renderProviderSettings($("#settings-fields"), view, (updated, refreshSettings) => {
+      view = updated;
       renderAll();
       if (refreshSettings && !settingsDialog.classList.contains("is-hidden")) renderSettings();
     }, showToast, initialProviderId);
@@ -1138,7 +1142,7 @@ function closeCommandPalette(): void {
 
 function renderCommandResults(): void {
   const query = $<HTMLInputElement>("#command-input").value.trim().toLowerCase();
-  const sessions = snapshot?.sessions.filter((session) =>
+  const sessions = view?.sessions.filter((session) =>
     `${session.title} ${session.description}`.toLowerCase().includes(query)) ?? [];
   const commands = [
     { id: "new-project", title: "Create Project", hint: "" },
@@ -1153,7 +1157,7 @@ function renderCommandResults(): void {
   ].join("") || '<div class="empty-details"><p>No matching command</p></div>';
   $("#command-results").querySelectorAll<HTMLElement>("[data-session]").forEach((button) => {
     button.addEventListener("click", () => {
-      const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.session);
+      const session = view?.sessions.find((candidate) => candidate.id === button.dataset.session);
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
       resetTreeView();

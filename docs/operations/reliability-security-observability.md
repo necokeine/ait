@@ -14,7 +14,7 @@ daemon 对每个实体操作 API 调用输出一行 JSON。日志与 `/v1/metric
 curl http://127.0.0.1:7314/v1/metric/list
 ```
 
-当前指标为进程内单调计数器，重启后清零；权威业务状态仍是 SQLite snapshot 和 durable
+当前指标为进程内单调计数器，重启后清零；权威业务状态仍是 SQLite 记录和 durable
 event outbox。不要把高基数关联标签转发到收费的远程指标后端，除非先配置采样与聚合。
 
 ## Project 导出与导入
@@ -33,7 +33,7 @@ cargo run -p ait-cli -- import --input project-1.ait.json --workdir /absolute/ne
 
 归档保留完整 Message 树/分支、Message ID 和 parent edge，以及 Project、Agent、Session
 revision。为保证恢复安全，Session 的 `active_run_id` 会清空；Run、Cron、附件字节和凭证
-不会导出。导入在一个 SQLite snapshot 事务中完成，任一 ID 冲突、悬空 parent、环、跨
+不会导出。导入在一个 SQLite 事务中完成，任一 ID 冲突、悬空 parent、环、跨
 Project 指针、未知 Agent 或版本不兼容都会整体拒绝。
 
 分享归档前仍需人工检查 Message 和工具结果；“不含凭证”不代表内容不敏感。
@@ -60,7 +60,7 @@ adapter 前必须把该流程实现为可 dry-run 的维护命令。
 ## SQLite 备份
 
 不要直接复制处于 WAL 模式的 `.sqlite3` 文件。在线备份使用
-`SqliteControlStore::backup_to`（SQLite Online Backup API）；备份包含 control snapshot
+`SqliteControlStore::backup_to`（SQLite Online Backup API）；备份包含 control records
 和 durable event outbox，不包含外置 provider secret。每次备份后：
 
 1. 以只读/隔离连接打开备份。
@@ -81,7 +81,7 @@ sqlite3 backups/ait-2026-09-04.sqlite3 "PRAGMA quick_check;"
 2. 保留故障现场副本，不在原文件上试修。
 3. 对备份执行 `PRAGMA quick_check;`。
 4. 恢复到一个新数据库路径；库内调用可使用 `SqliteControlStore::restore_from`。
-5. 用 `snapshot` 验证 revision、Project 数量、Session head 和 Message 路径；用
+5. 用 Projects/Sessions/Messages/Runs 的 list command 验证 Project 数量、Session head 和 Message 路径；用
    `events --after <已知 cursor>` 验证 outbox 连续性。
 6. 仅在验证通过后将 daemon 指向恢复库。恢复后的新写入从恢复 revision 继续；备份之后
    已确认成功的写入不会自动重放，需依据审计记录人工确认。

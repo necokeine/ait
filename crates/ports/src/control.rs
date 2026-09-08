@@ -1,87 +1,137 @@
+#![allow(missing_docs)]
+
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Optimistically versioned, transport-neutral control-plane snapshot.
+/// A durable control-plane entity family.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ControlRecordKind {
+    Project,
+    Agent,
+    Provider,
+    ProviderCredential,
+    RunCredential,
+    Session,
+    Message,
+    Run,
+    WorkspaceRunJournal,
+    Cron,
+    Settings,
+}
+
+/// One bounded record selection. Filters in a read are combined with union semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ControlFilter {
+    pub kind: ControlRecordKind,
+    pub id: Option<String>,
+    pub project_id: Option<String>,
+}
+
+impl ControlFilter {
+    #[must_use]
+    pub const fn all(kind: ControlRecordKind) -> Self {
+        Self {
+            kind,
+            id: None,
+            project_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn id(kind: ControlRecordKind, id: impl Into<String>) -> Self {
+        Self {
+            kind,
+            id: Some(id.into()),
+            project_id: None,
+        }
+    }
+
+    #[must_use]
+    pub fn project(kind: ControlRecordKind, project_id: impl Into<String>) -> Self {
+        Self {
+            kind,
+            id: None,
+            project_id: Some(project_id.into()),
+        }
+    }
+}
+
+/// One independently stored, versioned application record.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ControlSnapshot {
-    /// Revision used by compare-and-swap persistence.
-    pub revision: u64,
-    /// Application-owned serialized state.
+pub struct ControlRecord {
+    pub kind: ControlRecordKind,
+    pub id: String,
+    pub project_id: Option<String>,
     pub value: Value,
 }
 
-/// Event to append atomically with a snapshot change.
+/// A bounded record read and the database revision observed with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlRead {
+    pub revision: u64,
+    pub records: Vec<ControlRecord>,
+}
+
+/// One row-level change committed atomically with durable events.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ControlChange {
+    Put(ControlRecord),
+    Delete { kind: ControlRecordKind, id: String },
+}
+
+/// Event to append atomically with an entity change.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PendingEvent {
-    /// Stable event name.
     pub kind: String,
-    /// Optional aggregate identity.
     pub entity_id: Option<String>,
-    /// Versioned event payload.
     pub body: Value,
-    /// Unix timestamp in milliseconds.
     pub created_at: i64,
 }
 
 /// Durable event returned to a reconnecting client.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DurableEvent {
-    /// Monotonically increasing replay cursor.
     pub cursor: u64,
-    /// Stable event name.
     pub kind: String,
-    /// Optional aggregate identity.
     pub entity_id: Option<String>,
-    /// Versioned event payload.
     pub body: Value,
-    /// Unix timestamp in milliseconds.
     pub created_at: i64,
 }
 
 /// Retained cursor range used to detect an expired or future reconnect cursor.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EventBounds {
-    /// Oldest retained cursor, absent when the outbox is empty.
     pub oldest: Option<u64>,
-    /// Latest allocated cursor, absent when the outbox is empty.
     pub latest: Option<u64>,
 }
 
-/// One cursor-validated replay page read from a single storage snapshot.
+/// One cursor-validated replay page read at a single observed revision.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DurableEventPage {
-    /// Retained range observed atomically with `events`.
     pub bounds: EventBounds,
-    /// Ordered events strictly after the requested cursor.
     pub events: Vec<DurableEvent>,
-    /// Whether the requested cursor belonged to the observed retained range.
     pub cursor_valid: bool,
 }
 
 /// Latest bounded display projection for one active Run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgressCheckpoint {
-    /// Owning Run identity.
     pub run_id: String,
-    /// Versioned, transport-neutral progress projection.
     pub body: Value,
-    /// Unix timestamp in milliseconds.
     pub updated_at: i64,
 }
 
 /// Failures exposed by control-plane persistence adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlStoreError {
-    /// Another writer committed a newer snapshot.
     Conflict,
-    /// Safe adapter failure text.
     Other(String),
 }
 
 impl std::fmt::Display for ControlStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Conflict => formatter.write_str("control snapshot conflict"),
+            Self::Conflict => formatter.write_str("control record conflict"),
             Self::Other(message) => formatter.write_str(message),
         }
     }
@@ -89,49 +139,41 @@ impl std::fmt::Display for ControlStoreError {
 
 impl std::error::Error for ControlStoreError {}
 
-/// Persistence seam for the local control plane and its durable event outbox.
+/// Record-oriented persistence seam for the local control plane and event outbox.
 #[async_trait]
 pub trait ControlStore: Send + Sync {
-    /// Loads the latest committed application snapshot.
-    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError>;
+    /// Reads only records selected by the supplied filters.
+    async fn read(&self, filters: &[ControlFilter]) -> Result<ControlRead, ControlStoreError>;
 
-    /// Atomically replaces the expected snapshot and appends its events.
-    async fn commit(
+    /// Applies row-level changes if `expected_revision` is still current.
+    async fn apply(
         &self,
         expected_revision: u64,
-        value: Value,
+        changes: Vec<ControlChange>,
         events: Vec<PendingEvent>,
-    ) -> Result<ControlSnapshot, ControlStoreError>;
+    ) -> Result<u64, ControlStoreError>;
 
-    /// Replays durable events strictly after `cursor` in cursor order.
     async fn replay(
         &self,
         cursor: u64,
         limit: usize,
     ) -> Result<Vec<DurableEvent>, ControlStoreError>;
 
-    /// Returns the retained durable cursor range.
     async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError>;
 
-    /// Atomically validates a cursor against the retained range and reads the
-    /// following page so concurrent retention cannot create a silent gap.
     async fn replay_page(
         &self,
         cursor: u64,
         limit: usize,
     ) -> Result<DurableEventPage, ControlStoreError>;
 
-    /// Atomically appends a batch of progress events and replaces the Run's
-    /// compact progress checkpoint without rewriting the workspace snapshot.
     async fn save_progress(
         &self,
         checkpoint: ProgressCheckpoint,
         events: Vec<PendingEvent>,
     ) -> Result<(), ControlStoreError>;
 
-    /// Loads checkpoints for active or interrupted clients to resynchronize.
     async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError>;
 
-    /// Removes transient display state after the immutable result is durable.
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError>;
 }

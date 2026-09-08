@@ -159,7 +159,7 @@ test("renders ordered Codex progress collapsed before an independent final answe
   assert.ok(html.indexOf("Read file") < html.indexOf("Implemented and verified."));
 });
 
-test("uses the last phased Codex message as the final answer for compatible snapshots", () => {
+test("uses the last phased Codex message as the final answer for compatible views", () => {
   const message = projectMessage({
     ...input,
     role: "assistant",
