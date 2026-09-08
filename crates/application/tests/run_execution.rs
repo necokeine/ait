@@ -182,6 +182,7 @@ impl ControlStore for PausingProgressStore {
 struct RecordingAgent {
     store: Arc<ConflictingStore>,
     calls: AtomicUsize,
+    recoveries: AtomicUsize,
     fail: AtomicBool,
 }
 
@@ -220,6 +221,16 @@ impl WorkspaceAgent for RecordingAgent {
             operations: Vec::new(),
             output_items: Vec::new(),
         })
+    }
+
+    async fn recover_checkpointed(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        result: WorkspaceAgentResponse,
+        _baseline_ref: Option<String>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.recoveries.fetch_add(1, Ordering::Relaxed);
+        Ok(result)
     }
 }
 
@@ -264,6 +275,7 @@ impl Fixture {
         let agent = Arc::new(RecordingAgent {
             store: store.clone(),
             calls: AtomicUsize::new(0),
+            recoveries: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
         });
         let service = LocalControlService::with_workspace_agent(store.clone(), agent.clone());
@@ -476,10 +488,120 @@ async fn post_admission_failures_queries_and_duplicate_cron_triggers_never_start
         ErrorCode::RunAlreadyTerminal
     );
     assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
-    assert_eq!(fixture.service.mark_interrupted_runs().await.unwrap(), 0);
+    assert!(
+        fixture
+            .service
+            .recover_interrupted_runs()
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let recovered = run(&fixture.service, Command::GetRun { run_id: cron.id }).await;
     assert_eq!(recovered.status, "failed");
     assert_eq!(recovered.error.unwrap().code, ErrorCode::RunQueueConflict);
+}
+
+#[tokio::test]
+async fn startup_recovery_executes_a_queued_run_once_without_query_side_effects() {
+    let fixture = Fixture::new().await;
+    let completed = run(&fixture.service, send_message()).await;
+    rewind_completed_run(&fixture.store, &completed, "queued").await;
+    let service =
+        LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+
+    let before = fixture.agent.calls.load(Ordering::Relaxed);
+    let queried = run(
+        &service,
+        Command::GetRun {
+            run_id: completed.id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(queried.status, "queued");
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), before);
+
+    let recovered = service.recover_interrupted_runs().await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, "completed");
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), before + 1);
+    assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn startup_recovery_finalizes_a_checkpoint_without_reinvoking_the_agent() {
+    let fixture = Fixture::new().await;
+    let completed = run(&fixture.service, send_message()).await;
+    rewind_completed_run(&fixture.store, &completed, "settling").await;
+    let service =
+        LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+    let calls = fixture.agent.calls.load(Ordering::Relaxed);
+
+    let recovered = service.recover_interrupted_runs().await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, "completed");
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
+    assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), 1);
+    let snapshot = fixture.store.load().await.unwrap();
+    let run_messages = snapshot.value["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| {
+            message["parent_message_id"] == completed.base_message_id
+                && message["role"] == "assistant"
+        })
+        .count();
+    assert_eq!(run_messages, 1);
+}
+
+#[tokio::test]
+async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_session() {
+    let fixture = Fixture::new().await;
+    let completed = run(&fixture.service, send_message()).await;
+    rewind_completed_run(&fixture.store, &completed, "running").await;
+    let service =
+        LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+    let calls = fixture.agent.calls.load(Ordering::Relaxed);
+
+    let recovered = service.recover_interrupted_runs().await.unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].status, "interrupted");
+    assert_eq!(
+        recovered[0].error.as_ref().unwrap().code,
+        ErrorCode::RunRecoveryFailed
+    );
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
+    assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), 0);
+    assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
+}
+
+async fn rewind_completed_run(store: &ConflictingStore, completed: &RunView, status: &str) {
+    let snapshot = store.load().await.unwrap();
+    let mut value = snapshot.value;
+    value["messages"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|message| message["id"] != completed.last_message_id.as_deref().unwrap());
+    let run = value["runs"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|run| run["id"] == completed.id)
+        .unwrap();
+    run["status"] = Value::String(status.into());
+    run["phase"] = Value::String(if status == "settling" {
+        "result_persisted".into()
+    } else {
+        status.into()
+    });
+    run["last_message_id"] = Value::Null;
+    run["error"] = Value::Null;
+    value["sessions"][0]["active_run_id"] = Value::String(completed.id.clone());
+    value["sessions"][0]["current_message_id"] = Value::String(completed.base_message_id.clone());
+    store
+        .commit(snapshot.revision, value, Vec::new())
+        .await
+        .unwrap();
 }
 
 fn config() -> ait_contracts::AgentConfiguration {

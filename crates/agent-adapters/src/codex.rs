@@ -16,7 +16,7 @@ use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
     WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
     WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
-    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -236,6 +236,7 @@ async fn invoke_isolated_workspace(
     adapter: Arc<dyn AgentAdapter>,
     request: WorkspaceAgentInvocation,
     progress: Option<Arc<dyn WorkspaceProgressReporter>>,
+    result_sink: Option<&dyn WorkspaceResultSink>,
 ) -> Result<WorkspaceAgentResponse, DomainError> {
     if request.cancellation.is_cancelled() {
         return Err(domain_error(
@@ -300,6 +301,17 @@ async fn invoke_isolated_workspace(
     if let Err(failure) = workspace.validate_primary() {
         return Err(workspace.retain(failure));
     }
+    let result = WorkspaceAgentResponse {
+        assistant_text,
+        commit_id,
+        operations,
+        output_items,
+    };
+    if let Some(result_sink) = result_sink
+        && let Err(failure) = result_sink.checkpoint(result.clone()).await
+    {
+        return Err(workspace.settle_failure(failure));
+    }
     if let Some(gate) = integration_gate.as_deref() {
         if let Err(failure) = gate.begin_integration().await {
             return Err(workspace.settle_failure(failure));
@@ -312,17 +324,172 @@ async fn invoke_isolated_workspace(
         )));
     }
     if let Err(failure) = workspace
-        .integrate(commit_id.as_deref(), integration_gate.as_deref())
+        .integrate(result.commit_id.as_deref(), integration_gate.as_deref())
         .await
     {
         return Err(workspace.retain(failure));
     }
-    Ok(WorkspaceAgentResponse {
-        assistant_text,
-        commit_id,
-        operations,
-        output_items,
-    })
+    Ok(result)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "recovery keeps every Run-ref, worktree and primary-checkout validation in one auditable sequence"
+)]
+async fn recover_isolated_workspace(
+    request: WorkspaceAgentInvocation,
+    result: &WorkspaceAgentResponse,
+    baseline_ref: Option<&str>,
+) -> Result<(), DomainError> {
+    let primary = fs::canonicalize(&request.cwd).map_err(|failure| {
+        domain_error(
+            ErrorCode::ProjectPathNotFound,
+            format!("cannot resolve Project workdir during recovery: {failure}"),
+            false,
+        )
+    })?;
+    let current_ref = ensure_primary_baseline_or_integrated(
+        &primary,
+        &request.baseline_commit,
+        &request.baseline_index_tree,
+        result.commit_id.as_deref(),
+    )?;
+    if current_ref.as_deref() != baseline_ref {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            "Project branch changed after the workspace result checkpoint; recovery material was preserved",
+            false,
+        ));
+    }
+
+    if result
+        .commit_id
+        .as_deref()
+        .is_some_and(|commit| git_head(&primary).as_deref() == Some(commit))
+    {
+        return Ok(());
+    }
+
+    let identity = format!("{:x}", Sha256::digest(request.request_id.as_bytes()));
+    let git_dir = absolute_git_dir(&primary)?;
+    let worktree = git_dir.join("ait").join("workspaces").join(&identity);
+    let run_ref = format!("refs/ait/runs/{identity}");
+    let run_ref_oid = exact_ref_oid(&primary, &run_ref)?;
+    if result.commit_id.is_none() && !worktree.exists() && run_ref_oid.is_none() {
+        return Ok(());
+    }
+    let expected_run_ref = result
+        .commit_id
+        .as_deref()
+        .unwrap_or(&request.baseline_commit);
+    if run_ref_oid.as_deref() != Some(expected_run_ref) {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "checkpointed workspace ref {run_ref} no longer identifies the recorded result; recovery material was preserved"
+            ),
+            false,
+        ));
+    }
+    if let Some(commit_id) = result.commit_id.as_deref() {
+        let rollback_root = git_dir
+            .join("ait")
+            .join("integration-rollbacks")
+            .join(commit_id);
+        if rollback_root.exists() {
+            return Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "workspace integration has unresolved rollback material at {}; manual recovery is required",
+                    rollback_root.display()
+                ),
+                false,
+            ));
+        }
+    }
+
+    if !worktree.exists() {
+        let _ = git(&primary, &["worktree", "prune"]);
+        let worktree_text = worktree.to_string_lossy().into_owned();
+        git(
+            &primary,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--no-checkout",
+                &worktree_text,
+                expected_run_ref,
+            ],
+        )?;
+        if let Err(failure) = git(&worktree, &["reset", "--hard", expected_run_ref]) {
+            return Err(settle_setup_failure(&primary, &worktree, &run_ref, failure));
+        }
+    }
+    ensure_isolated_setup(&worktree, expected_run_ref)?;
+    let mut workspace = IsolatedWorkspace {
+        primary,
+        worktree,
+        run_ref,
+        baseline: request.baseline_commit,
+        baseline_index_tree: request.baseline_index_tree,
+        primary_head_ref: baseline_ref.map(str::to_owned),
+    };
+    if let Some(gate) = request.integration_gate.as_deref() {
+        gate.begin_integration().await?;
+    } else if request.cancellation.is_cancelled() {
+        return Err(domain_error(
+            ErrorCode::RunCancelled,
+            "run was cancelled before checkpointed changes were recovered",
+            false,
+        ));
+    }
+    workspace
+        .integrate(
+            result.commit_id.as_deref(),
+            request.integration_gate.as_deref(),
+        )
+        .await
+        .map_err(|failure| workspace.retain(failure))
+}
+
+fn ensure_primary_baseline_or_integrated(
+    primary: &Path,
+    baseline: &str,
+    baseline_index_tree: &str,
+    commit_id: Option<&str>,
+) -> Result<Option<String>, DomainError> {
+    let head = ensure_clean_worktree(primary)?.ok_or_else(|| {
+        domain_error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Project repository has no readable HEAD commit",
+            false,
+        )
+    })?;
+    let expected = commit_id.unwrap_or(baseline);
+    if head != baseline && head != expected {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            format!(
+                "Project HEAD changed after the workspace result checkpoint (expected {baseline} or {expected}, found {head})"
+            ),
+            false,
+        ));
+    }
+    let index_tree = git_index_tree(primary)?;
+    let expected_tree = if head == baseline {
+        baseline_index_tree.to_owned()
+    } else {
+        git_commit_tree(primary, &head)?
+    };
+    if index_tree != expected_tree {
+        return Err(domain_error(
+            ErrorCode::RunRecoveryFailed,
+            "Project index changed after the workspace result checkpoint; recovery material was preserved",
+            false,
+        ));
+    }
+    symbolic_head(primary)
 }
 
 async fn collect_workspace_output(
@@ -613,7 +780,7 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
-        invoke_isolated_workspace(Arc::clone(&self.adapter), request, None).await
+        invoke_isolated_workspace(Arc::clone(&self.adapter), request, None, None).await
     }
 
     async fn invoke_with_progress(
@@ -621,7 +788,32 @@ impl WorkspaceAgent for CodexWorkspaceAgent {
         request: WorkspaceAgentInvocation,
         progress: Arc<dyn WorkspaceProgressReporter>,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
-        invoke_isolated_workspace(Arc::clone(&self.adapter), request, Some(progress)).await
+        invoke_isolated_workspace(Arc::clone(&self.adapter), request, Some(progress), None).await
+    }
+
+    async fn invoke_with_progress_and_checkpoint(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+        result_sink: &dyn WorkspaceResultSink,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        invoke_isolated_workspace(
+            Arc::clone(&self.adapter),
+            request,
+            Some(progress),
+            Some(result_sink),
+        )
+        .await
+    }
+
+    async fn recover_checkpointed(
+        &self,
+        request: WorkspaceAgentInvocation,
+        result: WorkspaceAgentResponse,
+        baseline_ref: Option<String>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        recover_isolated_workspace(request, &result, baseline_ref.as_deref()).await?;
+        Ok(result)
     }
 }
 

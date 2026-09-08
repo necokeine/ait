@@ -1,6 +1,6 @@
 //! AIT control-plane daemon entry point.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use ait_agent_adapters::codex::{
     CodexAppServerAdapter, CodexAppServerConfig, CodexSessionTitleGenerator, CodexWorkspaceAgent,
@@ -37,15 +37,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
     );
-    let interrupted = service
-        .mark_interrupted_runs()
+    let recovery_plan = service
+        .prepare_startup_recovery()
         .await
-        .map_err(|error| std::io::Error::other(format!("{}: {}", error.code, error.message)))?;
-    if interrupted > 0 {
-        eprintln!("Marked {interrupted} interrupted Run(s) as unrecovered");
-    }
+        .map_err(|failure| {
+            std::io::Error::other(format!(
+                "failed to scan and claim interrupted Runs ({}): {}",
+                failure.code, failure.message
+            ))
+        })?;
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
     eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
-    axum::serve(listener, ait_api_http::router(service)).await?;
+    let recovery_count = recovery_plan.len();
+    let recovery_service = service.clone();
+    let mut recovery =
+        tokio::spawn(async move { recovery_service.run_startup_recovery(recovery_plan).await });
+    let server = axum::serve(listener, ait_api_http::router(service)).into_future();
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => {
+            recovery.abort();
+            result?;
+        }
+        result = &mut recovery => {
+            match result {
+                Ok(Ok(recovered)) if !recovered.is_empty() => {
+                    eprintln!("reconciled {} Run(s) after startup", recovered.len());
+                }
+                Ok(Ok(_)) if recovery_count > 0 => {
+                    eprintln!("startup recovery plan contained no runnable work");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(failure)) => eprintln!(
+                    "startup recovery supervisor stopped ({}): {}",
+                    failure.code, failure.message
+                ),
+                Err(failure) => eprintln!("startup recovery supervisor failed: {failure}"),
+            }
+            server.await?;
+        }
+    }
     Ok(())
 }

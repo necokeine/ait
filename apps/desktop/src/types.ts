@@ -133,6 +133,15 @@ export interface DesktopSnapshot {
   messages: DesktopMessage[];
   runs: DesktopRun[];
   runProgress: RunProgress[];
+  recoveryNotices?: Array<{
+    projectId: string;
+    projectName: string;
+    sessionId?: string;
+    sessionTitle?: string;
+    runId: string;
+    code?: string;
+    message: string;
+  }>;
 }
 
 export type SettingCategory =

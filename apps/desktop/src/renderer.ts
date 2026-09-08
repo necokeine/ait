@@ -203,12 +203,34 @@ function bindInteractions(): void {
 
 function renderAll(): void {
   if (!snapshot) return;
+  renderRecoveryNotices();
   renderProjects();
   renderAgents();
   renderConversation();
   renderTree();
   updateComposerState();
   agentsPage.render(snapshot);
+}
+
+function renderRecoveryNotices(): void {
+  if (!snapshot) return;
+  const container = $<HTMLElement>("#recovery-notices");
+  const notices = snapshot.recoveryNotices ?? [];
+  container.classList.toggle("is-hidden", notices.length === 0);
+  container.innerHTML = notices.map((notice) => `<button type="button" class="recovery-notice" data-recovery-project="${escapeAttribute(notice.projectId)}"${notice.sessionId ? ` data-recovery-session="${escapeAttribute(notice.sessionId)}"` : ""}>
+    <strong>Workspace recovery needs review</strong>
+    <span>${escapeHtml(notice.projectName)}${notice.sessionTitle ? ` / ${escapeHtml(notice.sessionTitle)}` : ""} · Run ${escapeHtml(notice.runId.slice(0, 8))}</span>
+    <small>${escapeHtml(notice.message)}</small>
+  </button>`).join("");
+  container.querySelectorAll<HTMLElement>("[data-recovery-project]").forEach((notice) => {
+    notice.addEventListener("click", () => {
+      selectedProjectId = notice.dataset.recoveryProject;
+      selectedSessionId = notice.dataset.recoverySession;
+      resetTreeView();
+      showPage("sessions");
+      renderAll();
+    });
+  });
 }
 
 function showPage(page: "sessions" | "agents"): void {

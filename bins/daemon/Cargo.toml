@@ -14,9 +14,12 @@ ait-ports = { path = "../../crates/ports" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
+ait-contracts = { path = "../../crates/contracts" }
+ait-domain = { path = "../../crates/domain" }
+async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
 tempfile = "3"

@@ -9,10 +9,17 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
 
+use ait_application::LocalControlService;
+use ait_contracts::{Command as ControlCommand, CommandResult};
+use ait_domain::DomainError;
+use ait_ports::{ControlStore, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_storage_sqlite::SqliteControlStore;
+use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -22,6 +29,23 @@ const ASSISTANT_RESPONSE: &str = "Generated through Codex over the daemon HTTP A
 struct DaemonGuard {
     child: Child,
     log_path: PathBuf,
+}
+
+struct SeedAgent;
+
+#[async_trait]
+impl WorkspaceAgent for SeedAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "seeded queued result".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
 }
 
 impl DaemonGuard {
@@ -205,6 +229,146 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     drop(stalled_stream);
 }
 
+#[tokio::test]
+async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_once() {
+    const DESKTOP_READINESS_WINDOW: Duration = Duration::from_secs(15);
+    let temporary = TempDir::new().unwrap();
+    let project = temporary.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let database = temporary.path().join("ait.sqlite3");
+    let run_id = seed_queued_run(&database, &project).await;
+
+    let codex_log = temporary.path().join("codex.jsonl");
+    let fake_bin = temporary.path().join("bin");
+    fs::create_dir(&fake_bin).unwrap();
+    install_fake_codex(&fake_bin.join("codex"));
+    let address = unused_loopback_address();
+    let daemon_log = temporary.path().join("daemon.log");
+    let log = File::create(&daemon_log).unwrap();
+    let mut search_paths = vec![fake_bin];
+    search_paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    let started_at = Instant::now();
+    let child = Command::new(env!("CARGO_BIN_EXE_ait-daemon"))
+        .args([
+            "--database",
+            database.to_str().unwrap(),
+            "--listen",
+            &address.to_string(),
+        ])
+        .env("PATH", env::join_paths(search_paths).unwrap())
+        .env("AIT_FAKE_CODEX_LOG", &codex_log)
+        .env("AIT_FAKE_CODEX_DELAY_SECONDS", "16")
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log))
+        .spawn()
+        .unwrap();
+    let mut daemon = DaemonGuard {
+        child,
+        log_path: daemon_log,
+    };
+    let base_url = format!("http://{address}");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    wait_until_ready(&client, &base_url, &mut daemon).await;
+    assert!(started_at.elapsed() < DESKTOP_READINESS_WINDOW);
+
+    tokio::time::sleep(
+        DESKTOP_READINESS_WINDOW.saturating_sub(started_at.elapsed()) + Duration::from_millis(250),
+    )
+    .await;
+    daemon.assert_running();
+    let completed = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let snapshot: Value = client
+                .get(format!("{base_url}/v1/workspace/snapshot"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let run = snapshot["result"]["value"]["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|run| run["id"] == run_id)
+                .unwrap();
+            if run["status"] == "completed" {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("recovered Run should complete after the blocked Agent is released");
+    assert_ok(&completed);
+    daemon.assert_running();
+    let protocol = fs::read_to_string(codex_log).unwrap();
+    assert_eq!(protocol.matches("\"method\":\"turn/start\"").count(), 1);
+}
+
+async fn seed_queued_run(database: &Path, project: &Path) -> String {
+    let store = Arc::new(SqliteControlStore::open(database).unwrap());
+    let service = LocalControlService::with_workspace_agent(store.clone(), Arc::new(SeedAgent));
+    for command in [
+        ControlCommand::RegisterProject {
+            id: "recovery-project".into(),
+            name: "Recovery Project".into(),
+            workdir: project.display().to_string(),
+            repo_url: None,
+        },
+        ControlCommand::RegisterAgent {
+            id: "recovery-agent".into(),
+            name: "Codex".into(),
+            config: ait_contracts::AgentConfiguration {
+                provider_id: "builtin-codex".into(),
+                model: "gpt-5.6-sol".into(),
+                reasoning_effort: Some("high".into()),
+            },
+        },
+        ControlCommand::CreateSession {
+            id: "recovery-session".into(),
+            project_id: "recovery-project".into(),
+            agent_id: "recovery-agent".into(),
+            at_message_id: None,
+        },
+    ] {
+        let response = service.execute(command).await;
+        assert!(response.ok, "{:?}", response.error);
+    }
+    let response = service
+        .execute(ControlCommand::SendMessage {
+            session_id: "recovery-session".into(),
+            text: "Recover this queued Run.".into(),
+        })
+        .await;
+    let CommandResult::Run(completed) = response.result.unwrap() else {
+        panic!("expected seeded Run");
+    };
+    assert_eq!(completed.status, "completed");
+
+    let snapshot = store.load().await.unwrap();
+    let mut value = snapshot.value;
+    value["messages"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|message| message["id"] != completed.last_message_id.as_deref().unwrap());
+    let run = value["runs"].as_array_mut().unwrap().first_mut().unwrap();
+    run["status"] = Value::String("queued".into());
+    run["phase"] = Value::String("queued".into());
+    run["last_message_id"] = Value::Null;
+    run["error"] = Value::Null;
+    value["sessions"][0]["active_run_id"] = Value::String(completed.id.clone());
+    value["sessions"][0]["current_message_id"] = Value::String(completed.base_message_id.clone());
+    store
+        .commit(snapshot.revision, value, Vec::new())
+        .await
+        .unwrap();
+    completed.id
+}
+
 fn unused_loopback_address() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -299,6 +463,7 @@ esac
 printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
 read_line
 printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-http-test"}}}}}}'
+[ -z "$AIT_FAKE_CODEX_DELAY_SECONDS" ] || sleep "$AIT_FAKE_CODEX_DELAY_SECONDS"
 printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":""}}}}}}'
 printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
 printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":"Inspecting the project."}}}}}}'
