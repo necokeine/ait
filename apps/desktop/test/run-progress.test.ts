@@ -101,7 +101,15 @@ test("renders failure and cancellation as terminal states rather than connection
   assert.ok(!failed.includes("Connection interrupted"));
   const cancelled = renderRunTerminal("cancelled", undefined, "Codex");
   assert.ok(cancelled.includes("Run cancelled"));
-  const cancelledAfterCommit = renderRunTerminal("cancelled", undefined, "Codex", "abc123");
+  const cancelledAfterCommit = renderRunTerminal(
+    "cancelled",
+    undefined,
+    "Codex",
+    undefined,
+    "run-a",
+    "project-a",
+    "abc123",
+  );
   assert.ok(cancelledAfterCommit.includes("abc123"));
   assert.ok(cancelledAfterCommit.includes("completed during settlement"));
 });

@@ -965,7 +965,7 @@ async fn cancellation_wins_the_finalization_gate_before_integration() {
     else {
         panic!()
     };
-    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.status, "cancelling");
     agent.begin_integration.add_permits(1);
 
     let CommandResult::Run(settled) = running.await.unwrap() else {

@@ -301,7 +301,9 @@ impl HostProviderModelCatalog for CodexAppServerAdapter {
                 false,
             )
         })?;
-        let mut child = self.spawn_process(&cwd, None).map_err(adapter_domain_error)?;
+        let mut child = self
+            .spawn_process(&cwd, None)
+            .map_err(adapter_domain_error)?;
         let stdout = child.stdout.take().ok_or_else(|| {
             domain_error(
                 ErrorCode::ProviderFailed,
@@ -822,20 +824,26 @@ impl IsolatedWorkspace {
     }
 
     fn retain(&self, mut failure: DomainError) -> DomainError {
-        failure.details = Some(ait_domain::DomainMetadata(BTreeMap::from([
-            (
-                "retained_worktree_path".into(),
-                Value::String(self.worktree.to_string_lossy().into_owned()),
-            ),
-            (
-                "retained_run_ref".into(),
-                Value::String(self.run_ref.clone()),
-            ),
-            (
-                "retained_source_run_id".into(),
-                Value::String(self.owner_run_id.clone()),
-            ),
-        ])));
+        let mut details = failure
+            .details
+            .take()
+            .map_or_else(BTreeMap::new, |value| value.0);
+        details.insert(
+            "retained_worktree_path".into(),
+            Value::String(self.worktree.to_string_lossy().into_owned()),
+        );
+        details.insert(
+            "retained_run_ref".into(),
+            Value::String(self.run_ref.clone()),
+        );
+        details.insert(
+            "retained_source_run_id".into(),
+            Value::String(self.owner_run_id.clone()),
+        );
+        if let Some(commit_id) = git_head(&self.worktree).filter(|head| head != &self.baseline) {
+            details.insert("workspace_commit_id".into(), Value::String(commit_id));
+        }
+        failure.details = Some(ait_domain::DomainMetadata(details));
         failure.message = if self.worktree.exists() {
             format!(
                 "{}; isolated Run changes were retained at {} under {}",

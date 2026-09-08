@@ -747,7 +747,7 @@ impl WorkspaceAgent for ImmediateCommitAgent {
 }
 
 #[tokio::test]
-async fn cancellation_before_the_final_store_wins_without_orphaning_the_commit() {
+async fn integration_before_the_final_store_rejects_cancellation_and_audits_the_commit() {
     let directory = TempDir::new().unwrap();
     let store = Arc::new(FinalCommitBarrierStore {
         inner: SqliteControlStore::in_memory().unwrap(),
@@ -809,23 +809,25 @@ async fn cancellation_before_the_final_store_wins_without_orphaning_the_commit()
     let snapshot = store.load().await.unwrap();
     let run_id = snapshot.value["runs"][0]["id"].as_str().unwrap().to_owned();
     assert_eq!(snapshot.value["runs"][0]["status"], "settling");
-    let stopping = run(
-        &service,
-        Command::CancelRun {
+    let cancellation = service
+        .execute(Command::CancelRun {
             run_id: run_id.clone(),
-        },
-    )
-    .await;
-    assert_eq!(stopping.status, "cancelling");
-    store.completed_release.add_permits(1);
-    let cancelled = execution.await.unwrap();
-    assert_eq!(cancelled.status, "cancelled");
+        })
+        .await;
+    assert!(!cancellation.ok);
     assert_eq!(
-        cancelled.workspace_commit_id.as_deref(),
+        cancellation.error.unwrap().code,
+        ErrorCode::RunAlreadyTerminal
+    );
+    store.completed_release.add_permits(1);
+    let completed = execution.await.unwrap();
+    assert_eq!(completed.status, "completed");
+    assert_eq!(
+        completed.workspace_commit_id.as_deref(),
         Some("commit-before-final-store")
     );
     let snapshot = store.load().await.unwrap();
-    assert_eq!(snapshot.value["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(snapshot.value["messages"].as_array().unwrap().len(), 3);
     assert!(snapshot.value["sessions"][0]["active_run_id"].is_null());
 }
 

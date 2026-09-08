@@ -193,6 +193,140 @@ done
     unrelated.wait().unwrap();
 }
 
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the production-wiring fixture keeps its process choreography visible"
+)]
+async fn root_exit_and_scan_time_forking_do_not_orphan_marked_descendants() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let binary = cwd.join("exiting-codex");
+    fs::write(
+        cwd.join("forking-tool.py"),
+        r#"import os
+import pathlib
+import time
+
+os.setsid()
+
+def record(pid):
+    fd = os.open("forked-pids", os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, f"{pid}\n".encode())
+    finally:
+        os.close(fd)
+
+record(os.getpid())
+while not pathlib.Path("fork-now").exists():
+    time.sleep(0.001)
+
+for index in range(40):
+    child = os.fork()
+    if child == 0:
+        grandchild = os.fork()
+        if grandchild == 0:
+            record(os.getpid())
+            time.sleep(300)
+        record(os.getpid())
+        time.sleep(0.02)
+        os._exit(0)
+    record(child)
+    if index == 0:
+        pathlib.Path("first-forked").touch()
+    time.sleep(0.005)
+
+time.sleep(300)
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &binary,
+        r#"#!/bin/sh
+echo $$ > child.pid
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
+    *'"id":1'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-root-exit"}}}' ;;
+    *'"id":2'*)
+      python3 forking-tool.py </dev/null >/dev/null 2>&1 &
+      printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-root-exit"}}}'
+      ;;
+    *'"id":3'*)
+      : > interrupt-seen
+      : > fork-now
+      while [ ! -f first-forked ]; do sleep 0.001; done
+      exit 0
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexAppServerAdapter::new(CodexAppServerConfig {
+        codex_binary: binary,
+        interrupt_grace_period: Duration::from_millis(200),
+        ..CodexAppServerConfig::default()
+    })
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut stream = adapter
+        .run(AgentRunRequest {
+            request_id: "root-exit-fork-race".into(),
+            model: None,
+            reasoning_effort: None,
+            project_instructions: None,
+            prompt: "hello".into(),
+            cwd: cwd.clone(),
+            resume_thread_id: None,
+            sandbox: SandboxMode::ReadOnly,
+            approval_policy: ApprovalPolicy::Never,
+            output_schema: None,
+            cancellation: cancellation.clone(),
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !matches!(
+            stream.next().await,
+            Some(Ok(AgentEvent::TurnStarted { .. }))
+        ) {}
+    })
+    .await
+    .expect("fake app-server must start a turn");
+    let root_pid = read_pid(&cwd, "child.pid").await;
+    let mut unrelated = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .unwrap();
+
+    cancellation.cancel();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while stream.next().await.is_some() {}
+    })
+    .await
+    .expect("root exit and concurrent descendant forking must still settle");
+
+    assert!(cwd.join("interrupt-seen").exists());
+    assert_dead(root_pid.trim()).await;
+    let forked = fs::read_to_string(cwd.join("forked-pids")).unwrap();
+    let forked = forked.lines().collect::<std::collections::HashSet<_>>();
+    assert!(
+        forked.len() >= 3,
+        "fixture must create a detached process tree"
+    );
+    for pid in forked {
+        assert_dead(pid).await;
+    }
+    assert!(
+        unrelated.try_wait().unwrap().is_none(),
+        "owner-marker cleanup must not kill an unrelated process"
+    );
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
+}
+
 async fn read_pid(cwd: &std::path::Path, filename: &str) -> String {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {

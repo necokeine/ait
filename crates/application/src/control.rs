@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     fs::{File, OpenOptions},
     panic::AssertUnwindSafe,
@@ -19,8 +19,8 @@ use ait_contracts::{
     SettingsView, WorkspaceView, default_settings, settings_schema,
 };
 use ait_domain::{
-    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
-    MessageId, ProjectId, RunId, RunTrigger, TimestampMs,
+    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, DomainMetadata,
+    ErrorCode, MessageId, ProjectId, RunId, RunTrigger, TimestampMs,
 };
 use ait_ports::{
     AdoptedWorkspace, AgentProviderGateway, ControlStore, ControlStoreError,
@@ -592,7 +592,10 @@ impl LocalControlService {
         });
         let result = if run.provider.kind == AgentMode::Codex {
             match result {
-                Ok(output) => control.begin_integration().await.map(|()| output),
+                Ok(output) => match control.begin_integration().await {
+                    Ok(()) => Ok(output),
+                    Err(failure) => Err(with_workspace_commit_id(failure, output.commit_id)),
+                },
                 Err(failure) => Err(failure),
             }
         } else {
@@ -1446,7 +1449,7 @@ fn api_domain_error(error: ApiError) -> DomainError {
         code: error.code,
         message: error.message,
         retryable: error.retryable,
-        details: None,
+        details: error.details.map(|details| *details),
         cause_id: None,
     }
 }
@@ -2149,11 +2152,11 @@ fn cancel_run(
         .iter()
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-    if matches!(state.runs[index].status.as_str(), "cancelling" | "cancelled") {
-        return Ok((
-            CommandResult::Run(state.runs[index].clone()),
-            Vec::new(),
-        ));
+    if matches!(
+        state.runs[index].status.as_str(),
+        "cancelling" | "cancelled"
+    ) {
+        return Ok((CommandResult::Run(state.runs[index].clone()), Vec::new()));
     }
     if matches!(
         state.runs[index].status.as_str(),
@@ -3321,10 +3324,7 @@ fn apply_workspace_terminal_result(
     result: &Result<WorkspaceAgentResponse, DomainError>,
 ) {
     if run.status == "cancelling" {
-        run.workspace_commit_id = result
-            .as_ref()
-            .ok()
-            .and_then(|output| output.commit_id.clone());
+        run.workspace_commit_id = workspace_commit_id(result);
         run.status = "cancelled".into();
         let mut cancellation_error = error(
             ErrorCode::RunCancelled,
@@ -3407,6 +3407,39 @@ fn apply_workspace_terminal_result(
             .into();
             run.error = Some(api_error(failure));
         }
+    }
+}
+
+fn with_workspace_commit_id(mut failure: DomainError, commit_id: Option<String>) -> DomainError {
+    let Some(commit_id) = commit_id else {
+        return failure;
+    };
+    let mut details = failure
+        .details
+        .take()
+        .map_or_else(BTreeMap::new, |value| value.0);
+    details.insert("workspace_commit_id".into(), Value::String(commit_id));
+    failure.details = Some(DomainMetadata(details));
+    failure
+}
+
+fn workspace_commit_id(result: &Result<WorkspaceAgentResponse, DomainError>) -> Option<String> {
+    match result {
+        Ok(output) => output.commit_id.clone(),
+        Err(failure) => failure.details.as_ref().and_then(|details| {
+            details
+                .0
+                .get("workspace_commit_id")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    details
+                        .0
+                        .get("workspace_settlement")
+                        .and_then(|settlement| settlement.get("commit_id"))
+                        .and_then(Value::as_str)
+                })
+                .map(str::to_owned)
+        }),
     }
 }
 
