@@ -2,6 +2,10 @@
 
 ## 当前基线
 
+- `decisions/NEC-212/adr-001-workspace-run-recovery-and-git-settlement.md`：在 NEC-209 隔离
+  worktree/补偿发布协议之上保存稳定 operation/lease 与完整结果 checkpoint，并在 daemon readiness
+  后安全续跑 queued Run 或对账已 checkpoint 的 Git 结果。
+
 - `decisions/NEC-205/adr-001-live-run-progress-and-recovery.md`：daemon 异步 Run、Codex 统一进度事件、
   有界 checkpoint、cursor 回放后持续监听，以及桌面端增量展示与断线状态同步。
 

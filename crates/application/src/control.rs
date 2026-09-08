@@ -7,7 +7,10 @@ use std::{
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -26,7 +29,7 @@ use ait_ports::{
     AgentProviderGateway, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
     ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationGate,
-    WorkspaceOutputItem,
+    WorkspaceOutputItem, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -55,11 +58,89 @@ struct State {
     sessions: Vec<SessionView>,
     messages: Vec<MessageView>,
     runs: Vec<RunView>,
+    /// Durable completed Agent responses keyed by Run id. The production Codex
+    /// adapter writes this checkpoint before publishing its isolated commit.
+    #[serde(default)]
+    workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
     crons: Vec<CronView>,
     #[serde(default = "default_settings")]
     settings: SettingsDocument,
     #[serde(default = "default_settings_revision")]
     settings_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct WorkspaceRunJournal {
+    operation_id: String,
+    lease_epoch: u64,
+    #[serde(default)]
+    baseline_ref: Option<String>,
+    #[serde(default)]
+    result: Option<WorkspaceAgentResponse>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WorkspaceExecutionLease {
+    run_id: String,
+    operation_id: String,
+    lease_epoch: u64,
+}
+
+struct DurableWorkspaceResultSink {
+    service: LocalControlService,
+    lease: WorkspaceExecutionLease,
+    checkpointed: AtomicBool,
+}
+
+impl DurableWorkspaceResultSink {
+    fn is_checkpointed(&self) -> bool {
+        self.checkpointed.load(Ordering::Acquire)
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkspaceResultSink for DurableWorkspaceResultSink {
+    async fn checkpoint(&self, result: WorkspaceAgentResponse) -> Result<(), DomainError> {
+        self.service
+            .persist_workspace_result(&self.lease, result)
+            .await
+            .map_err(api_domain_error)?;
+        self.checkpointed.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryPolicy {
+    ResumeSafe,
+    Ask,
+    Fail,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum WorkspaceRecoveryClaim {
+    Execute,
+    Finalize(WorkspaceExecutionLease),
+    Recovered(Box<RunView>),
+    Skip,
+}
+
+/// Read-only startup scan result. Run ownership changes only after the
+/// supervisor acquires the matching Project workspace lease.
+pub struct StartupRecoveryPlan {
+    run_ids: Vec<String>,
+}
+
+impl StartupRecoveryPlan {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.run_ids.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.run_ids.is_empty()
+    }
 }
 
 struct ForkSessionInput {
@@ -97,10 +178,30 @@ enum WorkspaceFinalizationDecision {
     Cancelled,
 }
 
-#[derive(Debug)]
 struct WorkspaceRunControl {
     cancellation: tokio_util::sync::CancellationToken,
     finalization: tokio::sync::Mutex<WorkspaceFinalizationDecision>,
+    integration_lease: OnceLock<WorkspaceIntegrationLease>,
+}
+
+#[derive(Clone)]
+struct WorkspaceIntegrationLease {
+    service: LocalControlService,
+    lease: WorkspaceExecutionLease,
+}
+
+impl std::fmt::Debug for WorkspaceRunControl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceRunControl")
+            .field("cancellation", &self.cancellation)
+            .field("finalization", &self.finalization)
+            .field(
+                "integration_lease_bound",
+                &self.integration_lease.get().is_some(),
+            )
+            .finish()
+    }
 }
 
 impl WorkspaceRunControl {
@@ -108,7 +209,18 @@ impl WorkspaceRunControl {
         Self {
             cancellation: tokio_util::sync::CancellationToken::new(),
             finalization: tokio::sync::Mutex::new(WorkspaceFinalizationDecision::Open),
+            integration_lease: OnceLock::new(),
         }
+    }
+
+    fn bind_integration_lease(
+        &self,
+        service: LocalControlService,
+        lease: WorkspaceExecutionLease,
+    ) -> Result<(), ApiError> {
+        self.integration_lease
+            .set(WorkspaceIntegrationLease { service, lease })
+            .map_err(|_| recovery_error("workspace integration lease was bound more than once"))
     }
 }
 
@@ -117,18 +229,28 @@ impl WorkspaceIntegrationGate for WorkspaceRunControl {
     async fn begin_integration(&self) -> Result<(), DomainError> {
         let mut decision = self.finalization.lock().await;
         match *decision {
-            WorkspaceFinalizationDecision::Open if !self.cancellation.is_cancelled() => {
-                *decision = WorkspaceFinalizationDecision::Integrating;
-                Ok(())
-            }
-            WorkspaceFinalizationDecision::Integrating => Ok(()),
+            WorkspaceFinalizationDecision::Open if !self.cancellation.is_cancelled() => {}
+            WorkspaceFinalizationDecision::Integrating => return Ok(()),
             WorkspaceFinalizationDecision::Open | WorkspaceFinalizationDecision::Cancelled => {
-                Err(DomainError::invariant(
+                return Err(DomainError::invariant(
                     ErrorCode::RunCancelled,
                     "run cancellation won before workspace integration",
-                ))
+                ));
             }
         }
+        let binding = self.integration_lease.get().ok_or_else(|| {
+            DomainError::invariant(
+                ErrorCode::RunRecoveryFailed,
+                "workspace integration has no durable execution lease",
+            )
+        })?;
+        binding
+            .service
+            .claim_workspace_integration(&binding.lease)
+            .await
+            .map_err(api_domain_error)?;
+        *decision = WorkspaceFinalizationDecision::Integrating;
+        Ok(())
     }
 }
 
@@ -180,6 +302,7 @@ impl Default for State {
             sessions: Vec::new(),
             messages: Vec::new(),
             runs: Vec::new(),
+            workspace_run_journals: HashMap::new(),
             crons: Vec::new(),
             settings: default_settings(),
             settings_revision: default_settings_revision(),
@@ -498,24 +621,8 @@ impl LocalControlService {
             .iter()
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-        let project = state
-            .projects
-            .iter()
-            .find(|project| project.id == run.project_id)
-            .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-        let user_text = state
-            .messages
-            .iter()
-            .find(|message| message.id == run.base_message_id)
-            .and_then(|message| message.text.clone())
-            .ok_or_else(|| error(ErrorCode::MessageNotFound, "run input not found", false))?;
-        let message_baseline = state
-            .messages
-            .iter()
-            .find(|message| message.id == run.base_message_id)
-            .and_then(|message| message.git_commit.clone());
-        let workdir = Path::new(&project.workdir).to_path_buf();
-        if !self.set_run_running(&run.id).await? {
+        let run = run.clone();
+        let Some(lease) = self.set_run_running(&run.id).await? else {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let state = decode_state(snapshot.value)?;
             return state
@@ -523,22 +630,26 @@ impl LocalControlService {
                 .into_iter()
                 .find(|candidate| candidate.id == run.id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false));
-        }
-        let progress = ProgressPump::start(self.store.clone(), run);
+        };
+        control.bind_integration_lease(self.clone(), lease.clone())?;
+        let progress = ProgressPump::start(self.store.clone(), &run);
         let reporter = progress.reporter();
         let cancellation = control.cancellation.clone();
+        let result_sink = DurableWorkspaceResultSink {
+            service: self.clone(),
+            lease: lease.clone(),
+            checkpointed: AtomicBool::new(false),
+        };
         let call = async {
             match run.provider.kind {
-                AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, run).await,
+                AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, &run).await,
                 AgentMode::Codex => {
-                    self.invoke_codex_workspace(
+                    self.invoke_codex_workspace_checkpointed(
                         &state,
-                        run,
-                        workdir,
-                        user_text,
-                        message_baseline,
+                        &run,
                         control.clone(),
                         reporter.clone(),
+                        &result_sink,
                     )
                     .await
                 }
@@ -574,36 +685,38 @@ impl LocalControlService {
                 "workspace agent task panicked",
             ))
         });
-        let result = if run.provider.kind == AgentMode::Codex {
-            match result {
-                Ok(output) => control.begin_integration().await.map(|()| output),
-                Err(failure) => Err(failure),
-            }
-        } else {
-            result
-        };
-        if result.is_ok() {
+        if result.is_ok() && run.provider.kind != AgentMode::Codex {
             // Settling is an informational state for the live UI. Once the
             // workspace result exists, failure to expose that intermediate
             // state must not bypass the reliable terminal persistence path.
-            let _ = self.set_run_settling(&run.id).await;
+            let _ = self.set_run_settling(&lease).await;
         }
-        self.finish_workspace_run(&run.id, result).await
+        if run.provider.kind == AgentMode::Codex && result.is_ok() && !result_sink.is_checkpointed()
+        {
+            return self
+                .finish_workspace_run(
+                    &lease,
+                    Err(DomainError::invariant(
+                        ErrorCode::RunRecoveryFailed,
+                        "workspace adapter returned without durably checkpointing its result",
+                    )),
+                )
+                .await;
+        }
+        self.finish_workspace_run(&lease, result).await
     }
 
     #[allow(
         clippy::too_many_arguments,
         reason = "the invocation keeps immutable admission, finalization, and progress context together"
     )]
-    async fn invoke_codex_workspace(
+    async fn invoke_codex_workspace_checkpointed(
         &self,
         state: &State,
         run: &RunView,
-        workdir: PathBuf,
-        user_text: String,
-        message_baseline: Option<String>,
         control: Arc<WorkspaceRunControl>,
         progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,
+        result_sink: &dyn WorkspaceResultSink,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         let executor = self.workspace_agent.as_ref().ok_or_else(|| {
             DomainError::invariant(
@@ -611,50 +724,9 @@ impl LocalControlService {
                 "Codex workspace executor is not configured",
             )
         })?;
-        let baseline_commit = match run
-            .workspace_base_commit
-            .as_ref()
-            .or(message_baseline.as_ref())
-        {
-            Some(commit) => commit.clone(),
-            None => git_head(&workdir)
-                .map_err(api_domain_error)?
-                .ok_or_else(|| {
-                    DomainError::invariant(
-                        ErrorCode::ProjectGitHeadUnavailable,
-                        "project repository has no HEAD commit",
-                    )
-                })?,
-        };
-        let baseline_index_tree = run
-            .workspace_base_index_tree
-            .as_deref()
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                DomainError::invariant(
-                    ErrorCode::ProjectGitHeadUnavailable,
-                    "Codex Run has no authorized Git index baseline",
-                )
-            })?;
-        let (project_instructions, prompt) =
-            codex_prompt(state, &run.base_message_id).map_err(api_domain_error)?;
+        let invocation = workspace_invocation(state, run, control)?;
         executor
-            .invoke_with_progress(
-                WorkspaceAgentInvocation {
-                    request_id: run.id.clone(),
-                    model: run.config.model.clone(),
-                    reasoning_effort: run.config.reasoning_effort.clone(),
-                    project_instructions,
-                    prompt,
-                    commit_subject: user_text,
-                    cwd: workdir,
-                    baseline_commit,
-                    baseline_index_tree,
-                    cancellation: control.cancellation.clone(),
-                    integration_gate: Some(control),
-                },
-                progress,
-            )
+            .invoke_with_progress_and_checkpoint(invocation, progress, result_sink)
             .await
     }
 
@@ -678,11 +750,11 @@ impl LocalControlService {
                 // caller. Every later error therefore belongs to the Run and
                 // must be persisted before its Session and workspace leases
                 // are released.
-                self.finish_workspace_run(&run_id, Err(api_domain_error(failure)))
+                self.finish_current_workspace_run(&run_id, Err(api_domain_error(failure)))
                     .await
             }
             Err(failure) => {
-                self.finish_workspace_run(
+                self.finish_current_workspace_run(
                     &run_id,
                     Err(DomainError::invariant(
                         ErrorCode::ProviderFailed,
@@ -696,19 +768,51 @@ impl LocalControlService {
         result
     }
 
-    async fn set_run_running(&self, run_id: &str) -> Result<bool, ApiError> {
+    async fn set_run_running(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<WorkspaceExecutionLease>, ApiError> {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
-            let run = state
+            let index = state
                 .runs
-                .iter_mut()
-                .find(|run| run.id == run_id)
+                .iter()
+                .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-            if run.status != "queued" {
-                return Ok(false);
+            if state.runs[index].status != "queued" {
+                return Ok(None);
             }
+            let operation_id = state.runs[index]
+                .operation_id
+                .as_deref()
+                .map_or_else(|| format!("workspace-{run_id}"), str::to_owned);
+            let lease_epoch = state.runs[index].lease_epoch.saturating_add(1);
+            let baseline_ref = if state.runs[index].provider.kind == AgentMode::Codex {
+                let project = state
+                    .projects
+                    .iter()
+                    .find(|project| project.id == state.runs[index].project_id)
+                    .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+                git_symbolic_head(Path::new(&project.workdir))?
+            } else {
+                None
+            };
+            let run = &mut state.runs[index];
             run.status = "running".into();
+            run.phase = Some("calling_agent".into());
+            run.operation_id = Some(operation_id.clone().into_boxed_str());
+            run.lease_epoch = lease_epoch;
+            run.error = None;
+            state.workspace_run_journals.insert(
+                run_id.to_owned(),
+                WorkspaceRunJournal {
+                    operation_id: operation_id.clone(),
+                    lease_epoch,
+                    baseline_ref,
+                    result: None,
+                },
+            );
             let event = pending("run.updated", Some(run_id.to_owned()), run);
             let value = serde_json::to_value(&state).map_err(serialization_error)?;
             match self
@@ -716,7 +820,13 @@ impl LocalControlService {
                 .commit(snapshot.revision, value, vec![event])
                 .await
             {
-                Ok(_) => return Ok(true),
+                Ok(_) => {
+                    return Ok(Some(WorkspaceExecutionLease {
+                        run_id: run_id.to_owned(),
+                        operation_id,
+                        lease_epoch,
+                    }));
+                }
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -728,20 +838,173 @@ impl LocalControlService {
         ))
     }
 
-    async fn set_run_settling(&self, run_id: &str) -> Result<bool, ApiError> {
+    async fn persist_workspace_result(
+        &self,
+        lease: &WorkspaceExecutionLease,
+        result: WorkspaceAgentResponse,
+    ) -> Result<RunView, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let index = state
+                .runs
+                .iter()
+                .position(|run| run.id == lease.run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            let mut run = state.runs[index].clone();
+            ensure_current_lease(&run, lease)?;
+            let journal = state
+                .workspace_run_journals
+                .get_mut(&lease.run_id)
+                .ok_or_else(|| recovery_error("workspace result journal is missing"))?;
+            ensure_journal_lease(journal, lease)?;
+            if is_terminal_workspace_status(&run.status) {
+                return if journal.result.as_ref() == Some(&result) {
+                    Ok(run)
+                } else {
+                    Err(recovery_error(
+                        "terminal Run cannot accept a different workspace result",
+                    ))
+                };
+            }
+            if run.status == "settling" && journal.result.as_ref() == Some(&result) {
+                return Ok(run);
+            }
+            if run.status != "running" {
+                return Err(error(
+                    ErrorCode::RunNotResumable,
+                    "run is not accepting a workspace result checkpoint",
+                    false,
+                ));
+            }
+            journal.result = Some(result.clone());
+            run.status = "settling".into();
+            run.phase = Some("result_persisted".into());
+            run.error = None;
+            state.runs[index] = run.clone();
+            let event = pending("run.result_persisted", Some(lease.run_id.clone()), &run);
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => return Ok(run),
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "concurrent workspace result checkpoint did not settle",
+            true,
+        ))
+    }
+
+    async fn claim_workspace_integration(
+        &self,
+        lease: &WorkspaceExecutionLease,
+    ) -> Result<RunView, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let index = state
+                .runs
+                .iter()
+                .position(|run| run.id == lease.run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            let mut run = state.runs[index].clone();
+            ensure_current_lease(&run, lease)?;
+            let journal = state
+                .workspace_run_journals
+                .get(&lease.run_id)
+                .ok_or_else(|| recovery_error("workspace result journal is missing"))?;
+            ensure_journal_lease(journal, lease)?;
+            if is_terminal_workspace_status(&run.status) {
+                return Err(error(
+                    ErrorCode::RunAlreadyTerminal,
+                    "workspace Run became terminal before integration",
+                    false,
+                ));
+            }
+            if run.status != "settling" || journal.result.is_none() {
+                return Err(recovery_error(
+                    "workspace integration requires a durable result checkpoint",
+                ));
+            }
+            if run.phase.as_deref() == Some("integrating") {
+                return Ok(run);
+            }
+            run.phase = Some("integrating".into());
+            run.error = None;
+            state.runs[index] = run.clone();
+            let event = pending("run.integration_claimed", Some(lease.run_id.clone()), &run);
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => return Ok(run),
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "workspace integration claim did not settle",
+            true,
+        ))
+    }
+
+    async fn current_workspace_lease(
+        &self,
+        run_id: &str,
+    ) -> Result<WorkspaceExecutionLease, ApiError> {
+        let snapshot = self.store.load().await.map_err(store_error)?;
+        let state = decode_state(snapshot.value)?;
+        let run = state
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+        let operation_id = run
+            .operation_id
+            .as_deref()
+            .map(str::to_owned)
+            .ok_or_else(|| recovery_error("workspace Run has no operation identity"))?;
+        Ok(WorkspaceExecutionLease {
+            run_id: run_id.to_owned(),
+            operation_id,
+            lease_epoch: run.lease_epoch,
+        })
+    }
+
+    async fn finish_current_workspace_run(
+        &self,
+        run_id: &str,
+        result: Result<WorkspaceAgentResponse, DomainError>,
+    ) -> Result<RunView, ApiError> {
+        let lease = self.current_workspace_lease(run_id).await?;
+        self.finish_workspace_run(&lease, result).await
+    }
+
+    async fn set_run_settling(&self, lease: &WorkspaceExecutionLease) -> Result<bool, ApiError> {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
             let run = state
                 .runs
                 .iter_mut()
-                .find(|run| run.id == run_id)
+                .find(|run| run.id == lease.run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            ensure_current_lease(run, lease)?;
             if run.status != "running" {
                 return Ok(false);
             }
             run.status = "settling".into();
-            let event = pending("run.updated", Some(run_id.to_owned()), run);
+            run.phase = Some("settling".into());
+            let event = pending("run.updated", Some(lease.run_id.clone()), run);
             let value = serde_json::to_value(&state).map_err(serialization_error)?;
             match self
                 .store
@@ -766,7 +1029,7 @@ impl LocalControlService {
     )]
     async fn finish_workspace_run(
         &self,
-        run_id: &str,
+        lease: &WorkspaceExecutionLease,
         result: Result<WorkspaceAgentResponse, DomainError>,
     ) -> Result<RunView, ApiError> {
         let mut persistence_failures = 0_u32;
@@ -779,20 +1042,42 @@ impl LocalControlService {
             let index = state
                 .runs
                 .iter()
-                .position(|run| run.id == run_id)
+                .position(|run| run.id == lease.run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let mut run = state.runs[index].clone();
-            if matches!(
-                run.status.as_str(),
-                "completed" | "failed" | "cancelled" | "limit_exceeded"
-            ) {
-                let _ = self.store.clear_progress(run_id).await;
+            ensure_current_lease(&run, lease)?;
+            if let Some(journal) = state.workspace_run_journals.get(&lease.run_id) {
+                ensure_journal_lease(journal, lease)?;
+                if let Ok(output) = &result
+                    && journal.result.as_ref().is_some_and(|saved| saved != output)
+                {
+                    return Err(recovery_error(
+                        "terminal settlement received a different workspace result",
+                    ));
+                }
+            }
+            if is_terminal_workspace_status(&run.status) {
+                let _ = self.store.clear_progress(&lease.run_id).await;
                 return Ok(run);
             }
-            apply_workspace_terminal_result(&mut state, &mut run, &result);
+            if run.status == "settling" && result.is_err() {
+                let failure = result.as_ref().expect_err("checked error");
+                run.status = "interrupted".into();
+                run.error = Some(error(
+                    failure.code,
+                    format!(
+                        "checkpointed workspace result could not be integrated: {}",
+                        failure.message
+                    ),
+                    failure.retryable,
+                ));
+            } else {
+                apply_workspace_terminal_result(&mut state, &mut run, &result);
+            }
+            run.phase = Some("terminal".into());
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
-            let event = pending("run.updated", Some(run_id.to_owned()), &run);
+            let event = pending("run.updated", Some(lease.run_id.clone()), &run);
             let value = serde_json::to_value(&state).map_err(serialization_error)?;
             match self
                 .store
@@ -800,7 +1085,7 @@ impl LocalControlService {
                 .await
             {
                 Ok(_) => {
-                    let _ = self.store.clear_progress(run_id).await;
+                    let _ = self.store.clear_progress(&lease.run_id).await;
                     return Ok(run);
                 }
                 Err(ControlStoreError::Conflict | ControlStoreError::Other(_)) => {
@@ -885,50 +1170,315 @@ impl LocalControlService {
             .map(|values| values.into_iter().map(|value| value.body).collect())
     }
 
-    /// Marks Runs left active by a previous daemon process as explicitly
-    /// unrecovered. Automatic provider-thread resume is outside this slice.
+    /// Scans replay-safe startup work without changing Run ownership. The
+    /// returned ids are claimed only after the recovery supervisor owns each
+    /// Project workspace lease.
     ///
     /// # Errors
     ///
-    /// Returns a stable persistence error when recovery cannot be committed.
-    pub async fn mark_interrupted_runs(&self) -> Result<usize, ApiError> {
+    /// Returns a persistence error when the global snapshot cannot be read.
+    pub async fn prepare_startup_recovery(&self) -> Result<StartupRecoveryPlan, ApiError> {
+        let snapshot = self.store.load().await.map_err(store_error)?;
+        let state = decode_state(snapshot.value)?;
+        Ok(StartupRecoveryPlan {
+            run_ids: state
+                .runs
+                .iter()
+                .filter(|run| !is_terminal_workspace_status(&run.status))
+                .map(|run| run.id.clone())
+                .collect(),
+        })
+    }
+
+    /// Executes a previously claimed startup plan after the daemon listener is
+    /// ready. Local Project/Git failures interrupt only their owning Run.
+    ///
+    /// # Errors
+    ///
+    /// Returns when global durable state can no longer be read or committed.
+    pub async fn run_startup_recovery(
+        &self,
+        plan: StartupRecoveryPlan,
+    ) -> Result<Vec<RunView>, ApiError> {
+        let mut recovered = Vec::new();
+        for run_id in plan.run_ids {
+            let workspace_lease = match self.acquire_workspace_write_for_run(&run_id).await {
+                Ok(lease) => lease,
+                Err(failure) if failure.code == ErrorCode::ProjectWorkspaceBusy => {
+                    // A live executor still owns this Project. It also owns the
+                    // only path to Git publication, so do not steal its epoch.
+                    continue;
+                }
+                Err(failure) if is_local_recovery_failure(failure.code) => {
+                    recovered.push(self.interrupt_recovery_run(&run_id, &failure).await?);
+                    continue;
+                }
+                Err(failure) => return Err(failure),
+            };
+            let claim = self.claim_startup_recovery(&run_id).await?;
+            let lease = match claim {
+                WorkspaceRecoveryClaim::Recovered(run) => {
+                    recovered.push(*run);
+                    continue;
+                }
+                WorkspaceRecoveryClaim::Skip => continue,
+                WorkspaceRecoveryClaim::Execute => None,
+                WorkspaceRecoveryClaim::Finalize(lease) => Some(lease),
+            };
+            let control = Arc::new(WorkspaceRunControl::new());
+            if let Some(lease) = lease.as_ref() {
+                control.bind_integration_lease(self.clone(), lease.clone())?;
+            }
+            let invocation = InvocationGuard::new(
+                Arc::clone(&self.cancellations),
+                &run_id,
+                control.cancellation.clone(),
+            );
+            let control_guard = WorkspaceRunControlGuard::new(
+                Arc::clone(&self.workspace_run_controls),
+                &run_id,
+                &control,
+            );
+            let result = match lease {
+                None => {
+                    self.supervise_workspace_agent(run_id.clone(), control.clone())
+                        .await
+                }
+                Some(lease) => self.recover_checkpointed_run(&lease, control.clone()).await,
+            };
+            drop((workspace_lease, invocation, control_guard, control));
+            match result {
+                Ok(run) => recovered.push(run),
+                Err(failure) => return Err(failure),
+            }
+        }
+        Ok(recovered)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the ownership claim keeps policy, lease fencing, and its event in one CAS"
+    )]
+    async fn claim_startup_recovery(
+        &self,
+        run_id: &str,
+    ) -> Result<WorkspaceRecoveryClaim, ApiError> {
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
-            let mut events = Vec::new();
-            let mut interrupted = Vec::new();
-            for run in &mut state.runs {
-                if matches!(run.status.as_str(), "queued" | "running" | "settling") {
-                    run.status = "failed".into();
-                    run.error = Some(error(
-                        ErrorCode::RunRecoveryFailed,
-                        "the daemon restarted before this Run completed; automatic resume is not available",
-                        false,
-                    ));
-                    interrupted.push(run.id.clone());
-                    events.push(pending("run.updated", Some(run.id.clone()), run));
+            let index = state
+                .runs
+                .iter()
+                .position(|run| run.id == run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            if is_terminal_workspace_status(&state.runs[index].status) {
+                return Ok(WorkspaceRecoveryClaim::Skip);
+            }
+            let policy = recovery_policy(&state);
+            let status = state.runs[index].status.clone();
+            let claim = match policy {
+                RecoveryPolicy::ResumeSafe if status == "queued" => {
+                    return Ok(WorkspaceRecoveryClaim::Execute);
                 }
-            }
-            if interrupted.is_empty() {
-                return Ok(0);
-            }
-            for session in &mut state.sessions {
-                if session
-                    .active_run_id
-                    .as_ref()
-                    .is_some_and(|id| interrupted.contains(id))
-                {
-                    session.active_run_id = None;
-                }
-            }
-            let count = interrupted.len();
-            let value = serde_json::to_value(&state).map_err(serialization_error)?;
-            match self.store.commit(snapshot.revision, value, events).await {
-                Ok(_) => {
-                    for run_id in interrupted {
-                        let _ = self.store.clear_progress(&run_id).await;
+                RecoveryPolicy::ResumeSafe if status == "settling" => {
+                    let operation_id = state.runs[index].operation_id.as_deref().map(str::to_owned);
+                    let valid = operation_id.as_ref().is_some_and(|operation_id| {
+                        state
+                            .workspace_run_journals
+                            .get(run_id)
+                            .is_some_and(|journal| {
+                                journal.operation_id == *operation_id
+                                    && journal.lease_epoch == state.runs[index].lease_epoch
+                                    && journal.result.is_some()
+                            })
+                    });
+                    if valid {
+                        let operation_id = operation_id
+                            .ok_or_else(|| recovery_error("validated operation id disappeared"))?;
+                        let lease_epoch = state.runs[index].lease_epoch.saturating_add(1);
+                        state
+                            .workspace_run_journals
+                            .get_mut(run_id)
+                            .ok_or_else(|| recovery_error("validated result journal disappeared"))?
+                            .lease_epoch = lease_epoch;
+                        let run = &mut state.runs[index];
+                        run.lease_epoch = lease_epoch;
+                        run.phase = Some("reconciling_result".into());
+                        run.error = None;
+                        WorkspaceRecoveryClaim::Finalize(WorkspaceExecutionLease {
+                            run_id: run_id.to_owned(),
+                            operation_id,
+                            lease_epoch,
+                        })
+                    } else {
+                        settle_recovered_run(
+                            &mut state,
+                            index,
+                            "interrupted",
+                            "checkpointed workspace result is incomplete; recovery material was preserved for review",
+                        );
+                        WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                     }
-                    return Ok(count);
+                }
+                RecoveryPolicy::ResumeSafe if status == "cancelling" => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "cancelled",
+                        "run cancellation was completed during daemon recovery",
+                    );
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
+                RecoveryPolicy::ResumeSafe => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "interrupted",
+                        "run effects are not proven replay-safe; isolated workspace recovery material was preserved for review",
+                    );
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
+                RecoveryPolicy::Ask => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "interrupted",
+                        "recovery policy requires user review; workspace changes were preserved",
+                    );
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
+                RecoveryPolicy::Fail => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "failed",
+                        "run failed because the daemon restarted",
+                    );
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
+            };
+            let run = &state.runs[index];
+            let event = pending(
+                if is_terminal_workspace_status(&run.status) {
+                    "run.recovered"
+                } else {
+                    "run.recovery_claimed"
+                },
+                Some(run.id.clone()),
+                run,
+            );
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => return Ok(claim),
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "startup Run ownership claim did not settle",
+            true,
+        ))
+    }
+
+    /// Synchronous convenience for tests and non-daemon embeddings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a global persistence error from either startup phase.
+    pub async fn recover_interrupted_runs(&self) -> Result<Vec<RunView>, ApiError> {
+        let plan = self.prepare_startup_recovery().await?;
+        self.run_startup_recovery(plan).await
+    }
+
+    async fn recover_checkpointed_run(
+        &self,
+        lease: &WorkspaceExecutionLease,
+        control: Arc<WorkspaceRunControl>,
+    ) -> Result<RunView, ApiError> {
+        let snapshot = self.store.load().await.map_err(store_error)?;
+        let state = decode_state(snapshot.value)?;
+        let run = state
+            .runs
+            .iter()
+            .find(|run| run.id == lease.run_id)
+            .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+        ensure_current_lease(run, lease)?;
+        let journal = state
+            .workspace_run_journals
+            .get(&lease.run_id)
+            .ok_or_else(|| recovery_error("workspace result journal is missing"))?;
+        ensure_journal_lease(journal, lease)?;
+        let result = journal
+            .result
+            .clone()
+            .ok_or_else(|| recovery_error("workspace result checkpoint is missing"))?;
+        let executor = self.workspace_agent.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::InvalidConfiguration,
+                "Codex workspace executor is not configured",
+                false,
+            )
+        })?;
+        control
+            .begin_integration()
+            .await
+            .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
+        let invocation = workspace_invocation(&state, run, control)
+            .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
+        let output = match executor
+            .recover_checkpointed(invocation, result, journal.baseline_ref.clone())
+            .await
+        {
+            Ok(output) => output,
+            Err(failure) => {
+                let failure = error(failure.code, failure.message, failure.retryable);
+                return self.interrupt_recovery_run(&lease.run_id, &failure).await;
+            }
+        };
+        self.finish_workspace_run(lease, Ok(output)).await
+    }
+
+    async fn interrupt_recovery_run(
+        &self,
+        run_id: &str,
+        failure: &ApiError,
+    ) -> Result<RunView, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let index = state
+                .runs
+                .iter()
+                .position(|run| run.id == run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            if is_terminal_workspace_status(&state.runs[index].status) {
+                return Ok(state.runs[index].clone());
+            }
+            let run = &mut state.runs[index];
+            run.lease_epoch = run.lease_epoch.saturating_add(1);
+            run.status = "interrupted".into();
+            run.phase = Some("terminal".into());
+            run.error = Some(error(ErrorCode::RunRecoveryFailed, &failure.message, false));
+            if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
+                journal.lease_epoch = run.lease_epoch;
+            }
+            let run = state.runs[index].clone();
+            release_session(&mut state, &run);
+            let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => {
+                    let _ = self.store.clear_progress(run_id).await;
+                    return Ok(run);
                 }
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
@@ -1105,6 +1655,33 @@ impl LocalControlService {
         let Some(workdir) = workspace_write_path(&state, command)? else {
             return Ok(None);
         };
+        self.acquire_workspace_path(&workdir).await.map(Some)
+    }
+
+    async fn acquire_workspace_write_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<WorkspaceWriteLease, ApiError> {
+        let snapshot = self.store.load().await.map_err(store_error)?;
+        let state = decode_state(snapshot.value)?;
+        let run = state
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == run.project_id)
+            .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+        self.acquire_workspace_path(Path::new(&project.workdir))
+            .await
+    }
+
+    async fn acquire_workspace_path(
+        &self,
+        workdir: &Path,
+    ) -> Result<WorkspaceWriteLease, ApiError> {
         let canonical = workdir.canonicalize().map_err(|failure| {
             error(
                 ErrorCode::ProjectPathNotFound,
@@ -1153,10 +1730,10 @@ impl LocalControlService {
                 )
             })?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(WorkspaceWriteLease {
+            Ok(()) => Ok(WorkspaceWriteLease {
                 _process_guard: process_guard,
                 _file: file,
-            })),
+            }),
             Err(std::fs::TryLockError::WouldBlock) => Err(error(
                 ErrorCode::ProjectWorkspaceBusy,
                 "another Ait process owns this Project workspace write lease",
@@ -1169,6 +1746,144 @@ impl LocalControlService {
             )),
         }
     }
+}
+
+fn workspace_invocation(
+    state: &State,
+    run: &RunView,
+    control: Arc<WorkspaceRunControl>,
+) -> Result<WorkspaceAgentInvocation, DomainError> {
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == run.project_id)
+        .ok_or_else(|| DomainError::invariant(ErrorCode::InvalidProject, "project not found"))?;
+    let user_text = state
+        .messages
+        .iter()
+        .find(|message| message.id == run.base_message_id)
+        .and_then(|message| message.text.clone())
+        .ok_or_else(|| DomainError::invariant(ErrorCode::MessageNotFound, "run input not found"))?;
+    let message_baseline = state
+        .messages
+        .iter()
+        .find(|message| message.id == run.base_message_id)
+        .and_then(|message| message.git_commit.clone());
+    let baseline_commit = run
+        .workspace_base_commit
+        .as_ref()
+        .or(message_baseline.as_ref())
+        .cloned()
+        .ok_or_else(|| {
+            DomainError::invariant(
+                ErrorCode::ProjectGitHeadUnavailable,
+                "Codex Run has no authorized Git baseline",
+            )
+        })?;
+    let baseline_index_tree = run
+        .workspace_base_index_tree
+        .as_deref()
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            DomainError::invariant(
+                ErrorCode::ProjectGitHeadUnavailable,
+                "Codex Run has no authorized Git index baseline",
+            )
+        })?;
+    let (project_instructions, prompt) =
+        codex_prompt(state, &run.base_message_id).map_err(api_domain_error)?;
+    Ok(WorkspaceAgentInvocation {
+        request_id: run.id.clone(),
+        model: run.config.model.clone(),
+        reasoning_effort: run.config.reasoning_effort.clone(),
+        project_instructions,
+        prompt,
+        commit_subject: user_text,
+        cwd: PathBuf::from(&project.workdir),
+        baseline_commit,
+        baseline_index_tree,
+        cancellation: control.cancellation.clone(),
+        integration_gate: Some(control),
+    })
+}
+
+fn ensure_current_lease(run: &RunView, lease: &WorkspaceExecutionLease) -> Result<(), ApiError> {
+    if run.operation_id.as_deref() != Some(lease.operation_id.as_str())
+        || run.lease_epoch != lease.lease_epoch
+    {
+        return Err(recovery_error("stale workspace execution lease"));
+    }
+    Ok(())
+}
+
+fn ensure_journal_lease(
+    journal: &WorkspaceRunJournal,
+    lease: &WorkspaceExecutionLease,
+) -> Result<(), ApiError> {
+    if journal.operation_id != lease.operation_id || journal.lease_epoch != lease.lease_epoch {
+        return Err(recovery_error("stale workspace result journal lease"));
+    }
+    Ok(())
+}
+
+fn recovery_error(message: &str) -> ApiError {
+    error(ErrorCode::RunRecoveryFailed, message, false)
+}
+
+fn recovery_policy(state: &State) -> RecoveryPolicy {
+    match state
+        .settings
+        .0
+        .get("runtime.recovery")
+        .and_then(Value::as_str)
+    {
+        Some("ask") => RecoveryPolicy::Ask,
+        Some("fail") => RecoveryPolicy::Fail,
+        _ => RecoveryPolicy::ResumeSafe,
+    }
+}
+
+fn is_terminal_workspace_status(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "failed" | "cancelled" | "limit_exceeded" | "interrupted"
+    )
+}
+
+fn is_local_recovery_failure(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::ProjectWorkspaceBusy
+            | ErrorCode::ProjectPathNotFound
+            | ErrorCode::ProjectPathNotDirectory
+            | ErrorCode::ProjectGitInitFailed
+            | ErrorCode::ProjectGitDirty
+            | ErrorCode::ProjectGitHeadUnavailable
+            | ErrorCode::InvalidProject
+            | ErrorCode::InvalidConfiguration
+            | ErrorCode::RunNotResumable
+    )
+}
+
+fn settle_recovered_run(state: &mut State, index: usize, status: &str, message: &str) {
+    let mut run = state.runs[index].clone();
+    run.lease_epoch = run.lease_epoch.saturating_add(1);
+    if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
+        journal.lease_epoch = run.lease_epoch;
+    }
+    run.status = status.into();
+    run.phase = Some("terminal".into());
+    run.error = Some(error(
+        if status == "cancelled" {
+            ErrorCode::RunCancelled
+        } else {
+            ErrorCode::RunRecoveryFailed
+        },
+        message,
+        false,
+    ));
+    release_session(state, &run);
+    state.runs[index] = run;
 }
 
 fn workspace_write_path(state: &State, command: &Command) -> Result<Option<PathBuf>, ApiError> {
@@ -1248,6 +1963,35 @@ fn absolute_git_dir(workdir: &Path) -> Result<PathBuf, ApiError> {
         ));
     }
     Ok(path)
+}
+
+fn git_symbolic_head(workdir: &Path) -> Result<Option<String>, ApiError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(workdir)
+        .args(["symbolic-ref", "--quiet", "HEAD"])
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot inspect Project branch identity: {failure}"),
+                false,
+            )
+        })?;
+    if output.status.success() {
+        return Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        ));
+    }
+    if output.status.code() == Some(1) {
+        Ok(None)
+    } else {
+        Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            false,
+        ))
+    }
 }
 
 fn api_domain_error(error: ApiError) -> DomainError {
@@ -1858,6 +2602,9 @@ fn send_message(
         workspace_base_commit,
         workspace_base_index_tree,
         status: "queued".into(),
+        phase: Some("queued".into()),
+        operation_id: Some(format!("workspace-{run_id}").into_boxed_str()),
+        lease_epoch: 0,
         error: None,
     };
     if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
@@ -1941,18 +2688,27 @@ fn cancel_run(
         .iter()
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-    if matches!(
-        state.runs[index].status.as_str(),
-        "completed" | "failed" | "cancelled"
-    ) {
+    if is_terminal_workspace_status(&state.runs[index].status) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
             "run is already terminal",
             false,
         ));
     }
+    if state.runs[index].phase.as_deref() == Some("integrating") {
+        return Err(error(
+            ErrorCode::RunAlreadyTerminal,
+            "workspace integration has started; cancellation cannot replace its durable result",
+            false,
+        ));
+    }
     let mut run = state.runs[index].clone();
+    run.lease_epoch = run.lease_epoch.saturating_add(1);
+    if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
+        journal.lease_epoch = run.lease_epoch;
+    }
     run.status = "cancelled".into();
+    run.phase = Some("terminal".into());
     run.error = Some(error(ErrorCode::RunCancelled, "run was cancelled", false));
     release_session(state, &run);
     state.runs[index] = run.clone();
@@ -2122,6 +2878,9 @@ fn trigger_cron(
         workspace_base_index_tree: workspace_baseline
             .map(|baseline| baseline.index_tree.clone().into_boxed_str()),
         status: "queued".into(),
+        phase: Some("queued".into()),
+        operation_id: Some(format!("workspace-{run_id}").into_boxed_str()),
+        lease_epoch: 0,
         error: None,
     });
     let run = state.runs.last().expect("new run exists").clone();

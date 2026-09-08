@@ -12,6 +12,7 @@ import {
 } from "./agents.js";
 import { progressFromCheckpoint } from "./run-progress.js";
 import { ReadyRunEventDelivery, cursorAfterEvent } from "./run-event-delivery.js";
+import { startupRecoveryNotices } from "./runs.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
@@ -421,6 +422,7 @@ class DaemonClient {
         } : {}),
       })),
       runProgress,
+      recoveryNotices: startupRecoveryNotices(workspace),
     };
   }
 }

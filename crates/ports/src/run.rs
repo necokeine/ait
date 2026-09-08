@@ -5,6 +5,7 @@ use ait_domain::{
     RunUsage, TimestampMs, ToolExecution, ToolExecutionId,
 };
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -217,7 +218,7 @@ pub struct WorkspaceAgentInvocation {
 }
 
 /// Durable-facing result of one workspace Agent turn.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceAgentResponse {
     /// Final assistant result shown in the Session.
     pub assistant_text: String,
@@ -296,7 +297,8 @@ pub trait WorkspaceProgressReporter: Send + Sync {
 }
 
 /// One ordered item in a workspace harness' durable display projection.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkspaceOutputItem {
     /// A provider-authored progress or final-answer message.
     Message {
@@ -315,7 +317,7 @@ pub enum WorkspaceOutputItem {
 }
 
 /// Safe projection of one operation performed inside a workspace Agent harness.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceOperation {
     /// Harness-stable item identity when one was supplied.
     pub id: String,
@@ -365,6 +367,15 @@ pub trait SessionTitleGenerator: Send + Sync {
     ) -> Result<GeneratedSessionTitle, DomainError>;
 }
 
+/// Durable callback invoked after an isolated workspace result is committed to
+/// its Run ref but before it is published into the primary Project checkout.
+#[async_trait]
+pub trait WorkspaceResultSink: Send + Sync {
+    /// Persists the complete response so a daemon restart can reconcile the
+    /// already-created commit without re-running the provider turn.
+    async fn checkpoint(&self, result: WorkspaceAgentResponse) -> Result<(), DomainError>;
+}
+
 /// Complete coding-harness boundary used by the local control-plane slice.
 #[async_trait]
 pub trait WorkspaceAgent: Send + Sync {
@@ -382,6 +393,43 @@ pub trait WorkspaceAgent: Send + Sync {
         _progress: Arc<dyn WorkspaceProgressReporter>,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         self.invoke(request).await
+    }
+
+    /// Runs the harness with progress and durably checkpoints the completed
+    /// response before crossing the primary-worktree integration boundary.
+    ///
+    /// Adapters that own Git integration must override this method and invoke
+    /// the sink before publishing their result. This fallback is appropriate
+    /// only for adapters whose `invoke_with_progress` has no external side
+    /// effect after it returns.
+    async fn invoke_with_progress_and_checkpoint(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+        result_sink: &dyn WorkspaceResultSink,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let integration_gate = request.integration_gate.clone();
+        let result = self.invoke_with_progress(request, progress).await?;
+        result_sink.checkpoint(result.clone()).await?;
+        if let Some(gate) = integration_gate.as_deref() {
+            gate.begin_integration().await?;
+        }
+        Ok(result)
+    }
+
+    /// Reconciles a previously checkpointed result without invoking the model.
+    /// Implementations must validate the Run-owned recovery material before
+    /// publishing it and must reject ambiguous integration state.
+    async fn recover_checkpointed(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        _result: WorkspaceAgentResponse,
+        _baseline_ref: Option<String>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "workspace adapter cannot reconcile a checkpointed result",
+        ))
     }
 }
 

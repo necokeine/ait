@@ -225,6 +225,15 @@ pub struct RunView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_base_index_tree: Option<Box<str>>,
     pub status: String,
+    /// Fine-grained durable phase used to explain and recover non-terminal work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Box<str>>,
+    /// Stable identity of the workspace side-effect operation for this Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Box<str>>,
+    /// Monotonic execution lease; late writers holding an older value are fenced.
+    #[serde(default)]
+    pub lease_epoch: u64,
     pub error: Option<ApiError>,
 }
 
@@ -272,6 +281,10 @@ pub struct ProjectExport {
 /// Successful command payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the versioned wire contract keeps result payloads directly serializable"
+)]
 pub enum CommandResult {
     Project(ProjectView),
     Agent(AgentView),

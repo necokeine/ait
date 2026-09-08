@@ -3,6 +3,7 @@
 - 状态：Proposed（NEC-205 实现，待评审）
 - 日期：2026-09-07
 - 依赖：ADR-001 v4、NEC-152、NEC-204 ADR-001
+- 修订：第 7 条启动恢复策略由 NEC-212 ADR-001 替代
 
 ## 决策
 
@@ -37,8 +38,9 @@
    并等待 writer 确认退出，保证任何 `save_progress` 都先于 terminal commit 与 checkpoint clear。所有
    终态统一发送 `run.updated`；renderer 也兼容保留窗口内旧版
    `run.cancelled`，收到两者后都重新读取 snapshot，以不可变 Message 或终态卡片替换临时投影。
-7. daemon 启动时把遗留的 `queued | running | settling` Run 明确标记为
-   `RUN_RECOVERY_FAILED` 并释放 Session。自动续跑与 Codex thread resume 不在本票范围内。
+7. daemon 启动恢复现按 NEC-212 ADR-001 执行：安全续跑 `queued`、对账已有完整结果 checkpoint
+   的 `settling`，未知 `running` 明确转为 `interrupted` 并释放 Session。Codex 原生 thread resume
+   仍不在本票范围内。
 
 ## 结果
 

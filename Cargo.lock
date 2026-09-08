@@ -88,6 +88,7 @@ dependencies = [
 name = "ait-application"
 version = "0.1.0"
 dependencies = [
+ "ait-agent-adapters",
  "ait-contracts",
  "ait-domain",
  "ait-ports",
@@ -144,10 +145,13 @@ dependencies = [
  "ait-agent-adapters",
  "ait-api-http",
  "ait-application",
+ "ait-contracts",
+ "ait-domain",
  "ait-ipc",
  "ait-observability",
  "ait-ports",
  "ait-storage-sqlite",
+ "async-trait",
  "axum",
  "clap",
  "reqwest 0.12.28",
@@ -187,6 +191,7 @@ version = "0.1.0"
 dependencies = [
  "ait-domain",
  "async-trait",
+ "serde",
  "serde_json",
  "tokio-util",
 ]
