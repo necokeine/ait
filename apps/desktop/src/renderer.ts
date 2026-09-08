@@ -1077,10 +1077,15 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
     return;
   }
   creatingSessionProjectId = project.id;
+  const mutation = projectViews.beginMutation(project.id);
   renderProjects();
   try {
     const result = await window.ait.createSession({ projectId: project.id, agentId });
-    replaceProjectView(project.id, result.view);
+    if (!projectViews.commitMutation(mutation, result.view)) {
+      if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
+      return;
+    }
+    if (!acceptLoadedProjectView()) return;
     selectedSessionId = result.selectedSessionId;
     resetTreeView();
     const loading = selectProjectView(project.id);
