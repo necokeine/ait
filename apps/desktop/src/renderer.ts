@@ -4,7 +4,7 @@ import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgre
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
 import { pendingBranchResolution, type PendingBranch } from "./runs.js";
-import { buildMessageTimeline, directMessageChildren, isCurrentSessionLeaf, messageText, pathToMessage, resolveBranchHead, sessionForBranch, type TimelineNode } from "./tree.js";
+import { buildMessageTimeline, directMessageChildren, messageText, pathToMessage, resolveBranchHead, sessionForBranch, type TimelineNode } from "./tree.js";
 import {
   agentDisplayName,
   agentLabel,
@@ -736,13 +736,9 @@ function renderBranchContext(): void {
   context.classList.toggle("is-hidden", !source);
   if (!source) return;
   const preview = messageText(source).replace(/\s+/g, " ").trim() || "Empty message";
-  const session = currentSession();
-  const reusesCurrent = !!session && isCurrentSessionLeaf(view?.messages ?? [], session, source.id);
   $("#branch-state-label").textContent = pendingBranch
     ? "Creating new Session from"
-    : reusesCurrent
-      ? "Deriving from current Session leaf"
-      : "Branching new Session from";
+    : "Deriving from";
   $("#branch-node-label").textContent = `${messageSourceLabel(source)} · ${shortId(source.id)} · ${preview}`;
   const clear = $<HTMLButtonElement>("#clear-branch");
   clear.disabled = Boolean(pendingBranch);
@@ -781,7 +777,6 @@ async function submitMessage(): Promise<void> {
         sourceMessageId: source.id,
         agentId: composerAgent.value,
         content,
-        reuseCurrentSession: isCurrentSessionLeaf(view.messages, session, source.id),
       });
       view = result.view;
       branchSourceNodeId = undefined;

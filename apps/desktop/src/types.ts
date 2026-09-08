@@ -266,7 +266,6 @@ export interface AitDesktopApi {
     sourceMessageId: string;
     agentId: string;
     content: string;
-    reuseCurrentSession: boolean;
   }): Promise<RunSubmission & {
     selectedSessionId: string;
     reusedCurrentSession: boolean;

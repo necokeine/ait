@@ -96,6 +96,8 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/session/submit-message",
         "/v1/session/fork",
         "/v1/session/submit-fork",
+        "/v1/session/derive",
+        "/v1/session/submit-derive",
         "/v1/run/get",
         "/v1/run/cancel",
         "/v1/run/approval/resolve",

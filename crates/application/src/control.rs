@@ -757,6 +757,87 @@ impl LocalControlService {
         ))
     }
 
+    async fn read_derive_session_records(
+        &self,
+        session_id: &str,
+        project_id: &str,
+        source_session_id: &str,
+        agent_id: &str,
+        at_message_id: &str,
+    ) -> Result<LoadedWorkingSet, ApiError> {
+        use ControlRecordKind as Kind;
+        for _ in 0..4 {
+            let anchors = self
+                .store
+                .read(&[
+                    ControlFilter::id(Kind::Project, project_id),
+                    ControlFilter::id(Kind::Session, source_session_id),
+                    ControlFilter::id(Kind::Agent, agent_id),
+                ])
+                .await
+                .map_err(store_error)?;
+            record_value(&anchors, Kind::Project, project_id)
+                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            let source_session = record_value(&anchors, Kind::Session, source_session_id)
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            let source_agent_id = required_string(source_session, "agent_id")?;
+            let requested_agent =
+                record_value(&anchors, Kind::Agent, agent_id).ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "agent not found",
+                        false,
+                    )
+                })?;
+
+            let agent_records = self
+                .store
+                .read(&[
+                    ControlFilter::id(Kind::Agent, &source_agent_id),
+                    ControlFilter::id(Kind::Agent, agent_id),
+                ])
+                .await
+                .map_err(store_error)?;
+            if agent_records.revision != anchors.revision {
+                continue;
+            }
+            let source_agent = record_value(&agent_records, Kind::Agent, &source_agent_id)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "Session Agent not found",
+                        false,
+                    )
+                })?;
+            let provider_ids = [
+                agent_provider_id(requested_agent)?,
+                agent_provider_id(source_agent)?,
+            ];
+            let mut filters = vec![
+                ControlFilter::id(Kind::Project, project_id),
+                ControlFilter::id(Kind::Session, source_session_id),
+                ControlFilter::id(Kind::Session, session_id),
+                ControlFilter::id(Kind::Message, at_message_id),
+                ControlFilter::message_children(at_message_id),
+                ControlFilter::id(Kind::Agent, agent_id),
+                ControlFilter::id(Kind::Agent, source_agent_id),
+            ];
+            for provider_id in provider_ids {
+                filters.push(ControlFilter::id(Kind::Provider, &provider_id));
+                filters.push(ControlFilter::id(Kind::ProviderCredential, provider_id));
+            }
+            let loaded = self.read_records(filters).await?;
+            if loaded.revision == anchors.revision {
+                return Ok(loaded);
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "concurrent Session derivation references did not settle",
+            true,
+        ))
+    }
+
     async fn read_export_records(&self, project_id: &str) -> Result<LoadedWorkingSet, ApiError> {
         use ControlRecordKind as Kind;
         for _ in 0..4 {
@@ -917,6 +998,23 @@ impl LocalControlService {
                 self.read_new_session_records(id, project_id, agent_id, Some(at_message_id), true)
                     .await
             }
+            Command::DeriveSession {
+                id,
+                project_id,
+                source_session_id,
+                agent_id,
+                at_message_id,
+                ..
+            } => {
+                self.read_derive_session_records(
+                    id,
+                    project_id,
+                    source_session_id,
+                    agent_id,
+                    at_message_id,
+                )
+                .await
+            }
             Command::SetSessionConfig { session_id, config } => {
                 self.read_session_records_with(
                     session_id,
@@ -1013,7 +1111,9 @@ impl LocalControlService {
     async fn try_submit(self: &Arc<Self>, command: Command) -> Result<CommandResult, ApiError> {
         if !matches!(
             command,
-            Command::SendMessage { .. } | Command::ForkSession { .. }
+            Command::SendMessage { .. }
+                | Command::ForkSession { .. }
+                | Command::DeriveSession { .. }
         ) {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
@@ -1021,15 +1121,19 @@ impl LocalControlService {
                 false,
             ));
         }
-        let session_lease = self.acquire_session(&command)?;
+        let mut session_admission = self.acquire_session(&command)?;
+        let derive_source_locked = session_admission.derive_source_locked();
         let workspace_lease = self.acquire_workspace_write(&command).await?;
         let has_workspace_lease = workspace_lease.is_some();
         match self
-            .commit_with_finalization_gate(command, has_workspace_lease)
+            .commit_with_finalization_gate(command, has_workspace_lease, derive_source_locked)
             .await?
         {
             CommandOutcome::ExecuteWorkspaceRun(run) => {
                 let accepted = (*run).clone();
+                if let Some(session_id) = &accepted.session_id {
+                    session_admission.retain_for_session(session_id);
+                }
                 let run_id = run.id.clone();
                 let control = Arc::new(WorkspaceRunControl::new());
                 let invocation = InvocationGuard::new(
@@ -1044,7 +1148,12 @@ impl LocalControlService {
                 );
                 let service = Arc::clone(self);
                 tokio::spawn(async move {
-                    let _owned = (session_lease, workspace_lease, invocation, control_guard);
+                    let _owned = (
+                        session_admission,
+                        workspace_lease,
+                        invocation,
+                        control_guard,
+                    );
                     let _ = service.supervise_workspace_agent(run_id, control).await;
                 });
                 Ok(CommandResult::Run(accepted))
@@ -2066,7 +2175,8 @@ impl LocalControlService {
         }
 
         // A Session request never waits behind a running turn: reject it immediately.
-        let session_lease = self.acquire_session(&command)?;
+        let mut session_admission = self.acquire_session(&command)?;
+        let derive_source_locked = session_admission.derive_source_locked();
         if let Command::SaveAgentProvider { provider, secret } = command {
             return self.save_provider(provider, secret).await;
         }
@@ -2084,12 +2194,15 @@ impl LocalControlService {
         // Commit retries may reapply state changes, but never repeat an external
         // Agent invocation. Only the command that created the Run can request it.
         let outcome = self
-            .commit_with_finalization_gate(command, has_workspace_lease)
+            .commit_with_finalization_gate(command, has_workspace_lease, derive_source_locked)
             .await?;
         match outcome {
             CommandOutcome::Ready(result) => Ok(*result),
             CommandOutcome::ExecuteWorkspaceRun(run) => {
                 let run_id = run.id.clone();
+                if let Some(session_id) = &run.session_id {
+                    session_admission.retain_for_session(session_id);
+                }
                 let control = Arc::new(WorkspaceRunControl::new());
                 let invocation = InvocationGuard::new(
                     Arc::clone(&self.cancellations),
@@ -2106,7 +2219,12 @@ impl LocalControlService {
                 tokio::spawn(async move {
                     // These guards deliberately live in the transport-independent
                     // supervisor until terminal persistence has completed.
-                    let _owned = (session_lease, workspace_lease, invocation, control_guard);
+                    let _owned = (
+                        session_admission,
+                        workspace_lease,
+                        invocation,
+                        control_guard,
+                    );
                     let result = service.supervise_workspace_agent(run_id, control).await;
                     let _ = sender.send(result);
                 });
@@ -2128,6 +2246,7 @@ impl LocalControlService {
         &self,
         command: Command,
         has_workspace_lease: bool,
+        derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
         let cancellation_run_id = match &command {
             Command::CancelRun { run_id }
@@ -2146,7 +2265,9 @@ impl LocalControlService {
                 .and_then(Weak::upgrade)
         });
         let Some(control) = control else {
-            let outcome = self.commit_command(command, has_workspace_lease).await?;
+            let outcome = self
+                .commit_command(command, has_workspace_lease, derive_source_locked)
+                .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
                 && run.status == "cancelled"
@@ -2169,7 +2290,9 @@ impl LocalControlService {
                 false,
             ));
         }
-        let outcome = self.commit_command(command, has_workspace_lease).await?;
+        let outcome = self
+            .commit_command(command, has_workspace_lease, derive_source_locked)
+            .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
             && run.status == "cancelled"
@@ -2184,6 +2307,7 @@ impl LocalControlService {
         &self,
         command: Command,
         has_workspace_lease: bool,
+        derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_command_records(&command).await?;
@@ -2204,6 +2328,7 @@ impl LocalControlService {
                 command.clone(),
                 git_baseline.as_ref(),
                 self.permission_limits,
+                derive_source_locked,
             )?;
             match self.persist_records(&loaded, &state, events).await {
                 Ok(()) => {
@@ -3012,20 +3137,39 @@ fn workspace_write_path(
     command: &Command,
     permission_limits: PermissionPolicyLimits,
 ) -> Result<Option<PathBuf>, ApiError> {
-    let target = match command {
+    let targets = match command {
         Command::SendMessage { session_id, .. } => {
             let session = state
                 .sessions
                 .iter()
                 .find(|session| session.id == *session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-            Some((session.project_id.as_str(), session.agent_id.as_str()))
+            vec![(session.project_id.as_str(), session.agent_id.as_str())]
         }
         Command::ForkSession {
             project_id,
             agent_id,
             ..
-        } => Some((project_id.as_str(), agent_id.as_str())),
+        } => vec![(project_id.as_str(), agent_id.as_str())],
+        Command::DeriveSession {
+            project_id,
+            source_session_id,
+            agent_id,
+            ..
+        } => {
+            let source_session = state
+                .sessions
+                .iter()
+                .find(|session| session.id == *source_session_id)
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            vec![
+                (project_id.as_str(), agent_id.as_str()),
+                (
+                    source_session.project_id.as_str(),
+                    source_session.agent_id.as_str(),
+                ),
+            ]
+        }
         Command::TriggerCron {
             cron_id,
             scheduled_at,
@@ -3040,19 +3184,27 @@ fn workspace_write_path(
                 .crons
                 .iter()
                 .find(|cron| cron.id == *cron_id && cron.enabled)
-                .map(|cron| (cron.project_id.as_str(), cron.agent_id.as_str()))
+                .map_or_else(Vec::new, |cron| {
+                    vec![(cron.project_id.as_str(), cron.agent_id.as_str())]
+                })
         }
-        _ => None,
+        _ => Vec::new(),
     };
-    let Some((project_id, agent_id)) = target else {
+    let Some((project_id, _)) = targets.first().copied() else {
         return Ok(None);
     };
-    let agent = require_agent(state, agent_id)?;
-    let provider = validate_config(state, &agent.config)?;
-    if provider.kind != AgentMode::Codex {
+    let writes_workspace = targets.iter().try_fold(false, |writes, (_, agent_id)| {
+        let agent = require_agent(state, agent_id)?;
+        let provider = validate_config(state, &agent.config)?;
+        if provider.kind != AgentMode::Codex {
+            return Ok::<_, ApiError>(writes);
+        }
+        let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
+        Ok(true)
+    })?;
+    if !writes_workspace {
         return Ok(None);
     }
-    let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
     let project = state
         .projects
         .iter()
@@ -3167,6 +3319,7 @@ fn apply_command(
     command: Command,
     user_git_baseline: Option<&GitBaseline>,
     permission_limits: PermissionPolicyLimits,
+    derive_source_locked: bool,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     let (result, events) = match command {
         Command::RegisterProject {
@@ -3228,6 +3381,29 @@ fn apply_command(
                     at_message_id,
                     text,
                 },
+                require_user_git_baseline(user_git_baseline)?,
+                permission_limits,
+            );
+        }
+        Command::DeriveSession {
+            id,
+            project_id,
+            source_session_id,
+            agent_id,
+            at_message_id,
+            text,
+        } => {
+            return derive_session(
+                state,
+                ForkSessionInput {
+                    id,
+                    project_id,
+                    agent_id,
+                    at_message_id,
+                    text,
+                },
+                &source_session_id,
+                derive_source_locked,
                 require_user_git_baseline(user_git_baseline)?,
                 permission_limits,
             );
@@ -3338,6 +3514,89 @@ fn fork_session(
         send_message(state, input.id, input.text, git_baseline, permission_limits)?;
     events.append(&mut run_events);
     Ok((result, events))
+}
+
+fn derive_session(
+    state: &mut WorkingSet,
+    input: ForkSessionInput,
+    source_session_id: &str,
+    source_locked: bool,
+    git_baseline: &GitBaseline,
+    permission_limits: PermissionPolicyLimits,
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
+    if input.text.trim().is_empty() {
+        return Err(error(
+            ErrorCode::InvalidMessageRole,
+            "message text is required",
+            false,
+        ));
+    }
+    if input.id.trim().is_empty() || state.sessions.iter().any(|session| session.id == input.id) {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "session id is empty or already exists",
+            false,
+        ));
+    }
+    if !state
+        .projects
+        .iter()
+        .any(|project| project.id == input.project_id)
+    {
+        return Err(error(ErrorCode::InvalidProject, "project not found", false));
+    }
+    require_agent(state, &input.agent_id)?;
+    let source_message = state
+        .messages
+        .iter()
+        .find(|message| message.id == input.at_message_id)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::MessageNotFound,
+                "branch message not found",
+                false,
+            )
+        })?;
+    if source_message.project_id != input.project_id {
+        return Err(error(
+            ErrorCode::SessionMessageProjectMismatch,
+            "branch message belongs to another project",
+            false,
+        ));
+    }
+    let source_session = state
+        .sessions
+        .iter()
+        .find(|session| session.id == source_session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?
+        .clone();
+    if source_session.project_id != input.project_id {
+        return Err(error(
+            ErrorCode::SessionMessageProjectMismatch,
+            "source Session belongs to another project",
+            false,
+        ));
+    }
+
+    let source_is_leaf = !state
+        .messages
+        .iter()
+        .any(|message| message.parent_message_id.as_deref() == Some(input.at_message_id.as_str()));
+    let can_reuse = source_locked
+        && source_session.active_run_id.is_none()
+        && source_session.current_message_id == input.at_message_id
+        && source_session.agent_id == input.agent_id
+        && source_is_leaf;
+    if can_reuse {
+        return send_message(
+            state,
+            source_session_id.to_owned(),
+            input.text,
+            git_baseline,
+            permission_limits,
+        );
+    }
+    fork_session(state, input, git_baseline, permission_limits)
 }
 
 fn require_user_git_baseline(baseline: Option<&GitBaseline>) -> Result<&GitBaseline, ApiError> {
@@ -4766,7 +5025,9 @@ fn command_git_baseline(
                 .project_id
                 .as_str(),
         ),
-        Command::ForkSession { project_id, .. } => Some(project_id.as_str()),
+        Command::ForkSession { project_id, .. } | Command::DeriveSession { project_id, .. } => {
+            Some(project_id.as_str())
+        }
         Command::TriggerCron {
             cron_id,
             scheduled_at,

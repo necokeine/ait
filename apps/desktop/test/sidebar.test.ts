@@ -59,16 +59,19 @@ test("uses the titlebar toggle as the persistent Session tree state", async () =
   assert.match(styles, /\.icon-button\[aria-pressed="true"\]/);
 });
 
-test("derives from leaf and non-leaf Messages through the context menu", async () => {
-  const [html, renderer] = await Promise.all([
+test("submits leaf and non-leaf derivation intent through the context menu", async () => {
+  const [html, renderer, main] = await Promise.all([
     readFile(new URL("../src/index.html", import.meta.url), "utf8"),
     readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/main.ts", import.meta.url), "utf8"),
   ]);
 
   assert.match(html, /id="message-context-menu"[\s\S]*id="message-start-session-action"/);
   assert.doesNotMatch(html, /Branch from here|select a tree node to branch/i);
   assert.match(renderer, /addEventListener\("contextmenu"[\s\S]*openMessageContextMenu/);
-  assert.match(renderer, /isCurrentSessionLeaf\(view\.messages, session, source\.id\)/);
+  assert.match(renderer, /sourceMessageId: source\.id/);
+  assert.doesNotMatch(renderer, /isCurrentSessionLeaf|reuseCurrentSession:/);
+  assert.match(main, /post\("\/v1\/session\/submit-derive"[\s\S]*source_session_id: currentSessionId/);
   assert.doesNotMatch(renderer, /canBranch[\s\S]*directMessageChildren/);
 });
 

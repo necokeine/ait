@@ -17,7 +17,6 @@ import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messag
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
-import { submitSessionDerivation } from "./session-derivation.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
@@ -214,23 +213,20 @@ class DaemonClient {
 
     const id = randomUUID();
     const currentSessionId = String(params.currentSessionId);
-    const result = await submitSessionDerivation({
-      currentSessionId,
-      newSessionId: id,
-      reuseCurrentSession: params.reuseCurrentSession === true,
-      submitCurrent: () => this.post("/v1/session/submit-message", "run", {
-        session_id: currentSessionId, text: params.content,
-      }) as Promise<{ id: string }>,
-      submitFork: () => this.post("/v1/session/submit-fork", "run", {
-        id, project_id: params.projectId, agent_id: params.agentId,
-        at_message_id: params.sourceMessageId, text: params.content,
-      }) as Promise<{ id: string }>,
-    });
+    const run = await this.post("/v1/session/submit-derive", "run", {
+      id, project_id: params.projectId, source_session_id: currentSessionId,
+      agent_id: params.agentId, at_message_id: params.sourceMessageId,
+      text: params.content,
+    }) as { id: string; session_id: string | null };
+    const selectedSessionId = run.session_id;
+    if (selectedSessionId !== currentSessionId && selectedSessionId !== id) {
+      throw new Error("Daemon returned an unexpected derived Session");
+    }
     return {
       view: await this.view(String(params.projectId)),
-      selectedSessionId: result.selectedSessionId,
-      runId: result.run.id,
-      reusedCurrentSession: result.reusedCurrentSession,
+      selectedSessionId,
+      runId: run.id,
+      reusedCurrentSession: selectedSessionId === currentSessionId,
     };
   }
 

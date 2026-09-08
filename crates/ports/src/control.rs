@@ -34,6 +34,9 @@ pub enum ControlFilter {
     MessageAncestors {
         head_id: String,
     },
+    MessageChildren {
+        parent_id: String,
+    },
     RunsForSession {
         session_id: String,
     },
@@ -71,6 +74,13 @@ impl ControlFilter {
     pub fn message_ancestors(head_id: impl Into<String>) -> Self {
         Self::MessageAncestors {
             head_id: head_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn message_children(parent_id: impl Into<String>) -> Self {
+        Self::MessageChildren {
+            parent_id: parent_id.into(),
         }
     }
 

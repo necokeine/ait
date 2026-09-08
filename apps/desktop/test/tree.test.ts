@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildMessageTimeline, directMessageChildren, isCurrentSessionLeaf, pathToMessage, resolveBranchHead, sessionForBranch } from "../src/tree.js";
+import { buildMessageTimeline, directMessageChildren, pathToMessage, resolveBranchHead, sessionForBranch } from "../src/tree.js";
 import type { DesktopMessage, DesktopSession } from "../src/types.js";
 
 const message = (id: string, parentMessageId: string | null, createdAt: number): DesktopMessage => ({
@@ -79,12 +79,6 @@ test("chooses the Session with the longest descendant chain before recency", () 
 
 test("projects root-to-head paths without copying history", () => {
   assert.deepEqual(pathToMessage(messages, "branch-tail").map(({ id }) => id), ["root", "a", "branch", "branch-tail"]);
-});
-
-test("only reuses the current Session for its own leaf", () => {
-  assert.equal(isCurrentSessionLeaf(messages, session("branch-session", "branch-tail"), "branch-tail"), true);
-  assert.equal(isCurrentSessionLeaf(messages, session("main", "b"), "a"), false);
-  assert.equal(isCurrentSessionLeaf(messages, session("branch-session", "branch-tail"), "b"), false);
 });
 
 test("handles a large deep timeline iteratively", () => {
