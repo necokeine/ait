@@ -4,18 +4,22 @@
 use ait_application::LocalControlService;
 use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
-    ProviderSecret, WorkspaceView,
+    ProviderSecret, RunView, WorkspaceView,
 };
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    AgentProviderGateway, ControlStore, HostProviderModelCatalog, ProviderMessage, WorkspaceAgent,
+    AgentProviderGateway, ControlSnapshot, ControlStore, ControlStoreError, DurableEvent,
+    HostProviderModelCatalog, PendingEvent, ProviderMessage, RunOutputArchive, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    collections::{HashMap, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::sync::Semaphore;
@@ -33,6 +37,12 @@ fn send(id: &str) -> Command {
         text: "hello".into(),
     }
 }
+fn send_text(id: &str, text: &str) -> Command {
+    Command::SendMessage {
+        session_id: id.into(),
+        text: text.into(),
+    }
+}
 async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
     let response = service.execute(command).await;
     assert!(response.ok, "{:?}", response.error);
@@ -43,6 +53,23 @@ async fn view(service: &LocalControlService) -> WorkspaceView {
         panic!()
     };
     view
+}
+
+async fn submit_run(service: &Arc<LocalControlService>, command: Command) -> RunView {
+    let response = service.submit(command).await;
+    assert!(response.ok, "{:?}", response.error);
+    let CommandResult::Run(run) = response.result.unwrap() else {
+        panic!("expected Run")
+    };
+    run
+}
+
+async fn wait_for_signal(semaphore: &Semaphore) {
+    tokio::time::timeout(Duration::from_secs(3), semaphore.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
 }
 async fn setup(
     service: &LocalControlService,
@@ -110,12 +137,18 @@ impl WorkspaceAgent for BlockingAgent {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let cancellation = request.cancellation.clone();
         self.requests
             .lock()
             .unwrap()
             .push((request.model, request.reasoning_effort));
         self.entered.add_permits(1);
-        self.release.acquire().await.unwrap().forget();
+        tokio::select! {
+            permit = self.release.acquire() => permit.unwrap().forget(),
+            () = cancellation.cancelled() => {
+                return Err(DomainError::invariant(ErrorCode::RunCancelled, "cancelled"));
+            }
+        }
         Ok(WorkspaceAgentResponse {
             assistant_text: "done".into(),
             commit_id: None,
@@ -125,8 +158,340 @@ impl WorkspaceAgent for BlockingAgent {
     }
 }
 
+struct CommittingAgent {
+    entered: Semaphore,
+    release: Semaphore,
+    commits: Mutex<Vec<(String, String, String)>>,
+}
+
+impl CommittingAgent {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            release: Semaphore::new(0),
+            commits: Mutex::default(),
+        }
+    }
+
+    async fn started(&self) {
+        self.entered.acquire().await.unwrap().forget();
+    }
+}
+
+fn git_head(path: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_index_tree(path: &std::path::Path) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("write-tree")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn git_commit_tree(path: &std::path::Path, commit: &str) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", &format!("{commit}^{{tree}}")])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[async_trait]
+impl WorkspaceAgent for CommittingAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        assert_eq!(git_head(&request.cwd), request.baseline_commit);
+        self.entered.add_permits(1);
+        self.release.acquire().await.unwrap().forget();
+        let file = if request.commit_subject == "first change" {
+            "first.txt"
+        } else {
+            "second.txt"
+        };
+        std::fs::write(request.cwd.join(file), format!("{file}\n")).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&request.cwd)
+                .args(["add", "--", file])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&request.cwd)
+                .args([
+                    "-c",
+                    "user.name=Test Agent",
+                    "-c",
+                    "user.email=test-agent@example.invalid",
+                    "commit",
+                    "-m",
+                    &request.commit_subject,
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let commit = git_head(&request.cwd);
+        self.commits
+            .lock()
+            .unwrap()
+            .push((request.baseline_commit, commit.clone(), file.into()));
+        Ok(WorkspaceAgentResponse {
+            assistant_text: format!("created {file}"),
+            commit_id: Some(commit),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+struct SettlingCancellationAgent {
+    calls: std::sync::atomic::AtomicUsize,
+    entered: Semaphore,
+    cancelling: Semaphore,
+    settle_release: Semaphore,
+}
+
+impl SettlingCancellationAgent {
+    fn new() -> Self {
+        Self {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            entered: Semaphore::new(0),
+            cancelling: Semaphore::new(0),
+            settle_release: Semaphore::new(0),
+        }
+    }
+
+    async fn started(&self) {
+        self.entered.acquire().await.unwrap().forget();
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for SettlingCancellationAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.entered.add_permits(1);
+        if call == 0 {
+            request.cancellation.cancelled().await;
+            self.cancelling.add_permits(1);
+            self.settle_release.acquire().await.unwrap().forget();
+            return Err(DomainError::invariant(
+                ErrorCode::RunCancelled,
+                "cancelled after workspace settlement",
+            ));
+        }
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "second run completed".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+struct FinalizationRaceAgent {
+    entered: Semaphore,
+    begin_integration: Semaphore,
+    integration_started: Semaphore,
+    complete: Semaphore,
+}
+
+impl FinalizationRaceAgent {
+    fn new() -> Self {
+        Self {
+            entered: Semaphore::new(0),
+            begin_integration: Semaphore::new(0),
+            integration_started: Semaphore::new(0),
+            complete: Semaphore::new(0),
+        }
+    }
+
+    async fn started(&self) {
+        self.entered.acquire().await.unwrap().forget();
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for FinalizationRaceAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.entered.add_permits(1);
+        self.begin_integration.acquire().await.unwrap().forget();
+        request
+            .integration_gate
+            .as_ref()
+            .expect("application integration gate")
+            .begin_integration()
+            .await?;
+        self.integration_started.add_permits(1);
+        self.complete.acquire().await.unwrap().forget();
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "integrated result".into(),
+            commit_id: Some("fixture-commit".into()),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+struct TerminalFailingStore {
+    inner: SqliteControlStore,
+    failure_status: &'static str,
+    pause_status: &'static str,
+    failures: Mutex<VecDeque<ControlStoreError>>,
+    pause_once: AtomicBool,
+    failures_exhausted: Semaphore,
+    allow_terminal_commit: Semaphore,
+    terminal_committed: Semaphore,
+}
+
+#[async_trait]
+impl ControlStore for TerminalFailingStore {
+    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
+        self.inner.load().await
+    }
+
+    async fn commit(
+        &self,
+        revision: u64,
+        value: serde_json::Value,
+        events: Vec<PendingEvent>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let status = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .and_then(|run| run["status"].as_str())
+            .map(str::to_owned);
+        if status.as_deref() == Some(self.failure_status) {
+            let injected = self.failures.lock().unwrap().pop_front();
+            if let Some(failure) = injected {
+                return Err(failure);
+            }
+        }
+        if status.as_deref() == Some(self.pause_status)
+            && self.pause_once.swap(false, Ordering::SeqCst)
+        {
+            self.failures_exhausted.add_permits(1);
+            self.allow_terminal_commit.acquire().await.unwrap().forget();
+        }
+        let result = self.inner.commit(revision, value, events).await;
+        if result.is_ok()
+            && matches!(
+                status.as_deref(),
+                Some("completed" | "failed" | "cancelled" | "limit_exceeded")
+            )
+        {
+            self.terminal_committed.add_permits(1);
+        }
+        result
+    }
+
+    async fn commit_terminal(
+        &self,
+        revision: u64,
+        value: serde_json::Value,
+        events: Vec<PendingEvent>,
+        run_id: &str,
+        output: Option<RunOutputArchive>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let status = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .and_then(|run| run["status"].as_str())
+            .map(str::to_owned);
+        if status.as_deref() == Some(self.failure_status)
+            && let Some(failure) = self.failures.lock().unwrap().pop_front()
+        {
+            return Err(failure);
+        }
+        if status.as_deref() == Some(self.pause_status)
+            && self.pause_once.swap(false, Ordering::SeqCst)
+        {
+            self.failures_exhausted.add_permits(1);
+            self.allow_terminal_commit.acquire().await.unwrap().forget();
+        }
+        let result = self
+            .inner
+            .commit_terminal(revision, value, events, run_id, output)
+            .await;
+        if result.is_ok() {
+            self.terminal_committed.add_permits(1);
+        }
+        result
+    }
+
+    async fn replay(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<DurableEvent>, ControlStoreError> {
+        self.inner.replay(after, limit).await
+    }
+
+    async fn event_bounds(&self) -> Result<ait_ports::EventBounds, ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<ait_ports::DurableEventPage, ControlStoreError> {
+        self.inner.replay_page(after, limit).await
+    }
+
+    async fn save_progress(
+        &self,
+        checkpoint: ait_ports::ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        self.inner.save_progress(checkpoint, events).await
+    }
+
+    async fn load_progress(&self) -> Result<Vec<ait_ports::ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress().await
+    }
+
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<RunOutputArchive>, ControlStoreError> {
+        self.inner.load_run_outputs(run_ids).await
+    }
+
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
+        self.inner.clear_progress(run_id).await
+    }
+}
+
 #[tokio::test]
-async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_execute() {
+async fn active_session_rejects_competitors_and_same_project_writers_are_serialized() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
@@ -174,6 +539,17 @@ async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_e
         let service = service.clone();
         tokio::spawn(async move { ok(&service, send("two")).await })
     };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "the second Session must wait for the same Project write lease"
+    );
+    agent.release.add_permits(1);
+    let CommandResult::Run(first_run) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(first_run.status, "completed");
     agent.started().await;
     assert_eq!(view(&service).await.runs.len(), 2);
     assert_eq!(
@@ -183,13 +559,11 @@ async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_e
             ("gpt-5.6-sol".into(), Some("low".into()))
         ]
     );
-    agent.release.add_permits(2);
-    for task in [running, second] {
-        let CommandResult::Run(run) = task.await.unwrap() else {
-            panic!()
-        };
-        assert_eq!(run.status, "completed");
-    }
+    agent.release.add_permits(1);
+    let CommandResult::Run(second_run) = second.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(second_run.status, "completed");
     let finished = view(&service).await;
     assert!(
         finished
@@ -207,6 +581,795 @@ async fn active_session_rejects_inputs_and_config_changes_while_other_sessions_e
             .count(),
         2
     );
+}
+
+#[tokio::test]
+async fn codex_writers_for_unrelated_projects_enter_concurrently() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(BlockingAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    for (project_id, directory) in [("p1", &first), ("p2", &second)] {
+        ok(
+            &service,
+            Command::RegisterProject {
+                id: project_id.into(),
+                name: project_id.into(),
+                workdir: directory.path().display().to_string(),
+                repo_url: None,
+            },
+        )
+        .await;
+    }
+    ok(
+        &service,
+        Command::RegisterAgent {
+            id: "preset".into(),
+            name: "Shared".into(),
+            config: config("high"),
+        },
+    )
+    .await;
+    for (session_id, project_id) in [("one", "p1"), ("two", "p2")] {
+        ok(
+            &service,
+            Command::CreateSession {
+                id: session_id.into(),
+                project_id: project_id.into(),
+                agent_id: "preset".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+    }
+
+    let one = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    let two = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("two")).await })
+    };
+    agent.started().await;
+    agent.started().await;
+    assert_eq!(agent.requests.lock().unwrap().len(), 2);
+    agent.release.add_permits(2);
+    for task in [one, two] {
+        let CommandResult::Run(run) = task.await.unwrap() else {
+            panic!()
+        };
+        assert_eq!(run.status, "completed");
+    }
+}
+
+#[tokio::test]
+async fn a_second_service_cannot_bypass_the_process_wide_workspace_lease() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(BlockingAgent::new());
+    let first_service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let second_service = LocalControlService::with_workspace_agent(store, agent.clone());
+    let _directory = setup(&first_service, config("high")).await;
+    let running = {
+        let service = first_service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+
+    let rejected = second_service.execute(send("two")).await;
+    assert_eq!(
+        rejected.error.unwrap().code,
+        ErrorCode::ProjectWorkspaceBusy
+    );
+    assert_eq!(view(&first_service).await.runs.len(), 1);
+
+    agent.release.add_permits(1);
+    let CommandResult::Run(finished) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(finished.status, "completed");
+    let retried = {
+        let service = Arc::new(second_service);
+        let task_service = service.clone();
+        let task = tokio::spawn(async move { ok(&task_service, send("two")).await });
+        agent.started().await;
+        agent.release.add_permits(1);
+        task.await.unwrap()
+    };
+    let CommandResult::Run(retried) = retried else {
+        panic!()
+    };
+    assert_eq!(retried.status, "completed");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn canonical_path_aliases_share_the_same_process_wide_lease() {
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("project");
+    let alias = root.path().join("project-alias");
+    std::fs::create_dir(&project).unwrap();
+    std::os::unix::fs::symlink(&project, &alias).unwrap();
+    let agent = Arc::new(BlockingAgent::new());
+    let first_service = Arc::new(LocalControlService::with_workspace_agent(
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+        agent.clone(),
+    ));
+    let second_service = LocalControlService::with_workspace_agent(
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+        agent.clone(),
+    );
+    for (service, workdir, session_id) in [
+        (first_service.as_ref(), project.as_path(), "one"),
+        (&second_service, alias.as_path(), "two"),
+    ] {
+        ok(
+            service,
+            Command::RegisterProject {
+                id: "p".into(),
+                name: "Project".into(),
+                workdir: workdir.display().to_string(),
+                repo_url: None,
+            },
+        )
+        .await;
+        ok(
+            service,
+            Command::RegisterAgent {
+                id: "preset".into(),
+                name: "Shared".into(),
+                config: config("high"),
+            },
+        )
+        .await;
+        ok(
+            service,
+            Command::CreateSession {
+                id: session_id.into(),
+                project_id: "p".into(),
+                agent_id: "preset".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+    }
+    let running = {
+        let service = first_service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+
+    let rejected = second_service.execute(send("two")).await;
+    assert_eq!(
+        rejected.error.unwrap().code,
+        ErrorCode::ProjectWorkspaceBusy
+    );
+    agent.release.add_permits(1);
+    let CommandResult::Run(finished) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(finished.status, "completed");
+}
+
+#[tokio::test]
+async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(CommittingAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let directory = setup(&service, config("high")).await;
+    let initial = git_head(directory.path());
+    let initial_tree = git_index_tree(directory.path());
+
+    let first = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send_text("one", "first change")).await })
+    };
+    agent.started().await;
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send_text("two", "second change")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err()
+    );
+    agent.release.add_permits(1);
+    let CommandResult::Run(first_run) = first.await.unwrap() else {
+        panic!()
+    };
+    agent.started().await;
+    agent.release.add_permits(1);
+    let CommandResult::Run(second_run) = second.await.unwrap() else {
+        panic!()
+    };
+
+    let commits = agent.commits.lock().unwrap().clone();
+    assert_eq!(commits.len(), 2);
+    assert_eq!(commits[0].0, initial);
+    assert_eq!(commits[1].0, commits[0].1);
+    assert_eq!(first_run.status, "completed");
+    assert_eq!(second_run.status, "completed");
+    assert_eq!(
+        first_run.workspace_base_commit.as_deref(),
+        Some(initial.as_str())
+    );
+    assert_eq!(
+        first_run.workspace_base_index_tree.as_deref(),
+        Some(initial_tree.as_str())
+    );
+    assert_eq!(
+        second_run.workspace_base_commit.as_deref(),
+        Some(commits[0].1.as_str())
+    );
+    assert_eq!(
+        second_run.workspace_base_index_tree.as_deref(),
+        Some(git_commit_tree(directory.path(), &commits[0].1).as_str())
+    );
+    assert_ne!(first_run.id, second_run.id);
+    for (baseline, commit, file) in &commits {
+        assert_ne!(baseline, commit);
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory.path())
+            .args(["show", "--pretty=format:", "--name-only", commit])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), file);
+    }
+    let workspace = view(&service).await;
+    let user_commits = workspace
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .map(|message| message.git_commit.clone().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(user_commits, [initial, commits[0].1.clone()]);
+    assert_eq!(git_head(directory.path()), commits[1].1);
+}
+
+#[tokio::test]
+async fn cancellation_holds_the_workspace_lease_until_adapter_settlement() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(SettlingCancellationAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let first = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+    let active = view(&service).await.runs[0].id.clone();
+    ok(
+        &service,
+        Command::CancelRun {
+            run_id: active.clone(),
+        },
+    )
+    .await;
+    agent.cancelling.acquire().await.unwrap().forget();
+
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "the next Run entered before cancelled workspace settlement completed"
+    );
+    agent.settle_release.add_permits(1);
+    let CommandResult::Run(cancelled) = first.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(cancelled.id, active);
+    assert_eq!(cancelled.status, "cancelled");
+    agent.started().await;
+    let CommandResult::Run(completed) = second.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(completed.status, "completed");
+}
+
+#[tokio::test]
+async fn dropping_the_execute_future_keeps_leases_and_terminal_persistence_supervised() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(BlockingAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let abandoned_transport = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    agent.started().await;
+    abandoned_transport.abort();
+    assert!(abandoned_transport.await.unwrap_err().is_cancelled());
+
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "the detached transport released the Project lease before settlement"
+    );
+
+    agent.release.add_permits(1);
+    agent.started().await;
+    let settled = view(&service).await;
+    let first_run = settled
+        .runs
+        .iter()
+        .find(|run| run.session_id.as_deref() == Some("one"))
+        .unwrap();
+    assert_eq!(first_run.status, "completed");
+    assert!(
+        settled
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+
+    agent.release.add_permits(1);
+    let CommandResult::Run(second_run) = second.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(second_run.status, "completed");
+}
+
+#[tokio::test]
+async fn cancellation_wins_the_finalization_gate_before_integration() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+    let active = view(&service).await.runs[0].id.clone();
+
+    let CommandResult::Run(cancelled) = ok(
+        &service,
+        Command::CancelRun {
+            run_id: active.clone(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(cancelled.status, "cancelled");
+    agent.begin_integration.add_permits(1);
+
+    let CommandResult::Run(settled) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(settled.status, "cancelled");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            agent.integration_started.acquire()
+        )
+        .await
+        .is_err(),
+        "integration started after durable cancellation"
+    );
+    let workspace = view(&service).await;
+    assert_eq!(workspace.messages.len(), 2);
+    assert!(
+        workspace
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn integration_wins_the_finalization_gate_and_its_output_is_persisted() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+    let active = view(&service).await.runs[0].id.clone();
+    agent.begin_integration.add_permits(1);
+    agent.integration_started.acquire().await.unwrap().forget();
+
+    let rejected = service
+        .execute(Command::CancelRun {
+            run_id: active.clone(),
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::RunAlreadyTerminal);
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .into_iter()
+            .find(|run| run.id == active)
+            .unwrap()
+            .status,
+        "running"
+    );
+
+    agent.complete.add_permits(1);
+    let CommandResult::Run(completed) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(completed.status, "completed");
+    let workspace = view(&service).await;
+    let assistant = workspace
+        .messages
+        .iter()
+        .find(|message| message.role == "assistant")
+        .unwrap();
+    assert_eq!(assistant.text.as_deref(), Some("integrated result"));
+    assert_eq!(
+        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
+        serde_json::json!("fixture-commit")
+    );
+}
+
+#[tokio::test]
+async fn integration_keeps_finalization_and_workspace_admission_until_terminal_store_recovers() {
+    let failures = VecDeque::from([
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Other("injected terminal store failure".into()),
+    ]);
+    let store = Arc::new(TerminalFailingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        failure_status: "completed",
+        pause_status: "completed",
+        failures: Mutex::new(failures),
+        pause_once: AtomicBool::new(true),
+        failures_exhausted: Semaphore::new(0),
+        allow_terminal_commit: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
+    });
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let first = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    agent.started().await;
+    let active = view(&service).await.runs[0].id.clone();
+    agent.begin_integration.add_permits(1);
+    agent.integration_started.acquire().await.unwrap().forget();
+    agent.complete.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(3), store.failures_exhausted.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+
+    assert!(store.failures.lock().unwrap().is_empty());
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .into_iter()
+            .find(|run| run.id == active)
+            .unwrap()
+            .status,
+        "settling"
+    );
+    let rejected = service
+        .execute(Command::CancelRun {
+            run_id: active.clone(),
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::RunAlreadyTerminal);
+
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "a new same-Project Run entered while terminal persistence was unavailable"
+    );
+
+    store.allow_terminal_commit.add_permits(1);
+    let CommandResult::Run(completed) = first.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(completed.id, active);
+    assert_eq!(completed.status, "completed");
+    agent.started().await;
+    agent.begin_integration.add_permits(1);
+    agent.integration_started.acquire().await.unwrap().forget();
+    agent.complete.add_permits(1);
+    let CommandResult::Run(second) = second.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(second.status, "completed");
+
+    let workspace = view(&service).await;
+    let first = workspace.runs.iter().find(|run| run.id == active).unwrap();
+    assert_eq!(first.status, "completed");
+    let assistant = workspace
+        .messages
+        .iter()
+        .find(|message| Some(&message.id) == first.last_message_id.as_ref())
+        .unwrap();
+    assert_eq!(assistant.text.as_deref(), Some("integrated result"));
+    assert_eq!(
+        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
+        serde_json::json!("fixture-commit")
+    );
+}
+
+async fn verify_running_transition_failure_reaches_terminal(
+    failures: VecDeque<ControlStoreError>,
+    expected_code: ErrorCode,
+) {
+    let store = Arc::new(TerminalFailingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        failure_status: "running",
+        pause_status: "failed",
+        failures: Mutex::new(failures),
+        pause_once: AtomicBool::new(true),
+        failures_exhausted: Semaphore::new(0),
+        allow_terminal_commit: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
+    });
+    let agent = Arc::new(BlockingAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+
+    let accepted = submit_run(&service, send("one")).await;
+    assert_eq!(accepted.status, "queued");
+    wait_for_signal(&store.failures_exhausted).await;
+    let pending = view(&service).await;
+    assert_eq!(
+        pending
+            .runs
+            .iter()
+            .find(|run| run.id == accepted.id)
+            .unwrap()
+            .status,
+        "queued"
+    );
+    assert_eq!(
+        pending
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .as_deref(),
+        Some(accepted.id.as_str())
+    );
+
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { submit_run(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "same-Project admission escaped before the first Run was terminal"
+    );
+
+    store.allow_terminal_commit.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    let failed = view(&service).await;
+    let first = failed
+        .runs
+        .iter()
+        .find(|run| run.id == accepted.id)
+        .unwrap();
+    assert_eq!(first.status, "failed");
+    assert_eq!(first.error.as_ref().unwrap().code, expected_code);
+    assert!(
+        failed
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+
+    let second = second.await.unwrap();
+    agent.started().await;
+    agent.release.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .iter()
+            .find(|run| run.id == second.id)
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn admitted_run_reaches_terminal_after_running_transition_conflict_or_store_error() {
+    verify_running_transition_failure_reaches_terminal(
+        VecDeque::from([
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+        ]),
+        ErrorCode::RunQueueConflict,
+    )
+    .await;
+    verify_running_transition_failure_reaches_terminal(
+        VecDeque::from([ControlStoreError::Other(
+            "injected running transition failure".into(),
+        )]),
+        ErrorCode::RunRecoveryFailed,
+    )
+    .await;
+}
+
+async fn verify_settling_transition_failure_preserves_integrated_result(
+    failures: VecDeque<ControlStoreError>,
+) {
+    let store = Arc::new(TerminalFailingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        failure_status: "settling",
+        pause_status: "completed",
+        failures: Mutex::new(failures),
+        pause_once: AtomicBool::new(true),
+        failures_exhausted: Semaphore::new(0),
+        allow_terminal_commit: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
+    });
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+
+    let accepted = submit_run(&service, send("one")).await;
+    agent.started().await;
+    agent.begin_integration.add_permits(1);
+    wait_for_signal(&agent.integration_started).await;
+    agent.complete.add_permits(1);
+    wait_for_signal(&store.failures_exhausted).await;
+
+    let pending = view(&service).await;
+    assert_eq!(
+        pending
+            .runs
+            .iter()
+            .find(|run| run.id == accepted.id)
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(
+        service
+            .execute(Command::CancelRun {
+                run_id: accepted.id.clone(),
+            })
+            .await
+            .error
+            .unwrap()
+            .code,
+        ErrorCode::RunAlreadyTerminal
+    );
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { submit_run(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "same-Project admission escaped before integrated output became terminal"
+    );
+
+    store.allow_terminal_commit.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    let completed = view(&service).await;
+    let first = completed
+        .runs
+        .iter()
+        .find(|run| run.id == accepted.id)
+        .unwrap();
+    assert_eq!(first.status, "completed");
+    let output = completed
+        .messages
+        .iter()
+        .find(|message| Some(&message.id) == first.last_message_id.as_ref())
+        .unwrap();
+    assert_eq!(output.text.as_deref(), Some("integrated result"));
+    assert_eq!(
+        output.data.as_ref().unwrap()["codex"]["commit_id"],
+        serde_json::json!("fixture-commit")
+    );
+
+    let second = second.await.unwrap();
+    agent.started().await;
+    agent.begin_integration.add_permits(1);
+    wait_for_signal(&agent.integration_started).await;
+    agent.complete.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .iter()
+            .find(|run| run.id == second.id)
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn integrated_run_ignores_settling_transition_conflict_or_store_error() {
+    verify_settling_transition_failure_preserves_integrated_result(VecDeque::from([
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+    ]))
+    .await;
+    verify_settling_transition_failure_preserves_integrated_result(VecDeque::from([
+        ControlStoreError::Other("injected settling transition failure".into()),
+    ]))
+    .await;
 }
 
 #[tokio::test]

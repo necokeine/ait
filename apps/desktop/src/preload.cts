@@ -5,13 +5,17 @@ const invoke = <T,>(method: string, params: unknown = {}): Promise<T> =>
   ipcRenderer.invoke("ait:request", method, params) as Promise<T>;
 
 const runEventListeners = new Set<(updates: RunStreamUpdate[]) => void>();
+const runEventGeneration = globalThis.crypto.randomUUID();
+let runEventsReady = false;
 ipcRenderer.on("ait:run-event-frame", (_event, value: unknown) => {
   const frame = value as Partial<RunStreamFrame>;
-  if (!Number.isSafeInteger(frame.id) || !Array.isArray(frame.updates)) return;
+  if (frame.generation !== runEventGeneration
+    || !Number.isSafeInteger(frame.id)
+    || !Array.isArray(frame.updates)) return;
   try {
     for (const listener of runEventListeners) listener(frame.updates);
   } finally {
-    ipcRenderer.send("ait:run-event-ack", frame.id);
+    ipcRenderer.send("ait:run-event-ack", runEventGeneration, frame.id);
   }
 });
 
@@ -39,6 +43,10 @@ const api: AitDesktopApi = {
   continueRun: (input) => invoke("run.continue", input),
   subscribeRunEvents: (listener) => {
     runEventListeners.add(listener);
+    if (!runEventsReady) {
+      runEventsReady = true;
+      ipcRenderer.send("ait:run-event-ready", runEventGeneration);
+    }
     return () => runEventListeners.delete(listener);
   },
   fork: (input) => invoke("session.fork", input),

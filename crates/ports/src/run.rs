@@ -136,8 +136,68 @@ pub trait RunAgent: Send + Sync {
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError>;
 }
 
+/// Linearization boundary between cancellation and externally visible workspace integration.
+#[async_trait]
+pub trait WorkspaceIntegrationGate: std::fmt::Debug + Send + Sync {
+    /// Claims finalization for the running invocation.
+    ///
+    /// Once this succeeds, cancellation must not persist a cancelled terminal
+    /// state. If cancellation won first, this returns [`ErrorCode::RunCancelled`].
+    async fn begin_integration(&self) -> Result<(), DomainError>;
+
+    /// Observes a named integration boundary after finalization was claimed.
+    ///
+    /// Production gates normally keep the default no-op implementation. The
+    /// explicit checkpoints make failure/race injection deterministic without
+    /// teaching an adapter about a concrete persistence or test implementation.
+    async fn checkpoint(
+        &self,
+        _checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+}
+
+/// Fallible boundaries in the primary-worktree publication protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceIntegrationCheckpoint {
+    /// The ref transaction is prepared, before the canonical index is locked.
+    BeforeIndexLock,
+    /// The primary worktree is still at the admitted tree, before updating it.
+    BeforeWorktreeUpdate,
+    /// Collision scanning is complete, immediately before paths are quarantined.
+    BeforeWorktreeMutation,
+    /// The primary worktree was updated through the locked candidate index.
+    AfterWorktreeUpdate,
+    /// All pre-publication validation passed, immediately before ref publication.
+    BeforeRefPublish,
+    /// Git applied the ref transaction, before its confirmation is accepted.
+    BeforeRefCommitConfirmation,
+    /// The target ref was published while the canonical index remains unchanged.
+    AfterRefPublish,
+    /// A baseline ref was observed, before its exact target lock is acquired.
+    BeforeBaselineRefReconciliationLock,
+    /// The candidate view is fixed, immediately before rollback isolates live paths.
+    BeforeWorktreeRollback,
+    /// A rollback candidate was isolated and verified, before restoring the baseline.
+    AfterRollbackCandidateQuarantine,
+    /// The canonical index is about to become the candidate index.
+    BeforeIndexPublish,
+}
+
 /// One workspace-scoped invocation of a complete coding Agent harness.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptedWorkspace {
+    /// Retained manager-owned worktree to continue.
+    pub path: PathBuf,
+    /// Exact fingerprint confirmed by the member.
+    pub fingerprint: String,
+    /// Original Run whose isolation ref owns the retained worktree.
+    pub source_run_id: String,
+}
+
+/// One workspace-scoped invocation of a complete coding Agent harness.
+#[derive(Clone, Debug)]
 pub struct WorkspaceAgentInvocation {
     /// Stable correlation identity for the external turn.
     pub request_id: String,
@@ -153,11 +213,20 @@ pub struct WorkspaceAgentInvocation {
     pub commit_subject: String,
     /// Canonical Project Git root and sandbox boundary.
     pub cwd: PathBuf,
-    /// Exact failed-Run worktree snapshot explicitly adopted by the member.
-    /// Ordinary invocations leave this absent and require a clean worktree.
-    pub adopted_worktree_fingerprint: Option<String>,
+    /// Exact manager-owned failed-Run workspace explicitly adopted by the member.
+    pub adopted_worktree: Option<AdoptedWorkspace>,
+    /// Full Git HEAD captured while the workspace write lease was held.
+    ///
+    /// A workspace-writing adapter must run from this immutable baseline and
+    /// refuse to integrate its result if the Project worktree moves away from
+    /// it during the invocation.
+    pub baseline_commit: String,
+    /// Exact index tree captured with `baseline_commit` at write admission.
+    pub baseline_index_tree: String,
     /// Cooperative cancellation shared with the caller.
     pub cancellation: CancellationToken,
+    /// Shared cancellation/finalization decision owned by the application supervisor.
+    pub integration_gate: Option<Arc<dyn WorkspaceIntegrationGate>>,
 }
 
 /// Durable-facing result of one workspace Agent turn.

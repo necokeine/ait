@@ -33,8 +33,8 @@ pub(super) struct FinishedProgress {
 }
 
 pub(super) struct ProgressPump {
-    reporter: Arc<ChannelProgressReporter>,
-    writer: JoinHandle<FinishedProgress>,
+    reporter: Option<Arc<ChannelProgressReporter>>,
+    writer: Option<JoinHandle<FinishedProgress>>,
 }
 
 impl ProgressPump {
@@ -47,23 +47,35 @@ impl ProgressPump {
         };
         let writer = tokio::spawn(write_progress(store, identity, receiver));
         Self {
-            reporter: Arc::new(ChannelProgressReporter { sender }),
-            writer,
+            reporter: Some(Arc::new(ChannelProgressReporter { sender })),
+            writer: Some(writer),
         }
     }
 
     pub(super) fn reporter(&self) -> Arc<dyn WorkspaceProgressReporter> {
-        self.reporter.clone()
+        self.reporter
+            .as_ref()
+            .expect("progress reporter exists")
+            .clone()
     }
 
-    pub(super) async fn finish(self) -> FinishedProgress {
-        drop(self.reporter);
-        match self.writer.await {
+    pub(super) async fn finish(mut self) -> FinishedProgress {
+        let writer = self.writer.take().expect("progress writer exists");
+        drop(self.reporter.take());
+        match writer.await {
             Ok(result) => result,
             Err(error) => FinishedProgress {
                 checkpoint: None,
                 persistence_error: Some(format!("progress writer task failed: {error}")),
             },
+        }
+    }
+}
+
+impl Drop for ProgressPump {
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            writer.abort();
         }
     }
 }
@@ -114,6 +126,15 @@ async fn write_progress(
     identity: ProgressIdentity,
     mut receiver: mpsc::Receiver<WorkspaceProgressEvent>,
 ) -> FinishedProgress {
+    if let Some(error) = identity_validation_error(&identity) {
+        // Keep draining so an adapter cannot deadlock on the bounded channel,
+        // but never send an oversized checkpoint or event to persistence.
+        while receiver.recv().await.is_some() {}
+        return FinishedProgress {
+            checkpoint: None,
+            persistence_error: Some(error),
+        };
+    }
     let mut projection = ProgressProjection {
         status: "running".into(),
         ..ProgressProjection::default()
@@ -174,6 +195,18 @@ async fn write_progress(
         checkpoint: Some(checkpoint),
         persistence_error,
     }
+}
+
+fn identity_validation_error(identity: &ProgressIdentity) -> Option<String> {
+    let oversized = identity.run.len() > MAX_IDENTIFIER_BYTES
+        || identity.project.len() > MAX_IDENTIFIER_BYTES
+        || identity
+            .session
+            .as_ref()
+            .is_some_and(|session| session.len() > MAX_IDENTIFIER_BYTES);
+    oversized.then(|| {
+        format!("progress identity exceeds the {MAX_IDENTIFIER_BYTES}-byte persistence limit")
+    })
 }
 
 impl ProgressProjection {

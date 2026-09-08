@@ -18,6 +18,8 @@ pub enum ErrorCode {
     ProjectGitDirty,
     /// Project repository has no readable HEAD commit.
     ProjectGitHeadUnavailable,
+    /// Another process owns the Project workspace write lease.
+    ProjectWorkspaceBusy,
     /// A file operation escaped the Project boundary.
     ProjectPathOutOfScope,
     /// Project aggregate fields are inconsistent.
@@ -129,6 +131,7 @@ impl ErrorCode {
             Self::ProjectGitInitFailed => "PROJECT_GIT_INIT_FAILED",
             Self::ProjectGitDirty => "PROJECT_GIT_DIRTY",
             Self::ProjectGitHeadUnavailable => "PROJECT_GIT_HEAD_UNAVAILABLE",
+            Self::ProjectWorkspaceBusy => "PROJECT_WORKSPACE_BUSY",
             Self::ProjectPathOutOfScope => "PROJECT_PATH_OUT_OF_SCOPE",
             Self::InvalidProject => "INVALID_PROJECT",
             Self::SessionNotFound => "SESSION_NOT_FOUND",

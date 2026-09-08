@@ -1,5 +1,5 @@
 import type { AgentProvider, AgentView, ControlEvent, RunProgress, RunStreamUpdate, RunWorktreeState } from "./types.js";
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -11,7 +11,7 @@ import {
   projectAgent,
 } from "./agents.js";
 import { progressFromCheckpoint } from "./run-progress.js";
-import { BoundedRunEventDelivery, cursorAfterEvent } from "./run-event-delivery.js";
+import { ReadyRunEventDelivery, cursorAfterEvent } from "./run-event-delivery.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
@@ -65,7 +65,7 @@ class DaemonClient {
   private eventLoop: Promise<void> | undefined;
   private eventCursor = 0;
   private streamConnected: boolean | undefined;
-  private readonly deliveries = new Map<number, BoundedRunEventDelivery>();
+  private readonly deliveries = new Map<number, ReadyRunEventDelivery>();
 
   ensureStarted(): Promise<void> {
     this.startup ??= this.start().then(() => this.ensureBuiltInAgents()).then(() => {
@@ -349,28 +349,38 @@ class DaemonClient {
   private publish(update: RunStreamUpdate): void {
     for (const window of BrowserWindow.getAllWindows()) {
       if (window.isDestroyed()) continue;
-      const webContents = window.webContents;
-      let delivery = this.deliveries.get(webContents.id);
-      if (!delivery) {
-        delivery = new BoundedRunEventDelivery((frame) => {
-          if (!webContents.isDestroyed()) webContents.send("ait:run-event-frame", frame);
-        });
-        this.deliveries.set(webContents.id, delivery);
-        const cleanup = () => {
-          this.deliveries.get(webContents.id)?.close();
-          this.deliveries.delete(webContents.id);
-          webContents.removeListener("did-start-loading", cleanup);
-          webContents.removeListener("destroyed", cleanup);
-        };
-        webContents.once("did-start-loading", cleanup);
-        webContents.once("destroyed", cleanup);
-      }
-      delivery.enqueue(update);
+      this.deliveries.get(window.webContents.id)?.enqueue(update);
     }
   }
 
-  acknowledge(webContentsId: number, frameId: number): void {
-    if (Number.isSafeInteger(frameId)) this.deliveries.get(webContentsId)?.acknowledge(frameId);
+  rendererReady(webContents: WebContents, generation: string): void {
+    if (!generation || generation.length > 128 || webContents.isDestroyed()) return;
+    let delivery = this.deliveries.get(webContents.id);
+    if (!delivery) {
+      delivery = new ReadyRunEventDelivery((frame) => {
+        if (!webContents.isDestroyed()) webContents.send("ait:run-event-frame", frame);
+      });
+      this.deliveries.set(webContents.id, delivery);
+    }
+    delivery.ready(generation, [
+      { type: "connection", connected: this.streamConnected ?? false },
+      { type: "resync", cursor: this.eventCursor },
+    ]);
+  }
+
+  rendererLoading(webContentsId: number): void {
+    this.deliveries.get(webContentsId)?.suspend();
+  }
+
+  removeRenderer(webContentsId: number): void {
+    this.deliveries.get(webContentsId)?.close();
+    this.deliveries.delete(webContentsId);
+  }
+
+  acknowledge(webContentsId: number, generation: string, frameId: number): void {
+    if (Number.isSafeInteger(frameId)) {
+      this.deliveries.get(webContentsId)?.acknowledge(generation, frameId);
+    }
   }
 
   private snapshot(): Promise<unknown> {
@@ -449,6 +459,8 @@ function partialOutput(value: unknown): {
     }).slice(0, 256)
     : [];
   const worktree = fingerprint ? {
+    ...(typeof rawWorktree.retained_path === "string" ? { retainedPath: rawWorktree.retained_path } : {}),
+    ...(typeof rawWorktree.retained_run_id === "string" ? { retainedRunId: rawWorktree.retained_run_id } : {}),
     head: typeof rawWorktree.head === "string" ? rawWorktree.head : null,
     dirty: rawWorktree.dirty === true,
     fingerprint,
@@ -497,6 +509,8 @@ function createWindow(): void {
     return { action: "deny" };
   });
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("did-start-loading", () => daemon.rendererLoading(window.webContents.id));
+  window.webContents.once("destroyed", () => daemon.removeRenderer(window.webContents.id));
   void window.loadFile(join(here, "index.html"));
   window.once("ready-to-show", () => window.show());
 }
@@ -507,8 +521,20 @@ app.whenReady().then(() => {
     if (typeof method !== "string") throw new Error("Unsupported desktop operation.");
     return daemon.request(method, params ?? {});
   });
-  ipcMain.on("ait:run-event-ack", (event, frameId: unknown) => {
-    if (typeof frameId === "number") daemon.acknowledge(event.sender.id, frameId);
+  ipcMain.on("ait:run-event-ready", (event, generation: unknown) => {
+    const senderFrame = event.senderFrame;
+    const mainFrame = event.sender.mainFrame;
+    const fromMainFrame = senderFrame !== null
+      && senderFrame.processId === mainFrame.processId
+      && senderFrame.routingId === mainFrame.routingId;
+    if (typeof generation === "string" && fromMainFrame) {
+      daemon.rendererReady(event.sender, generation);
+    }
+  });
+  ipcMain.on("ait:run-event-ack", (event, generation: unknown, frameId: unknown) => {
+    if (typeof generation === "string" && typeof frameId === "number") {
+      daemon.acknowledge(event.sender.id, generation, frameId);
+    }
   });
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

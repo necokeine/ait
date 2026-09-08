@@ -222,6 +222,12 @@ pub struct RunView {
     pub trigger: ait_domain::RunTrigger,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
+    /// Git baseline authorized for a workspace-writing Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_base_commit: Option<String>,
+    /// Exact Git index tree authorized with the workspace baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_base_index_tree: Option<Box<str>>,
     pub status: String,
     pub error: Option<ApiError>,
     /// Bounded provider output and workspace state retained when no immutable
@@ -277,6 +283,10 @@ pub struct ProjectExport {
 }
 
 /// Successful command payload.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the stable unboxed command contract keeps transport and application pattern matching simple"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum CommandResult {

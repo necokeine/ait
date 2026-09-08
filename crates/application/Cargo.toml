@@ -12,6 +12,7 @@ ait-worktree = { path = "../worktree" }
 ait-runtime = { path = "../runtime" }
 ait-scheduler = { path = "../scheduler" }
 async-trait = "0.1"
+futures-util = "0.3"
 sha2 = "0.10"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +24,6 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
 ait-storage-sqlite = { path = "../storage-sqlite" }
-async-trait = "0.1"
 criterion = "0.7"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

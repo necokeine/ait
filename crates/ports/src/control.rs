@@ -158,7 +158,8 @@ pub trait ControlStore: Send + Sync {
     /// Loads checkpoints for active or interrupted clients to resynchronize.
     async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError>;
 
-    /// Loads independently archived output for only the requested Runs.
+    /// Loads independently archived output for the requested Runs, or the
+    /// complete bounded archive catalog when `run_ids` is empty.
     async fn load_run_outputs(
         &self,
         run_ids: &[String],

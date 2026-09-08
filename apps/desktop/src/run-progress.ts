@@ -1,4 +1,34 @@
-import type { MessagePart, RunProgress, RunProgressItem } from "./types.js";
+import type {
+  ControlEvent,
+  DesktopRun,
+  DesktopSnapshot,
+  MessagePart,
+  RunProgress,
+  RunProgressItem,
+} from "./types.js";
+
+const terminalRunStatuses = new Set(["completed", "failed", "cancelled", "limit_exceeded"]);
+
+export function isTerminalRunEvent(event: ControlEvent): boolean {
+  if (event.kind !== "run.updated" && event.kind !== "run.cancelled") return false;
+  const status = text(record(event.body).status);
+  return status !== undefined && terminalRunStatuses.has(status);
+}
+
+export function terminalRunForSession(
+  snapshot: Pick<DesktopSnapshot, "sessions" | "runs">,
+  sessionId: string,
+): DesktopRun | undefined {
+  const session = snapshot.sessions.find((candidate) => candidate.id === sessionId);
+  if (!session || session.activeRunId) return undefined;
+  const run = snapshot.runs.findLast((candidate) => candidate.sessionId === sessionId);
+  return run
+    && terminalRunStatuses.has(run.status)
+    && run.status !== "completed"
+    && run.lastMessageId === null
+    ? run
+    : undefined;
+}
 
 export function progressFromCheckpoint(value: unknown): RunProgress | undefined {
   const checkpoint = record(value);

@@ -130,6 +130,12 @@ pub struct RunWorktreeChange {
 /// Exact Git worktree identity used to guard explicit continuation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RunWorktreeState {
+    /// Manager-owned retained worktree path, absent when this is the Project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_path: Option<String>,
+    /// Original Run identity that owns the retained worktree/ref pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_run_id: Option<String>,
     /// HEAD observed with the status snapshot, absent for an unborn branch.
     pub head: Option<String>,
     /// Whether the index, worktree, or untracked set has changes.

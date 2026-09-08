@@ -3,11 +3,13 @@ import type { ControlEvent, RunStreamFrame, RunStreamUpdate } from "./types.js";
 export const RUN_EVENT_BUFFER_LIMIT = 512;
 export const RUN_EVENT_BUFFER_CHARACTER_LIMIT = 1024 * 1024;
 export const RUN_EVENT_FRAME_DELAY_MS = 16;
+export const RUN_EVENT_ACK_TIMEOUT_MS = 5_000;
 
 interface DeliveryOptions {
   limit?: number;
   characterLimit?: number;
   delayMs?: number;
+  ackTimeoutMs?: number;
   schedule?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   cancel?: (handle: ReturnType<typeof setTimeout>) => void;
 }
@@ -62,6 +64,7 @@ export class BoundedRunEventDelivery {
   private readonly limit: number;
   private readonly characterLimit: number;
   private readonly delayMs: number;
+  private readonly ackTimeoutMs: number;
   private readonly schedule: NonNullable<DeliveryOptions["schedule"]>;
   private readonly cancel: NonNullable<DeliveryOptions["cancel"]>;
   private readonly pending: RunStreamUpdate[] = [];
@@ -69,16 +72,19 @@ export class BoundedRunEventDelivery {
   private overflowCursor: number | undefined;
   private overflowConnection: boolean | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private inFlight: number | undefined;
+  private ackTimer: ReturnType<typeof setTimeout> | undefined;
+  private inFlight: RunStreamFrame | undefined;
   private nextFrameId = 1;
 
   constructor(
+    private readonly generation: string,
     private readonly send: (frame: RunStreamFrame) => void,
     options: DeliveryOptions = {},
   ) {
     this.limit = options.limit ?? RUN_EVENT_BUFFER_LIMIT;
     this.characterLimit = options.characterLimit ?? RUN_EVENT_BUFFER_CHARACTER_LIMIT;
     this.delayMs = options.delayMs ?? RUN_EVENT_FRAME_DELAY_MS;
+    this.ackTimeoutMs = options.ackTimeoutMs ?? RUN_EVENT_ACK_TIMEOUT_MS;
     this.schedule = options.schedule ?? setTimeout;
     this.cancel = options.cancel ?? clearTimeout;
   }
@@ -105,18 +111,22 @@ export class BoundedRunEventDelivery {
     } else {
       this.startOverflow(update);
     }
-    if (this.inFlight === undefined) this.ensureScheduled();
+    if (!this.inFlight) this.ensureScheduled();
   }
 
-  acknowledge(frameId: number): void {
-    if (frameId !== this.inFlight) return;
+  acknowledge(generation: string, frameId: number): void {
+    if (generation !== this.generation || frameId !== this.inFlight?.id) return;
+    if (this.ackTimer !== undefined) this.cancel(this.ackTimer);
+    this.ackTimer = undefined;
     this.inFlight = undefined;
     if (this.size > 0) this.ensureScheduled();
   }
 
   close(): void {
     if (this.timer !== undefined) this.cancel(this.timer);
+    if (this.ackTimer !== undefined) this.cancel(this.ackTimer);
     this.timer = undefined;
+    this.ackTimer = undefined;
     this.inFlight = undefined;
     this.pending.length = 0;
     this.pendingCharacters = 0;
@@ -140,9 +150,9 @@ export class BoundedRunEventDelivery {
     if (update.type === "connection") {
       this.overflowConnection = update.connected;
     } else if (update.type === "event") {
-      this.overflowCursor = Math.max(this.overflowCursor ?? 0, update.event.cursor);
+      this.overflowCursor = cursorAfterEvent(this.overflowCursor ?? 0, update.event);
     } else {
-      this.overflowCursor = Math.max(this.overflowCursor ?? 0, update.cursor);
+      this.overflowCursor = update.cursor;
     }
   }
 
@@ -152,11 +162,9 @@ export class BoundedRunEventDelivery {
   }
 
   private startOverflow(update: RunStreamUpdate): void {
-    const cursor = update.type === "event" ? update.event.cursor : update.type === "resync" ? update.cursor : 0;
-    this.overflowCursor = maxEventCursor(this.pending, cursor);
-    this.overflowConnection = update.type === "connection"
-      ? update.connected
-      : latestConnection(this.pending);
+    const buffered = [...this.pending, update];
+    this.overflowCursor = streamCursor(buffered);
+    this.overflowConnection = latestConnection(buffered);
     this.pending.length = 0;
     this.pendingCharacters = 0;
   }
@@ -168,12 +176,42 @@ export class BoundedRunEventDelivery {
 
   private flush(): void {
     this.timer = undefined;
-    if (this.inFlight !== undefined) return;
+    if (this.inFlight) return;
     const updates = this.takePending();
     if (updates.length === 0) return;
-    const frame = { id: this.nextFrameId++, updates };
-    this.inFlight = frame.id;
-    this.send(frame);
+    const frame = { generation: this.generation, id: this.nextFrameId++, updates };
+    this.inFlight = frame;
+    try {
+      this.send(frame);
+    } catch {
+      this.recoverLostFrame(frame.id);
+      return;
+    }
+    if (this.ackTimeoutMs > 0) {
+      this.ackTimer = this.schedule(() => this.recoverLostFrame(frame.id), this.ackTimeoutMs);
+    }
+  }
+
+  private recoverLostFrame(frameId: number): void {
+    if (frameId !== this.inFlight?.id) return;
+    const lost = this.inFlight.updates;
+    this.inFlight = undefined;
+    this.ackTimer = undefined;
+    const buffered = this.overflowCursor === undefined
+      ? [...lost, ...this.pending]
+      : [
+        ...lost,
+        ...(this.overflowConnection === undefined ? [] : [{
+          type: "connection" as const,
+          connected: this.overflowConnection,
+        }]),
+        { type: "resync" as const, cursor: this.overflowCursor },
+      ];
+    this.pending.length = 0;
+    this.pendingCharacters = 0;
+    this.overflowCursor = streamCursor(buffered);
+    this.overflowConnection = latestConnection(buffered);
+    this.ensureScheduled();
   }
 
   private takePending(): RunStreamUpdate[] {
@@ -193,6 +231,53 @@ export class BoundedRunEventDelivery {
   }
 }
 
+/**
+ * One BrowserWindow document generation. Events are sent only after that
+ * document's preload has installed its listener and announced readiness.
+ */
+export class ReadyRunEventDelivery {
+  private delivery: BoundedRunEventDelivery | undefined;
+  private generation: string | undefined;
+
+  constructor(
+    private readonly send: (frame: RunStreamFrame) => void,
+    private readonly options: DeliveryOptions = {},
+  ) {}
+
+  ready(generation: string, initial: RunStreamUpdate[]): void {
+    this.delivery?.close();
+    this.generation = generation;
+    this.delivery = new BoundedRunEventDelivery(generation, this.send, this.options);
+    for (const update of initial) this.delivery.enqueue(update);
+  }
+
+  suspend(): void {
+    this.delivery?.close();
+    this.delivery = undefined;
+    this.generation = undefined;
+  }
+
+  enqueue(update: RunStreamUpdate): void {
+    this.delivery?.enqueue(update);
+  }
+
+  acknowledge(generation: string, frameId: number): void {
+    if (generation === this.generation) this.delivery?.acknowledge(generation, frameId);
+  }
+
+  close(): void {
+    this.suspend();
+  }
+
+  get readyGeneration(): string | undefined {
+    return this.generation;
+  }
+
+  get waitingForAcknowledgement(): boolean {
+    return this.delivery?.waitingForAcknowledgement ?? false;
+  }
+}
+
 /** A server reset replaces a future local cursor instead of preserving it. */
 export function cursorAfterEvent(current: number, event: ControlEvent): number {
   return event.kind === "stream.reset_required"
@@ -200,10 +285,12 @@ export function cursorAfterEvent(current: number, event: ControlEvent): number {
     : Math.max(current, event.cursor);
 }
 
-function maxEventCursor(updates: RunStreamUpdate[], initial: number): number {
-  return updates.reduce((cursor, update) => update.type === "event"
-    ? Math.max(cursor, update.event.cursor)
-    : cursor, initial);
+function streamCursor(updates: RunStreamUpdate[]): number {
+  return updates.reduce((cursor, update) => {
+    if (update.type === "event") return cursorAfterEvent(cursor, update.event);
+    if (update.type === "resync") return update.cursor;
+    return cursor;
+  }, 0);
 }
 
 function latestConnection(updates: RunStreamUpdate[]): boolean | undefined {

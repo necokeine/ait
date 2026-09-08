@@ -106,6 +106,8 @@ export interface DesktopRun {
 }
 
 export interface RunWorktreeState {
+  retainedPath?: string;
+  retainedRunId?: string;
   head: string | null;
   dirty: boolean;
   fingerprint: string;
@@ -128,6 +130,7 @@ export type RunStreamUpdate =
   | { type: "resync"; cursor: number };
 
 export interface RunStreamFrame {
+  generation: string;
   id: number;
   updates: RunStreamUpdate[];
 }

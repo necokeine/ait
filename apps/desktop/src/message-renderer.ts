@@ -406,13 +406,19 @@ function renderPartialPart(part: RunProgress["items"][number]): string {
 }
 
 function renderRetainedWorktree(worktree: RunWorktreeState, runId: string, projectId: string): string {
+  const retainedPath = worktree.retainedPath;
+  const separator = retainedPath?.includes("\\") ? "\\" : "/";
+  const retainedRoot = retainedPath?.replace(/[\\/]+$/, "");
   const changes = worktree.changes.map((change) =>
-    `<li><code>${escapeHtml(change.status)}</code><button type="button" data-file-path="${escapeHtml(change.path)}">${escapeHtml(change.path)}</button></li>`,
+    `<li><code>${escapeHtml(change.status)}</code><button type="button" data-file-path="${escapeHtml(retainedRoot ? `${retainedRoot}${separator}${change.path.replaceAll("/", separator)}` : change.path)}">${escapeHtml(change.path)}</button></li>`,
   ).join("");
   const count = worktree.changes.length;
+  const continuation = retainedPath
+    ? `<button class="primary-button" type="button" data-run-continue="${escapeHtml(runId)}" data-worktree-fingerprint="${escapeHtml(worktree.fingerprint)}">Continue with these changes</button>`
+    : "";
   return `<section class="retained-worktree"><header><strong>Workspace changes kept</strong><small>${count} ${count === 1 ? "path" : "paths"}${worktree.truncated ? "+" : ""}; nothing was discarded or committed.</small></header>
     ${changes ? `<ul>${changes}</ul>` : ""}
-    <div class="retained-worktree-actions"><button class="secondary-button" type="button" data-run-inspect-project="${escapeHtml(projectId)}">Inspect Project folder</button><button class="primary-button" type="button" data-run-continue="${escapeHtml(runId)}" data-worktree-fingerprint="${escapeHtml(worktree.fingerprint)}">Continue with these changes</button></div>
+    <div class="retained-worktree-actions"><button class="secondary-button" type="button" data-run-inspect-project="${escapeHtml(projectId)}"${retainedPath ? ` data-run-inspect-path="${escapeHtml(retainedPath)}"` : ""}>Inspect retained workspace</button>${continuation}</div>
   </section>`;
 }
 
