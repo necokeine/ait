@@ -21,37 +21,77 @@ pub enum ControlRecordKind {
 
 /// One bounded record selection. Filters in a read are combined with union semantics.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ControlFilter {
-    pub kind: ControlRecordKind,
-    pub id: Option<String>,
-    pub project_id: Option<String>,
+pub enum ControlFilter {
+    All(ControlRecordKind),
+    Id {
+        kind: ControlRecordKind,
+        id: String,
+    },
+    Project {
+        kind: ControlRecordKind,
+        project_id: String,
+    },
+    MessageAncestors {
+        head_id: String,
+    },
+    RunsForSession {
+        session_id: String,
+    },
+    RunsForCron {
+        cron_id: String,
+    },
+    AgentsForProvider {
+        provider_id: String,
+    },
 }
 
 impl ControlFilter {
     #[must_use]
     pub const fn all(kind: ControlRecordKind) -> Self {
-        Self {
-            kind,
-            id: None,
-            project_id: None,
-        }
+        Self::All(kind)
     }
 
     #[must_use]
     pub fn id(kind: ControlRecordKind, id: impl Into<String>) -> Self {
-        Self {
+        Self::Id {
             kind,
-            id: Some(id.into()),
-            project_id: None,
+            id: id.into(),
         }
     }
 
     #[must_use]
     pub fn project(kind: ControlRecordKind, project_id: impl Into<String>) -> Self {
-        Self {
+        Self::Project {
             kind,
-            id: None,
-            project_id: Some(project_id.into()),
+            project_id: project_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn message_ancestors(head_id: impl Into<String>) -> Self {
+        Self::MessageAncestors {
+            head_id: head_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn runs_for_session(session_id: impl Into<String>) -> Self {
+        Self::RunsForSession {
+            session_id: session_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn runs_for_cron(cron_id: impl Into<String>) -> Self {
+        Self::RunsForCron {
+            cron_id: cron_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn agents_for_provider(provider_id: impl Into<String>) -> Self {
+        Self::AgentsForProvider {
+            provider_id: provider_id.into(),
         }
     }
 }

@@ -34,6 +34,8 @@ const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
                    project_id TEXT,
                    body_json TEXT NOT NULL CHECK (json_valid(body_json))
                  ) STRICT;
+                 CREATE INDEX IF NOT EXISTS agents_provider
+                   ON agents(json_extract(body_json, '$.config.provider_id'));
                  CREATE TABLE IF NOT EXISTS agent_providers (
                    id TEXT PRIMARY KEY,
                    project_id TEXT,
@@ -64,6 +66,10 @@ const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
                    body_json TEXT NOT NULL CHECK (json_valid(body_json))
                  ) STRICT;
                  CREATE INDEX IF NOT EXISTS runs_project ON runs(project_id);
+                 CREATE INDEX IF NOT EXISTS runs_session
+                   ON runs(json_extract(body_json, '$.session_id'));
+                 CREATE INDEX IF NOT EXISTS runs_cron
+                   ON runs(json_extract(body_json, '$.cron_id'));
                  CREATE TABLE IF NOT EXISTS run_credentials (
                    id TEXT PRIMARY KEY,
                    project_id TEXT NOT NULL REFERENCES projects(id) DEFERRABLE INITIALLY DEFERRED,
@@ -361,37 +367,66 @@ fn read_filter(
     filter: &ControlFilter,
     records: &mut BTreeMap<(ControlRecordKind, String), ControlRecord>,
 ) -> Result<(), ControlStoreError> {
-    let table = table(filter.kind);
-    let (sql, first, second) = match (&filter.id, &filter.project_id) {
-        (Some(id), Some(project_id)) => (
+    let (kind, sql, parameter) = match filter {
+        ControlFilter::All(kind) => (
+            *kind,
+            format!("SELECT id, project_id, body_json FROM {}", table(*kind)),
+            None,
+        ),
+        ControlFilter::Id { kind, id } => (
+            *kind,
             format!(
-                "SELECT id, project_id, body_json FROM {table} WHERE id = ?1 AND project_id = ?2"
+                "SELECT id, project_id, body_json FROM {} WHERE id = ?1",
+                table(*kind)
             ),
             Some(id.as_str()),
+        ),
+        ControlFilter::Project { kind, project_id } => (
+            *kind,
+            format!(
+                "SELECT id, project_id, body_json FROM {} WHERE project_id = ?1",
+                table(*kind)
+            ),
             Some(project_id.as_str()),
         ),
-        (Some(id), None) => (
-            format!("SELECT id, project_id, body_json FROM {table} WHERE id = ?1"),
-            Some(id.as_str()),
-            None,
+        ControlFilter::MessageAncestors { head_id } => (
+            ControlRecordKind::Message,
+            "WITH RECURSIVE ancestors(id, project_id, parent_message_id, body_json) AS (
+               SELECT id, project_id, parent_message_id, body_json FROM messages WHERE id = ?1
+               UNION
+               SELECT message.id, message.project_id, message.parent_message_id, message.body_json
+                 FROM messages AS message
+                 JOIN ancestors ON message.id = ancestors.parent_message_id
+             ) SELECT id, project_id, body_json FROM ancestors"
+                .into(),
+            Some(head_id.as_str()),
         ),
-        (None, Some(project_id)) => (
-            format!("SELECT id, project_id, body_json FROM {table} WHERE project_id = ?1"),
-            Some(project_id.as_str()),
-            None,
+        ControlFilter::RunsForSession { session_id } => (
+            ControlRecordKind::Run,
+            "SELECT id, project_id, body_json FROM runs
+             WHERE json_extract(body_json, '$.session_id') = ?1"
+                .into(),
+            Some(session_id.as_str()),
         ),
-        (None, None) => (
-            format!("SELECT id, project_id, body_json FROM {table}"),
-            None,
-            None,
+        ControlFilter::RunsForCron { cron_id } => (
+            ControlRecordKind::Run,
+            "SELECT id, project_id, body_json FROM runs
+             WHERE json_extract(body_json, '$.cron_id') = ?1"
+                .into(),
+            Some(cron_id.as_str()),
+        ),
+        ControlFilter::AgentsForProvider { provider_id } => (
+            ControlRecordKind::Agent,
+            "SELECT id, project_id, body_json FROM agents
+             WHERE json_extract(body_json, '$.config.provider_id') = ?1"
+                .into(),
+            Some(provider_id.as_str()),
         ),
     };
     let mut statement = connection.prepare(&sql).map_err(sql_error)?;
-    let mut rows = match (first, second) {
-        (Some(first), Some(second)) => statement.query(params![first, second]),
-        (Some(first), None) => statement.query(params![first]),
-        (None, None) => statement.query([]),
-        (None, Some(_)) => unreachable!(),
+    let mut rows = match parameter {
+        Some(parameter) => statement.query(params![parameter]),
+        None => statement.query([]),
     }
     .map_err(sql_error)?;
     while let Some(row) = rows.next().map_err(sql_error)? {
@@ -399,9 +434,9 @@ fn read_filter(
         let project_id = row.get::<_, Option<String>>(1).map_err(sql_error)?;
         let body = row.get::<_, String>(2).map_err(sql_error)?;
         records.insert(
-            (filter.kind, id.clone()),
+            (kind, id.clone()),
             ControlRecord {
-                kind: filter.kind,
+                kind,
                 id,
                 project_id,
                 value: serde_json::from_str(&body).map_err(json_error)?,
@@ -496,6 +531,10 @@ fn migrate_legacy_blob(connection: &mut Connection) -> Result<(), ControlStoreEr
     if let Some((legacy_revision, body)) = legacy {
         let value: Value = serde_json::from_str(&body).map_err(json_error)?;
         if !value.is_null() {
+            // The retired blob predates both record storage and provider-backed
+            // Agent configuration. Upgrade the complete snapshot before any row
+            // is written, so the split can never leave mixed Agent schemas.
+            let value = upgrade_legacy_snapshot(value)?;
             for record in legacy_records(&value)? {
                 apply_change(&transaction, ControlChange::Put(record))?;
             }
@@ -511,6 +550,102 @@ fn migrate_legacy_blob(connection: &mut Connection) -> Result<(), ControlStoreEr
         .execute("DROP TABLE control_state", [])
         .map_err(sql_error)?;
     transaction.commit().map_err(sql_error)
+}
+
+fn upgrade_legacy_snapshot(mut value: Value) -> Result<Value, ControlStoreError> {
+    if value.get("providers").is_some() {
+        return Ok(value);
+    }
+    let mut providers = vec![serde_json::json!({
+        "id": "builtin-codex",
+        "name": "Codex",
+        "kind": "codex",
+        "url": null,
+        "models": [{
+            "id": "gpt-5.6-sol",
+            "name": "gpt-5.6-sol",
+            "reasoning_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        }],
+        "has_secret": false
+    })];
+    if let Some(agents) = value.get_mut("agents").and_then(Value::as_array_mut) {
+        for agent in agents {
+            let kind = agent.get("mode").and_then(Value::as_str).ok_or_else(|| {
+                ControlStoreError::Other("legacy Agent provider kind is missing".into())
+            })?;
+            let model = agent
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned();
+            let provider = providers
+                .iter_mut()
+                .find(|provider| provider["kind"] == kind)
+                .ok_or_else(|| {
+                    ControlStoreError::Other("legacy provider kind is unavailable".into())
+                })?;
+            let models = provider["models"].as_array_mut().expect("provider models");
+            if !models.iter().any(|candidate| candidate["id"] == model) {
+                models.push(serde_json::json!({
+                    "id": model,
+                    "name": model,
+                    "reasoning_efforts": []
+                }));
+            }
+            agent["config"] = serde_json::json!({
+                "provider_id": provider["id"],
+                "model": model,
+                "reasoning_effort": null
+            });
+            let object = agent.as_object_mut().ok_or_else(|| {
+                ControlStoreError::Other("legacy Agent record is not an object".into())
+            })?;
+            object.remove("model");
+            object.remove("mode");
+        }
+    }
+    let configs = value["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|agent| {
+            Some((
+                agent.get("id")?.as_str()?.to_owned(),
+                agent.get("config")?.clone(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(runs) = value.get_mut("runs").and_then(Value::as_array_mut) {
+        for run in runs {
+            let agent_id = run
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut config = configs.get(agent_id).cloned().ok_or_else(|| {
+                ControlStoreError::Other("legacy Run Agent is unavailable".into())
+            })?;
+            config["reasoning_effort"] =
+                run.get("reasoning_effort").cloned().unwrap_or(Value::Null);
+            let provider = providers
+                .iter()
+                .find(|provider| provider["id"] == config["provider_id"])
+                .expect("migrated provider");
+            let mut provider = provider.clone();
+            provider
+                .as_object_mut()
+                .expect("provider object")
+                .remove("has_secret");
+            run["provider"] = provider;
+            run["config"] = config;
+            run.as_object_mut()
+                .ok_or_else(|| {
+                    ControlStoreError::Other("legacy Run record is not an object".into())
+                })?
+                .remove("reasoning_effort");
+        }
+    }
+    value["providers"] = Value::Array(providers);
+    Ok(value)
 }
 
 fn legacy_records(value: &Value) -> Result<Vec<ControlRecord>, ControlStoreError> {
@@ -762,12 +897,16 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn legacy_control_blob_is_split_once_and_removed() {
         let temporary = tempfile::TempDir::new().unwrap();
         let database = temporary.path().join("legacy.sqlite3");
         let legacy = serde_json::json!({
             "projects": [{"id":"p1","workdir":"/p1"}],
-            "agents": [],
+            "agents": [
+                {"id":"a1","name":"one","mode":"codex","model":"gpt-5.6-sol","owner_session_id":null,"revision":1,"enabled":true},
+                {"id":"a2","name":"two","mode":"codex","model":"legacy-model","owner_session_id":null,"revision":1,"enabled":true}
+            ],
             "sessions": [],
             "messages": [{"id":"m1","project_id":"p1","parent_message_id":null}],
             "runs": [],
@@ -800,14 +939,63 @@ mod tests {
         let read = store
             .read(&[
                 ControlFilter::all(ControlRecordKind::Project),
+                ControlFilter::all(ControlRecordKind::Agent),
+                ControlFilter::all(ControlRecordKind::Provider),
                 ControlFilter::project(ControlRecordKind::Message, "p1"),
                 ControlFilter::all(ControlRecordKind::Settings),
             ])
             .await
             .unwrap();
         assert_eq!(read.revision, 7);
-        assert_eq!(read.records.len(), 3);
+        assert_eq!(read.records.len(), 6);
+        let agents = read
+            .records
+            .iter()
+            .filter(|record| record.kind == ControlRecordKind::Agent)
+            .collect::<Vec<_>>();
+        assert_eq!(agents.len(), 2);
+        assert!(
+            agents
+                .iter()
+                .all(|agent| agent.value.get("config").is_some())
+        );
+        assert!(agents.iter().all(|agent| agent.value.get("mode").is_none()));
+
+        let mut updated = agents
+            .iter()
+            .find(|agent| agent.id == "a1")
+            .expect("first migrated Agent")
+            .value
+            .clone();
+        updated["name"] = serde_json::json!("updated");
+        store
+            .apply(
+                read.revision,
+                vec![ControlChange::Put(record(
+                    ControlRecordKind::Agent,
+                    "a1",
+                    None,
+                    updated,
+                ))],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
         drop(store);
+
+        let reopened = SqliteControlStore::open(&database).unwrap();
+        let agents = reopened
+            .read(&[ControlFilter::all(ControlRecordKind::Agent)])
+            .await
+            .unwrap();
+        assert_eq!(agents.records.len(), 2);
+        assert!(
+            agents
+                .records
+                .iter()
+                .all(|agent| agent.value.get("config").is_some())
+        );
+        drop(reopened);
 
         let connection = Connection::open(database).unwrap();
         let legacy_table_count: u64 = connection

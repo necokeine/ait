@@ -333,7 +333,7 @@ impl LocalControlService {
         credential: Option<&str>,
     ) -> Result<CommandResult, ApiError> {
         for _ in 0..4 {
-            let loaded = self.read_catalog_records().await?;
+            let loaded = self.read_provider_records(&provider.id, true).await?;
             let mut state = loaded.original.clone();
             if let Some(existing) = state
                 .providers
@@ -409,7 +409,10 @@ impl LocalControlService {
         if !matches!(provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
             return Err(invalid("this provider does not expose model discovery"));
         }
-        let state = self.read_catalog_records().await?.original;
+        let state = self
+            .read_provider_records(&provider.id, false)
+            .await?
+            .original;
         let existing = state
             .providers
             .iter()
@@ -450,7 +453,10 @@ impl LocalControlService {
         &self,
         provider_id: &str,
     ) -> Result<CommandResult, ApiError> {
-        let state = self.read_catalog_records().await?.original;
+        let state = self
+            .read_provider_records(provider_id, false)
+            .await?
+            .original;
         let provider = state
             .providers
             .iter()
@@ -468,7 +474,7 @@ impl LocalControlService {
         // Apply fetched IDs to the latest configuration, preserving manually declared
         // capabilities because standard model-list APIs do not advertise effort levels.
         for _ in 0..4 {
-            let loaded = self.read_catalog_records().await?;
+            let loaded = self.read_provider_records(provider_id, false).await?;
             let mut latest = loaded.original.clone();
             let target = latest
                 .providers

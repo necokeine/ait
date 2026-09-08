@@ -10,10 +10,10 @@ use ait_contracts::{
 };
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlStore,
-    ControlStoreError, DurableEvent, HostProviderModelCatalog, PendingEvent, ProviderMessage,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceProgressReporter,
-    WorkspaceResultSink,
+    AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
+    ControlRecordKind, ControlStore, ControlStoreError, DurableEvent, HostProviderModelCatalog,
+    PendingEvent, ProviderMessage, WorkspaceAgent, WorkspaceAgentInvocation,
+    WorkspaceAgentResponse, WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -2007,6 +2007,48 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
 }
 
 #[tokio::test]
+async fn unrelated_malformed_project_record_does_not_block_session_update() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let service = LocalControlService::new(store.clone());
+    let _directory = setup(&service, config("high")).await;
+    let revision = store.load().await.unwrap().revision;
+    store
+        .apply(
+            revision,
+            vec![ControlChange::Put(ControlRecord {
+                kind: ControlRecordKind::Message,
+                id: "malformed-unrelated-message".into(),
+                project_id: Some("p".into()),
+                value: serde_json::json!({"not": "a MessageView"}),
+            })],
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let CommandResult::Session(session) = ok(
+        &service,
+        Command::RenameSession {
+            session_id: "one".into(),
+            name: "Still available".into(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(session.name, "Still available");
+    let malformed = store
+        .read(&[ControlFilter::id(
+            ControlRecordKind::Message,
+            "malformed-unrelated-message",
+        )])
+        .await
+        .unwrap();
+    assert_eq!(malformed.records[0].value["not"], "a MessageView");
+}
+
+#[tokio::test]
 async fn retired_provider_references_and_custom_connections_are_never_silently_removed() {
     for kind in RETIRED_BUILTINS {
         for reference in ["agent", "run", "credential", "custom", "url"] {
@@ -2038,8 +2080,13 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
                 .commit(snapshot.revision, snapshot.value, vec![])
                 .await
                 .unwrap();
-            let command = Command::GetRun {
-                run_id: saved.value["runs"][0]["id"].as_str().unwrap().into(),
+            let command = match reference {
+                "agent" => send("one"),
+                "run" => Command::GetRun {
+                    run_id: saved.value["runs"][0]["id"].as_str().unwrap().into(),
+                },
+                "credential" | "custom" | "url" => Command::ListAgentProviders,
+                _ => unreachable!(),
             };
             let rejected = LocalControlService::new(store.clone())
                 .execute(command)

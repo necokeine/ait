@@ -9,7 +9,9 @@
 ## 决策
 
 1. 控制面存储 port 改为 `read(filters)` 与 `apply(expected_revision, changes, events)`。
-   application 每次只读取命令需要的全局目录、单个 Project 上下文或单类记录，不再装载并回写整个工作空间对象。
+   application 每次只读取命令的目标记录与被引用记录；只有明确的 list/export 操作扫描记录族。
+   Session/Run/Cron 关系通过有界选择器读取，Agent Provider 更新只扫描引用该 Provider 的 Agent，
+   Agent prompt 只读取 `base_message_id` 的祖先链，不再把“单个 Project”当作读取聚合边界。
 2. SQLite 使用具名 STRICT 表保存 Project、Agent、Provider、credential reference、Session、Message、Run、
    Run credential、workspace journal、Cron 和 Settings。Project 范围记录带 `project_id` 与索引；JSON 只作为单条记录的
    payload，不再作为包含所有集合的数据库根对象。
@@ -19,8 +21,9 @@
 5. 删除 `Snapshot` command、`WorkspaceView`、`GET /v1/workspace/snapshot`、CLI `snapshot` 与桌面 IPC snapshot。
    读取改为 Projects、Agents、AgentProviders、Sessions、Messages、Runs、Crons 的独立 list operation；
    Messages/Runs 必须给出 Project，桌面只为当前 Project 读取历史与运行记录。
-6. 打开旧数据库时，若存在 `control_state`，在一个迁移事务中把其各集合拆成具名记录、继承 revision，随后删除旧表。
-   迁移不把 secret 明文写入数据库；现有 credential reference 边界保持不变。
+6. 打开旧数据库时，若存在 `control_state`，先把整个 blob 升级到当前 Agent/Provider/Run schema，再在同一个迁移事务中
+   把各集合拆成具名记录、继承 revision，最后删除旧表。禁止先拆旧 schema、再依赖某次 application 局部读取顺带升级，
+   因为那会永久形成新旧记录混合状态。迁移不把 secret 明文写入数据库；现有 credential reference 边界保持不变。
 
 ## 与 NEC-146 的关系
 
@@ -34,13 +37,15 @@ secret 文件协议单独交付。在那之前，逻辑边界、查询边界和�
 
 ## 迁移与兼容性
 
-- 旧 `control_state` 只在数据库首次打开时读取一次，成功迁移后即删除。
+- 旧 `control_state` 只在数据库首次打开时读取一次；schema 升级、记录拆分与旧表删除全部成功后才提交。
 - 公开 API 尚未发布，不保留 snapshot 兼容别名；旧客户端必须改用实体 list operation。
 - 历史 Run 中的非秘密 Agent 配置仍保存在 Run 记录内；这属于历史事实快照，不是 Workspace 聚合接口。
 - SQLite Online Backup、恢复、quick check、event retention 与 progress checkpoint 的既有能力保留。
 
 ## 验证
 
-- SQLite 测试覆盖 Project 范围读取不会返回其他 Project、Message 更新被拒绝、在线备份和事件裁剪竞态。
+- SQLite 测试覆盖 Project/关系范围读取不会返回无关记录、Message 更新被拒绝、在线备份和事件裁剪竞态。
 - application、HTTP、CLI 与 desktop 测试全部通过独立 list operation 观察结果，不依赖被删除的 Snapshot。
-- 旧 blob 迁移测试验证记录可读、revision 保留且 `control_state` 被移除。
+- 旧 blob 迁移测试验证多个旧 Agent 在拆表前同时完成升级；更新其中一个并重启后，所有 Agent 仍使用同一 schema，
+  revision 保留且 `control_state` 被移除。
+- application 回归测试验证同 Project 内无关坏记录不会阻断按 ID 的 Session 更新。
