@@ -93,7 +93,9 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/session/set-title",
         "/v1/session/generate-title",
         "/v1/session/send-message",
+        "/v1/session/submit-message",
         "/v1/session/fork",
+        "/v1/session/submit-fork",
         "/v1/run/get",
         "/v1/run/cancel",
         "/v1/cron/create",
@@ -122,6 +124,8 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/workspace/snapshot",
         "/v1/settings",
         "/v1/event/list",
+        "/v1/event/stream",
+        "/v1/run/progress",
         "/v1/metric/list",
     ] {
         let response = app
@@ -143,6 +147,77 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn event_stream_replays_then_follows_an_event_committed_at_the_handoff() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("stream-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = Arc::new(LocalControlService::new(Arc::new(
+        SqliteControlStore::in_memory().unwrap(),
+    )));
+    let app = ait_api_http::router(service);
+    let project = serde_json::json!({
+        "id": "stream-project",
+        "name": "Stream",
+        "workdir": project_dir.display().to_string(),
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/v1/project/register")
+                .header("content-type", "application/json")
+                .body(Body::from(project.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/v1/event/stream?after=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = response.into_body();
+    let agent = serde_json::json!({
+        "id": "stream-agent",
+        "name": "Stream agent",
+        "config": {
+            "provider_id": "builtin-codex",
+            "model": "gpt-5.6-sol",
+            "reasoning_effort": "low"
+        }
+    });
+    let committed = app
+        .oneshot(
+            Request::post("/v1/agent/register")
+                .header("content-type", "application/json")
+                .body(Body::from(agent.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(committed.status(), StatusCode::OK);
+
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Some(data) = frame.data_ref()
+                && String::from_utf8_lossy(data).contains("agent.registered")
+            {
+                break data.clone();
+            }
+        }
+    })
+    .await
+    .expect("follow stream did not deliver the handoff event");
+    assert!(String::from_utf8_lossy(&frame).contains("id: 2"));
 }
 
 #[tokio::test]

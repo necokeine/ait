@@ -1,10 +1,11 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
     DomainError, Message, MessageId, ProjectedMessage, Run, RunAttempt, RunAttemptId, RunId,
     RunUsage, TimestampMs, ToolExecution, ToolExecutionId,
 };
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -136,8 +137,57 @@ pub trait RunAgent: Send + Sync {
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError>;
 }
 
+/// Linearization boundary between cancellation and externally visible workspace integration.
+#[async_trait]
+pub trait WorkspaceIntegrationGate: std::fmt::Debug + Send + Sync {
+    /// Claims finalization for the running invocation.
+    ///
+    /// Once this succeeds, cancellation must not persist a cancelled terminal
+    /// state. If cancellation won first, this returns [`ErrorCode::RunCancelled`].
+    async fn begin_integration(&self) -> Result<(), DomainError>;
+
+    /// Observes a named integration boundary after finalization was claimed.
+    ///
+    /// Production gates normally keep the default no-op implementation. The
+    /// explicit checkpoints make failure/race injection deterministic without
+    /// teaching an adapter about a concrete persistence or test implementation.
+    async fn checkpoint(
+        &self,
+        _checkpoint: WorkspaceIntegrationCheckpoint,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+}
+
+/// Fallible boundaries in the primary-worktree publication protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceIntegrationCheckpoint {
+    /// The ref transaction is prepared, before the canonical index is locked.
+    BeforeIndexLock,
+    /// The primary worktree is still at the admitted tree, before updating it.
+    BeforeWorktreeUpdate,
+    /// Collision scanning is complete, immediately before paths are quarantined.
+    BeforeWorktreeMutation,
+    /// The primary worktree was updated through the locked candidate index.
+    AfterWorktreeUpdate,
+    /// All pre-publication validation passed, immediately before ref publication.
+    BeforeRefPublish,
+    /// Git applied the ref transaction, before its confirmation is accepted.
+    BeforeRefCommitConfirmation,
+    /// The target ref was published while the canonical index remains unchanged.
+    AfterRefPublish,
+    /// A baseline ref was observed, before its exact target lock is acquired.
+    BeforeBaselineRefReconciliationLock,
+    /// The candidate view is fixed, immediately before rollback isolates live paths.
+    BeforeWorktreeRollback,
+    /// A rollback candidate was isolated and verified, before restoring the baseline.
+    AfterRollbackCandidateQuarantine,
+    /// The canonical index is about to become the candidate index.
+    BeforeIndexPublish,
+}
+
 /// One workspace-scoped invocation of a complete coding Agent harness.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct WorkspaceAgentInvocation {
     /// Stable correlation identity for the external turn.
     pub request_id: String,
@@ -153,12 +203,22 @@ pub struct WorkspaceAgentInvocation {
     pub commit_subject: String,
     /// Canonical Project Git root and sandbox boundary.
     pub cwd: PathBuf,
+    /// Full Git HEAD captured while the workspace write lease was held.
+    ///
+    /// A workspace-writing adapter must run from this immutable baseline and
+    /// refuse to integrate its result if the Project worktree moves away from
+    /// it during the invocation.
+    pub baseline_commit: String,
+    /// Exact index tree captured with `baseline_commit` at write admission.
+    pub baseline_index_tree: String,
     /// Cooperative cancellation shared with the caller.
     pub cancellation: CancellationToken,
+    /// Shared cancellation/finalization decision owned by the application supervisor.
+    pub integration_gate: Option<Arc<dyn WorkspaceIntegrationGate>>,
 }
 
 /// Durable-facing result of one workspace Agent turn.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceAgentResponse {
     /// Final assistant result shown in the Session.
     pub assistant_text: String,
@@ -178,8 +238,67 @@ pub struct WorkspaceAgentResponse {
     pub output_items: Vec<WorkspaceOutputItem>,
 }
 
-/// One ordered item in a workspace harness' durable display projection.
+/// One provider-normalized, user-visible update from a workspace harness.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceProgressEvent {
+    /// A provider-authored message item became visible.
+    MessageStarted {
+        /// Harness-stable item identity.
+        id: String,
+        /// Provider phase such as `commentary` or `final_answer`.
+        phase: Option<String>,
+        /// Optional initial full text.
+        text: String,
+    },
+    /// More text arrived for one message item.
+    TextDelta {
+        /// Harness-stable item identity.
+        id: String,
+        /// Ordered text suffix.
+        delta: String,
+    },
+    /// The provider supplied the authoritative full message item.
+    MessageCompleted {
+        /// Harness-stable item identity.
+        id: String,
+        /// Provider phase such as `commentary` or `final_answer`.
+        phase: Option<String>,
+        /// Authoritative full text.
+        text: String,
+    },
+    /// A native operation started or changed state.
+    OperationStarted(WorkspaceOperation),
+    /// A native operation reached a provider terminal state.
+    OperationCompleted(WorkspaceOperation),
+    /// A safe, user-visible provider warning or retry notice.
+    Warning {
+        /// Bounded diagnostic text.
+        message: String,
+        /// Whether the provider reports an automatic retry.
+        retrying: bool,
+        /// Optional provider-normalized error code.
+        code: Option<String>,
+    },
+    /// The underlying provider turn changed state.
+    TurnStatus {
+        /// Stable lowercase status.
+        status: String,
+        /// Safe terminal diagnostic, when present.
+        error: Option<String>,
+    },
+}
+
+/// Progress sink supplied by the application to a provider adapter.
+#[async_trait]
+pub trait WorkspaceProgressReporter: Send + Sync {
+    /// Accepts one ordered update. Implementations may batch persistence, but
+    /// must preserve order within a Run.
+    async fn report(&self, event: WorkspaceProgressEvent);
+}
+
+/// One ordered item in a workspace harness' durable display projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkspaceOutputItem {
     /// A provider-authored progress or final-answer message.
     Message {
@@ -198,7 +317,7 @@ pub enum WorkspaceOutputItem {
 }
 
 /// Safe projection of one operation performed inside a workspace Agent harness.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceOperation {
     /// Harness-stable item identity when one was supplied.
     pub id: String,
@@ -248,6 +367,15 @@ pub trait SessionTitleGenerator: Send + Sync {
     ) -> Result<GeneratedSessionTitle, DomainError>;
 }
 
+/// Durable callback invoked after an isolated workspace result is committed to
+/// its Run ref but before it is published into the primary Project checkout.
+#[async_trait]
+pub trait WorkspaceResultSink: Send + Sync {
+    /// Persists the complete response so a daemon restart can reconcile the
+    /// already-created commit without re-running the provider turn.
+    async fn checkpoint(&self, result: WorkspaceAgentResponse) -> Result<(), DomainError>;
+}
+
 /// Complete coding-harness boundary used by the local control-plane slice.
 #[async_trait]
 pub trait WorkspaceAgent: Send + Sync {
@@ -256,6 +384,53 @@ pub trait WorkspaceAgent: Send + Sync {
         &self,
         request: WorkspaceAgentInvocation,
     ) -> Result<WorkspaceAgentResponse, DomainError>;
+
+    /// Runs the harness while forwarding normalized user-visible progress.
+    /// Adapters without streaming support retain their existing behavior.
+    async fn invoke_with_progress(
+        &self,
+        request: WorkspaceAgentInvocation,
+        _progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.invoke(request).await
+    }
+
+    /// Runs the harness with progress and durably checkpoints the completed
+    /// response before crossing the primary-worktree integration boundary.
+    ///
+    /// Adapters that own Git integration must override this method and invoke
+    /// the sink before publishing their result. This fallback is appropriate
+    /// only for adapters whose `invoke_with_progress` has no external side
+    /// effect after it returns.
+    async fn invoke_with_progress_and_checkpoint(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+        result_sink: &dyn WorkspaceResultSink,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let integration_gate = request.integration_gate.clone();
+        let result = self.invoke_with_progress(request, progress).await?;
+        result_sink.checkpoint(result.clone()).await?;
+        if let Some(gate) = integration_gate.as_deref() {
+            gate.begin_integration().await?;
+        }
+        Ok(result)
+    }
+
+    /// Reconciles a previously checkpointed result without invoking the model.
+    /// Implementations must validate the Run-owned recovery material before
+    /// publishing it and must reject ambiguous integration state.
+    async fn recover_checkpointed(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        _result: WorkspaceAgentResponse,
+        _baseline_ref: Option<String>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "workspace adapter cannot reconcile a checkpointed result",
+        ))
+    }
 }
 
 /// A tool invocation with stable host-assigned idempotency identity.

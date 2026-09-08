@@ -2,6 +2,15 @@
 
 ## 当前基线
 
+- `decisions/NEC-212/adr-001-workspace-run-recovery-and-git-settlement.md`：在 NEC-209 隔离
+  worktree/补偿发布协议之上保存稳定 operation/lease 与完整结果 checkpoint，并在 daemon readiness
+  后安全续跑 queued Run 或对账已 checkpoint 的 Git 结果。
+
+- `decisions/NEC-205/adr-001-live-run-progress-and-recovery.md`：daemon 异步 Run、Codex 统一进度事件、
+  有界 checkpoint、cursor 回放后持续监听，以及桌面端增量展示与断线状态同步。
+
+- `decisions/NEC-209/adr-001-codex-workspace-isolation.md`：以规范化工作区写入租约和每 Run 隔离 worktree 保证 Codex 并发准入、Git 提交归属及冲突保留。
+
 - `decisions/NEC-204/adr-001-codex-phased-output-timeline.md`：按 Codex item 聚合并持久化阶段化输出时间线，桌面端以折叠过程和独立最终答复收尾。
 
 - `decisions/NEC-203/adr-001-remove-test-provider-identities.md`：移除 Tool、Manual、ProviderFailure 与 ApprovalRequired 的生产 Provider 身份，保留 seam 测试与旧快照引用保护。

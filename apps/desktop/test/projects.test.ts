@@ -21,6 +21,7 @@ const session = (id: string, projectId: string, updatedAt: number): DesktopSessi
   agentId: "codex-local",
   version: 1,
   active: false,
+  activeRunId: null,
   updatedAt,
 });
 
@@ -36,6 +37,8 @@ test("keeps every Project visible and groups Sessions beneath their owner", () =
       session("a-newer", "project-a", 3),
     ],
     messages: [],
+    runs: [],
+    runProgress: [],
   };
 
   const groups = groupProjects(snapshot);

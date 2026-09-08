@@ -70,7 +70,57 @@ export interface DesktopSession {
   agentId: string;
   version: number;
   active: boolean;
+  activeRunId: string | null;
   updatedAt: number;
+}
+
+export type RunProgressItem =
+  | Extract<MessagePart, { type: "codex_message" }>
+  | Extract<MessagePart, { type: "operation" }>;
+
+export interface RunProgress {
+  runId: string;
+  projectId: string;
+  sessionId: string | null;
+  seq: number;
+  status: string;
+  items: RunProgressItem[];
+  warnings: Array<{ message: string; retrying: boolean; code?: string }>;
+  updatedAt: number;
+}
+
+export interface DesktopRun {
+  id: string;
+  sessionId: string | null;
+  baseMessageId: string;
+  lastMessageId: string | null;
+  status: string;
+  error?: { code?: string; message: string };
+}
+
+export interface ControlEvent {
+  api_version: number;
+  cursor: number;
+  kind: string;
+  entity_id: string | null;
+  body: unknown;
+  created_at: number;
+}
+
+export type RunStreamUpdate =
+  | { type: "event"; event: ControlEvent }
+  | { type: "connection"; connected: boolean }
+  | { type: "resync"; cursor: number };
+
+export interface RunStreamFrame {
+  generation: string;
+  id: number;
+  updates: RunStreamUpdate[];
+}
+
+export interface RunSubmission {
+  snapshot: DesktopSnapshot;
+  runId: string;
 }
 
 export interface DesktopSnapshot {
@@ -81,6 +131,17 @@ export interface DesktopSnapshot {
   providers: AgentProvider[];
   sessions: DesktopSession[];
   messages: DesktopMessage[];
+  runs: DesktopRun[];
+  runProgress: RunProgress[];
+  recoveryNotices?: Array<{
+    projectId: string;
+    projectName: string;
+    sessionId?: string;
+    sessionTitle?: string;
+    runId: string;
+    code?: string;
+    message: string;
+  }>;
 }
 
 export type SettingCategory =
@@ -164,13 +225,14 @@ export interface AitDesktopApi {
   sendMessage(input: {
     sessionId: string;
     content: string;
-  }): Promise<DesktopSnapshot>;
+  }): Promise<RunSubmission>;
+  subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {
     projectId: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
-  }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
+  }): Promise<RunSubmission & { selectedSessionId: string }>;
 }
 
 declare global {

@@ -1,5 +1,5 @@
 import { messageAuthor } from "./messages.js";
-import type { AgentSummary, DesktopMessage } from "./types.js";
+import type { AgentSummary, DesktopMessage, RunProgress } from "./types.js";
 
 export type TextBlock = { type: "text"; text: string } | { type: "code"; text: string; language: string };
 export interface FileReference { path: string; line?: number; column?: number }
@@ -340,6 +340,44 @@ export function renderMessage(message: DesktopMessage, agents: AgentSummary[], s
   </article>`;
 }
 
+export function renderRunProgress(progress: RunProgress | undefined, author: string, connected: boolean): string {
+  const latestWarning = progress?.warnings.at(-1);
+  const status = !connected
+    ? "Connection interrupted — reconnecting without stopping the Run."
+    : latestWarning?.retrying
+      ? `Retrying — ${latestWarning.message}`
+      : progress?.status === "completed" || progress?.status === "settling"
+        ? "Codex finished; Ait is saving the result…"
+        : "Codex is working…";
+  const content = progress?.items.length
+    ? renderCodexOutput(progress.items, true)
+    : '<div class="live-run-placeholder"><span class="live-run-spinner" aria-hidden="true"></span>Waiting for Codex output</div>';
+  return `<article class="message assistant live-run" data-run-id="${escapeHtml(progress?.runId ?? "")}" aria-live="polite">
+    <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
+    <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong><small class="live-run-status">${escapeHtml(status)}</small></div>
+      <div class="message-parts">${content}</div>
+    </div>
+  </article>`;
+}
+
+export function renderRunTerminal(
+  status: string,
+  message: string | undefined,
+  author: string,
+): string {
+  const cancelled = status === "cancelled";
+  const heading = cancelled ? "Run cancelled" : status === "limit_exceeded" ? "Run limit reached" : "Run failed";
+  const detail = message?.trim() || (cancelled
+    ? "The Run was cancelled before a final answer was saved."
+    : "The Run ended before a final answer was saved.");
+  return `<article class="message assistant run-terminal status-${escapeHtml(status)}" aria-live="polite">
+    <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
+    <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong></div>
+      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>
+    </div>
+  </article>`;
+}
+
 function renderPart(part: DesktopMessage["parts"][number], isInput = false): string {
   if (part.type === "text") return isInput
     ? `<div class="message-content">${escapeHtml(part.text)}</div>`
@@ -354,10 +392,10 @@ function renderPart(part: DesktopMessage["parts"][number], isInput = false): str
   return '<div class="message-content">Content redacted</div>';
 }
 
-function renderCodexOutput(parts: DesktopMessage["parts"]): string {
+function renderCodexOutput(parts: DesktopMessage["parts"], live = false): string {
   const hasExplicitFinal = parts.some((part) =>
     part.type === "codex_message" && part.phase === "final_answer");
-  const fallbackFinalIndex = hasExplicitFinal ? -1 : parts.findLastIndex((part) =>
+  const fallbackFinalIndex = hasExplicitFinal || live ? -1 : parts.findLastIndex((part) =>
     part.type === "codex_message");
   const isFinal = (part: DesktopMessage["parts"][number], index: number): boolean =>
     part.type === "codex_message"
@@ -365,7 +403,7 @@ function renderCodexOutput(parts: DesktopMessage["parts"]): string {
   const process = parts.filter((part, index) => !isFinal(part, index));
   const final = parts.filter(isFinal);
   const processHtml = process.length > 0
-    ? `<details class="codex-process"><summary><span class="codex-process-status" aria-hidden="true">◇</span><span><strong>Process</strong><small>${process.length} ${process.length === 1 ? "event" : "events"}</small></span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="codex-process-events">${process.map((part) => renderPart(part)).join("")}</div></details>`
+    ? `<details class="codex-process"${live ? " open" : ""}><summary><span class="codex-process-status" aria-hidden="true">${live ? "◉" : "◇"}</span><span><strong>Process</strong><small>${process.length} ${process.length === 1 ? "event" : "events"}</small></span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="codex-process-events">${process.map((part) => renderPart(part)).join("")}</div></details>`
     : "";
   const finalHtml = final.length > 0
     ? `<section class="codex-final-answer" data-codex-final-answer>${final.map((part) => renderPart(part)).join("")}</section>`

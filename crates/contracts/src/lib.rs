@@ -202,8 +202,8 @@ pub struct MessageView {
 }
 
 /// Run result or query snapshot; this DTO never requests execution.
-/// New actively executed Runs return their final state. Queries and deferred
-/// Manual/approval modes can expose an intermediate state.
+/// Synchronous command routes return the final state. Explicit asynchronous
+/// submission routes and queries can expose an intermediate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunView {
     pub id: String,
@@ -218,7 +218,22 @@ pub struct RunView {
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
+    /// Git baseline authorized for a workspace-writing Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_base_commit: Option<String>,
+    /// Exact Git index tree authorized with the workspace baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_base_index_tree: Option<Box<str>>,
     pub status: String,
+    /// Fine-grained durable phase used to explain and recover non-terminal work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Box<str>>,
+    /// Stable identity of the workspace side-effect operation for this Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Box<str>>,
+    /// Monotonic execution lease; late writers holding an older value are fenced.
+    #[serde(default)]
+    pub lease_epoch: u64,
     pub error: Option<ApiError>,
 }
 
@@ -266,6 +281,10 @@ pub struct ProjectExport {
 /// Successful command payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the versioned wire contract keeps result payloads directly serializable"
+)]
 pub enum CommandResult {
     Project(ProjectView),
     Agent(AgentView),
@@ -320,6 +339,15 @@ pub struct Event {
     pub entity_id: Option<String>,
     pub body: Value,
     pub created_at: i64,
+}
+
+/// One bounded replay page plus retained-cursor validity metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventPage {
+    pub events: Vec<Event>,
+    pub oldest_cursor: Option<u64>,
+    pub latest_cursor: Option<u64>,
+    pub cursor_valid: bool,
 }
 
 /// Versioned desktop workspace, settings, and branch-operation DTOs.
