@@ -112,6 +112,11 @@ export interface NativeApproval {
   threadId: string;
   turnId: string;
   itemId: string;
+  target:
+    | { type: "command"; command: string; cwd: string }
+    | { type: "network"; host: string; protocol: "http" | "https" | "socks5Tcp" | "socks5Udp" }
+    | { type: "file_change"; grant_root?: string; changes: Array<{ path: string; kind: "add" | "delete" | "update" }> }
+    | { type: "permissions"; cwd: string };
   requestedPermissions?: Record<string, unknown>;
   status: "pending" | "approved" | "denied" | "cancelled" | "expired";
   grantedScope?: "one_shot" | "turn" | "session";

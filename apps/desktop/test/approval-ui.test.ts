@@ -19,6 +19,7 @@ const pendingRun: DesktopRun = {
     threadId: "thread-a",
     turnId: "turn-a",
     itemId: "item-a",
+    target: { type: "permissions", cwd: "/workspace" },
     requestedPermissions: { fileSystem: { write: ["/workspace"] } },
     status: "pending",
     createdAt: 1,
@@ -41,10 +42,32 @@ test("renders a correlated permission request with only explicit decisions", () 
 test("ordinary command approval stays one-shot rather than turn-scoped", () => {
   const commandRun = structuredClone(pendingRun);
   commandRun.nativeApprovals[0]!.kind = "command_execution";
+  commandRun.nativeApprovals[0]!.target = {
+    type: "command",
+    command: "cargo test <unsafe>",
+    cwd: "/workspace",
+  };
   commandRun.nativeApprovals[0]!.requestedPermissions = undefined;
   const html = renderPendingApprovals(commandRun);
   assert.match(html, /data-approval-scope="one_shot"/);
   assert.doesNotMatch(html, /data-approval-scope="turn"/);
+  assert.match(html, /cargo test &lt;unsafe&gt;/);
+  assert.doesNotMatch(html, /cargo test <unsafe>/);
+});
+
+test("renders network approvals as network-specific escaped prompts", () => {
+  const networkRun = structuredClone(pendingRun);
+  networkRun.nativeApprovals[0]!.kind = "command_execution";
+  networkRun.nativeApprovals[0]!.target = {
+    type: "network",
+    protocol: "https",
+    host: "api.example.test<script>",
+  };
+  networkRun.nativeApprovals[0]!.requestedPermissions = undefined;
+  const html = renderPendingApprovals(networkRun);
+  assert.match(html, /Allow network access/);
+  assert.match(html, /https:\/\/api\.example\.test&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
 });
 
 test("rejects invented actions and scopes before IPC", () => {

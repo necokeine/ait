@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use ait_domain::NativeApprovalTarget;
+
 use crate::AdapterError;
 
 pub type AgentStream =
@@ -138,6 +140,7 @@ pub struct ApprovalRequest {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    pub target: NativeApprovalTarget,
     pub params: Value,
 }
 

@@ -26,26 +26,35 @@ Codex 当前协议的通用 approval policy 只有 `untrusted`、`on-request`、
 2. `always` 在当前协议下不可忠实实现，Run 准入必须返回配置错误。未知设置值、缺失值、超过
    daemon `--max-sandbox` 上限及被 `--deny-session-approvals` 禁止的授权范围均 fail closed。
    这些检查在追加 user Message、创建 Run、取得写入租约或调用 Provider 前完成。
+   新建和重置设置的 sandbox 默认值为 `read_only`；已持久化的显式选择不因升级而重写。
 3. 原生审批使用 domain 的 kind/status/scope 值对象、application-owned `WorkspaceApproval`
    port、Codex adapter bridge、daemon entity-operation HTTP API、context-isolated Electron IPC 与
    桌面审批卡。renderer 只能提交 `approve|deny|cancel`，批准还必须提交
    command/file 的 `one_shot|session` 或 permissions 的 `turn|session`；main process 再次
    白名单和有界校验，不允许把一次授权扩大为整轮授权。
 4. 每个审批记录 Run ID、原 JSON-RPC string/integer request ID、method、thread ID、turn ID、
-   item ID、状态、决定时间、授权 scope，以及 permissions 请求中经过严格反序列化与大小检查的
-   明确 filesystem/network 集合。未知字段、未知 special path、空权限集合和关联不匹配均在回答
-   或外部操作前拒绝。凭证、环境变量与 provider secret 不进入记录。
+   item ID、状态、决定时间、授权 scope，以及有界、强类型、可重连审阅的授权目标：脱敏 command
+   与 cwd、network host/protocol、file grant root 与 path/kind（不含 diff），或 permissions cwd
+   与经过严格反序列化和大小检查的 filesystem/network 集合。缺少可审阅目标、未知字段、未知
+   special path、空权限集合和关联不匹配均在显示批准按钮、回答或外部操作前拒绝。凭证、环境变量、
+   patch 内容、provider reason 与 provider secret 不进入记录。
 5. Adapter 在独立 task 等待审批，协议事件循环继续分发其他 notification。原 request ID 原样用于
    回答；重复 pending/answered ID 至多得到一次失败响应；`serverRequest/resolved`、turn 终止、
    Run cancel 与 adapter cancellation 会中止 waiter，并把 durable 状态更新为 expired 或
    cancelled。桌面根据 cursor 事件刷新，同时每次 `workspace.view` 从 durable Run 重新构建审批卡，
    所以 SSE 重连不依赖丢失的瞬时事件。
 6. command/file/legacy 的一次性批准映射 `accept`，会话批准映射 `acceptForSession`；拒绝映射
-   `decline`，取消映射 `cancel`。permissions 批准只返回原请求中已验证的权限集合及
-   `turn|session` scope，不能由 renderer 扩写。拒绝和取消绝不携带 scope 或 permissions。
+   `decline`。permissions 批准只返回原请求中已验证的权限集合及 `turn|session` scope，不能由
+   renderer 扩写；每个 filesystem grant 还必须同时受 Run 快照、daemon 上限和 Project root
+   约束，无法证明边界的 glob/special path 拒绝。UI 的 Cancel turn 不作为单条拒绝响应发送，而是
+   走统一 Run cancellation/finalization gate，发送 `turn/interrupt`、释放全部 waiter 并持久化
+   cancelled Run。拒绝和取消绝不携带 scope 或 permissions。
 7. 原生 operation 继续只作为 Codex 输出展示与审计；审批记录属于 Run metadata，不追加或修改
    Message，也不伪装成 Ait `ToolUse`/`ToolResult`。非审批 server request 仍由既有拒绝策略处理，
    不扩展本 ADR 范围。
+8. `read_only` 不只作为 wire 参数传给 Codex：独立 workspace 的终结边界会验证 HEAD、index、
+   tracked/untracked 状态。任何写入尝试都会在 checkpoint、commit 与 integration 前被丢弃并让
+   Run fail closed，主 Project、Message 历史和 Git 引用保持不变。
 
 ## 后果
 
@@ -60,8 +69,11 @@ Codex 当前协议的通用 approval policy 只有 `untrusted`、`on-request`、
 
 - application fake workspace agent 覆盖四种 sandbox 输入、设置变更后的快照不变、未知值、
   `always`、管理员上限冲突，以及审批等待期间查询可用。
-- offline fake app-server 覆盖真实 wire 参数、原 request ID、permissions profile/scope、关联不匹配、
-  重复回答、resolved、取消与事件继续分发。
-- desktop 纯函数测试覆盖关联信息、权限集合转义、唯一允许的 action/scope 和审批事件重同步。
+- offline fake app-server 覆盖真实 wire 参数、原 request ID、permissions profile/scope、审批目标
+  投影与脱敏、缺失目标 fail closed、关联不匹配、重复回答、resolved、三类取消与事件继续分发。
+- 独立 workspace 测试覆盖 `read_only` 实际写入尝试在 checkpoint/commit/integration 前被丢弃，
+  `workspace_write` 只在测试明确选择时提交。
+- desktop 纯函数测试覆盖关联信息、command/file/network/permissions 目标与权限集合转义、唯一允许的
+  action/scope 和审批事件重同步。
 - workspace tests 继续证明 Message 历史不可变、Codex operation 不变成 ToolUse/ToolResult，且
   存储与导出中没有 provider credentials。

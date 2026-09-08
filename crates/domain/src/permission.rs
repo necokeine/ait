@@ -68,6 +68,78 @@ pub enum NativeApprovalKind {
     LegacyPatch,
 }
 
+/// Bounded, non-secret object a member is being asked to authorize.
+///
+/// Provider arguments remain adapter-owned. This projection contains only the
+/// fields required to make a durable approval understandable after reconnect.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeApprovalTarget {
+    /// One concrete shell command and its working directory.
+    Command {
+        /// Redacted command text or argument projection.
+        command: String,
+        /// Project-relative execution context expressed as an absolute host path.
+        cwd: String,
+    },
+    /// One managed-network destination. Network prompts are never rendered as commands.
+    Network {
+        /// Destination host requested by the managed network proxy.
+        host: String,
+        /// Network protocol requested for the destination.
+        protocol: NativeNetworkProtocol,
+    },
+    /// Proposed file targets, without persisting patch contents.
+    FileChange {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Optional directory scope that Codex asks to retain for later writes.
+        grant_root: Option<String>,
+        /// Proposed paths and operation kinds, excluding patch contents.
+        changes: Vec<NativeApprovalFileChange>,
+    },
+    /// The working directory associated with an explicit permission-profile request.
+    Permissions {
+        /// Project working directory to which the permission profile applies.
+        cwd: String,
+    },
+}
+
+/// Protocol-supported managed-network scheme shown in a native approval card.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeNetworkProtocol {
+    /// Plain HTTP.
+    Http,
+    /// HTTP over TLS.
+    Https,
+    /// SOCKS5 TCP transport.
+    Socks5Tcp,
+    /// SOCKS5 UDP transport.
+    Socks5Udp,
+}
+
+/// One proposed file path and operation, excluding patch content.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeApprovalFileChange {
+    /// Proposed file path.
+    pub path: String,
+    /// Proposed operation on the path.
+    pub kind: NativeApprovalFileChangeKind,
+}
+
+/// File operation kinds exposed by current Codex file-change items.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeApprovalFileChangeKind {
+    /// Add a new path.
+    Add,
+    /// Delete an existing path.
+    Delete,
+    /// Update an existing path.
+    Update,
+}
+
 /// Durable lifecycle of one native approval request.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

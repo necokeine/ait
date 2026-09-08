@@ -443,7 +443,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
                     "strict".into(),
                 ],
             },
-            json!("workspace_write"),
+            json!("read_only"),
             false,
         ),
     ]

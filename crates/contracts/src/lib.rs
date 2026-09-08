@@ -2,7 +2,8 @@
 #![allow(missing_docs)]
 
 use ait_domain::{
-    ApprovalGrantScope, ErrorCode, NativeApprovalKind, NativeApprovalStatus, RunPermissionProfile,
+    ApprovalGrantScope, ErrorCode, NativeApprovalKind, NativeApprovalStatus, NativeApprovalTarget,
+    RunPermissionProfile,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -347,6 +348,8 @@ pub struct NativeApprovalView {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    /// Bounded, non-secret authorization object shown after reconnect.
+    pub target: NativeApprovalTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_permissions: Option<NativePermissionProfile>,
     pub status: NativeApprovalStatus,

@@ -32,14 +32,18 @@ export function renderPendingApprovals(run: DesktopRun | undefined): string {
 }
 
 function renderApproval(run: DesktopRun, approval: NativeApproval): string {
+  if (!approval.target) {
+    return `<section class="native-approval native-approval-invalid"><header><strong>Approval unavailable</strong></header><p>This request has no reviewable authorization target and cannot be approved.</p></section>`;
+  }
   const permissionDetail = approval.requestedPermissions
     ? `<pre>${escapeHtml(JSON.stringify(approval.requestedPermissions, null, 2))}</pre>`
     : "";
+  const targetDetail = renderTarget(approval.target);
   const limitedScope = approval.kind === "permissions" ? "turn" : "one_shot";
   const limitedLabel = approval.kind === "permissions" ? "Allow for turn" : "Allow once";
   return `<section class="native-approval" data-run-id="${escapeAttribute(run.id)}" data-approval-id="${escapeAttribute(approval.id)}">
-    <header><strong>${escapeHtml(kindLabel(approval.kind))}</strong><span>Approval required</span></header>
-    <p>Codex requires an explicit decision before continuing. Provider arguments are not persisted here.</p>${permissionDetail}
+    <header><strong>${escapeHtml(approval.target.type === "network" ? "Allow network access" : kindLabel(approval.kind))}</strong><span>Approval required</span></header>
+    <p>Codex requires an explicit decision before continuing.</p>${targetDetail}${permissionDetail}
     <dl>
       <div><dt>Thread</dt><dd><code>${escapeHtml(approval.threadId)}</code></dd></div>
       <div><dt>Turn</dt><dd><code>${escapeHtml(approval.turnId)}</code></dd></div>
@@ -61,6 +65,26 @@ function kindLabel(kind: NativeApproval["kind"]): string {
     case "permissions": return "Extend permissions";
     case "legacy_command": return "Run legacy command";
     case "legacy_patch": return "Apply legacy patch";
+  }
+}
+
+function renderTarget(target: NativeApproval["target"]): string {
+  switch (target.type) {
+    case "command":
+      return `<dl class="approval-target"><div><dt>Command</dt><dd><code>${escapeHtml(target.command)}</code></dd></div><div><dt>Working directory</dt><dd><code>${escapeHtml(target.cwd)}</code></dd></div></dl>`;
+    case "network":
+      return `<dl class="approval-target"><div><dt>Network destination</dt><dd><code>${escapeHtml(target.protocol)}://${escapeHtml(target.host)}</code></dd></div></dl>`;
+    case "file_change": {
+      const root = target.grant_root
+        ? `<div><dt>Grant root</dt><dd><code>${escapeHtml(target.grant_root)}</code></dd></div>`
+        : "";
+      const changes = target.changes.map((change) =>
+        `<li><span>${escapeHtml(change.kind)}</span> <code>${escapeHtml(change.path)}</code></li>`
+      ).join("");
+      return `<dl class="approval-target">${root}</dl>${changes ? `<ul class="approval-file-changes">${changes}</ul>` : ""}`;
+    }
+    case "permissions":
+      return `<dl class="approval-target"><div><dt>Permission root</dt><dd><code>${escapeHtml(target.cwd)}</code></dd></div></dl>`;
   }
 }
 

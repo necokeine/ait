@@ -24,7 +24,7 @@ use ait_contracts::{
 use ait_domain::{
     AgentId, ApprovalGrantScope, ApprovalMode, Cron, CronConcurrencyPolicy, CronId,
     CronMisfirePolicy, DomainError, ErrorCode, MessageId, NativeApprovalKind, NativeApprovalStatus,
-    ProjectId, RunPermissionProfile, SandboxAccess, TimestampMs,
+    NativeApprovalTarget, ProjectId, RunPermissionProfile, SandboxAccess, TimestampMs,
 };
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
@@ -596,6 +596,7 @@ impl LocalControlService {
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let mut filters = vec![
                 ControlFilter::id(Kind::Run, run_id),
+                ControlFilter::id(Kind::Project, required_string(run, "project_id")?),
                 ControlFilter::id(Kind::WorkspaceRunJournal, run_id),
             ];
             if let Some(session_id) = run.get("session_id").and_then(Value::as_str) {
@@ -2128,15 +2129,22 @@ impl LocalControlService {
         command: Command,
         has_workspace_lease: bool,
     ) -> Result<CommandOutcome, ApiError> {
-        let control = if let Command::CancelRun { run_id } = &command {
+        let cancellation_run_id = match &command {
+            Command::CancelRun { run_id }
+            | Command::ResolveNativeApproval {
+                run_id,
+                action: NativeApprovalAction::Cancel,
+                ..
+            } => Some(run_id),
+            _ => None,
+        };
+        let control = cancellation_run_id.and_then(|run_id| {
             self.workspace_run_controls
                 .lock()
                 .expect("workspace run controls")
                 .get(run_id)
                 .and_then(Weak::upgrade)
-        } else {
-            None
-        };
+        });
         let Some(control) = control else {
             let outcome = self.commit_command(command, has_workspace_lease).await?;
             if let CommandOutcome::Ready(result) = &outcome
@@ -2498,6 +2506,8 @@ impl LocalControlService {
                     || existing.thread_id != approval.thread_id
                     || existing.turn_id != approval.turn_id
                     || existing.item_id != approval.item_id
+                    || existing.target != approval.target
+                    || existing.requested_permissions != approval.requested_permissions
                 {
                     return Err(error(
                         ErrorCode::ToolCallDuplicate,
@@ -2736,6 +2746,7 @@ fn native_approval_record(
             ));
         }
     };
+    validate_native_approval_target(request.kind, &request.target)?;
     let requested_permissions = if request.kind == NativeApprovalKind::Permissions {
         let value = request.requested_permissions.clone().ok_or_else(|| {
             error(
@@ -2783,6 +2794,7 @@ fn native_approval_record(
         thread_id: request.thread_id.clone(),
         turn_id: request.turn_id.clone(),
         item_id: request.item_id.clone(),
+        target: request.target.clone(),
         requested_permissions,
         status: NativeApprovalStatus::Pending,
         granted_scope: None,
@@ -2878,7 +2890,7 @@ fn validate_native_permission_profile(profile: &NativePermissionProfile) -> Resu
 }
 
 fn validate_permission_path(value: &str) -> Result<(), ApiError> {
-    if value.is_empty() || value.len() > 4_096 || value.contains('\0') {
+    if !is_bounded_display_value(value) {
         return Err(error(
             ErrorCode::ToolApprovalRequired,
             "permission path is empty or outside size limits",
@@ -2886,6 +2898,52 @@ fn validate_permission_path(value: &str) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+fn validate_native_approval_target(
+    kind: NativeApprovalKind,
+    target: &NativeApprovalTarget,
+) -> Result<(), ApiError> {
+    let valid = match (kind, target) {
+        (
+            NativeApprovalKind::CommandExecution | NativeApprovalKind::LegacyCommand,
+            NativeApprovalTarget::Command { command, cwd },
+        ) => is_bounded_display_value(command) && is_bounded_display_value(cwd),
+        (NativeApprovalKind::CommandExecution, NativeApprovalTarget::Network { host, .. }) => {
+            is_bounded_display_value(host)
+        }
+        (
+            NativeApprovalKind::FileChange | NativeApprovalKind::LegacyPatch,
+            NativeApprovalTarget::FileChange {
+                grant_root,
+                changes,
+            },
+        ) => {
+            changes.len() <= 128
+                && (!changes.is_empty() || grant_root.is_some())
+                && grant_root.as_deref().is_none_or(is_bounded_display_value)
+                && changes
+                    .iter()
+                    .all(|change| is_bounded_display_value(&change.path))
+        }
+        (NativeApprovalKind::Permissions, NativeApprovalTarget::Permissions { cwd }) => {
+            is_bounded_display_value(cwd)
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(error(
+            ErrorCode::ToolApprovalRequired,
+            "native approval has no bounded, reviewable authorization target",
+            false,
+        ))
+    }
+}
+
+fn is_bounded_display_value(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 4_096 && !value.chars().any(char::is_control)
 }
 
 fn approval_decision(approval: &NativeApprovalView) -> Option<WorkspaceApprovalDecision> {
@@ -3846,11 +3904,12 @@ fn resolve_native_approval(
     scope: Option<ApprovalGrantScope>,
     limits: PermissionPolicyLimits,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    let run = state
+    let run_index = state
         .runs
-        .iter_mut()
-        .find(|run| run.id == run_id)
+        .iter()
+        .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    let run = &state.runs[run_index];
     if is_terminal_workspace_status(&run.status) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
@@ -3858,10 +3917,10 @@ fn resolve_native_approval(
             false,
         ));
     }
-    let approval = run
+    let approval_index = run
         .native_approvals
-        .iter_mut()
-        .find(|approval| approval.id == approval_id)
+        .iter()
+        .position(|approval| approval.id == approval_id)
         .ok_or_else(|| {
             error(
                 ErrorCode::ToolApprovalRequired,
@@ -3869,13 +3928,31 @@ fn resolve_native_approval(
                 false,
             )
         })?;
-    if approval.status != NativeApprovalStatus::Pending {
+    if run.native_approvals[approval_index].status != NativeApprovalStatus::Pending {
         return Err(error(
             ErrorCode::ToolApprovalRequired,
             "native approval request is no longer pending",
             false,
         ));
     }
+    if action == NativeApprovalAction::Cancel {
+        if scope.is_some() {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "cancellation cannot carry an authorization scope",
+                false,
+            ));
+        }
+        return cancel_run(state, run_id);
+    }
+    let project_root = state
+        .projects
+        .iter()
+        .find(|project| project.id == run.project_id)
+        .map(|project| PathBuf::from(&project.workdir))
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    let run_profile = run.permission_profile;
+    let approval = &mut state.runs[run_index].native_approvals[approval_index];
     match action {
         NativeApprovalAction::Approve => {
             let scope = scope.ok_or_else(|| {
@@ -3885,7 +3962,7 @@ fn resolve_native_approval(
                     false,
                 )
             })?;
-            validate_native_approval_grant(approval, scope, limits)?;
+            validate_native_approval_grant(approval, scope, limits, run_profile, &project_root)?;
             approval.status = NativeApprovalStatus::Approved;
             approval.granted_scope = Some(scope);
             approval
@@ -3902,18 +3979,10 @@ fn resolve_native_approval(
             }
             approval.status = NativeApprovalStatus::Denied;
         }
-        NativeApprovalAction::Cancel => {
-            if scope.is_some() {
-                return Err(error(
-                    ErrorCode::InvalidConfiguration,
-                    "cancellation cannot carry an authorization scope",
-                    false,
-                ));
-            }
-            approval.status = NativeApprovalStatus::Cancelled;
-        }
+        NativeApprovalAction::Cancel => unreachable!("handled as Run cancellation above"),
     }
     approval.decided_at = Some(now());
+    let run = &mut state.runs[run_index];
     if !run
         .native_approvals
         .iter()
@@ -3932,7 +4001,16 @@ fn validate_native_approval_grant(
     approval: &NativeApprovalView,
     scope: ApprovalGrantScope,
     limits: PermissionPolicyLimits,
+    run_profile: RunPermissionProfile,
+    project_root: &Path,
 ) -> Result<(), ApiError> {
+    if run_profile.sandbox > limits.max_sandbox {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            "Run permission snapshot exceeds the administrator sandbox ceiling",
+            false,
+        ));
+    }
     if scope == ApprovalGrantScope::Session && !limits.allow_session_approvals {
         return Err(error(
             ErrorCode::InvalidConfiguration,
@@ -3941,13 +4019,13 @@ fn validate_native_approval_grant(
         ));
     }
     if approval.kind == NativeApprovalKind::Permissions {
-        if approval.requested_permissions.is_none() {
-            return Err(error(
+        let permissions = approval.requested_permissions.as_ref().ok_or_else(|| {
+            error(
                 ErrorCode::InvalidConfiguration,
                 "permission approval has no explicit permission profile",
                 false,
-            ));
-        }
+            )
+        })?;
         if scope == ApprovalGrantScope::OneShot {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
@@ -3955,6 +4033,7 @@ fn validate_native_approval_grant(
                 false,
             ));
         }
+        validate_permission_grant_ceiling(permissions, run_profile, limits, project_root)?;
     } else if scope == ApprovalGrantScope::Turn {
         return Err(error(
             ErrorCode::InvalidConfiguration,
@@ -3963,6 +4042,128 @@ fn validate_native_approval_grant(
         ));
     }
     Ok(())
+}
+
+fn validate_permission_grant_ceiling(
+    permissions: &NativePermissionProfile,
+    run_profile: RunPermissionProfile,
+    limits: PermissionPolicyLimits,
+    project_root: &Path,
+) -> Result<(), ApiError> {
+    let Some(file_system) = &permissions.file_system else {
+        return Ok(());
+    };
+    let requests_write = !file_system.write.is_empty()
+        || file_system
+            .entries
+            .iter()
+            .any(|entry| entry.access == ait_contracts::NativeFileSystemAccess::Write);
+    if requests_write
+        && (run_profile.sandbox < SandboxAccess::WorkspaceWrite
+            || limits.max_sandbox < SandboxAccess::WorkspaceWrite)
+    {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            "filesystem write grant exceeds the Run snapshot or administrator sandbox ceiling",
+            false,
+        ));
+    }
+    for path in file_system.read.iter().chain(&file_system.write) {
+        ensure_permission_path_in_project(path, project_root)?;
+    }
+    for entry in &file_system.entries {
+        match &entry.path {
+            ait_contracts::NativeFileSystemPath::Path { path } => {
+                ensure_permission_path_in_project(path, project_root)?;
+            }
+            ait_contracts::NativeFileSystemPath::Special {
+                value: ait_contracts::NativeFileSystemSpecialPath::ProjectRoots { subpath },
+            } => {
+                if let Some(subpath) = subpath {
+                    ensure_permission_path_in_project(subpath, project_root)?;
+                }
+            }
+            ait_contracts::NativeFileSystemPath::GlobPattern { .. }
+            | ait_contracts::NativeFileSystemPath::Special { .. } => {
+                return Err(error(
+                    ErrorCode::InvalidConfiguration,
+                    "filesystem grant cannot be proven to stay inside the Project boundary",
+                    false,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<(), ApiError> {
+    use std::path::Component;
+
+    let root = lexical_absolute_path(project_root)?;
+    let candidate = Path::new(path);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(project_boundary_error());
+                }
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    if !normalized.starts_with(&root) {
+        return Err(project_boundary_error());
+    }
+    let canonical_root = std::fs::canonicalize(&root).map_err(|_| project_boundary_error())?;
+    let mut existing = normalized.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(project_boundary_error)?;
+    }
+    let canonical_existing =
+        std::fs::canonicalize(existing).map_err(|_| project_boundary_error())?;
+    if !canonical_existing.starts_with(canonical_root) {
+        return Err(project_boundary_error());
+    }
+    Ok(())
+}
+
+fn lexical_absolute_path(path: &Path) -> Result<PathBuf, ApiError> {
+    if !path.is_absolute() {
+        return Err(project_boundary_error());
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        use std::path::Component;
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(project_boundary_error());
+                }
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    Ok(normalized)
+}
+
+fn project_boundary_error() -> ApiError {
+    error(
+        ErrorCode::InvalidConfiguration,
+        "filesystem grant escapes the Project boundary",
+        false,
+    )
 }
 
 fn expire_pending_native_approvals(run: &mut RunView, status: NativeApprovalStatus) {

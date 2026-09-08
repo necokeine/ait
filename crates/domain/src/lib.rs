@@ -33,7 +33,8 @@ pub use message::{
     RunId, StoredMessage, SubMessage, ToolResult, ToolResultStatus, ToolUse,
 };
 pub use permission::{
-    ApprovalGrantScope, ApprovalMode, NativeApprovalKind, NativeApprovalStatus,
+    ApprovalGrantScope, ApprovalMode, NativeApprovalFileChange, NativeApprovalFileChangeKind,
+    NativeApprovalKind, NativeApprovalStatus, NativeApprovalTarget, NativeNetworkProtocol,
     RunPermissionProfile, SandboxAccess,
 };
 pub use project::{

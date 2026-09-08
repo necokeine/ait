@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentView, ControlEvent, RunProgress, RunStreamUpdate } from "./types.js";
+import type { AgentProvider, AgentView, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -54,6 +54,7 @@ interface WorkspaceView {
     native_approvals?: Array<{
       id: string; run_id: string; protocol_request_id: string | number; method: string; kind: string;
       thread_id: string; turn_id: string; item_id: string;
+      target: NativeApproval["target"];
       requested_permissions?: Record<string, unknown>; status: string; granted_scope?: string;
       granted_permissions?: Record<string, unknown>; created_at: number; decided_at?: number;
     }>;
@@ -470,6 +471,7 @@ class DaemonClient {
           threadId: approval.thread_id,
           turnId: approval.turn_id,
           itemId: approval.item_id,
+          target: approval.target,
           ...(approval.requested_permissions ? { requestedPermissions: approval.requested_permissions } : {}),
           status: approval.status,
           ...(approval.granted_scope ? { grantedScope: approval.granted_scope } : {}),

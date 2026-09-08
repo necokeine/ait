@@ -1,9 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
-    ApprovalGrantScope, DomainError, Message, MessageId, NativeApprovalKind, ProjectedMessage, Run,
-    RunAttempt, RunAttemptId, RunId, RunPermissionProfile, RunUsage, TimestampMs, ToolExecution,
-    ToolExecutionId,
+    ApprovalGrantScope, DomainError, Message, MessageId, NativeApprovalKind, NativeApprovalTarget,
+    ProjectedMessage, Run, RunAttempt, RunAttemptId, RunId, RunPermissionProfile, RunUsage,
+    TimestampMs, ToolExecution, ToolExecutionId,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -260,6 +260,8 @@ pub struct WorkspaceApprovalRequest {
     pub turn_id: String,
     /// Codex item identifier.
     pub item_id: String,
+    /// Bounded, redacted object a member can review before deciding.
+    pub target: NativeApprovalTarget,
     /// Exact protocol permission profile, only for permission requests.
     pub requested_permissions: Option<Value>,
 }

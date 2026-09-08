@@ -12,8 +12,9 @@ use std::{
 };
 
 use ait_domain::{
-    AgentProvider, ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, ProviderKind,
-    ProviderModel, SandboxAccess,
+    AgentProvider, ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalFileChange,
+    NativeApprovalFileChangeKind, NativeApprovalKind, NativeApprovalTarget, NativeNetworkProtocol,
+    ProviderKind, ProviderModel, SandboxAccess,
 };
 use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
@@ -240,6 +241,8 @@ impl CodexWorkspaceAgent {
 #[derive(Clone)]
 struct WorkspaceApprovalBridge {
     run_id: String,
+    isolated_cwd: PathBuf,
+    project_cwd: PathBuf,
     approvals: Arc<dyn WorkspaceApproval>,
 }
 
@@ -259,7 +262,21 @@ impl ApprovalHandler for WorkspaceApprovalBridge {
                 thread_id: request.thread_id.clone(),
                 turn_id: request.turn_id.clone(),
                 item_id: request.item_id.clone(),
-                requested_permissions: request.params.get("permissions").cloned(),
+                target: rewrite_approval_target_paths(
+                    request.target.clone(),
+                    &self.isolated_cwd,
+                    &self.project_cwd,
+                ),
+                requested_permissions: request.params.get("permissions").cloned().map(
+                    |mut value| {
+                        rewrite_json_workspace_paths(
+                            &mut value,
+                            &self.isolated_cwd,
+                            &self.project_cwd,
+                        );
+                        value
+                    },
+                ),
             })
             .await;
         match decision {
@@ -303,6 +320,11 @@ impl ApprovalHandler for WorkspaceApprovalBridge {
                 thread_id: request.thread_id.clone(),
                 turn_id: request.turn_id.clone(),
                 item_id: request.item_id.clone(),
+                target: rewrite_approval_target_paths(
+                    request.target.clone(),
+                    &self.isolated_cwd,
+                    &self.project_cwd,
+                ),
                 requested_permissions: None,
             })
             .await;
@@ -318,6 +340,66 @@ const fn native_approval_kind(kind: ApprovalKind) -> Option<NativeApprovalKind> 
         ApprovalKind::LegacyPatch => Some(NativeApprovalKind::LegacyPatch),
         ApprovalKind::Unsupported => None,
     }
+}
+
+fn rewrite_approval_target_paths(
+    target: NativeApprovalTarget,
+    isolated_cwd: &Path,
+    project_cwd: &Path,
+) -> NativeApprovalTarget {
+    let rewrite = |value: String| rewrite_workspace_path(value, isolated_cwd, project_cwd);
+    match target {
+        NativeApprovalTarget::Command { command, cwd } => NativeApprovalTarget::Command {
+            command,
+            cwd: rewrite(cwd),
+        },
+        NativeApprovalTarget::Network { host, protocol } => {
+            NativeApprovalTarget::Network { host, protocol }
+        }
+        NativeApprovalTarget::FileChange {
+            grant_root,
+            changes,
+        } => NativeApprovalTarget::FileChange {
+            grant_root: grant_root.map(&rewrite),
+            changes: changes
+                .into_iter()
+                .map(|change| NativeApprovalFileChange {
+                    path: rewrite(change.path),
+                    kind: change.kind,
+                })
+                .collect(),
+        },
+        NativeApprovalTarget::Permissions { cwd } => {
+            NativeApprovalTarget::Permissions { cwd: rewrite(cwd) }
+        }
+    }
+}
+
+fn rewrite_json_workspace_paths(value: &mut Value, isolated_cwd: &Path, project_cwd: &Path) {
+    match value {
+        Value::String(path) => {
+            *path = rewrite_workspace_path(path.clone(), isolated_cwd, project_cwd);
+        }
+        Value::Array(values) => {
+            for value in values {
+                rewrite_json_workspace_paths(value, isolated_cwd, project_cwd);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                rewrite_json_workspace_paths(value, isolated_cwd, project_cwd);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn rewrite_workspace_path(value: String, isolated_cwd: &Path, project_cwd: &Path) -> String {
+    let path = Path::new(&value);
+    let Ok(relative) = path.strip_prefix(isolated_cwd) else {
+        return value;
+    };
+    project_cwd.join(relative).to_string_lossy().into_owned()
 }
 
 async fn invoke_isolated_workspace(
@@ -341,7 +423,7 @@ async fn invoke_isolated_workspace(
     )?;
     let integration_gate = request.integration_gate.clone();
     let cancellation = request.cancellation.clone();
-    let agent_request = codex_run_request(&request, workspace.path().to_path_buf());
+    let agent_request = codex_run_request(&request, workspace.path());
     let commit_subject = request.commit_subject;
     let stream = adapter.run(agent_request).await;
     let stream = match stream {
@@ -351,7 +433,7 @@ async fn invoke_isolated_workspace(
         }
     };
     let (assistant_text, mut operations, output_items) =
-        collect_workspace_output(stream, &mut workspace, progress.as_ref()).await?;
+        collect_workspace_output(stream, &mut workspace, progress.as_ref(), &cancellation).await?;
     rewrite_isolated_operation_paths(&mut operations, workspace.path());
     if cancellation.is_cancelled() {
         return Err(workspace.settle_failure(domain_error(
@@ -359,6 +441,11 @@ async fn invoke_isolated_workspace(
             "run was cancelled before isolated changes were committed",
             false,
         )));
+    }
+    if request.permission_profile.sandbox == SandboxAccess::ReadOnly
+        && let Err(failure) = workspace.enforce_read_only()
+    {
+        return Err(failure);
     }
     let commit_id = match commit_workspace_changes(
         workspace.path(),
@@ -404,14 +491,14 @@ async fn invoke_isolated_workspace(
     Ok(result)
 }
 
-fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: PathBuf) -> AgentRunRequest {
+fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: &Path) -> AgentRunRequest {
     AgentRunRequest {
         request_id: request.request_id.clone(),
         model: Some(request.model.clone()),
         reasoning_effort: request.reasoning_effort.clone(),
         project_instructions: request.project_instructions.clone(),
         prompt: request.prompt.clone(),
-        cwd,
+        cwd: cwd.to_path_buf(),
         resume_thread_id: None,
         sandbox: match request.permission_profile.sandbox {
             SandboxAccess::ReadOnly => crate::SandboxMode::ReadOnly,
@@ -424,6 +511,8 @@ fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: PathBuf) -> AgentR
         },
         approval_handler: Some(Arc::new(WorkspaceApprovalBridge {
             run_id: request.request_id.clone(),
+            isolated_cwd: cwd.to_path_buf(),
+            project_cwd: request.cwd.clone(),
             approvals: Arc::clone(&request.approvals),
         })),
         output_schema: None,
@@ -594,6 +683,7 @@ async fn collect_workspace_output(
     mut stream: AgentStream,
     workspace: &mut IsolatedWorkspace,
     progress: Option<&Arc<dyn WorkspaceProgressReporter>>,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>), DomainError> {
     let mut completed = false;
     let mut output = CodexOutputCollector::default();
@@ -652,11 +742,21 @@ async fn collect_workspace_output(
                         .await;
                 }
                 if status != AgentRunStatus::Completed {
-                    let failure = domain_error(
-                        ErrorCode::ProviderFailed,
-                        error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
-                        status == AgentRunStatus::Unknown,
-                    );
+                    let cancelled =
+                        status == AgentRunStatus::Interrupted && cancellation.is_cancelled();
+                    let failure = if cancelled {
+                        domain_error(
+                            ErrorCode::RunCancelled,
+                            error.unwrap_or_else(|| "Codex turn was cancelled".into()),
+                            false,
+                        )
+                    } else {
+                        domain_error(
+                            ErrorCode::ProviderFailed,
+                            error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
+                            status == AgentRunStatus::Unknown,
+                        )
+                    };
                     while stream.next().await.is_some() {}
                     return Err(workspace.settle_failure(failure));
                 }
@@ -777,6 +877,49 @@ impl IsolatedWorkspace {
             Some(&self.primary_head_ref),
         )
         .map(|_| ())
+    }
+
+    fn enforce_read_only(&mut self) -> Result<(), DomainError> {
+        let changed = git_head(&self.worktree).as_deref() != Some(self.baseline.as_str())
+            || git(
+                &self.worktree,
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                    "--ignored=matching",
+                ],
+            )
+            .map_or(true, |status| !status.stdout.is_empty());
+        if !changed {
+            return Ok(());
+        }
+        let failure = domain_error(
+            ErrorCode::ProjectGitDirty,
+            "read-only Codex Run attempted to modify its isolated Project workspace",
+            false,
+        );
+        if let Err(cleanup_failure) = cleanup_partial_worktree(&self.primary, &self.worktree) {
+            return Err(self.retain(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "{}; failed to discard unauthorized changes: {}",
+                    failure.message, cleanup_failure.message
+                ),
+                false,
+            )));
+        }
+        if let Err(cleanup_failure) = delete_git_ref(&self.primary, &self.run_ref) {
+            return Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "{}; unauthorized workspace was removed but its Run ref could not be deleted: {}",
+                    failure.message, cleanup_failure.message
+                ),
+                false,
+            ));
+        }
+        Err(failure)
     }
 
     async fn integrate(
@@ -4233,6 +4376,7 @@ where
     let mut pending_approvals = HashMap::<String, PendingApprovalTask>::new();
     let mut seen_server_requests = HashSet::new();
     let mut answered_server_requests = HashSet::new();
+    let mut approval_items = HashMap::<String, Value>::new();
     loop {
         let message = if let Some(message) = deferred.pop_front() {
             Some(message)
@@ -4245,6 +4389,8 @@ where
                         &mut writer,
                         &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
                     ).await?;
+                    approval_tasks.abort_all();
+                    expire_protocol_approvals(&approvals, &mut pending_approvals).await;
                     return Err(AdapterError::cancelled());
                 }
                 message = read_message(&mut lines) => Some(message?),
@@ -4254,8 +4400,19 @@ where
                     };
                     match resolution {
                         Ok(resolution) => {
-                            if pending_approvals.remove(&resolution.request_key).is_none() {
+                            let Some(pending) = pending_approvals.remove(&resolution.request_key) else {
                                 continue;
+                            };
+                            if resolution.decision == ApprovalDecision::Cancel {
+                                write_message(
+                                    &mut writer,
+                                    &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
+                                )
+                                .await?;
+                                approvals.resolved(&pending.request).await;
+                                approval_tasks.abort_all();
+                                expire_protocol_approvals(&approvals, &mut pending_approvals).await;
+                                return Err(AdapterError::cancelled());
                             }
                             match approval_response(&resolution.method, resolution.decision) {
                                 Ok(result) => {
@@ -4306,6 +4463,12 @@ where
             continue;
         };
         let method = message.get("method").and_then(Value::as_str);
+        if method == Some("item/started")
+            && let Some(item) = message.pointer("/params/item")
+            && let Some(item_id) = item.get("id").and_then(Value::as_str)
+        {
+            approval_items.insert(item_id.to_owned(), item.clone());
+        }
         if method == Some("serverRequest/resolved")
             && let Some(request_id) = message.pointer("/params/requestId")
             && let Some(request_key) = server_request_key(request_id)
@@ -4329,12 +4492,18 @@ where
                 &mut pending_approvals,
                 &mut seen_server_requests,
                 &mut answered_server_requests,
+                &approval_items,
             )
             .await?;
             continue;
         }
         if handle_message(&message, &turn_id, sender).await? {
             return Ok(());
+        }
+        if method == Some("item/completed")
+            && let Some(item_id) = message.pointer("/params/item/id").and_then(Value::as_str)
+        {
+            approval_items.remove(item_id);
         }
     }
 }
@@ -4537,6 +4706,16 @@ struct PendingApprovalTask {
     request: ApprovalRequest,
 }
 
+async fn expire_protocol_approvals(
+    approvals: &Arc<dyn ApprovalHandler>,
+    pending_approvals: &mut HashMap<String, PendingApprovalTask>,
+) {
+    for (_, pending) in pending_approvals.drain() {
+        pending.task.abort();
+        approvals.resolved(&pending.request).await;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerRequestKind {
     Approval(ApprovalKind),
@@ -4562,6 +4741,7 @@ async fn handle_server_request<W>(
     pending_approvals: &mut HashMap<String, PendingApprovalTask>,
     seen_server_requests: &mut HashSet<String>,
     answered_server_requests: &mut HashSet<String>,
+    approval_items: &HashMap<String, Value>,
 ) -> Result<(), AdapterError>
 where
     W: AsyncWrite + Unpin,
@@ -4617,6 +4797,21 @@ where
                 answered_server_requests.insert(request_key);
                 return Ok(());
             }
+            let target = match approval_target(kind, &params, approval_items) {
+                Ok(target) => target,
+                Err(reason) => {
+                    send_server_request_warning(
+                        sender,
+                        method,
+                        &reason,
+                        "CODEX_APPROVAL_TARGET_INVALID",
+                    )
+                    .await?;
+                    write_rpc_error(writer, request_id, -32602, reason).await?;
+                    answered_server_requests.insert(request_key);
+                    return Ok(());
+                }
+            };
             let request = ApprovalRequest {
                 request_id: request_id.clone(),
                 method: method.to_owned(),
@@ -4629,6 +4824,7 @@ where
                     .and_then(Value::as_str)
                     .unwrap_or(&request_key)
                     .to_owned(),
+                target,
                 params,
             };
             send_event(
@@ -4714,6 +4910,220 @@ where
         answered_server_requests.insert(request_key);
     }
     Ok(())
+}
+
+fn approval_target(
+    kind: ApprovalKind,
+    params: &Value,
+    approval_items: &HashMap<String, Value>,
+) -> Result<NativeApprovalTarget, String> {
+    let item = params
+        .get("itemId")
+        .and_then(Value::as_str)
+        .and_then(|item_id| approval_items.get(item_id));
+    match kind {
+        ApprovalKind::CommandExecution => {
+            if let Some(context) = params.get("networkApprovalContext") {
+                let host = bounded_target_string(context.get("host"), "network host")?;
+                let protocol = match context.get("protocol").and_then(Value::as_str) {
+                    Some("http") => NativeNetworkProtocol::Http,
+                    Some("https") => NativeNetworkProtocol::Https,
+                    Some("socks5Tcp") => NativeNetworkProtocol::Socks5Tcp,
+                    Some("socks5Udp") => NativeNetworkProtocol::Socks5Udp,
+                    _ => return Err("network approval has an unsupported protocol".into()),
+                };
+                return Ok(NativeApprovalTarget::Network { host, protocol });
+            }
+            let command = approval_command(
+                params
+                    .get("command")
+                    .or_else(|| item.and_then(|item| item.get("command"))),
+            )?;
+            let cwd = bounded_target_string(
+                params
+                    .get("cwd")
+                    .or_else(|| item.and_then(|item| item.get("cwd"))),
+                "command working directory",
+            )?;
+            Ok(NativeApprovalTarget::Command { command, cwd })
+        }
+        ApprovalKind::FileChange => {
+            let grant_root = optional_bounded_target_string(params.get("grantRoot"), "grant root")?;
+            let changes = item
+                .and_then(|item| item.get("changes"))
+                .and_then(Value::as_array)
+                .map(|changes| project_file_changes(changes))
+                .transpose()?
+                .unwrap_or_default();
+            if grant_root.is_none() && changes.is_empty() {
+                return Err("file approval has no grant root or proposed file paths".into());
+            }
+            Ok(NativeApprovalTarget::FileChange {
+                grant_root,
+                changes,
+            })
+        }
+        ApprovalKind::Permissions => Ok(NativeApprovalTarget::Permissions {
+            cwd: bounded_target_string(params.get("cwd"), "permission working directory")?,
+        }),
+        ApprovalKind::LegacyCommand => {
+            let command = approval_command(params.get("command"))?;
+            let cwd = bounded_target_string(params.get("cwd"), "command working directory")?;
+            Ok(NativeApprovalTarget::Command { command, cwd })
+        }
+        ApprovalKind::LegacyPatch => {
+            let grant_root = optional_bounded_target_string(params.get("grantRoot"), "grant root")?;
+            let changes = params
+                .get("fileChanges")
+                .and_then(Value::as_object)
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .take(129)
+                        .map(|(path, change)| {
+                            let path = validate_bounded_string(path, "file path")?;
+                            let kind = match change.get("type").and_then(Value::as_str) {
+                                Some("add" | "create") => NativeApprovalFileChangeKind::Add,
+                                Some("delete") => NativeApprovalFileChangeKind::Delete,
+                                Some("update") | None => NativeApprovalFileChangeKind::Update,
+                                Some(_) => {
+                                    return Err(
+                                        "file approval has an unsupported change kind".into()
+                                    );
+                                }
+                            };
+                            Ok(NativeApprovalFileChange { path, kind })
+                        })
+                        .collect::<Result<Vec<_>, String>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            if changes.len() > 128 {
+                return Err("file approval contains too many paths".into());
+            }
+            if grant_root.is_none() && changes.is_empty() {
+                return Err("file approval has no grant root or proposed file paths".into());
+            }
+            Ok(NativeApprovalTarget::FileChange {
+                grant_root,
+                changes,
+            })
+        }
+        ApprovalKind::Unsupported => Err("unsupported approval kind".into()),
+    }
+}
+
+fn project_file_changes(changes: &[Value]) -> Result<Vec<NativeApprovalFileChange>, String> {
+    if changes.is_empty() || changes.len() > 128 {
+        return Err("file approval has no paths or contains too many paths".into());
+    }
+    changes
+        .iter()
+        .map(|change| {
+            let path = bounded_target_string(change.get("path"), "file path")?;
+            let kind = match change.get("kind").and_then(Value::as_str) {
+                Some("add") => NativeApprovalFileChangeKind::Add,
+                Some("delete") => NativeApprovalFileChangeKind::Delete,
+                Some("update") => NativeApprovalFileChangeKind::Update,
+                _ => return Err("file approval has an unsupported change kind".into()),
+            };
+            Ok(NativeApprovalFileChange { path, kind })
+        })
+        .collect()
+}
+
+fn approval_command(value: Option<&Value>) -> Result<String, String> {
+    let command = match value {
+        Some(Value::String(command)) => command.clone(),
+        Some(Value::Array(arguments)) if !arguments.is_empty() => arguments
+            .iter()
+            .map(|argument| argument.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| "command approval contains a non-string argument".to_owned())?
+            .join(" "),
+        _ => return Err("command approval has no concrete command".into()),
+    };
+    redact_approval_command(&validate_bounded_string(&command, "command")?)
+}
+
+fn redact_approval_command(command: &str) -> Result<String, String> {
+    let mut redact_next = false;
+    let mut redacted = Vec::new();
+    for token in command.split_whitespace() {
+        let token = redact_url_credentials(token);
+        let lower = token.to_ascii_lowercase();
+        if redact_next {
+            redacted.push("[REDACTED]".to_owned());
+            redact_next = false;
+            continue;
+        }
+        if is_sensitive_key(lower.trim_start_matches('-')) || lower == "bearer" {
+            redacted.push(token);
+            redact_next = true;
+            continue;
+        }
+        if let Some((key, _)) = token.split_once('=')
+            && is_sensitive_key(key.to_ascii_lowercase().trim_start_matches('-'))
+        {
+            redacted.push(format!("{key}=[REDACTED]"));
+            continue;
+        }
+        redacted.push(token);
+    }
+    validate_bounded_string(&redacted.join(" "), "redacted command")
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "api-key",
+        "api_key",
+        "apikey",
+        "credential",
+        "authorization",
+        "cookie",
+    ]
+    .iter()
+    .any(|sensitive| key.contains(sensitive))
+}
+
+fn redact_url_credentials(token: &str) -> String {
+    let Some((scheme, remainder)) = token.split_once("://") else {
+        return token.to_owned();
+    };
+    let Some((_, host)) = remainder.split_once('@') else {
+        return token.to_owned();
+    };
+    format!("{scheme}://[REDACTED]@{host}")
+}
+
+fn optional_bounded_target_string(
+    value: Option<&Value>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    value
+        .map(|value| bounded_target_string(Some(value), field))
+        .transpose()
+}
+
+fn bounded_target_string(value: Option<&Value>, field: &str) -> Result<String, String> {
+    let value = value
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("approval has no concrete {field}"))?;
+    validate_bounded_string(value, field)
+}
+
+fn validate_bounded_string(value: &str, field: &str) -> Result<String, String> {
+    if value.trim().is_empty() || value.len() > 4_096 || value.chars().any(char::is_control) {
+        Err(format!(
+            "approval {field} is empty or outside display limits"
+        ))
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 fn validate_approval_correlation(
@@ -4840,13 +5250,16 @@ fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, 
     if let ApprovalDecision::Raw(value) = decision {
         return Ok(value);
     }
+    if decision == ApprovalDecision::Cancel {
+        return Err(AdapterError::cancelled());
+    }
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
             let decision = match decision {
                 ApprovalDecision::Accept => "accept",
                 ApprovalDecision::AcceptForSession => "acceptForSession",
                 ApprovalDecision::Decline => "decline",
-                ApprovalDecision::Cancel => "cancel",
+                ApprovalDecision::Cancel => unreachable!("cancel interrupts the turn"),
                 ApprovalDecision::Raw(_) => unreachable!(),
             };
             Ok(json!({"decision": decision}))
@@ -4855,7 +5268,8 @@ fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, 
             let decision = match decision {
                 ApprovalDecision::Accept => "approved",
                 ApprovalDecision::AcceptForSession => "approved_for_session",
-                ApprovalDecision::Decline | ApprovalDecision::Cancel => "abort",
+                ApprovalDecision::Decline => "abort",
+                ApprovalDecision::Cancel => unreachable!("cancel interrupts the turn"),
                 ApprovalDecision::Raw(_) => unreachable!(),
             };
             Ok(json!({"decision": decision}))
@@ -4868,9 +5282,8 @@ fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, 
                     false,
                 ))
             }
-            ApprovalDecision::Decline | ApprovalDecision::Cancel => {
-                Ok(json!({"permissions": {}, "scope": "turn"}))
-            }
+            ApprovalDecision::Decline => Ok(json!({"permissions": {}, "scope": "turn"})),
+            ApprovalDecision::Cancel => unreachable!("cancel interrupts the turn"),
             ApprovalDecision::Raw(_) => unreachable!(),
         },
         _ => Err(AdapterError::new(
@@ -4945,6 +5358,63 @@ async fn send_event(
 #[cfg(test)]
 mod workspace_cleanup_tests {
     use super::*;
+
+    #[test]
+    fn network_approval_projection_is_network_specific_and_bounded() {
+        assert_eq!(
+            approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({
+                    "networkApprovalContext": {"host": "api.example.test", "protocol": "https"}
+                }),
+                &HashMap::new(),
+            )
+            .unwrap(),
+            NativeApprovalTarget::Network {
+                host: "api.example.test".into(),
+                protocol: NativeNetworkProtocol::Https,
+            }
+        );
+        assert!(
+            approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({
+                    "networkApprovalContext": {"host": "api.example.test", "protocol": "ftp"}
+                }),
+                &HashMap::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn command_approval_projection_redacts_credentials() {
+        let target = approval_target(
+            ApprovalKind::CommandExecution,
+            &json!({
+                "command": "curl --api-key very-secret https://user:password@example.test",
+                "cwd": "/workspace"
+            }),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let rendered = format!("{target:?}");
+        assert!(!rendered.contains("very-secret"));
+        assert!(!rendered.contains("password"));
+        assert!(rendered.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn cancel_is_never_encoded_as_an_approval_or_empty_permission_grant() {
+        for method in [
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+        ] {
+            let failure = approval_response(method, ApprovalDecision::Cancel).unwrap_err();
+            assert_eq!(failure.kind, AdapterErrorKind::Cancelled, "{method}");
+        }
+    }
 
     #[cfg(windows)]
     #[test]

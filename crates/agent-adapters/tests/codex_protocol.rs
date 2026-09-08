@@ -14,6 +14,7 @@ use ait_agent_adapters::{
     ApprovalRequest, SandboxMode,
     codex::{ClientInfo, drive_model_list_protocol, drive_protocol},
 };
+use ait_domain::{NativeApprovalFileChange, NativeApprovalFileChangeKind, NativeApprovalTarget};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::{
@@ -350,6 +351,24 @@ impl ApprovalHandler for AcceptOnce {
     }
 }
 
+#[derive(Debug)]
+struct InspectingCommandApproval;
+
+#[async_trait]
+impl ApprovalHandler for InspectingCommandApproval {
+    async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        assert_eq!(
+            request.target,
+            NativeApprovalTarget::Command {
+                command: "curl --token [REDACTED] https://[REDACTED]@example.com".into(),
+                cwd: "/workspace".into(),
+            }
+        );
+        assert!(request.params["reason"].as_str().is_some());
+        ApprovalDecision::Accept
+    }
+}
+
 #[tokio::test]
 async fn routes_command_approvals_through_handler() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
@@ -374,7 +393,7 @@ async fn routes_command_approvals_through_handler() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","reason":"needs permission"}}),
+            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","command":"curl --token super-secret https://user:password@example.com","cwd":"/workspace","reason":"needs permission"}}),
         )
         .await;
         let response = read_json(&mut lines).await;
@@ -393,7 +412,7 @@ async fn routes_command_approvals_through_handler() {
             client_write,
             request(),
             client(),
-            Arc::new(AcceptOnce),
+            Arc::new(InspectingCommandApproval),
             &sender,
         )
         .await
@@ -419,6 +438,12 @@ impl ApprovalHandler for PermissionGrant {
         assert_eq!(request.thread_id, "thr-1");
         assert_eq!(request.turn_id, "turn-1");
         assert_eq!(request.item_id, "permission-item");
+        assert_eq!(
+            request.target,
+            NativeApprovalTarget::Permissions {
+                cwd: "/workspace".into()
+            }
+        );
         ApprovalDecision::Raw(json!({
             "permissions": request.params["permissions"].clone(),
             "scope": "session"
@@ -462,6 +487,7 @@ async fn permission_approval_answers_the_original_request_id_with_explicit_profi
                     "threadId":"thr-1",
                     "turnId":"turn-1",
                     "itemId":"permission-item",
+                    "cwd":"/workspace",
                     "permissions": permissions
                 }
             }),
@@ -564,6 +590,74 @@ async fn mismatched_approval_correlation_fails_closed_before_the_handler() {
     server.await.unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 0);
     assert!(saw_warning);
+}
+
+#[tokio::test]
+async fn approval_without_a_reviewable_target_fails_closed_before_the_handler() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thr-1"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"id":92,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","reason":"arguments intentionally absent"}}),
+        )
+        .await;
+        let response = read_json(&mut lines).await;
+        assert_eq!(response["id"], 92);
+        assert_eq!(response["error"]["code"], -32602);
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+        )
+        .await;
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (sender, mut receiver) = mpsc::channel(32);
+    let handler = Arc::clone(&calls);
+    let drive = tokio::spawn(async move {
+        drive_protocol(
+            client_read,
+            client_write,
+            request(),
+            client(),
+            Arc::new(CountingApprovals(handler)),
+            &sender,
+        )
+        .await
+    });
+    let mut saw_warning = false;
+    let mut saw_approval = false;
+    while let Some(event) = receiver.recv().await {
+        match event.unwrap() {
+            AgentEvent::AdapterWarning {
+                code: Some(code), ..
+            } if code == "CODEX_APPROVAL_TARGET_INVALID" => saw_warning = true,
+            AgentEvent::ApprovalRequested { .. } => saw_approval = true,
+            _ => {}
+        }
+    }
+    drive.await.unwrap().unwrap();
+    server.await.unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(saw_warning);
+    assert!(!saw_approval);
 }
 
 #[tokio::test]
@@ -781,16 +875,31 @@ struct DeclineThenCancel(AtomicUsize);
 
 #[async_trait]
 impl ApprovalHandler for DeclineThenCancel {
-    async fn decide(&self, _request: &ApprovalRequest) -> ApprovalDecision {
-        match self.0.fetch_add(1, Ordering::Relaxed) {
-            0 => ApprovalDecision::Decline,
-            _ => ApprovalDecision::Cancel,
+    async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+            assert!(matches!(
+                request.target,
+                NativeApprovalTarget::Command { .. }
+            ));
+            ApprovalDecision::Decline
+        } else {
+            assert_eq!(
+                request.target,
+                NativeApprovalTarget::FileChange {
+                    grant_root: None,
+                    changes: vec![NativeApprovalFileChange {
+                        path: "src/main.rs".into(),
+                        kind: NativeApprovalFileChangeKind::Update,
+                    }],
+                }
+            );
+            ApprovalDecision::Cancel
         }
     }
 }
 
 #[tokio::test]
-async fn preserves_decline_and_cancel_approval_decisions() {
+async fn decline_continues_but_cancel_interrupts_the_original_turn() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
     let (server_read, mut server_write) = split(server_io);
@@ -811,24 +920,27 @@ async fn preserves_decline_and_cancel_approval_decisions() {
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
         )
         .await;
-        for (id, method, expected) in [
-            (71, "item/commandExecution/requestApproval", "decline"),
-            (72, "item/fileChange/requestApproval", "cancel"),
-        ] {
-            write_json(
-                &mut server_write,
-                json!({"id":id,"method":method,"params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("item-{id}")}}),
-            )
-            .await;
-            let response = read_json(&mut lines).await;
-            assert_eq!(response["id"], id);
-            assert_eq!(response["result"]["decision"], expected);
-        }
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({"id":71,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"item-71","command":"git status","cwd":"/workspace"}}),
         )
         .await;
+        let response = read_json(&mut lines).await;
+        assert_eq!(response["id"], 71);
+        assert_eq!(response["result"]["decision"], "decline");
+        write_json(
+            &mut server_write,
+            json!({"method":"item/started","params":{"threadId":"thr-1","turnId":"turn-1","item":{"type":"fileChange","id":"item-72","status":"inProgress","changes":[{"path":"src/main.rs","kind":"update","diff":"never persist this patch"}]}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"id":72,"method":"item/fileChange/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"item-72"}}),
+        )
+        .await;
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["turnId"], "turn-1");
     });
 
     let (sender, mut receiver) = mpsc::channel(32);
@@ -849,14 +961,88 @@ async fn preserves_decline_and_cancel_approval_decisions() {
             approvals += 1;
         }
     }
-    drive.await.unwrap().unwrap();
+    let error = drive.await.unwrap().unwrap_err();
     server.await.unwrap();
     assert_eq!(approvals, 2);
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
 }
 
 #[derive(Debug, Default)]
 struct PendingApproval {
     release: Notify,
+}
+
+#[derive(Debug)]
+struct CancelApproval;
+
+#[async_trait]
+impl ApprovalHandler for CancelApproval {
+    async fn decide(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+        ApprovalDecision::Cancel
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_permission_request_interrupts_instead_of_granting_empty_permissions() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thr-1"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({
+                "id": "permission-cancel",
+                "method": "item/permissions/requestApproval",
+                "params": {
+                    "threadId": "thr-1",
+                    "turnId": "turn-1",
+                    "itemId": "permission-item",
+                    "cwd": "/workspace",
+                    "permissions": {"network": {"enabled": true}}
+                }
+            }),
+        )
+        .await;
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["turnId"], "turn-1");
+        assert!(interrupt.get("result").is_none());
+    });
+    let (sender, mut receiver) = mpsc::channel(32);
+    let drive = tokio::spawn(async move {
+        drive_protocol(
+            client_read,
+            client_write,
+            request(),
+            client(),
+            Arc::new(CancelApproval),
+            &sender,
+        )
+        .await
+    });
+    while receiver.recv().await.is_some() {}
+    let failure = drive.await.unwrap().unwrap_err();
+    server.await.unwrap();
+    assert_eq!(
+        failure.kind,
+        ait_agent_adapters::AdapterErrorKind::Cancelled
+    );
 }
 
 #[async_trait]
@@ -893,7 +1079,7 @@ async fn buffered_resolution_wins_over_immediately_completed_approvals() {
         for request_id in 100..132 {
             write_json(
                 &mut server_write,
-                json!({"id":request_id,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("cmd-{request_id}")}}),
+                json!({"id":request_id,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("cmd-{request_id}"),"command":"git status","cwd":"/workspace"}}),
             )
             .await;
             write_json(
@@ -983,7 +1169,7 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
         )
         .await;
-        let answered = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-99"}});
+        let answered = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-99","command":"git status","cwd":"/workspace"}});
         write_json(&mut server_write, answered.clone()).await;
         let response = read_json(&mut lines).await;
         assert_eq!(response["id"], 99);
@@ -996,7 +1182,7 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
             "an answered request must not receive a second response"
         );
 
-        let pending = json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-100"}});
+        let pending = json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-100","command":"git status","cwd":"/workspace"}});
         write_json(&mut server_write, pending.clone()).await;
         write_json(&mut server_write, pending).await;
         let response = read_json(&mut lines).await;
@@ -1078,7 +1264,7 @@ async fn cancellation_interrupts_a_turn_while_approval_is_pending() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1"}}),
+            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","command":"git status","cwd":"/workspace"}}),
         )
         .await;
         let interrupt = read_json(&mut lines).await;
