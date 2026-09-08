@@ -35,7 +35,12 @@ Provider kind 选择 Codex、OpenAI、DeepSeek 等适配器。URL、认证和模
 
 模型与 reasoning effort 必须存在于 Provider catalog 中。空 effort 表示供应商默认值。模型 ID 和等级均为字符串，避免把所有供应商限制在 Codex 的固定枚举。模型发现使用实际 API 的 `/models`；该接口不提供等级时，新模型的等级为空，已有模型保留手工声明的等级，不从名称猜测能力。发现中若连接已变化，拒绝把旧响应写入新连接。模型下架后旧配置仍可查询，但新执行必须重新通过能力校验。
 
-OpenAI 的调用使用 Rig Responses API 的 `reasoning.effort`，DeepSeek Chat Completions 使用 `reasoning_effort`。参考：[DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)。当前远程 LLM 执行投影文本历史并进行一次调用；Codex 的工作区工具循环仍由其 adapter 负责。
+OpenAI 的调用使用 Rig Responses API 的 `reasoning.effort`。DeepSeek Chat
+Completions 的非 `off` 等级显式发送 `thinking.type=enabled` 与
+`reasoning_effort`；参考 [DeepSeek Harness 的 adapter-owned effort
+约定](https://github.com/deepseek-ai/deepseek-harness/blob/c389f96bf3a9b6807cb71ed6bdad5849be0df6d8/packages/llm/llm-deepseek/README.md)，
+`off` 转换为 `thinking.type=disabled` 且不得作为 `reasoning_effort=off`
+发送。空值不发送任何控制字段，保留供应商默认。参考：[DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)。当前远程 LLM 执行投影文本历史并进行一次调用；Codex 的工作区工具循环仍由其 adapter 负责。
 
 ## 凭证
 
