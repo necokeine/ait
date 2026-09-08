@@ -1,29 +1,40 @@
 use std::{
     collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash as _, Hasher as _},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use ait_contracts::RunView;
 use ait_ports::{
-    ControlStore, ControlStoreError, PendingEvent, ProgressCheckpoint, WorkspaceOperation,
-    WorkspaceProgressEvent, WorkspaceProgressReporter,
+    ControlStore, PendingEvent, ProgressCheckpoint, WorkspaceOperation, WorkspaceProgressEvent,
+    WorkspaceProgressReporter,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::{sync::mpsc, task::JoinHandle, time};
 
 const PROGRESS_BUFFER: usize = 256;
-const PROGRESS_BATCH: usize = 64;
+const PROGRESS_BATCH: usize = 16;
 const PROGRESS_FLUSH_INTERVAL: Duration = Duration::from_millis(40);
-const PROGRESS_DRAIN_DEADLINE: Duration = Duration::from_millis(500);
 const MAX_LIVE_MESSAGE_BYTES: usize = 512 * 1024;
+const MAX_PROGRESS_CHECKPOINT_BYTES: usize = 768 * 1024;
 const MAX_PROJECTED_ITEMS: usize = 512;
 const MAX_WARNINGS: usize = 8;
+const MAX_WARNING_BYTES: usize = 8 * 1024;
+const MAX_OPERATION_TEXT_BYTES: usize = 64 * 1024;
+const MAX_OPERATION_PATHS: usize = 64;
+const MAX_OPERATION_PATH_BYTES: usize = 1024;
+const MAX_IDENTIFIER_BYTES: usize = 256;
+
+pub(super) struct FinishedProgress {
+    pub(super) checkpoint: Option<Value>,
+    pub(super) persistence_error: Option<String>,
+}
 
 pub(super) struct ProgressPump {
     reporter: Option<Arc<ChannelProgressReporter>>,
-    writer: Option<JoinHandle<Result<(), ControlStoreError>>>,
+    writer: Option<JoinHandle<FinishedProgress>>,
 }
 
 impl ProgressPump {
@@ -48,22 +59,15 @@ impl ProgressPump {
             .clone()
     }
 
-    pub(super) async fn finish(mut self) -> Result<(), ControlStoreError> {
+    pub(super) async fn finish(mut self) -> FinishedProgress {
         let writer = self.writer.take().expect("progress writer exists");
         drop(self.reporter.take());
-        let mut writer = writer;
-        if let Ok(result) = time::timeout(PROGRESS_DRAIN_DEADLINE, &mut writer).await {
-            result.map_err(|error| {
-                ControlStoreError::Other(format!("progress writer task failed: {error}"))
-            })?
-        } else {
-            writer.abort();
-            // `abort` requests cancellation; awaiting the handle establishes
-            // that no save_progress future can run after terminal cleanup.
-            let _ = writer.await;
-            Err(ControlStoreError::Other(
-                "progress writer did not drain before the terminal deadline".into(),
-            ))
+        match writer.await {
+            Ok(result) => result,
+            Err(error) => FinishedProgress {
+                checkpoint: None,
+                persistence_error: Some(format!("progress writer task failed: {error}")),
+            },
         }
     }
 }
@@ -104,10 +108,16 @@ struct ProgressProjection {
     seen: HashSet<String>,
     items: HashMap<String, ProjectedItem>,
     warnings: Vec<Value>,
+    dropped_items: usize,
+    dropped_warnings: usize,
 }
 
 enum ProjectedItem {
-    Message { phase: Option<String>, text: String },
+    Message {
+        phase: Option<String>,
+        text: String,
+        completed: bool,
+    },
     Operation(WorkspaceOperation),
 }
 
@@ -115,11 +125,21 @@ async fn write_progress(
     store: Arc<dyn ControlStore>,
     identity: ProgressIdentity,
     mut receiver: mpsc::Receiver<WorkspaceProgressEvent>,
-) -> Result<(), ControlStoreError> {
+) -> FinishedProgress {
+    if let Some(error) = identity_validation_error(&identity) {
+        // Keep draining so an adapter cannot deadlock on the bounded channel,
+        // but never send an oversized checkpoint or event to persistence.
+        while receiver.recv().await.is_some() {}
+        return FinishedProgress {
+            checkpoint: None,
+            persistence_error: Some(error),
+        };
+    }
     let mut projection = ProgressProjection {
         status: "running".into(),
         ..ProgressProjection::default()
     };
+    let mut persistence_error = None;
     while let Some(first) = receiver.recv().await {
         let mut batch = vec![first];
         let deadline = time::Instant::now() + PROGRESS_FLUSH_INTERVAL;
@@ -140,8 +160,9 @@ async fn write_progress(
                 created_at: now(),
             });
         }
+        projection.enforce_budget(&identity);
         let updated_at = now();
-        store
+        if let Err(error) = store
             .save_progress(
                 ProgressCheckpoint {
                     run_id: identity.run.clone(),
@@ -150,21 +171,60 @@ async fn write_progress(
                 },
                 pending,
             )
-            .await?;
+            .await
+        {
+            persistence_error = Some(error.to_string());
+        }
     }
-    Ok(())
+    projection.enforce_budget(&identity);
+    let checkpoint = projection.checkpoint(&identity);
+    if let Err(error) = store
+        .save_progress(
+            ProgressCheckpoint {
+                run_id: identity.run.clone(),
+                body: checkpoint.clone(),
+                updated_at: now(),
+            },
+            Vec::new(),
+        )
+        .await
+    {
+        persistence_error = Some(error.to_string());
+    }
+    FinishedProgress {
+        checkpoint: Some(checkpoint),
+        persistence_error,
+    }
+}
+
+fn identity_validation_error(identity: &ProgressIdentity) -> Option<String> {
+    let oversized = identity.run.len() > MAX_IDENTIFIER_BYTES
+        || identity.project.len() > MAX_IDENTIFIER_BYTES
+        || identity
+            .session
+            .as_ref()
+            .is_some_and(|session| session.len() > MAX_IDENTIFIER_BYTES);
+    oversized.then(|| {
+        format!("progress identity exceeds the {MAX_IDENTIFIER_BYTES}-byte persistence limit")
+    })
 }
 
 impl ProgressProjection {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive event projection keeps every bounded wire mapping together"
+    )]
     fn apply(&mut self, identity: &ProgressIdentity, event: WorkspaceProgressEvent) -> Value {
         match event {
             WorkspaceProgressEvent::MessageStarted { id, phase, text } => {
+                let id = bounded_identifier(id);
                 self.remember(&id);
                 self.items.insert(
                     id.clone(),
                     ProjectedItem::Message {
-                        phase: phase.clone(),
+                        phase: phase.map(|value| bounded_to(value, MAX_IDENTIFIER_BYTES)),
                         text: bounded(text),
+                        completed: false,
                     },
                 );
                 envelope(
@@ -173,12 +233,13 @@ impl ProgressProjection {
                     "message_started",
                     Some(&id),
                     &json!({
-                        "phase": phase,
+                        "phase": self.message_phase(&id),
                         "text": self.message_text(&id),
                     }),
                 )
             }
             WorkspaceProgressEvent::TextDelta { id, delta } => {
+                let id = bounded_identifier(id);
                 self.remember(&id);
                 let item = self
                     .items
@@ -186,6 +247,7 @@ impl ProgressProjection {
                     .or_insert_with(|| ProjectedItem::Message {
                         phase: None,
                         text: String::new(),
+                        completed: false,
                     });
                 let mut accepted = String::new();
                 if let ProjectedItem::Message { text, .. } = item {
@@ -201,13 +263,16 @@ impl ProgressProjection {
                 )
             }
             WorkspaceProgressEvent::MessageCompleted { id, phase, text } => {
+                let id = bounded_identifier(id);
                 self.remember(&id);
                 let text = bounded(text);
+                let phase = phase.map(|value| bounded_to(value, MAX_IDENTIFIER_BYTES));
                 self.items.insert(
                     id.clone(),
                     ProjectedItem::Message {
                         phase: phase.clone(),
                         text: text.clone(),
+                        completed: true,
                     },
                 );
                 envelope(
@@ -230,24 +295,26 @@ impl ProgressProjection {
                 code,
             } => {
                 let warning = json!({
-                    "message": bounded(message),
+                    "message": bounded_to(message, MAX_WARNING_BYTES),
                     "retrying": retrying,
-                    "code": code,
+                    "code": code.map(bounded_identifier),
                 });
                 if self.warnings.len() == MAX_WARNINGS {
                     self.warnings.remove(0);
+                    self.dropped_warnings = self.dropped_warnings.saturating_add(1);
                 }
                 self.warnings.push(warning.clone());
                 envelope(identity, self.seq, "warning", None, &warning)
             }
             WorkspaceProgressEvent::TurnStatus { status, error } => {
+                let status = bounded_to(status, MAX_IDENTIFIER_BYTES);
                 self.status.clone_from(&status);
                 envelope(
                     identity,
                     self.seq,
                     "turn_status",
                     None,
-                    &json!({"status": status, "error": error.map(bounded)}),
+                    &json!({"status": status, "error": error.map(|value| bounded_to(value, MAX_WARNING_BYTES))}),
                 )
             }
         }
@@ -259,6 +326,7 @@ impl ProgressProjection {
         operation: WorkspaceOperation,
         event_type: &str,
     ) -> Value {
+        let operation = bounded_operation(operation);
         self.remember(&operation.id);
         let id = operation.id.clone();
         let value = operation_value(&operation);
@@ -279,6 +347,7 @@ impl ProgressProjection {
                 let evicted = self.order.remove(0);
                 self.seen.remove(&evicted);
                 self.items.remove(&evicted);
+                self.dropped_items = self.dropped_items.saturating_add(1);
             }
             self.order.push(id.to_owned());
         }
@@ -291,16 +360,47 @@ impl ProgressProjection {
         }
     }
 
+    fn message_phase(&self, id: &str) -> Option<&str> {
+        match self.items.get(id) {
+            Some(ProjectedItem::Message { phase, .. }) => phase.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn enforce_budget(&mut self, identity: &ProgressIdentity) {
+        while serde_json::to_vec(&self.checkpoint(identity)).map_or(usize::MAX, |body| body.len())
+            > MAX_PROGRESS_CHECKPOINT_BYTES
+        {
+            if let Some(evicted) = self.order.first().cloned() {
+                self.order.remove(0);
+                self.seen.remove(&evicted);
+                self.items.remove(&evicted);
+                self.dropped_items = self.dropped_items.saturating_add(1);
+            } else if !self.warnings.is_empty() {
+                self.warnings.remove(0);
+                self.dropped_warnings = self.dropped_warnings.saturating_add(1);
+            } else {
+                self.status = bounded_to(self.status.clone(), 32);
+                break;
+            }
+        }
+    }
+
     fn checkpoint(&self, identity: &ProgressIdentity) -> Value {
         let items = self
             .order
             .iter()
             .filter_map(|id| match self.items.get(id) {
-                Some(ProjectedItem::Message { phase, text }) => Some(json!({
+                Some(ProjectedItem::Message {
+                    phase,
+                    text,
+                    completed,
+                }) => Some(json!({
                     "type": "message",
                     "id": id,
                     "phase": phase,
                     "text": text,
+                    "completed": completed,
                 })),
                 Some(ProjectedItem::Operation(operation)) => {
                     Some(json!({"type": "operation", "operation": operation_value(operation)}))
@@ -317,6 +417,9 @@ impl ProgressProjection {
             "status": self.status,
             "items": items,
             "warnings": self.warnings,
+            "truncated": self.dropped_items > 0 || self.dropped_warnings > 0,
+            "dropped_items": self.dropped_items,
+            "dropped_warnings": self.dropped_warnings,
             "updated_at": now(),
         })
     }
@@ -354,6 +457,37 @@ fn operation_value(operation: &WorkspaceOperation) -> Value {
         "detail": operation.detail,
         "paths": operation.paths,
     })
+}
+
+fn bounded_operation(mut operation: WorkspaceOperation) -> WorkspaceOperation {
+    operation.id = bounded_identifier(operation.id);
+    operation.kind = bounded_to(operation.kind, MAX_IDENTIFIER_BYTES);
+    operation.status = bounded_to(operation.status, MAX_IDENTIFIER_BYTES);
+    operation.title = bounded_to(operation.title, MAX_OPERATION_TEXT_BYTES);
+    operation.summary = operation
+        .summary
+        .map(|value| bounded_to(value, MAX_OPERATION_TEXT_BYTES));
+    operation.detail = operation
+        .detail
+        .map(|value| bounded_to(value, MAX_OPERATION_TEXT_BYTES));
+    operation.paths = operation
+        .paths
+        .into_iter()
+        .take(MAX_OPERATION_PATHS)
+        .map(|value| bounded_to(value, MAX_OPERATION_PATH_BYTES))
+        .collect();
+    operation
+}
+
+fn bounded_identifier(value: String) -> String {
+    if value.len() <= MAX_IDENTIFIER_BYTES {
+        return value;
+    }
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    let suffix = format!("#{:016x}", hasher.finish());
+    let prefix_limit = MAX_IDENTIFIER_BYTES.saturating_sub(suffix.len());
+    format!("{}{}", bounded_to(value, prefix_limit), suffix)
 }
 
 fn bounded(value: String) -> String {
@@ -405,6 +539,7 @@ mod tests {
                 ProjectedItem::Message {
                     phase: None,
                     text: String::new(),
+                    completed: false,
                 },
             );
         }
@@ -413,5 +548,42 @@ mod tests {
         assert!(!projection.seen.contains("item-0"));
         assert!(!projection.items.contains_key("item-0"));
         assert_eq!(projection.order.first().map(String::as_str), Some("item-1"));
+    }
+
+    #[test]
+    fn one_run_checkpoint_has_a_total_budget_and_bounds_operation_fields() {
+        let identity = ProgressIdentity {
+            run: "run".into(),
+            project: "project".into(),
+            session: Some("session".into()),
+        };
+        let mut projection = ProgressProjection::default();
+        for index in 0..32 {
+            projection.seq += 1;
+            projection.apply(
+                &identity,
+                WorkspaceProgressEvent::OperationCompleted(WorkspaceOperation {
+                    id: format!("operation-{index}-{}", "i".repeat(512)),
+                    kind: "k".repeat(512),
+                    status: "s".repeat(512),
+                    title: "t".repeat(MAX_OPERATION_TEXT_BYTES * 2),
+                    summary: Some("s".repeat(MAX_OPERATION_TEXT_BYTES * 2)),
+                    detail: Some("d".repeat(MAX_OPERATION_TEXT_BYTES * 2)),
+                    paths: (0..MAX_OPERATION_PATHS * 2)
+                        .map(|path| format!("{path}-{}", "p".repeat(MAX_OPERATION_PATH_BYTES * 2)))
+                        .collect(),
+                }),
+            );
+            projection.enforce_budget(&identity);
+        }
+
+        let checkpoint = projection.checkpoint(&identity);
+        assert!(serde_json::to_vec(&checkpoint).unwrap().len() <= MAX_PROGRESS_CHECKPOINT_BYTES);
+        assert_eq!(checkpoint["truncated"], true);
+        assert!(checkpoint["dropped_items"].as_u64().unwrap() > 0);
+        let operation = &checkpoint["items"].as_array().unwrap()[0]["operation"];
+        assert!(operation["id"].as_str().unwrap().len() <= MAX_IDENTIFIER_BYTES);
+        assert!(operation["detail"].as_str().unwrap().len() <= MAX_OPERATION_TEXT_BYTES);
+        assert!(operation["paths"].as_array().unwrap().len() <= MAX_OPERATION_PATHS);
     }
 }

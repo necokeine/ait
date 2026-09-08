@@ -24,7 +24,7 @@ test("restores a checkpoint then appends only newer Run-local sequences", () => 
     status: "running",
     updated_at: 10,
     warnings: [],
-    items: [{ type: "message", id: "answer", phase: "final_answer", text: "Hel" }],
+    items: [{ type: "message", id: "answer", phase: "final_answer", text: "Hel", completed: false }],
   });
   assert.ok(checkpoint);
   const duplicate = applyProgressEvent(checkpoint, {
@@ -35,6 +35,7 @@ test("restores a checkpoint then appends only newer Run-local sequences", () => 
     ...base, seq: 5, type: "text_delta", item_id: "answer", delta: "lo",
   });
   assert.equal(next?.items[0]?.type === "codex_message" && next.items[0].text, "Hello");
+  assert.equal(next?.items[0]?.type === "codex_message" && next.items[0].completed, false);
 });
 
 test("keeps item order while tool state and authoritative text are replaced", () => {
@@ -54,6 +55,7 @@ test("keeps item order while tool state and authoritative text are replaced", ()
   });
   assert.deepEqual(progress?.items.map((item) => item.id), ["commentary", "tool"]);
   assert.equal(progress?.items[0]?.type === "codex_message" && progress.items[0].text, "Inspected it.");
+  assert.equal(progress?.items[0]?.type === "codex_message" && progress.items[0].completed, true);
   assert.equal(progress?.items[1]?.type === "operation" && progress.items[1].status, "completed");
 });
 
@@ -99,6 +101,74 @@ test("renders failure and cancellation as terminal states rather than connection
   assert.ok(!failed.includes("Connection interrupted"));
   const cancelled = renderRunTerminal("cancelled", undefined, "Codex");
   assert.ok(cancelled.includes("Run cancelled"));
+});
+
+test("keeps live commentary in process instead of presenting it as a final answer", () => {
+  const progress = progressFromCheckpoint({
+    ...base,
+    seq: 1,
+    status: "running",
+    updated_at: 10,
+    warnings: [],
+    items: [{ type: "message", id: "commentary", phase: "commentary", text: "Still checking", completed: false }],
+  });
+  const html = renderRunProgress(progress, "Codex", true);
+  assert.ok(html.includes('<details class="codex-process" open>'));
+  assert.ok(!html.includes("codex-final-answer"));
+});
+
+test("renders retained partial output, error, and guarded workspace recovery separately", () => {
+  const progress = progressFromCheckpoint({
+    ...base,
+    seq: 2,
+    status: "failed",
+    updated_at: 10,
+    warnings: [],
+    items: [
+      { type: "message", id: "commentary", phase: "commentary", text: "File written", completed: true },
+      { type: "message", id: "answer", phase: "final_answer", text: "Unfinished", completed: false },
+    ],
+  });
+  assert.ok(progress);
+  const html = renderRunTerminal("failed", "Stream ended.", "Codex", {
+    progress,
+    worktree: {
+      retainedPath: "/project/.git/ait/workspaces/run-a",
+      retainedRunId: "run-a",
+      head: "a".repeat(40), dirty: true, fingerprint: "f".repeat(64), truncated: false,
+      changes: [{ status: "??", path: "src/new file.rs" }],
+    },
+  }, "run-a", "project-a");
+  assert.ok(html.includes("Run failed"));
+  assert.ok(html.includes("Partial output before termination"));
+  assert.ok(html.includes("Confirmed · commentary"));
+  assert.ok(html.includes("Unfinished · final_answer"));
+  assert.ok(!html.includes("codex-final-answer"));
+  assert.ok(html.includes("Workspace changes kept"));
+  assert.ok(html.includes('data-file-path="/project/.git/ait/workspaces/run-a/src/new file.rs"'));
+  assert.ok(html.includes('data-run-inspect-path="/project/.git/ait/workspaces/run-a"'));
+  assert.ok(html.includes('data-run-continue="run-a"'));
+  assert.ok(html.includes("Continue with these changes"));
+
+  const legacy = renderRunTerminal("failed", "Stopped.", "Codex", {
+    worktree: {
+      head: null, dirty: true, fingerprint: "e".repeat(64), truncated: false,
+      changes: [{ status: "??", path: "legacy.txt" }],
+    },
+  }, "legacy-run", "project-a");
+  assert.ok(legacy.includes("Workspace changes kept"));
+  assert.ok(!legacy.includes("Continue with these changes"));
+});
+
+test("renders terminal inspection failures as explicit unknown state", () => {
+  const html = renderRunTerminal("failed", "Provider stopped.", "Codex", {
+    progressError: { code: "run_recovery_failed", message: "checkpoint unavailable" },
+    worktreeError: { code: "project_git_head_unavailable", message: "path raced" },
+  }, "run-a", "project-a");
+  assert.ok(html.includes("Some terminal state could not be inspected"));
+  assert.ok(html.includes("Progress archive unknown: checkpoint unavailable"));
+  assert.ok(html.includes("Workspace state unknown: path raced"));
+  assert.ok(!html.includes("Continue with these changes"));
 });
 
 test("a cancellation event refreshes an active snapshot into its cancelled terminal card", () => {

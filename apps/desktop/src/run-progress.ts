@@ -82,6 +82,7 @@ export function applyProgressEvent(
         id: itemId,
         phase: text(event.phase) ?? "",
         text: typeof event.text === "string" ? event.text : "",
+        completed: event.type === "message_completed",
       };
       replaceItem(next.items, itemId, part);
       break;
@@ -91,7 +92,7 @@ export function applyProgressEvent(
       const index = itemIndex(next.items, itemId);
       const existing = index >= 0 ? next.items[index] : undefined;
       if (existing?.type === "codex_message") existing.text += event.delta;
-      else next.items.push({ type: "codex_message", id: itemId, phase: "", text: event.delta });
+      else next.items.push({ type: "codex_message", id: itemId, phase: "", text: event.delta, completed: false });
       break;
     }
     case "operation_started":
@@ -129,6 +130,7 @@ function checkpointItem(value: unknown): RunProgressItem | undefined {
       id,
       phase: text(item.phase) ?? "",
       text: typeof item.text === "string" ? item.text : "",
+      completed: item.completed === true,
     };
   }
   return item.type === "operation" ? operationPart(item.operation) : undefined;

@@ -186,6 +186,17 @@ pub enum WorkspaceIntegrationCheckpoint {
 }
 
 /// One workspace-scoped invocation of a complete coding Agent harness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptedWorkspace {
+    /// Retained manager-owned worktree to continue.
+    pub path: PathBuf,
+    /// Exact fingerprint confirmed by the member.
+    pub fingerprint: String,
+    /// Original Run whose isolation ref owns the retained worktree.
+    pub source_run_id: String,
+}
+
+/// One workspace-scoped invocation of a complete coding Agent harness.
 #[derive(Clone, Debug)]
 pub struct WorkspaceAgentInvocation {
     /// Stable correlation identity for the external turn.
@@ -202,6 +213,8 @@ pub struct WorkspaceAgentInvocation {
     pub commit_subject: String,
     /// Canonical Project Git root and sandbox boundary.
     pub cwd: PathBuf,
+    /// Exact manager-owned failed-Run workspace explicitly adopted by the member.
+    pub adopted_worktree: Option<AdoptedWorkspace>,
     /// Full Git HEAD captured while the workspace write lease was held.
     ///
     /// A workspace-writing adapter must run from this immutable baseline and

@@ -133,6 +133,19 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .run-terminal-card p { margin: 6px 0 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
 .run-terminal.status-cancelled .run-terminal-card { border-color: var(--line); background: var(--surface); }
 .run-terminal.status-cancelled .run-terminal-card strong { color: var(--text-soft); }
+.partial-run-output, .retained-worktree { margin-top: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); overflow: hidden; }
+.partial-run-output > header, .retained-worktree > header { display: grid; gap: 3px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); }
+.partial-run-output > header strong, .retained-worktree > header strong { color: var(--text-soft); font-size: 11px; }
+.partial-run-output > header small, .retained-worktree > header small { color: var(--text-muted); font-size: 9.5px; }
+.partial-output-item { margin: 4px 0 9px; }
+.partial-output-item > small { display: block; margin: 0 7px 4px; color: var(--text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.partial-output-item.is-confirmed > small { color: var(--accent); }
+.partial-output-item.is-unfinished .codex-output-message { border-left-style: dashed; }
+.retained-worktree ul { max-height: 180px; overflow: auto; list-style: none; margin: 0; padding: 7px 12px; }
+.retained-worktree li { display: flex; align-items: baseline; gap: 9px; min-width: 0; padding: 4px 0; }
+.retained-worktree li code { flex: 0 0 20px; color: var(--text-muted); font-size: 9px; white-space: pre; }
+.retained-worktree li button { min-width: 0; border: 0; padding: 0; background: none; color: var(--accent); font: inherit; font-size: 10.5px; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.retained-worktree-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-soft); }
 @keyframes pulse-progress { 50% { opacity: .45; } }
 .message-content { color: var(--text); font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-content.markdown { white-space: normal; }

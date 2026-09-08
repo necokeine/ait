@@ -14,22 +14,22 @@ use std::{
 use ait_contracts::{
     API_VERSION, AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView,
     ApiError, Command, CommandResult, CronView, Event, EventPage, MessageView,
-    PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunView,
-    SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView, default_settings,
-    settings_schema,
+    PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunPartialOutput,
+    RunView, RunWorktreeChange, RunWorktreeState, SessionView, SettingKind, SettingsDocument,
+    SettingsView, WorkspaceView, default_settings, settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
-    MessageId, ProjectId, TimestampMs,
+    MessageId, ProjectId, RunId, RunTrigger, TimestampMs,
 };
 use ait_ports::{
-    AgentProviderGateway, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
-    ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationGate,
-    WorkspaceOutputItem,
+    AdoptedWorkspace, AgentProviderGateway, ControlStore, ControlStoreError,
+    HostProviderModelCatalog, PendingEvent, ProviderMessage, RunOutputArchive,
+    SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
+    WorkspaceAgentResponse, WorkspaceIntegrationGate, WorkspaceOutputItem,
 };
 use futures_util::FutureExt;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -40,7 +40,9 @@ use agents::{
     register_agent, require_named_agent, set_session_config, update_agent, validate_config,
     validate_provider,
 };
-use progress::ProgressPump;
+use progress::{FinishedProgress, ProgressPump};
+
+const MAX_CONTROL_ID_BYTES: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct State {
@@ -54,12 +56,24 @@ struct State {
     run_credentials: HashMap<String, String>,
     sessions: Vec<SessionView>,
     messages: Vec<MessageView>,
+    #[serde(serialize_with = "serialize_runs_without_output")]
     runs: Vec<RunView>,
     crons: Vec<CronView>,
     #[serde(default = "default_settings")]
     settings: SettingsDocument,
     #[serde(default = "default_settings_revision")]
     settings_revision: u64,
+}
+
+fn serialize_runs_without_output<S>(runs: &[RunView], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut persisted = runs.to_vec();
+    for run in &mut persisted {
+        run.partial_output = None;
+    }
+    persisted.serialize(serializer)
 }
 
 struct ForkSessionInput {
@@ -300,11 +314,11 @@ impl LocalControlService {
     async fn try_submit(self: &Arc<Self>, command: Command) -> Result<CommandResult, ApiError> {
         if !matches!(
             command,
-            Command::SendMessage { .. } | Command::ForkSession { .. }
+            Command::SendMessage { .. } | Command::ForkSession { .. } | Command::ContinueRun { .. }
         ) {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                "only interactive Run commands support asynchronous submission",
+                "only interactive and recovery Run commands support asynchronous submission",
                 false,
             ));
         }
@@ -486,6 +500,10 @@ impl LocalControlService {
         ))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the invocation, cancellation race, progress drain, and terminal handoff are one barrier"
+    )]
     async fn execute_workspace_agent(
         &self,
         run_id: &str,
@@ -534,7 +552,7 @@ impl LocalControlService {
                     self.invoke_codex_workspace(
                         &state,
                         run,
-                        workdir,
+                        workdir.clone(),
                         user_text,
                         message_baseline,
                         control.clone(),
@@ -563,11 +581,9 @@ impl LocalControlService {
         .catch_unwind()
         .await;
         drop(reporter);
-        // Progress storage is deliberately best-effort: a display-channel
-        // failure must not prevent Git integration or terminal persistence.
-        // This drain also runs after a provider panic, before any terminal
-        // commit can clear the checkpoint.
-        let _ = progress.finish().await;
+        // Always join the writer and retain its final in-memory projection,
+        // even when checkpoint persistence itself failed.
+        let progress = progress.finish().await;
         let result = result.unwrap_or_else(|_| {
             Err(DomainError::invariant(
                 ErrorCode::ProviderFailed,
@@ -582,13 +598,27 @@ impl LocalControlService {
         } else {
             result
         };
-        if result.is_ok() {
+        let terminal_output_needed = if result.is_ok() {
             // Settling is an informational state for the live UI. Once the
             // workspace result exists, failure to expose that intermediate
             // state must not bypass the reliable terminal persistence path.
-            let _ = self.set_run_settling(&run.id).await;
-        }
-        self.finish_workspace_run(&run.id, result).await
+            // `Ok(false)` means cancellation already won the terminal CAS, so
+            // preserve the provider's complete final checkpoint on that Run.
+            // A store error is retried by terminal persistence and is not
+            // itself partial Agent output.
+            self.set_run_settling(&run.id)
+                .await
+                .is_ok_and(|settled| !settled)
+        } else {
+            true
+        };
+        let partial_output = if terminal_output_needed {
+            terminal_partial_output(progress, &workdir, result.as_ref().err())?
+        } else {
+            None
+        };
+        self.finish_workspace_run(&run.id, result, partial_output)
+            .await
     }
 
     #[allow(
@@ -636,8 +666,19 @@ impl LocalControlService {
                     "Codex Run has no authorized Git index baseline",
                 )
             })?;
-        let (project_instructions, prompt) =
+        let adopted_worktree = self
+            .recovery_workspace(run)
+            .await
+            .map_err(api_domain_error)?;
+        let (mut project_instructions, prompt) =
             codex_prompt(state, &run.base_message_id).map_err(api_domain_error)?;
+        if adopted_worktree.is_some() {
+            let recovery = "The member explicitly chose to continue a failed Codex Run in its retained isolated workspace. Inspect and preserve the existing changes before editing. Continue toward the original request without redoing completed external side effects, and do not discard or reset existing changes.";
+            project_instructions = Some(match project_instructions {
+                Some(instructions) => format!("{instructions}\n\n{recovery}"),
+                None => recovery.into(),
+            });
+        }
         executor
             .invoke_with_progress(
                 WorkspaceAgentInvocation {
@@ -648,6 +689,7 @@ impl LocalControlService {
                     prompt,
                     commit_subject: user_text,
                     cwd: workdir,
+                    adopted_worktree,
                     baseline_commit,
                     baseline_index_tree,
                     cancellation: control.cancellation.clone(),
@@ -678,7 +720,7 @@ impl LocalControlService {
                 // caller. Every later error therefore belongs to the Run and
                 // must be persisted before its Session and workspace leases
                 // are released.
-                self.finish_workspace_run(&run_id, Err(api_domain_error(failure)))
+                self.finish_workspace_run(&run_id, Err(api_domain_error(failure)), None)
                     .await
             }
             Err(failure) => {
@@ -688,6 +730,7 @@ impl LocalControlService {
                         ErrorCode::ProviderFailed,
                         format!("workspace execution task failed: {failure}"),
                     )),
+                    None,
                 )
                 .await
             }
@@ -726,6 +769,54 @@ impl LocalControlService {
             "concurrent run update did not settle",
             true,
         ))
+    }
+
+    async fn recovery_workspace(
+        &self,
+        run: &RunView,
+    ) -> Result<Option<AdoptedWorkspace>, ApiError> {
+        let Some(source_id) = run.recovery_of_run_id.as_ref() else {
+            return Ok(None);
+        };
+        let output = self
+            .store
+            .load_run_outputs(&[source_id.as_str().to_owned()])
+            .await
+            .map_err(store_error)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::RunNotResumable,
+                    "the retained workspace archive is no longer available",
+                    false,
+                )
+            })?;
+        let worktree = output
+            .output
+            .worktree
+            .filter(|worktree| worktree.dirty)
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::RunNotResumable,
+                    "the retained workspace state is unknown or clean",
+                    false,
+                )
+            })?;
+        let path = worktree.retained_path.ok_or_else(|| {
+            error(
+                ErrorCode::RunNotResumable,
+                "the failed Run has no retained isolated workspace",
+                false,
+            )
+        })?;
+        Ok(Some(AdoptedWorkspace {
+            path: path.into(),
+            fingerprint: worktree.fingerprint,
+            source_run_id: worktree
+                .retained_run_id
+                .unwrap_or_else(|| source_id.as_str().to_owned()),
+        }))
     }
 
     async fn set_run_settling(&self, run_id: &str) -> Result<bool, ApiError> {
@@ -768,7 +859,9 @@ impl LocalControlService {
         &self,
         run_id: &str,
         result: Result<WorkspaceAgentResponse, DomainError>,
+        partial_output: Option<Box<RunPartialOutput>>,
     ) -> Result<RunView, ApiError> {
+        let requested_output = partial_output.map(|output| *output);
         let mut persistence_failures = 0_u32;
         loop {
             let Ok(snapshot) = self.store.load().await else {
@@ -782,27 +875,74 @@ impl LocalControlService {
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let mut run = state.runs[index].clone();
-            if matches!(
+            let embedded_output = run.partial_output.take().map(|output| *output);
+            let terminal = matches!(
                 run.status.as_str(),
                 "completed" | "failed" | "cancelled" | "limit_exceeded"
-            ) {
-                let _ = self.store.clear_progress(run_id).await;
-                return Ok(run);
+            );
+            let existing_output =
+                if terminal && requested_output.is_none() && embedded_output.is_none() {
+                    self.store
+                        .load_run_outputs(&[run_id.to_owned()])
+                        .await
+                        .ok()
+                        .and_then(|outputs| outputs.into_iter().next())
+                        .map(|archive| archive.output)
+                } else {
+                    None
+                };
+            let output = requested_output
+                .clone()
+                .or(embedded_output)
+                .or(existing_output);
+            if terminal {
+                state.runs[index] = run.clone();
+                let mut public_run = run;
+                public_run.partial_output = output.clone().map(Box::new);
+                if requested_output.is_none() {
+                    let _ = self.store.clear_progress(run_id).await;
+                    return Ok(public_run);
+                }
+                // Terminal events carry only the lightweight Run metadata.
+                // Readers hydrate the separately budgeted archive after refresh.
+                let events = vec![terminal_run_event(&state.runs[index], output.is_some())];
+                let value = serde_json::to_value(&state).map_err(serialization_error)?;
+                let archive = output.map(|output| RunOutputArchive {
+                    run_id: run_id.to_owned(),
+                    output,
+                    updated_at: now(),
+                });
+                match self
+                    .store
+                    .commit_terminal(snapshot.revision, value, events, run_id, archive)
+                    .await
+                {
+                    Ok(_) => return Ok(public_run),
+                    Err(ControlStoreError::Conflict | ControlStoreError::Other(_)) => {
+                        wait_for_workspace_terminal_persistence(&mut persistence_failures).await;
+                    }
+                }
+                continue;
             }
             apply_workspace_terminal_result(&mut state, &mut run, &result);
             release_session(&mut state, &run);
+            run.partial_output = None;
             state.runs[index] = run.clone();
-            let event = pending("run.updated", Some(run_id.to_owned()), &run);
+            let mut public_run = run;
+            public_run.partial_output = output.clone().map(Box::new);
+            let event = terminal_run_event(&state.runs[index], output.is_some());
             let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            let archive = output.map(|output| RunOutputArchive {
+                run_id: run_id.to_owned(),
+                output,
+                updated_at: now(),
+            });
             match self
                 .store
-                .commit(snapshot.revision, value, vec![event])
+                .commit_terminal(snapshot.revision, value, vec![event], run_id, archive)
                 .await
             {
-                Ok(_) => {
-                    let _ = self.store.clear_progress(run_id).await;
-                    return Ok(run);
-                }
+                Ok(_) => return Ok(public_run),
                 Err(ControlStoreError::Conflict | ControlStoreError::Other(_)) => {
                     // A workspace adapter may already have made its Git result
                     // externally visible. Keep the supervisor's finalization
@@ -950,7 +1090,12 @@ impl LocalControlService {
                 | Command::GetSettings
         ) {
             let snapshot = self.store.load().await.map_err(store_error)?;
-            let state = decode_state(snapshot.value)?;
+            let mut state = decode_state(snapshot.value)?;
+            let only_run = match &command {
+                Command::GetRun { run_id } => Some(run_id.as_str()),
+                _ => None,
+            };
+            self.hydrate_run_outputs(&mut state, only_run).await?;
             return read_command(state, snapshot.revision, command);
         }
 
@@ -1067,10 +1212,22 @@ impl LocalControlService {
         command: Command,
         has_workspace_lease: bool,
     ) -> Result<CommandOutcome, ApiError> {
+        let archived_output = if let Command::ContinueRun { run_id, .. } = &command {
+            self.store
+                .load_run_outputs(std::slice::from_ref(run_id))
+                .await
+                .map_err(store_error)?
+                .into_iter()
+                .next()
+                .map(|archive| archive.output)
+        } else {
+            None
+        };
         for _ in 0..4 {
             let snapshot = self.store.load().await.map_err(store_error)?;
             let mut state = decode_state(snapshot.value)?;
             check_session_admission(&state, &command)?;
+            validate_continue_worktree(&state, &command, archived_output.as_ref())?;
             if !has_workspace_lease && workspace_write_path(&state, &command)?.is_some() {
                 return Err(error(
                     ErrorCode::ProjectWorkspaceBusy,
@@ -1093,6 +1250,32 @@ impl LocalControlService {
             "concurrent state update did not settle",
             true,
         ))
+    }
+
+    async fn hydrate_run_outputs(
+        &self,
+        state: &mut State,
+        only_run: Option<&str>,
+    ) -> Result<(), ApiError> {
+        // An empty selector asks storage for its independently bounded archive
+        // catalog. This avoids serializing every historical Run id merely to
+        // hydrate the small retained subset during a full snapshot read.
+        let run_ids = only_run.map_or_else(Vec::new, |id| vec![id.to_owned()]);
+        let outputs = self
+            .store
+            .load_run_outputs(&run_ids)
+            .await
+            .map_err(store_error)?;
+        let outputs = outputs
+            .into_iter()
+            .map(|archive| (archive.run_id, Box::new(archive.output)))
+            .collect::<HashMap<_, _>>();
+        for run in &mut state.runs {
+            if let Some(output) = outputs.get(&run.id) {
+                run.partial_output = Some(output.clone());
+            }
+        }
+        Ok(())
     }
 
     async fn acquire_workspace_write(
@@ -1186,6 +1369,14 @@ fn workspace_write_path(state: &State, command: &Command) -> Result<Option<PathB
             agent_id,
             ..
         } => Some((project_id.as_str(), agent_id.as_str())),
+        Command::ContinueRun { run_id, .. } => {
+            let source = state
+                .runs
+                .iter()
+                .find(|run| run.id == *run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            Some((source.project_id.as_str(), source.agent_id.as_str()))
+        }
         Command::TriggerCron {
             cron_id,
             scheduled_at,
@@ -1349,6 +1540,17 @@ fn apply_command(
             );
         }
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
+        Command::ContinueRun {
+            run_id,
+            expected_worktree_fingerprint,
+        } => {
+            return continue_run(
+                state,
+                &run_id,
+                &expected_worktree_fingerprint,
+                require_user_git_baseline(user_git_baseline)?,
+            );
+        }
         Command::CreateCron {
             id,
             name,
@@ -1529,10 +1731,10 @@ fn register_project(
     workdir: &str,
     mut repo_url: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if id.trim().is_empty() || name.trim().is_empty() {
+    if id.trim().is_empty() || id.len() > MAX_CONTROL_ID_BYTES || name.trim().is_empty() {
         return Err(error(
             ErrorCode::InvalidProject,
-            "project id and name are required",
+            "project id must be non-empty and at most 256 bytes; name is required",
             false,
         ));
     }
@@ -1603,10 +1805,13 @@ fn create_session(
     agent_id: &str,
     at_message_id: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if id.trim().is_empty() || state.sessions.iter().any(|session| session.id == id) {
+    if id.trim().is_empty()
+        || id.len() > MAX_CONTROL_ID_BYTES
+        || state.sessions.iter().any(|session| session.id == id)
+    {
         return Err(error(
             ErrorCode::InvalidSession,
-            "session id is empty or already exists",
+            "session id must be non-empty, unique, and at most 256 bytes",
             false,
         ));
     }
@@ -1852,13 +2057,15 @@ fn send_message(
         agent_revision: agent.revision,
         config: agent.config.clone(),
         provider,
-        trigger: "manual".into(),
+        trigger: RunTrigger::Manual,
         cron_id: None,
         scheduled_at: None,
         workspace_base_commit,
         workspace_base_index_tree,
         status: "queued".into(),
         error: None,
+        partial_output: None,
+        recovery_of_run_id: None,
     };
     if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
         state
@@ -1962,6 +2169,190 @@ fn cancel_run(
         // schedules an authoritative snapshot refresh. Renderers still accept
         // legacy run.cancelled events retained in older outboxes.
         vec![pending("run.updated", Some(run.id.clone()), &run)],
+    ))
+}
+
+fn validate_continue_worktree(
+    state: &State,
+    command: &Command,
+    archived_output: Option<&RunPartialOutput>,
+) -> Result<(), ApiError> {
+    let Command::ContinueRun {
+        run_id,
+        expected_worktree_fingerprint,
+    } = command
+    else {
+        return Ok(());
+    };
+    let run = state
+        .runs
+        .iter()
+        .find(|run| run.id == *run_id)
+        .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    if !matches!(
+        run.status.as_str(),
+        "failed" | "cancelled" | "limit_exceeded"
+    ) || run.provider.kind != AgentMode::Codex
+        || run.last_message_id.is_some()
+    {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "only an unfinished terminal Codex Run can continue from workspace changes",
+            false,
+        ));
+    }
+    if state.runs.iter().any(|candidate| {
+        candidate
+            .recovery_of_run_id
+            .as_ref()
+            .is_some_and(|source| source.as_str() == run_id)
+    }) {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "this Run already has a continuation",
+            false,
+        ));
+    }
+    let recorded = archived_output
+        .or(run.partial_output.as_deref())
+        .and_then(|partial| partial.worktree.as_ref())
+        .filter(|worktree| worktree.dirty)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::RunNotResumable,
+                "the Run has no recorded workspace changes to continue",
+                false,
+            )
+        })?;
+    if expected_worktree_fingerprint.is_empty()
+        || expected_worktree_fingerprint != &recorded.fingerprint
+    {
+        return Err(error(
+            ErrorCode::ProjectGitDirty,
+            "the requested workspace snapshot does not match the failed Run",
+            false,
+        ));
+    }
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == run.project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    let path = recorded.retained_path.as_deref().ok_or_else(|| {
+        error(
+            ErrorCode::RunNotResumable,
+            "the Run has no retained isolated workspace",
+            false,
+        )
+    })?;
+    let inspection_path = Path::new(path).canonicalize().map_err(|failure| {
+        error(
+            ErrorCode::RunNotResumable,
+            format!("cannot resolve the retained isolated workspace: {failure}"),
+            false,
+        )
+    })?;
+    let root = absolute_git_dir(Path::new(&project.workdir))?
+        .join("ait")
+        .join("workspaces");
+    if !inspection_path.starts_with(&root) {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "the retained workspace is outside the manager-owned isolation root",
+            false,
+        ));
+    }
+    let current = inspect_worktree(&inspection_path)?;
+    if !current.dirty || current.fingerprint != recorded.fingerprint {
+        return Err(error(
+            ErrorCode::ProjectGitDirty,
+            "the Project worktree changed after this Run stopped; inspect it again before continuing",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn continue_run(
+    state: &mut State,
+    source_run_id: &str,
+    _expected_worktree_fingerprint: &str,
+    workspace_baseline: &GitBaseline,
+) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
+    let source = state
+        .runs
+        .iter()
+        .find(|run| run.id == source_run_id)
+        .cloned()
+        .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    let session_id = source.session_id.clone().ok_or_else(|| {
+        error(
+            ErrorCode::RunNotResumable,
+            "a Run without a Session cannot be continued interactively",
+            false,
+        )
+    })?;
+    let session_index = state
+        .sessions
+        .iter()
+        .position(|session| session.id == session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    let session = &state.sessions[session_index];
+    if session.active_run_id.is_some() {
+        return Err(error(
+            ErrorCode::SessionBusy,
+            "session already has an active run",
+            false,
+        ));
+    }
+    if session.current_message_id != source.base_message_id {
+        return Err(error(
+            ErrorCode::RunNotResumable,
+            "the Session moved after the failed Run",
+            false,
+        ));
+    }
+    if source.workspace_base_commit.as_deref() != Some(workspace_baseline.commit.as_str())
+        || source.workspace_base_index_tree.as_deref()
+            != Some(workspace_baseline.index_tree.as_str())
+    {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "the Project Git baseline changed after the failed Run",
+            false,
+        ));
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    state.sessions[session_index].active_run_id = Some(run_id.clone());
+    state.sessions[session_index].version += 1;
+    let run = RunView {
+        id: run_id.clone(),
+        project_id: source.project_id,
+        base_message_id: source.base_message_id,
+        last_message_id: None,
+        session_id: Some(session_id),
+        agent_id: source.agent_id,
+        agent_revision: source.agent_revision,
+        config: source.config,
+        provider: source.provider,
+        trigger: RunTrigger::Recovery,
+        cron_id: None,
+        scheduled_at: None,
+        workspace_base_commit: Some(workspace_baseline.commit.clone()),
+        workspace_base_index_tree: Some(workspace_baseline.index_tree.clone().into_boxed_str()),
+        status: "queued".into(),
+        error: None,
+        partial_output: None,
+        recovery_of_run_id: Some(RunId::new(source_run_id)),
+    };
+    if let Some(reference) = state.run_credentials.get(source_run_id).cloned() {
+        state.run_credentials.insert(run_id.clone(), reference);
+    }
+    state.runs.push(run.clone());
+    Ok((
+        CommandOutcome::for_new_run(run.clone()),
+        vec![pending("run.recovery_started", Some(run_id), &run)],
     ))
 }
 
@@ -2115,7 +2506,7 @@ fn trigger_cron(
         agent_revision: agent.revision,
         config: agent.config.clone(),
         provider,
-        trigger: "cron".into(),
+        trigger: RunTrigger::Cron,
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),
         workspace_base_commit: workspace_baseline.map(|baseline| baseline.commit.clone()),
@@ -2123,6 +2514,8 @@ fn trigger_cron(
             .map(|baseline| baseline.index_tree.clone().into_boxed_str()),
         status: "queued".into(),
         error: None,
+        partial_output: None,
+        recovery_of_run_id: None,
     });
     let run = state.runs.last().expect("new run exists").clone();
     let event = pending("cron.run_triggered", Some(run_id), &run);
@@ -2298,6 +2691,7 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
     if archive.format_version != PROJECT_EXPORT_VERSION
         || archive.source_revision == 0
         || archive.project.id.trim().is_empty()
+        || archive.project.id.len() > MAX_CONTROL_ID_BYTES
         || archive.project.revision == 0
         || !is_git_commit(&archive.project.base_commit)
         || archive
@@ -2375,7 +2769,9 @@ fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
     }
     let mut session_ids = HashSet::with_capacity(archive.sessions.len());
     for session in &archive.sessions {
-        if session.project_id != archive.project.id
+        if session.id.trim().is_empty()
+            || session.id.len() > MAX_CONTROL_ID_BYTES
+            || session.project_id != archive.project.id
             || session.version == 0
             || session.active_run_id.is_some()
             || !session_ids.insert(session.id.as_str())
@@ -2545,6 +2941,15 @@ fn command_git_baseline(state: &State, command: &Command) -> Result<Option<GitBa
                 .as_str(),
         ),
         Command::ForkSession { project_id, .. } => Some(project_id.as_str()),
+        Command::ContinueRun { run_id, .. } => Some(
+            state
+                .runs
+                .iter()
+                .find(|run| run.id == *run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?
+                .project_id
+                .as_str(),
+        ),
         Command::TriggerCron {
             cron_id,
             scheduled_at,
@@ -2699,6 +3104,140 @@ fn git_commit_tree(path: &Path, commit: &str) -> Result<String, ApiError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+const MAX_WORKTREE_CHANGES: usize = 256;
+const MAX_WORKTREE_PATH_CHARS: usize = 128;
+
+fn terminal_partial_output(
+    progress: FinishedProgress,
+    workdir: &Path,
+    failure: Option<&DomainError>,
+) -> Result<Option<Box<RunPartialOutput>>, ApiError> {
+    let has_progress = progress.checkpoint.as_ref().is_some_and(|checkpoint| {
+        checkpoint["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+            || checkpoint["warnings"]
+                .as_array()
+                .is_some_and(|warnings| !warnings.is_empty())
+    });
+    let retained = failure.and_then(retained_workspace_details);
+    let inspection_path = retained
+        .as_ref()
+        .map_or(workdir, |(path, _)| path.as_path());
+    let (worktree, worktree_error) = match inspect_worktree(inspection_path) {
+        Ok(mut state) => {
+            if let Some((path, owner_run_id)) = retained {
+                state.retained_path = Some(path.to_string_lossy().into_owned());
+                state.retained_run_id = Some(owner_run_id);
+            }
+            (Some(state), None)
+        }
+        Err(failure) => (
+            None,
+            Some(DomainError {
+                code: failure.code,
+                message: failure.message,
+                retryable: failure.retryable,
+                details: None,
+                cause_id: None,
+            }),
+        ),
+    };
+    let has_changes = worktree.as_ref().is_some_and(|state| state.dirty);
+    let progress_error = progress
+        .persistence_error
+        .map(|failure| {
+            DomainError::invariant(
+                ErrorCode::RunRecoveryFailed,
+                bounded_chars(&failure, 8 * 1024),
+            )
+        })
+        .or_else(|| {
+            progress.checkpoint.is_none().then(|| {
+                DomainError::invariant(
+                    ErrorCode::RunRecoveryFailed,
+                    "final progress checkpoint is unavailable",
+                )
+            })
+        });
+    if !(has_progress || has_changes || progress_error.is_some() || worktree_error.is_some()) {
+        return Ok(None);
+    }
+    let output = RunPartialOutput {
+        progress: has_progress.then_some(progress.checkpoint).flatten(),
+        progress_error,
+        worktree,
+        worktree_error,
+    };
+    output
+        .validate()
+        .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
+    Ok(Some(Box::new(output)))
+}
+
+fn retained_workspace_details(failure: &DomainError) -> Option<(PathBuf, String)> {
+    let details = failure.details.as_ref()?;
+    let path = details.0.get("retained_worktree_path")?.as_str()?;
+    let owner_run_id = details.0.get("retained_source_run_id")?.as_str()?;
+    Some((PathBuf::from(path), owner_run_id.to_owned()))
+}
+
+fn inspect_worktree(path: &Path) -> Result<RunWorktreeState, ApiError> {
+    let snapshot = ait_worktree::inspect(path).map_err(|failure| {
+        error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            failure.to_string(),
+            false,
+        )
+    })?;
+    let records = snapshot
+        .status
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let mut changes = Vec::new();
+    let mut index = 0;
+    let mut total = 0;
+    while index < records.len() {
+        let record = records[index];
+        if record.len() < 3 || record[2] != b' ' {
+            index += 1;
+            continue;
+        }
+        total += 1;
+        if changes.len() < MAX_WORKTREE_CHANGES {
+            changes.push(RunWorktreeChange {
+                status: String::from_utf8_lossy(&record[..2]).into_owned(),
+                path: bounded_chars(
+                    &String::from_utf8_lossy(&record[3..]),
+                    MAX_WORKTREE_PATH_CHARS,
+                ),
+            });
+        }
+        let renamed = record[..2]
+            .iter()
+            .any(|status| matches!(*status, b'R' | b'C'));
+        index += if renamed { 2 } else { 1 };
+    }
+    Ok(RunWorktreeState {
+        retained_path: None,
+        retained_run_id: None,
+        head: snapshot.head,
+        dirty: !snapshot.status.is_empty(),
+        fingerprint: snapshot.fingerprint,
+        changes,
+        truncated: total > MAX_WORKTREE_CHANGES,
+    })
+}
+
+fn bounded_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        value.to_owned()
+    } else {
+        value.chars().take(limit).collect()
+    }
+}
+
 fn git_head(path: &Path) -> Result<Option<String>, ApiError> {
     let output = ProcessCommand::new("git")
         .arg("-C")
@@ -2840,6 +3379,19 @@ fn pending<T: Serialize>(kind: &str, entity_id: Option<String>, body: &T) -> Pen
         body: serde_json::to_value(body).unwrap_or(Value::Null),
         created_at: now(),
     }
+}
+
+fn terminal_run_event(run: &RunView, partial_output_available: bool) -> PendingEvent {
+    pending(
+        "run.updated",
+        Some(run.id.clone()),
+        &json!({
+            "version": 1,
+            "id": run.id,
+            "status": run.status,
+            "partial_output_available": partial_output_available,
+        }),
+    )
 }
 
 fn now() -> i64 {

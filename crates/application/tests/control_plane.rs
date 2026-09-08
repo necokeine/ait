@@ -8,7 +8,7 @@ use std::sync::{
 
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, default_settings};
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{DomainError, ErrorCode, RunTrigger};
 use ait_ports::{
     GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation, WorkspaceOutputItem,
@@ -48,6 +48,55 @@ impl WorkspaceAgent for FixtureCodex {
 
 fn fixture_service(store: Arc<SqliteControlStore>) -> LocalControlService {
     LocalControlService::with_workspace_agent(store, Arc::new(FixtureCodex))
+}
+
+#[tokio::test]
+async fn control_ids_are_rejected_before_they_can_exceed_progress_budgets() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("bounded-ids");
+    std::fs::create_dir(&project_dir).unwrap();
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let oversized = "x".repeat(257);
+
+    let rejected = service
+        .execute(Command::RegisterProject {
+            id: oversized.clone(),
+            name: "Too long".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::InvalidProject);
+
+    run(
+        &service,
+        Command::RegisterProject {
+            id: "bounded-project".into(),
+            name: "Bounded".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "bounded-agent".into(),
+            name: "Bounded agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    let rejected = service
+        .execute(Command::CreateSession {
+            id: oversized,
+            project_id: "bounded-project".into(),
+            agent_id: "bounded-agent".into(),
+            at_message_id: None,
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::InvalidSession);
+    assert!(service.progress_checkpoints().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -585,7 +634,7 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
         CommandResult::Run(value) => value,
         _ => panic!(),
     };
-    assert_eq!(scheduled.trigger, "cron");
+    assert_eq!(scheduled.trigger, RunTrigger::Cron);
     assert_eq!(scheduled.status, "completed");
     assert!(scheduled.session_id.is_none());
     assert_eq!(
@@ -835,6 +884,24 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     );
 
     let target = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let mut oversized_project = archive.clone();
+    oversized_project.project.id = "p".repeat(257);
+    let rejected = target
+        .execute(Command::ImportProject {
+            archive: oversized_project,
+            workdir: imported_dir.display().to_string(),
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::InvalidProject);
+    let mut oversized_session = archive.clone();
+    oversized_session.sessions[0].id = "s".repeat(257);
+    let rejected = target
+        .execute(Command::ImportProject {
+            archive: oversized_session,
+            workdir: imported_dir.display().to_string(),
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::InvalidProject);
     run(
         &target,
         Command::ImportProject {

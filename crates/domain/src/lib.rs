@@ -36,8 +36,10 @@ pub use project::{
     SystemMessage, SystemMessageComponent,
 };
 pub use run::{
-    CheckpointId, RetryPolicy, Run, RunAttempt, RunAttemptId, RunAttemptReason, RunAttemptStatus,
-    RunBudget, RunPhase, RunQueueItem, RunQueueItemId, RunQueueItemKind, RunQueueItemStatus,
-    RunStatus, RunStopReason, RunTerminationBlocker, RunTerminationReadiness, RunTrigger, RunUsage,
+    CheckpointId, MAX_RUN_PARTIAL_OUTPUT_BYTES, RetryPolicy, Run, RunAttempt, RunAttemptId,
+    RunAttemptReason, RunAttemptStatus, RunBudget, RunPartialOutput, RunPhase, RunQueueItem,
+    RunQueueItemId, RunQueueItemKind, RunQueueItemStatus, RunStatus, RunStopReason,
+    RunTerminationBlocker, RunTerminationReadiness, RunTrigger, RunUsage, RunWorktreeChange,
+    RunWorktreeState,
 };
 pub use tool::{ToolApprovalStatus, ToolExecution, ToolExecutionId, ToolExecutionStatus};

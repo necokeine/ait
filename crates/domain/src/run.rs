@@ -73,6 +73,79 @@ pub enum RunTrigger {
     Manual,
     /// One scheduled Cron occurrence.
     Cron,
+    /// Explicit continuation of a terminal Run's retained workspace.
+    Recovery,
+}
+
+/// Maximum serialized terminal output retained for one Run.
+pub const MAX_RUN_PARTIAL_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// Terminal, non-Message output retained for a failed or cancelled Run.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunPartialOutput {
+    /// Last bounded progress projection written by the Run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<Value>,
+    /// Explicit reason progress could not be captured, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_error: Option<DomainError>,
+    /// Git state observed after provider/Git execution stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<RunWorktreeState>,
+    /// Explicit reason the terminal worktree state is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_error: Option<DomainError>,
+}
+
+impl RunPartialOutput {
+    /// Validates worktree certainty and the aggregate serialized byte budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::InvalidRun`] when worktree inspection is
+    /// simultaneously known and unknown, or the archive exceeds its budget.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        let mutually_exclusive = !(self.worktree.is_some() && self.worktree_error.is_some());
+        let size = serde_json::to_vec(self).map_or(usize::MAX, |value| value.len());
+        if mutually_exclusive && size <= MAX_RUN_PARTIAL_OUTPUT_BYTES {
+            Ok(())
+        } else {
+            Err(DomainError::invariant(
+                ErrorCode::InvalidRun,
+                "terminal Run output is inconsistent or exceeds its byte budget",
+            ))
+        }
+    }
+}
+
+/// One bounded Git status entry belonging to a terminal Run workspace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunWorktreeChange {
+    /// Two-character porcelain status such as ` M`, `A `, or `??`.
+    pub status: String,
+    /// Project-relative path as reported by Git.
+    pub path: String,
+}
+
+/// Exact Git worktree identity used to guard explicit continuation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RunWorktreeState {
+    /// Manager-owned retained worktree path, absent when this is the Project root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_path: Option<String>,
+    /// Original Run identity that owns the retained worktree/ref pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_run_id: Option<String>,
+    /// HEAD observed with the status snapshot, absent for an unborn branch.
+    pub head: Option<String>,
+    /// Whether the index, worktree, or untracked set has changes.
+    pub dirty: bool,
+    /// SHA-256 over HEAD, complete porcelain data, diffs, and typed content.
+    pub fingerprint: String,
+    /// Bounded display projection of changed paths.
+    pub changes: Vec<RunWorktreeChange>,
+    /// More paths existed than the display projection retained.
+    pub truncated: bool,
 }
 
 /// Durable Run lifecycle state.
@@ -283,6 +356,9 @@ pub struct Run {
     pub agent_snapshot: AgentConfigSnapshot,
     /// Trigger class.
     pub trigger: RunTrigger,
+    /// Terminal Run whose explicitly retained workspace this Run adopted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_of_run_id: Option<RunId>,
     /// Source Cron for a scheduled Run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron_id: Option<CronId>,
@@ -299,6 +375,9 @@ pub struct Run {
     /// Safe terminal or recoverable failure information.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<DomainError>,
+    /// Bounded terminal output stored independently from the mutable snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_output: Option<RunPartialOutput>,
     /// Persisted steps completed so far.
     pub step_count: u64,
     /// Fixed limits.
@@ -336,6 +415,31 @@ pub struct Run {
 }
 
 impl Run {
+    fn trigger_shape_valid(&self) -> bool {
+        match self.trigger {
+            RunTrigger::Manual => {
+                self.cron_id.is_none()
+                    && self.scheduled_at.is_none()
+                    && self.recovery_of_run_id.is_none()
+            }
+            RunTrigger::Cron => {
+                self.cron_id.is_some()
+                    && self.scheduled_at.is_some()
+                    && self.follow_session_id.is_none()
+                    && self.recovery_of_run_id.is_none()
+            }
+            RunTrigger::Recovery => {
+                self.cron_id.is_none()
+                    && self.scheduled_at.is_none()
+                    && self.follow_session_id.is_some()
+                    && self
+                        .recovery_of_run_id
+                        .as_ref()
+                        .is_some_and(|source| source != &self.id)
+            }
+        }
+    }
+
     /// Validates fixed references, trigger shape, budgets, and lifecycle fields.
     ///
     /// # Errors
@@ -345,14 +449,12 @@ impl Run {
         self.budget.validate()?;
         self.retry_policy.validate()?;
 
-        let trigger_valid = match self.trigger {
-            RunTrigger::Manual => self.cron_id.is_none() && self.scheduled_at.is_none(),
-            RunTrigger::Cron => {
-                self.cron_id.is_some()
-                    && self.scheduled_at.is_some()
-                    && self.follow_session_id.is_none()
-            }
-        };
+        let trigger_valid = self.trigger_shape_valid();
+        let partial_output_valid = self.partial_output.as_ref().is_none_or(|output| {
+            self.status.is_terminal()
+                && self.status != RunStatus::Completed
+                && output.validate().is_ok()
+        });
         let terminal_fields_valid = if self.status.is_terminal() {
             self.ended_at.is_some()
                 && self.stop_reason.is_some()
@@ -413,6 +515,7 @@ impl Run {
             || self.base_message_id.as_uuid().is_nil()
             || !snapshot_valid
             || !trigger_valid
+            || !partial_output_valid
             || !terminal_fields_valid
             || !status_phase_valid
             || !stop_reason_valid
@@ -671,12 +774,14 @@ mod tests {
             agent_revision: 3,
             agent_snapshot: snapshot(),
             trigger: RunTrigger::Manual,
+            recovery_of_run_id: None,
             cron_id: None,
             scheduled_at: None,
             status: RunStatus::Queued,
             phase: RunPhase::Queued,
             stop_reason: None,
             error: None,
+            partial_output: None,
             step_count: 0,
             budget: RunBudget {
                 max_steps: 10,
@@ -720,6 +825,35 @@ mod tests {
             candidate.validate().unwrap_err().code,
             ErrorCode::InvalidRun
         );
+    }
+
+    #[test]
+    fn recovery_trigger_and_terminal_output_are_typed_invariants() {
+        let mut recovery = run();
+        recovery.trigger = RunTrigger::Recovery;
+        recovery.recovery_of_run_id = Some(RunId::new("source-run"));
+        recovery.validate().unwrap();
+
+        recovery.recovery_of_run_id = Some(recovery.id.clone());
+        assert_eq!(recovery.validate().unwrap_err().code, ErrorCode::InvalidRun);
+
+        let mut failed = run();
+        failed.status = RunStatus::Failed;
+        failed.phase = RunPhase::Terminal;
+        failed.stop_reason = Some(RunStopReason::Failed);
+        failed.started_at = Some(TimestampMs(11));
+        failed.ended_at = Some(TimestampMs(12));
+        failed.partial_output = Some(RunPartialOutput {
+            progress: Some(serde_json::json!({"items": []})),
+            progress_error: None,
+            worktree: None,
+            worktree_error: None,
+        });
+        failed.validate().unwrap();
+
+        failed.status = RunStatus::Completed;
+        failed.stop_reason = Some(RunStopReason::Completed);
+        assert_eq!(failed.validate().unwrap_err().code, ErrorCode::InvalidRun);
     }
 
     #[test]

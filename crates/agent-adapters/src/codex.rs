@@ -1,7 +1,7 @@
 //! Codex adapter backed by `codex app-server` over stdio JSONL.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
     io::{BufRead as _, BufReader as StdBufReader, Read as _, Write as _},
@@ -244,12 +244,20 @@ async fn invoke_isolated_workspace(
             false,
         ));
     }
-    let mut workspace = IsolatedWorkspace::create(
-        &request.cwd,
-        &request.request_id,
-        &request.baseline_commit,
-        &request.baseline_index_tree,
-    )?;
+    let mut workspace = match request.adopted_worktree.as_ref() {
+        Some(adopted) => IsolatedWorkspace::adopt(
+            &request.cwd,
+            adopted,
+            &request.baseline_commit,
+            &request.baseline_index_tree,
+        )?,
+        None => IsolatedWorkspace::create(
+            &request.cwd,
+            &request.request_id,
+            &request.baseline_commit,
+            &request.baseline_index_tree,
+        )?,
+    };
     let integration_gate = request.integration_gate.clone();
     let cancellation = request.cancellation.clone();
     let commit_subject = request.commit_subject;
@@ -422,6 +430,7 @@ struct IsolatedWorkspace {
     primary: PathBuf,
     worktree: PathBuf,
     run_ref: String,
+    owner_run_id: String,
     baseline: String,
     baseline_index_tree: String,
     primary_head_ref: Option<String>,
@@ -490,6 +499,78 @@ impl IsolatedWorkspace {
             primary,
             worktree,
             run_ref,
+            owner_run_id: request_id.to_owned(),
+            baseline: baseline.to_owned(),
+            baseline_index_tree: baseline_index_tree.to_owned(),
+            primary_head_ref,
+        })
+    }
+
+    fn adopt(
+        primary: &Path,
+        adopted: &ait_ports::AdoptedWorkspace,
+        baseline: &str,
+        baseline_index_tree: &str,
+    ) -> Result<Self, DomainError> {
+        let primary = fs::canonicalize(primary).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectPathNotFound,
+                format!("cannot resolve Project workdir: {failure}"),
+                false,
+            )
+        })?;
+        let primary_head_ref =
+            ensure_primary_baseline(&primary, baseline, baseline_index_tree, None)?;
+        reject_initialized_submodules(&primary)?;
+        let git_dir = absolute_git_dir(&primary)?;
+        let identity = format!("{:x}", Sha256::digest(adopted.source_run_id.as_bytes()));
+        let expected_path = git_dir.join("ait").join("workspaces").join(&identity);
+        let worktree = fs::canonicalize(&adopted.path).map_err(|failure| {
+            domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!("cannot resolve retained Run workspace: {failure}"),
+                false,
+            )
+        })?;
+        if worktree != expected_path {
+            return Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                "retained Run workspace is outside the manager-owned isolation root",
+                false,
+            ));
+        }
+        let snapshot = ait_worktree::inspect(&worktree).map_err(|failure| {
+            domain_error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                failure.to_string(),
+                false,
+            )
+        })?;
+        if snapshot.status.is_empty() || snapshot.fingerprint != adopted.fingerprint {
+            return Err(domain_error(
+                ErrorCode::ProjectGitDirty,
+                "the explicitly adopted isolated workspace changed before Codex could continue",
+                false,
+            ));
+        }
+        if let Some(head) = snapshot.head.as_deref()
+            && head != baseline
+        {
+            ensure_descendant(&primary, baseline, head)?;
+        }
+        let run_ref = format!("refs/ait/runs/{identity}");
+        if !git_ref_exists(&primary, &run_ref)? {
+            return Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                "retained Run reference is unavailable",
+                false,
+            ));
+        }
+        Ok(Self {
+            primary,
+            worktree,
+            run_ref,
+            owner_run_id: adopted.source_run_id.clone(),
             baseline: baseline.to_owned(),
             baseline_index_tree: baseline_index_tree.to_owned(),
             primary_head_ref,
@@ -590,6 +671,20 @@ impl IsolatedWorkspace {
     }
 
     fn retain(&self, mut failure: DomainError) -> DomainError {
+        failure.details = Some(ait_domain::DomainMetadata(BTreeMap::from([
+            (
+                "retained_worktree_path".into(),
+                Value::String(self.worktree.to_string_lossy().into_owned()),
+            ),
+            (
+                "retained_run_ref".into(),
+                Value::String(self.run_ref.clone()),
+            ),
+            (
+                "retained_source_run_id".into(),
+                Value::String(self.owner_run_id.clone()),
+            ),
+        ])));
         failure.message = if self.worktree.exists() {
             format!(
                 "{}; isolated Run changes were retained at {} under {}",

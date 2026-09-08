@@ -10,7 +10,7 @@ mod session;
 
 pub use control::{
     ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
-    PendingEvent, ProgressCheckpoint,
+    MAX_TERMINAL_OUTPUT_ARCHIVE_BYTES, PendingEvent, ProgressCheckpoint, RunOutputArchive,
 };
 pub use message::{MessageStore, MessageStoreError};
 pub use project::{
@@ -19,9 +19,9 @@ pub use project::{
 };
 pub use provider::{AgentProviderGateway, HostProviderModelCatalog, ProviderMessage};
 pub use run::{
-    AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult,
-    GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator, RunStore,
-    RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
+    AdoptedWorkspace, AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest,
+    CompletionResult, GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator,
+    RunStore, RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
     ToolOutcome, ToolRecovery, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
     WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
     WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,

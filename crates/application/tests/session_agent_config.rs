@@ -9,7 +9,7 @@ use ait_contracts::{
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     AgentProviderGateway, ControlSnapshot, ControlStore, ControlStoreError, DurableEvent,
-    HostProviderModelCatalog, PendingEvent, ProviderMessage, WorkspaceAgent,
+    HostProviderModelCatalog, PendingEvent, ProviderMessage, RunOutputArchive, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
 use ait_storage_sqlite::SqliteControlStore;
@@ -412,6 +412,40 @@ impl ControlStore for TerminalFailingStore {
         result
     }
 
+    async fn commit_terminal(
+        &self,
+        revision: u64,
+        value: serde_json::Value,
+        events: Vec<PendingEvent>,
+        run_id: &str,
+        output: Option<RunOutputArchive>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let status = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .and_then(|run| run["status"].as_str())
+            .map(str::to_owned);
+        if status.as_deref() == Some(self.failure_status)
+            && let Some(failure) = self.failures.lock().unwrap().pop_front()
+        {
+            return Err(failure);
+        }
+        if status.as_deref() == Some(self.pause_status)
+            && self.pause_once.swap(false, Ordering::SeqCst)
+        {
+            self.failures_exhausted.add_permits(1);
+            self.allow_terminal_commit.acquire().await.unwrap().forget();
+        }
+        let result = self
+            .inner
+            .commit_terminal(revision, value, events, run_id, output)
+            .await;
+        if result.is_ok() {
+            self.terminal_committed.add_permits(1);
+        }
+        result
+    }
+
     async fn replay(
         &self,
         after: u64,
@@ -442,6 +476,13 @@ impl ControlStore for TerminalFailingStore {
 
     async fn load_progress(&self) -> Result<Vec<ait_ports::ProgressCheckpoint>, ControlStoreError> {
         self.inner.load_progress().await
+    }
+
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<RunOutputArchive>, ControlStoreError> {
+        self.inner.load_run_outputs(run_ids).await
     }
 
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
@@ -2152,6 +2193,18 @@ impl ControlStore for PausingStore {
     ) -> Result<ait_ports::DurableEventPage, ait_ports::ControlStoreError> {
         self.inner.replay_page(after, limit).await
     }
+    async fn commit_terminal(
+        &self,
+        revision: u64,
+        value: serde_json::Value,
+        events: Vec<ait_ports::PendingEvent>,
+        run_id: &str,
+        output: Option<ait_ports::RunOutputArchive>,
+    ) -> Result<ait_ports::ControlSnapshot, ait_ports::ControlStoreError> {
+        self.inner
+            .commit_terminal(revision, value, events, run_id, output)
+            .await
+    }
     async fn save_progress(
         &self,
         checkpoint: ait_ports::ProgressCheckpoint,
@@ -2163,6 +2216,12 @@ impl ControlStore for PausingStore {
         &self,
     ) -> Result<Vec<ait_ports::ProgressCheckpoint>, ait_ports::ControlStoreError> {
         self.inner.load_progress().await
+    }
+    async fn load_run_outputs(
+        &self,
+        run_ids: &[String],
+    ) -> Result<Vec<ait_ports::RunOutputArchive>, ait_ports::ControlStoreError> {
+        self.inner.load_run_outputs(run_ids).await
     }
     async fn clear_progress(&self, run_id: &str) -> Result<(), ait_ports::ControlStoreError> {
         self.inner.clear_progress(run_id).await

@@ -1,5 +1,5 @@
 import { messageAuthor } from "./messages.js";
-import type { AgentSummary, DesktopMessage, RunProgress } from "./types.js";
+import type { AgentSummary, DesktopMessage, RunProgress, RunWorktreeState } from "./types.js";
 
 export type TextBlock = { type: "text"; text: string } | { type: "code"; text: string; language: string };
 export interface FileReference { path: string; line?: number; column?: number }
@@ -364,18 +364,62 @@ export function renderRunTerminal(
   status: string,
   message: string | undefined,
   author: string,
+  partial?: {
+    progress?: RunProgress;
+    progressError?: { code?: string; message: string };
+    worktree?: RunWorktreeState;
+    worktreeError?: { code?: string; message: string };
+  },
+  runId = "",
+  projectId = "",
 ): string {
   const cancelled = status === "cancelled";
   const heading = cancelled ? "Run cancelled" : status === "limit_exceeded" ? "Run limit reached" : "Run failed";
   const detail = message?.trim() || (cancelled
     ? "The Run was cancelled before a final answer was saved."
     : "The Run ended before a final answer was saved.");
-  return `<article class="message assistant run-terminal status-${escapeHtml(status)}" aria-live="polite">
+  const partialProgress = partial?.progress?.items.length
+    ? `<section class="partial-run-output"><header><strong>Partial output before termination</strong><small>Confirmed items are marked; unfinished text remains partial.</small></header><div class="codex-process-events">${partial.progress.items.map(renderPartialPart).join("")}</div></section>`
+    : "";
+  const worktree = partial?.worktree?.dirty
+    ? renderRetainedWorktree(partial.worktree, runId, projectId)
+    : "";
+  const unknown = [
+    partial?.progressError ? `Progress archive unknown: ${partial.progressError.message}` : "",
+    partial?.worktreeError ? `Workspace state unknown: ${partial.worktreeError.message}` : "",
+  ].filter(Boolean);
+  const inspectionFailure = unknown.length
+    ? `<section class="partial-run-unknown"><strong>Some terminal state could not be inspected</strong><p>${escapeHtml(unknown.join(" "))}</p></section>`
+    : "";
+  return `<article class="message assistant run-terminal status-${escapeHtml(status)}" data-run-id="${escapeHtml(runId)}" aria-live="polite">
     <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
     <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong></div>
-      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>
+      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>${partialProgress}${inspectionFailure}${worktree}
     </div>
   </article>`;
+}
+
+function renderPartialPart(part: RunProgress["items"][number]): string {
+  if (part.type !== "codex_message") return renderPart(part);
+  const state = part.completed ? "Confirmed" : "Unfinished";
+  return `<section class="partial-output-item ${part.completed ? "is-confirmed" : "is-unfinished"}"><small>${state}${part.phase ? ` · ${escapeHtml(part.phase)}` : ""}</small>${renderPart(part)}</section>`;
+}
+
+function renderRetainedWorktree(worktree: RunWorktreeState, runId: string, projectId: string): string {
+  const retainedPath = worktree.retainedPath;
+  const separator = retainedPath?.includes("\\") ? "\\" : "/";
+  const retainedRoot = retainedPath?.replace(/[\\/]+$/, "");
+  const changes = worktree.changes.map((change) =>
+    `<li><code>${escapeHtml(change.status)}</code><button type="button" data-file-path="${escapeHtml(retainedRoot ? `${retainedRoot}${separator}${change.path.replaceAll("/", separator)}` : change.path)}">${escapeHtml(change.path)}</button></li>`,
+  ).join("");
+  const count = worktree.changes.length;
+  const continuation = retainedPath
+    ? `<button class="primary-button" type="button" data-run-continue="${escapeHtml(runId)}" data-worktree-fingerprint="${escapeHtml(worktree.fingerprint)}">Continue with these changes</button>`
+    : "";
+  return `<section class="retained-worktree"><header><strong>Workspace changes kept</strong><small>${count} ${count === 1 ? "path" : "paths"}${worktree.truncated ? "+" : ""}; nothing was discarded or committed.</small></header>
+    ${changes ? `<ul>${changes}</ul>` : ""}
+    <div class="retained-worktree-actions"><button class="secondary-button" type="button" data-run-inspect-project="${escapeHtml(projectId)}"${retainedPath ? ` data-run-inspect-path="${escapeHtml(retainedPath)}"` : ""}>Inspect retained workspace</button>${continuation}</div>
+  </section>`;
 }
 
 function renderPart(part: DesktopMessage["parts"][number], isInput = false): string {

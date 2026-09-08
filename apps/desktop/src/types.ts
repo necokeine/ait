@@ -10,7 +10,7 @@ export interface AgentView { id: string; name: string; config: AgentConfiguratio
 
 export type MessagePart =
   | { type: "text"; text: string }
-  | { type: "codex_message"; id: string; phase: string; text: string }
+  | { type: "codex_message"; id: string; phase: string; text: string; completed?: boolean }
   | { type: "file"; name: string; media_type: string }
   | { type: "tool_use"; call_id: string; tool_name: string; arguments: string }
   | {
@@ -96,6 +96,23 @@ export interface DesktopRun {
   lastMessageId: string | null;
   status: string;
   error?: { code?: string; message: string };
+  partialOutput?: {
+    progress?: RunProgress;
+    progressError?: { code?: string; message: string };
+    worktree?: RunWorktreeState;
+    worktreeError?: { code?: string; message: string };
+  };
+  recoveryOfRunId?: string;
+}
+
+export interface RunWorktreeState {
+  retainedPath?: string;
+  retainedRunId?: string;
+  head: string | null;
+  dirty: boolean;
+  fingerprint: string;
+  changes: Array<{ status: string; path: string }>;
+  truncated: boolean;
 }
 
 export interface ControlEvent {
@@ -218,6 +235,10 @@ export interface AitDesktopApi {
     content: string;
   }): Promise<RunSubmission>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
+  continueRun(input: {
+    runId: string;
+    expectedWorktreeFingerprint: string;
+  }): Promise<RunSubmission>;
   fork(input: {
     projectId: string;
     sourceMessageId: string;

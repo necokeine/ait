@@ -14,8 +14,9 @@ use ait_agent_adapters::{
     codex::{CodexSessionTitleGenerator, CodexWorkspaceAgent},
 };
 use ait_ports::{
-    SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOutputItem,
+    AdoptedWorkspace, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -1068,6 +1069,84 @@ struct ScriptedAdapter {
     events: Vec<AgentEvent>,
 }
 
+#[derive(Default)]
+struct RecordingProgress(Mutex<Vec<WorkspaceProgressEvent>>);
+
+#[async_trait]
+impl WorkspaceProgressReporter for RecordingProgress {
+    async fn report(&self, event: WorkspaceProgressEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FaultEnding {
+    Failed,
+    Eof,
+    StreamError,
+}
+
+#[derive(Debug)]
+struct FaultingAdapter(FaultEnding);
+
+#[async_trait]
+impl AgentAdapter for FaultingAdapter {
+    fn driver(&self) -> &'static str {
+        "faulting_test"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: false,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        std::fs::write(request.cwd.join("retained.txt"), "retained\n").unwrap();
+        let mut events = vec![
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "confirmed-commentary",
+                    "phase": "commentary",
+                    "text": "Confirmed before failure."
+                }),
+            }),
+            Ok(AgentEvent::ItemCompleted {
+                item: json!({
+                    "type": "fileChange",
+                    "id": "confirmed-change",
+                    "status": "completed",
+                    "changes": [{"path": "retained.txt", "kind": "add"}]
+                }),
+            }),
+            Ok(AgentEvent::MessageDelta {
+                item_id: "unfinished-final".into(),
+                delta: "Unfinished answer".into(),
+            }),
+        ];
+        match self.0 {
+            FaultEnding::Failed => events.push(Ok(AgentEvent::Completed {
+                turn_id: "failed-turn".into(),
+                status: AgentRunStatus::Failed,
+                error: Some("injected failure".into()),
+            })),
+            FaultEnding::Eof => {}
+            FaultEnding::StreamError => events.push(Err(AdapterError::new(
+                ait_agent_adapters::AdapterErrorKind::ProcessExited,
+                "injected stream error",
+                true,
+            ))),
+        }
+        Ok(Box::pin(tokio_stream::iter(events)))
+    }
+}
+
 #[async_trait]
 impl AgentAdapter for ScriptedAdapter {
     fn driver(&self) -> &'static str {
@@ -1225,6 +1304,7 @@ fn paused_request(project: &Path, request_id: &str) -> WorkspaceAgentInvocation 
         project_instructions: None,
         commit_subject: "Make an isolated edit".into(),
         cwd: project.to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: head(project),
         baseline_index_tree: index_tree(project),
         cancellation: CancellationToken::new(),
@@ -1243,6 +1323,7 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
             project_instructions: None,
             commit_subject: "Return a result".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
@@ -1283,6 +1364,7 @@ async fn returns_assistant_result_and_commits_generated_changes() {
             project_instructions: Some("Keep generated files small.".into()),
             commit_subject: "Create the generated answer".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
@@ -1395,6 +1477,7 @@ async fn detached_primary_head_advances_without_moving_the_original_branch() {
             project_instructions: Some("Keep generated files small.".into()),
             commit_subject: "Create answer.txt".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
@@ -1541,6 +1624,7 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
             project_instructions: None,
             commit_subject: "Change something".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
@@ -1550,6 +1634,174 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
         .unwrap_err();
 
     assert_eq!(error.code, ait_domain::ErrorCode::ProjectGitDirty);
+    assert!(!project.path().join("answer.txt").exists());
+}
+
+fn retained_workspace(error: &ait_domain::DomainError) -> PathBuf {
+    PathBuf::from(
+        error
+            .details
+            .as_ref()
+            .and_then(|details| details.0.get("retained_worktree_path"))
+            .and_then(serde_json::Value::as_str)
+            .expect("retained isolated workspace path"),
+    )
+}
+
+#[tokio::test]
+async fn failed_eof_and_stream_errors_retain_progress_and_isolated_changes() {
+    for ending in [
+        FaultEnding::Failed,
+        FaultEnding::Eof,
+        FaultEnding::StreamError,
+    ] {
+        let project = initialized_project();
+        let progress = Arc::new(RecordingProgress::default());
+        let error = CodexWorkspaceAgent::new(Arc::new(FaultingAdapter(ending)))
+            .invoke_with_progress(
+                WorkspaceAgentInvocation {
+                    request_id: format!("faulting-{ending:?}"),
+                    model: "test-model".into(),
+                    reasoning_effort: None,
+                    prompt: "write then fail".into(),
+                    project_instructions: None,
+                    commit_subject: "write then fail".into(),
+                    cwd: project.path().to_path_buf(),
+                    adopted_worktree: None,
+                    baseline_commit: head(project.path()),
+                    baseline_index_tree: index_tree(project.path()),
+                    cancellation: CancellationToken::new(),
+                    integration_gate: None,
+                },
+                progress.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ait_domain::ErrorCode::ProviderFailed);
+        let retained = retained_workspace(&error);
+        assert_eq!(
+            std::fs::read_to_string(retained.join("retained.txt")).unwrap(),
+            "retained\n"
+        );
+        assert!(!project.path().join("retained.txt").exists());
+        let events = progress.0.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkspaceProgressEvent::MessageCompleted { id, .. }
+                if id == "confirmed-commentary"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkspaceProgressEvent::OperationCompleted(operation)
+                if operation.id == "confirmed-change"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            WorkspaceProgressEvent::TextDelta { id, .. } if id == "unfinished-final"
+        )));
+    }
+}
+
+#[tokio::test]
+async fn a_confirmed_recovery_adopts_and_integrates_the_retained_workspace() {
+    let project = initialized_project();
+    let source_run_id = "recoverable-source";
+    let baseline_commit = head(project.path());
+    let baseline_index_tree = index_tree(project.path());
+    let failure = CodexWorkspaceAgent::new(Arc::new(FaultingAdapter(FaultEnding::Failed)))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: source_run_id.into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "write then fail".into(),
+            project_instructions: None,
+            commit_subject: "write then fail".into(),
+            cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
+            baseline_commit: baseline_commit.clone(),
+            baseline_index_tree: baseline_index_tree.clone(),
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap_err();
+    let retained = retained_workspace(&failure);
+    let fingerprint = ait_worktree::inspect(&retained).unwrap().fingerprint;
+
+    let result = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke(WorkspaceAgentInvocation {
+            request_id: "recovery-run".into(),
+            model: "test-model".into(),
+            reasoning_effort: None,
+            prompt: "finish retained work".into(),
+            project_instructions: Some("Keep generated files small.".into()),
+            commit_subject: "Finish retained work".into(),
+            cwd: project.path().to_path_buf(),
+            adopted_worktree: Some(AdoptedWorkspace {
+                path: retained.clone(),
+                fingerprint,
+                source_run_id: source_run_id.into(),
+            }),
+            baseline_commit,
+            baseline_index_tree,
+            cancellation: CancellationToken::new(),
+            integration_gate: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.commit_id.is_some());
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("retained.txt")).unwrap(),
+        "retained\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("answer.txt")).unwrap(),
+        "generated by codex\n"
+    );
+    assert!(!retained.exists());
+    assert!(git_output(project.path(), &["for-each-ref", "refs/ait/runs"]).is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn commit_failure_retains_confirmed_output_and_staged_isolated_changes() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let project = initialized_project();
+    let hook = project.path().join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&hook, permissions).unwrap();
+    let progress = Arc::new(RecordingProgress::default());
+    let error = CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+        .invoke_with_progress(
+            WorkspaceAgentInvocation {
+                request_id: "commit-failure".into(),
+                model: "test-model".into(),
+                reasoning_effort: None,
+                prompt: "Create answer.txt".into(),
+                project_instructions: Some("Keep generated files small.".into()),
+                commit_subject: "Create answer.txt".into(),
+                cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
+                baseline_commit: head(project.path()),
+                baseline_index_tree: index_tree(project.path()),
+                cancellation: CancellationToken::new(),
+                integration_gate: None,
+            },
+            progress.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ait_domain::ErrorCode::ProjectGitInitFailed);
+    assert!(progress.0.lock().unwrap().iter().any(|event| matches!(
+        event,
+        WorkspaceProgressEvent::MessageCompleted { id, .. } if id == "final-1"
+    )));
+    let status = git_output(&retained_workspace(&error), &["status", "--porcelain=v1"]);
+    assert!(status.contains("A  answer.txt"));
     assert!(!project.path().join("answer.txt").exists());
 }
 
@@ -1819,6 +2071,7 @@ async fn publication_phase_failures_roll_back_run_changes_and_preserve_external_
                 project_instructions: None,
                 commit_subject: "Exercise integration rollback".into(),
                 cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
                 cancellation: CancellationToken::new(),
@@ -1989,6 +2242,7 @@ async fn ignored_files_that_candidate_paths_would_replace_are_rejected_before_mu
                 project_instructions: None,
                 commit_subject: "Exercise ignored collision rejection".into(),
                 cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
                 cancellation: CancellationToken::new(),
@@ -2061,6 +2315,7 @@ async fn ignored_file_created_after_collision_scan_is_quarantined_and_restored_b
         project_instructions: None,
         commit_subject: "Exercise atomic ignored quarantine".into(),
         cwd: project.path().to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
         cancellation: CancellationToken::new(),
@@ -2121,6 +2376,7 @@ async fn ignored_child_created_after_df_scan_is_restored_with_its_directory() {
         project_instructions: None,
         commit_subject: "Exercise atomic D/F quarantine".into(),
         cwd: project.path().to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
         cancellation: CancellationToken::new(),
@@ -2177,6 +2433,7 @@ async fn rollback_atomically_isolates_live_file_or_directory_before_candidate_va
                 project_instructions: None,
                 commit_subject: "Exercise atomic rollback isolation".into(),
                 cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
                 cancellation: CancellationToken::new(),
@@ -2240,6 +2497,7 @@ async fn baseline_ref_reconciliation_locks_before_confirming_the_noop() {
             project_instructions: None,
             commit_subject: "Exercise baseline ref reconciliation lock".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
             cancellation: CancellationToken::new(),
@@ -2305,6 +2563,7 @@ async fn open_file_handle_writes_after_quarantine_are_detected_and_restored() {
             project_instructions: None,
             commit_subject: "Exercise open file handle protection".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
             cancellation: CancellationToken::new(),
@@ -2362,6 +2621,7 @@ async fn open_directory_handle_writes_after_quarantine_are_detected_and_restored
         project_instructions: None,
         commit_subject: "Exercise open directory handle protection".into(),
         cwd: project.path().to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
         cancellation: CancellationToken::new(),
@@ -2420,6 +2680,7 @@ async fn rollback_retains_candidate_file_writes_after_quarantine_verification() 
         project_instructions: None,
         commit_subject: "Retain rollback candidate file inode".into(),
         cwd: project.path().to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
         cancellation: CancellationToken::new(),
@@ -2479,6 +2740,7 @@ async fn rollback_retains_candidate_directory_writes_after_quarantine_verificati
         project_instructions: None,
         commit_subject: "Retain rollback candidate directory inode".into(),
         cwd: project.path().to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
         cancellation: CancellationToken::new(),
@@ -2538,6 +2800,7 @@ async fn successful_publication_retains_an_inode_for_writes_after_return() {
             project_instructions: None,
             commit_subject: "Retain successful publication inode".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
@@ -2595,6 +2858,7 @@ async fn successful_df_publication_retains_an_open_directory_inode() {
         project_instructions: None,
         commit_subject: "Retain successful directory inode".into(),
         cwd: project.path().to_path_buf(),
+        adopted_worktree: None,
         baseline_commit: head(project.path()),
         baseline_index_tree: index_tree(project.path()),
         cancellation: CancellationToken::new(),
@@ -2663,6 +2927,7 @@ async fn ancestor_links_never_redirect_publication_or_rollback_outside_the_proje
                 project_instructions: None,
                 commit_subject: "Exercise capability-bound publication".into(),
                 cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
                 cancellation: CancellationToken::new(),
@@ -2746,6 +3011,7 @@ async fn untouched_later_roots_do_not_turn_an_early_collision_into_recovery_fail
             project_instructions: None,
             commit_subject: "Exercise per-root publication state".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
             cancellation: CancellationToken::new(),
@@ -2802,6 +3068,7 @@ async fn rollback_classifies_filter_owned_files_before_removing_gitattributes() 
             project_instructions: None,
             commit_subject: "Exercise attribute-sensitive rollback".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
             cancellation: CancellationToken::new(),
@@ -2855,6 +3122,7 @@ async fn rollback_preserves_a_target_ref_replaced_by_a_candidate_resolving_symre
             project_instructions: None,
             commit_subject: "Exercise target identity rollback".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
             cancellation: CancellationToken::new(),
@@ -2932,6 +3200,7 @@ async fn directory_file_transitions_roll_back_ref_index_and_worktree_after_publi
                 project_instructions: None,
                 commit_subject: "Exercise D/F rollback".into(),
                 cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
                 cancellation: CancellationToken::new(),
@@ -3005,6 +3274,7 @@ async fn detached_head_rollback_preserves_a_later_symbolic_head() {
             project_instructions: None,
             commit_subject: "Exercise detached rollback".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
             cancellation: CancellationToken::new(),
@@ -3082,6 +3352,7 @@ async fn controlled_worktree_setup_skips_successful_and_failing_post_checkout_ho
                 project_instructions: Some("Keep generated files small.".into()),
                 commit_subject: "Create answer.txt".into(),
                 cwd: project.path().to_path_buf(),
+                adopted_worktree: None,
                 baseline_commit: head(project.path()),
                 baseline_index_tree: index_tree(project.path()),
                 cancellation: CancellationToken::new(),
@@ -3115,6 +3386,7 @@ async fn successful_runs_rewrite_absolute_workspace_paths_before_cleanup() {
             project_instructions: None,
             commit_subject: "Report paths".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),
@@ -3171,6 +3443,7 @@ async fn initialized_submodules_are_rejected_with_an_actionable_error() {
             project_instructions: Some("Keep generated files small.".into()),
             commit_subject: "Inspect the module".into(),
             cwd: project.path().to_path_buf(),
+            adopted_worktree: None,
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
             cancellation: CancellationToken::new(),

@@ -91,6 +91,10 @@ pub enum Command {
     CancelRun {
         run_id: String,
     },
+    ContinueRun {
+        run_id: String,
+        expected_worktree_fingerprint: String,
+    },
     CreateCron {
         id: String,
         name: String,
@@ -215,7 +219,7 @@ pub struct RunView {
     pub agent_revision: u64,
     pub config: AgentConfiguration,
     pub provider: AgentProvider,
-    pub trigger: String,
+    pub trigger: ait_domain::RunTrigger,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
     /// Git baseline authorized for a workspace-writing Run.
@@ -226,7 +230,16 @@ pub struct RunView {
     pub workspace_base_index_tree: Option<Box<str>>,
     pub status: String,
     pub error: Option<ApiError>,
+    /// Bounded provider output and workspace state retained when no immutable
+    /// assistant Message could be completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_output: Option<Box<RunPartialOutput>>,
+    /// Failed Run whose explicitly adopted workspace this Run continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_of_run_id: Option<ait_domain::RunId>,
 }
+
+pub use ait_domain::{RunPartialOutput, RunWorktreeChange, RunWorktreeState};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CronView {
@@ -270,6 +283,10 @@ pub struct ProjectExport {
 }
 
 /// Successful command payload.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the stable unboxed command contract keeps transport and application pattern matching simple"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum CommandResult {

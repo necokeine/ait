@@ -8,6 +8,7 @@ publish.workspace = true
 ait-contracts = { path = "../contracts" }
 ait-domain = { path = "../domain" }
 ait-ports = { path = "../ports" }
+ait-worktree = { path = "../worktree" }
 ait-runtime = { path = "../runtime" }
 ait-scheduler = { path = "../scheduler" }
 async-trait = "0.1"
