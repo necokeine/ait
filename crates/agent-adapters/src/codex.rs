@@ -4127,11 +4127,14 @@ where
     let mut approval_tasks = JoinSet::<ApprovalResolution>::new();
     let mut pending_approvals = HashMap::<String, AbortHandle>::new();
     let mut seen_server_requests = HashSet::new();
+    let mut answered_server_requests = HashSet::new();
     loop {
         let message = if let Some(message) = deferred.pop_front() {
             Some(message)
         } else {
+            // A buffered invalidation must revoke a request before a ready handler can answer it.
             tokio::select! {
+                biased;
                 () = request.cancellation.cancelled() => {
                     write_message(
                         &mut writer,
@@ -4139,6 +4142,7 @@ where
                     ).await?;
                     return Err(AdapterError::cancelled());
                 }
+                message = read_message(&mut lines) => Some(message?),
                 resolution = approval_tasks.join_next(), if !approval_tasks.is_empty() => {
                     let Some(resolution) = resolution else {
                         continue;
@@ -4178,6 +4182,7 @@ where
                                     .await?;
                                 }
                             }
+                            answered_server_requests.insert(resolution.request_key);
                         }
                         Err(error) if error.is_cancelled() => {}
                         Err(error) => {
@@ -4190,7 +4195,6 @@ where
                     }
                     None
                 }
-                message = read_message(&mut lines) => Some(message?),
             }
         };
         let Some(message) = message else {
@@ -4216,6 +4220,7 @@ where
                 &mut approval_tasks,
                 &mut pending_approvals,
                 &mut seen_server_requests,
+                &mut answered_server_requests,
             )
             .await?;
             continue;
@@ -4441,6 +4446,7 @@ async fn handle_server_request<W>(
     approval_tasks: &mut JoinSet<ApprovalResolution>,
     pending_approvals: &mut HashMap<String, AbortHandle>,
     seen_server_requests: &mut HashSet<String>,
+    answered_server_requests: &mut HashSet<String>,
 ) -> Result<(), AdapterError>
 where
     W: AsyncWrite + Unpin,
@@ -4456,9 +4462,6 @@ where
         return Ok(());
     };
     if !seen_server_requests.insert(request_key.clone()) {
-        if let Some(task) = pending_approvals.remove(&request_key) {
-            task.abort();
-        }
         send_server_request_warning(
             sender,
             method,
@@ -4466,17 +4469,24 @@ where
             "CODEX_SERVER_REQUEST_DUPLICATE",
         )
         .await?;
-        write_rpc_error(
-            writer,
-            request_id,
-            -32600,
-            format!("duplicate Codex server request id for method {method}"),
-        )
-        .await?;
+        if !answered_server_requests.contains(&request_key)
+            && let Some(task) = pending_approvals.remove(&request_key)
+        {
+            task.abort();
+            write_rpc_error(
+                writer,
+                request_id,
+                -32600,
+                format!("duplicate Codex server request id for method {method}"),
+            )
+            .await?;
+            answered_server_requests.insert(request_key);
+        }
         return Ok(());
     }
 
-    match server_request_kind(method) {
+    let request_kind = server_request_kind(method);
+    match request_kind {
         ServerRequestKind::Approval(kind) => {
             let request = ApprovalRequest {
                 request_id: request_id.clone(),
@@ -4502,7 +4512,7 @@ where
                     decision,
                 }
             });
-            pending_approvals.insert(request_key, task);
+            pending_approvals.insert(request_key.clone(), task);
         }
         ServerRequestKind::McpElicitation => {
             write_message(
@@ -4561,6 +4571,9 @@ where
             )
             .await?;
         }
+    }
+    if !matches!(request_kind, ServerRequestKind::Approval(_)) {
+        answered_server_requests.insert(request_key);
     }
     Ok(())
 }

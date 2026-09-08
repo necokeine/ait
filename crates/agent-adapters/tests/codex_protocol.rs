@@ -653,7 +653,7 @@ impl ApprovalHandler for PendingApproval {
 }
 
 #[tokio::test]
-async fn dispatches_events_while_an_approval_is_pending_and_honors_resolution() {
+async fn buffered_resolution_wins_over_immediately_completed_approvals() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
     let (server_read, mut server_write) = split(server_io);
@@ -674,19 +674,22 @@ async fn dispatches_events_while_an_approval_is_pending_and_honors_resolution() 
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
         )
         .await;
-        write_json(
-            &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1"}}),
-        )
-        .await;
+        // Repetition makes the regression fail reliably with an unbiased select.
+        for request_id in 100..132 {
+            write_json(
+                &mut server_write,
+                json!({"id":request_id,"method":"item/commandExecution/requestApproval","params":{"itemId":format!("cmd-{request_id}")}}),
+            )
+            .await;
+            write_json(
+                &mut server_write,
+                json!({"method":"serverRequest/resolved","params":{"threadId":"thr-1","requestId":request_id}}),
+            )
+            .await;
+        }
         write_json(
             &mut server_write,
             json!({"method":"item/agentMessage/delta","params":{"itemId":"answer","delta":"not blocked"}}),
-        )
-        .await;
-        write_json(
-            &mut server_write,
-            json!({"method":"serverRequest/resolved","params":{"threadId":"thr-1","requestId":99}}),
         )
         .await;
         assert!(
@@ -709,7 +712,7 @@ async fn dispatches_events_while_an_approval_is_pending_and_honors_resolution() 
             client_write,
             request(),
             client(),
-            Arc::new(PendingApproval::default()),
+            Arc::new(AcceptOnce),
             &sender,
         )
         .await
@@ -744,7 +747,7 @@ async fn dispatches_events_while_an_approval_is_pending_and_honors_resolution() 
 }
 
 #[tokio::test]
-async fn rejects_duplicate_request_ids_without_reinvoking_approval() {
+async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
     let (server_read, mut server_write) = split(server_io);
@@ -765,12 +768,31 @@ async fn rejects_duplicate_request_ids_without_reinvoking_approval() {
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
         )
         .await;
-        let approval = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1"}});
-        write_json(&mut server_write, approval.clone()).await;
-        write_json(&mut server_write, approval).await;
+        let answered = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-99"}});
+        write_json(&mut server_write, answered.clone()).await;
         let response = read_json(&mut lines).await;
         assert_eq!(response["id"], 99);
+        assert_eq!(response["result"]["decision"], "accept");
+        write_json(&mut server_write, answered).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), lines.next_line())
+                .await
+                .is_err(),
+            "an answered request must not receive a second response"
+        );
+
+        let pending = json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-100"}});
+        write_json(&mut server_write, pending.clone()).await;
+        write_json(&mut server_write, pending).await;
+        let response = read_json(&mut lines).await;
+        assert_eq!(response["id"], 100);
         assert_eq!(response["error"]["code"], -32600);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), lines.next_line())
+                .await
+                .is_err(),
+            "a duplicate pending request must receive exactly one response"
+        );
         write_json(
             &mut server_write,
             json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
@@ -785,7 +807,7 @@ async fn rejects_duplicate_request_ids_without_reinvoking_approval() {
             client_write,
             request(),
             client(),
-            Arc::new(PendingApproval::default()),
+            Arc::new(AcceptOnce),
             &sender,
         )
         .await
@@ -801,13 +823,20 @@ async fn rejects_duplicate_request_ids_without_reinvoking_approval() {
             .iter()
             .filter(|event| matches!(event, AgentEvent::ApprovalRequested { .. }))
             .count(),
-        1
+        2
     );
     assert!(events.iter().any(|event| matches!(
         event,
         AgentEvent::AdapterWarning { code: Some(code), .. }
             if code == "CODEX_SERVER_REQUEST_DUPLICATE"
     )));
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Completed {
+            status: AgentRunStatus::Completed,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
