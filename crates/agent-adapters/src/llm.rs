@@ -274,6 +274,56 @@ impl LLMClient {
         request
     }
 
+    /// Applies one caller-selected reasoning effort to a request.
+    ///
+    /// `OpenAI` Responses accepts `reasoning.effort`. `DeepSeek` Chat
+    /// Completions instead uses `reasoning_effort` while thinking is enabled; its
+    /// adapter-owned `off` choice must be expressed as `thinking.type =
+    /// "disabled"` and must not cross the wire as a reasoning effort.
+    /// Existing provider-specific request parameters are preserved.
+    ///
+    /// # Errors
+    /// Rejects an empty effort or non-object `additional_params` locally.
+    pub fn apply_reasoning_effort(
+        &self,
+        request: &mut CompletionRequest,
+        effort: &str,
+    ) -> Result<(), AdapterError> {
+        if effort.trim().is_empty() {
+            return Err(invalid("reasoning effort must be non-empty"));
+        }
+        if request.additional_params.is_none() {
+            request.additional_params = Some(serde_json::json!({}));
+        }
+        let params = request
+            .additional_params
+            .as_mut()
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| invalid("additional completion parameters must be an object"))?;
+        match self.provider() {
+            LLMProvider::OpenAI => {
+                let reasoning = params
+                    .entry("reasoning")
+                    .or_insert_with(|| serde_json::json!({}));
+                if let serde_json::Value::Object(reasoning) = reasoning {
+                    reasoning.insert("effort".into(), serde_json::json!(effort));
+                } else {
+                    *reasoning = serde_json::json!({"effort": effort});
+                }
+            }
+            LLMProvider::DeepSeek => {
+                params.remove("reasoning_effort");
+                if effort == "off" {
+                    params.insert("thinking".into(), serde_json::json!({"type": "disabled"}));
+                } else {
+                    params.insert("thinking".into(), serde_json::json!({"type": "enabled"}));
+                    params.insert("reasoning_effort".into(), serde_json::json!(effort));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Sends one non-streaming API call and preserves Rig content, usage and metadata.
     /// Returned tool calls are data only; the caller owns their execution.
     ///

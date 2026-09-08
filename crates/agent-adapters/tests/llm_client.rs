@@ -194,6 +194,64 @@ async fn both_providers_send_one_rig_completion_and_preserve_content_and_usage()
 }
 
 #[tokio::test]
+async fn reasoning_effort_uses_each_provider_wire_format() {
+    for (provider, effort) in [
+        (LLMProvider::OpenAI, "high"),
+        (LLMProvider::DeepSeek, "high"),
+        (LLMProvider::DeepSeek, "off"),
+    ] {
+        let mut fixture = Fixture::new(vec![(StatusCode::OK, completion(provider))]).await;
+        let client = fixture.client(provider);
+        let mut request = client.text_request("fixture-model", "hi");
+        request.additional_params = Some(json!({"metadata": {"source": "fixture"}}));
+        client.apply_reasoning_effort(&mut request, effort).unwrap();
+        client.complete(request).await.unwrap();
+        let body = fixture.request("POST", completion_path(provider)).await;
+        assert_eq!(body["metadata"]["source"], "fixture");
+        match (provider, effort) {
+            (LLMProvider::OpenAI, "high") => {
+                assert_eq!(body["reasoning"]["effort"], "high");
+                assert!(body["reasoning_effort"].is_null());
+                assert!(body["thinking"].is_null());
+            }
+            (LLMProvider::DeepSeek, "high") => {
+                assert_eq!(body["thinking"]["type"], "enabled");
+                assert_eq!(body["reasoning_effort"], "high");
+            }
+            (LLMProvider::DeepSeek, "off") => {
+                assert_eq!(body["thinking"]["type"], "disabled");
+                assert!(body["reasoning_effort"].is_null());
+            }
+            _ => unreachable!(),
+        }
+        assert!(fixture.requests.try_recv().is_err());
+    }
+}
+
+#[test]
+fn reasoning_effort_rejects_invalid_local_request_values() {
+    for provider in PROVIDERS {
+        let client = LLMClient::new(LLMClientConfig::new(provider, TEST_KEY)).unwrap();
+        let mut request = client.text_request("fixture-model", "hi");
+        assert_eq!(
+            client
+                .apply_reasoning_effort(&mut request, " ")
+                .unwrap_err()
+                .kind,
+            AdapterErrorKind::InvalidConfiguration
+        );
+        request.additional_params = Some(json!(false));
+        assert_eq!(
+            client
+                .apply_reasoning_effort(&mut request, "high")
+                .unwrap_err()
+                .kind,
+            AdapterErrorKind::InvalidConfiguration
+        );
+    }
+}
+
+#[tokio::test]
 async fn prompt_works_for_both_providers() {
     for provider in PROVIDERS {
         let mut fixture = Fixture::new(vec![(StatusCode::OK, completion(provider))]).await;

@@ -58,6 +58,7 @@ let text = client.prompt(&model, "Say hello.").await?;
 // Keep Rig's structured content (including tool calls/reasoning) and token usage.
 let mut request = client.completion_request(&model, "Explain ownership in Rust.");
 request.max_tokens = Some(256);
+client.apply_reasoning_effort(&mut request, "high")?;
 let response = client.complete(request).await?;
 # Ok(())
 # }
@@ -73,6 +74,12 @@ history and appends the current user message last. `LLMClientConfig.tool_sets`
 accepts exact provider/model overrides. See [the tool catalog](../tools/README.md)
 for the pinned DeepSeek Harness baseline and integration boundary.
 `prompt` and `text_request` omit tools for callers that consume only text.
+`apply_reasoning_effort` preserves other provider parameters and maps the
+model-catalog value to the selected API dialect. OpenAI receives
+`reasoning.effort`; DeepSeek receives `thinking: enabled` plus
+`reasoning_effort`, except the adapter-owned `off` choice becomes
+`thinking: disabled` without an invalid `reasoning_effort: off`. Omitting the
+method preserves the provider default.
 DeepSeek response normalization accepts null content and omitted tool-call
 indices before Rig deserialization; reasoning and call ids remain intact.
 Neither method executes tools, retries requests, or owns Message/Session/Run state.

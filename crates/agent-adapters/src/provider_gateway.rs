@@ -139,10 +139,9 @@ impl AgentProviderGateway for RigProviderGateway {
         let client = client(provider, credential_ref).await?;
         let mut request = text_request(&client, config, messages)?;
         if let Some(effort) = &config.reasoning_effort {
-            request.additional_params = Some(match provider.kind {
-                ProviderKind::OpenAI => serde_json::json!({"reasoning": {"effort": effort}}),
-                _ => serde_json::json!({"reasoning_effort": effort}),
-            });
+            client
+                .apply_reasoning_effort(&mut request, effort)
+                .map_err(|_| provider_error())?;
         }
         let response = client
             .complete(request)
