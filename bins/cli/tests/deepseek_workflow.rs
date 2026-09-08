@@ -256,36 +256,43 @@ impl Workflow {
         response["result"]["value"].clone()
     }
 
+    async fn cli(&self, name: &str, arguments: &[&str], seconds: u64) -> Value {
+        let output = self
+            .output(
+                Command::new(env!("CARGO_BIN_EXE_ait-cli"))
+                    .args(["--endpoint", &self.endpoint])
+                    .args(arguments)
+                    .current_dir(&self.root)
+                    .env("NO_PROXY", "*")
+                    .env("no_proxy", "*"),
+                seconds,
+            )
+            .await;
+        fs::write(self.root.join(format!("{name}.json")), &output).unwrap();
+        let response: Value = serde_json::from_str(&output).expect("CLI JSON envelope");
+        assert_eq!(response["api_version"], 1);
+        assert_eq!(response["ok"], true, "{response}");
+        response["result"]["value"].clone()
+    }
+
     async fn view(&self, name: &str) -> Value {
         let projects = self
-            .command(
-                &format!("{name}-projects"),
-                json!({"type": "list_projects"}),
-                20,
-            )
+            .cli(&format!("{name}-projects"), &["project", "list"], 20)
             .await;
         let agents = self
-            .command(
-                &format!("{name}-agents"),
-                json!({"type": "list_agents"}),
-                20,
-            )
+            .cli(&format!("{name}-agents"), &["agent", "list"], 20)
             .await;
         let sessions = self
-            .command(
-                &format!("{name}-sessions"),
-                json!({"type": "list_sessions", "project_id": null}),
-                20,
-            )
+            .cli(&format!("{name}-sessions"), &["session", "list"], 20)
             .await;
         let mut messages = Vec::new();
         let mut runs = Vec::new();
         for project in projects.as_array().unwrap() {
             let project_id = project["id"].as_str().unwrap();
             messages.extend(
-                self.command(
+                self.cli(
                     &format!("{name}-messages"),
-                    json!({"type": "list_messages", "project_id": project_id}),
+                    &["message", "list", "--project-id", project_id],
                     20,
                 )
                 .await
@@ -295,9 +302,9 @@ impl Workflow {
                 .cloned(),
             );
             runs.extend(
-                self.command(
+                self.cli(
                     &format!("{name}-runs"),
-                    json!({"type": "list_runs", "project_id": project_id}),
+                    &["run", "list", "--project-id", project_id],
                     20,
                 )
                 .await

@@ -11,26 +11,26 @@ CURSOR="$(awk '/^id:/ { cursor=$2 } END { print cursor+0 }' "$WF_ROOT/events.sse
 ait command '{"type":"create_session","id":"s-events","project_id":"p1","agent_id":"agent-demo"}'
 ait command '{"type":"send_message","session_id":"s-events","text":"保存重启前的状态"}'
 ait events --after "$CURSOR" | tee "$WF_ROOT/events-after.sse"
-for query in \
-  '{"type":"list_projects"}' \
-  '{"type":"list_agents"}' \
-  '{"type":"list_sessions","project_id":"p1"}' \
-  '{"type":"list_messages","project_id":"p1"}' \
-  '{"type":"list_runs","project_id":"p1"}'
-do ait command "$query"; done > "$WF_ROOT/before-restart.jsonl"
+{
+  ait project list
+  ait agent list
+  ait session list --project-id p1
+  ait message list --project-id p1
+  ait run list --project-id p1
+} > "$WF_ROOT/before-restart.jsonl"
 ```
 
 在运行本次 daemon 的终端 B 按 Ctrl-C，然后使用同一数据库路径和端口重新运行原启动命令。
 看到监听提示后回到终端 A：
 
 ```bash
-for query in \
-  '{"type":"list_projects"}' \
-  '{"type":"list_agents"}' \
-  '{"type":"list_sessions","project_id":"p1"}' \
-  '{"type":"list_messages","project_id":"p1"}' \
-  '{"type":"list_runs","project_id":"p1"}'
-do ait command "$query"; done > "$WF_ROOT/after-restart.jsonl"
+{
+  ait project list
+  ait agent list
+  ait session list --project-id p1
+  ait message list --project-id p1
+  ait run list --project-id p1
+} > "$WF_ROOT/after-restart.jsonl"
 diff "$WF_ROOT/before-restart.jsonl" "$WF_ROOT/after-restart.jsonl"
 ait events --after "$CURSOR"
 ```

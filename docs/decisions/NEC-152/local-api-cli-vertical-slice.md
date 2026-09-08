@@ -10,7 +10,7 @@
 
 ```bash
 cargo run -p ait-daemon -- --database ./ait.sqlite3 --listen 127.0.0.1:7314
-cargo run -p ait-cli -- command '{"type":"list_projects"}'
+cargo run -p ait-cli -- project list
 ```
 
 CLI 的 `command` 子命令接受版本一的 JSON command。例如注册 Agent：
@@ -28,8 +28,8 @@ cargo run -p ait-cli -- command \
 - `send_message`、`get_run`、`cancel_run`：交互与 Run 生命周期；
 - `create_cron`、`set_cron_enabled`、`trigger_cron`：持久化 Cron、启停与幂等 occurrence 触发；
 - `export_project`、`import_project`：版本化导出/原子导入无凭证 Project archive；
-- `list_projects`、`list_agents`、`list_sessions`、`list_messages`、`list_runs`、`list_crons`：
-  按实体或 Project 范围读取最终投影（NEC-224 修订）。
+- `project list`、`agent list`、`agent-provider list`、`session list`、`message list`、
+  `run list`、`cron list`：按实体或 Project 范围读取最终投影（NEC-224 修订）；底层仍复用相同 Command/API。
 
 生产命令不再通过 Provider kind 构造工具、排队、失败或审批状态。ToolUse/ToolResult 与审批恢复由
 runtime 的 scripted ports 覆盖；Provider 失败、queued checkpoint 与取消由 application 测试向

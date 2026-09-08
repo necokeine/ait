@@ -67,7 +67,7 @@ printf '演练目录：%s\n' "$WF_ROOT"
 target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1:17314
 ```
 
-看到监听地址后，在终端 A 执行 `ait command '{"type":"list_projects"}'`。若端口已被占用，给本次演练选择另一个端口，
+看到监听地址后，在终端 A 执行 `ait project list`。若端口已被占用，给本次演练选择另一个端口，
 同时修改 `AIT_ENDPOINT` 和 `--listen`。演练结束后在终端 B 按 Ctrl-C 停止本次服务。
 数据库、响应文件、归档都放在 `$WF_ROOT` 下，位于 Project 的 Git 工作目录之外，避免让发送输入的 Git 检查失败。
 
@@ -76,13 +76,14 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 ## 公共输入输出约定
 
-目前命令入口为 `command '<JSON>'`（或 `command -` 从 stdin 读取）、`events --after <cursor>`、
-`export --project-id <id> --output <file>`、`import --input <file> --workdir <dir>`。
-`--endpoint` 写在子命令前。不要假设已有 `ait project create` 等实体子命令。
-业务 command 的完整字段定义见 [contracts](../crates/contracts/src/lib.rs)，HTTP 映射见
+实体读取入口为 `project list`、`agent list`、`agent-provider list`、`session list [--project-id <id>]`、
+`message list --project-id <id>`、`run list --project-id <id>` 和 `cron list`。尚未包装的写操作使用
+`command '<JSON>'`（或 `command -` 从 stdin 读取）；其余入口包括 `events --after <cursor>`、
+`export --project-id <id> --output <file>` 和 `import --input <file> --workdir <dir>`。
+`--endpoint` 写在子命令前。业务 command 的完整字段定义见 [contracts](../crates/contracts/src/lib.rs)，HTTP 映射见
 [实体操作 API](../docs/decisions/NEC-166/entity-operation-http-api.md)。
 
-`command` 和成功的 `import` 输出一个 JSON 信封：
+实体读取命令、`command` 和成功的 `import` 输出一个 JSON 信封：
 
 ```json
 {"api_version":1,"ok":true,"result":{"kind":"session","value":{"id":"示意，实际还有其他字段"}}}
@@ -98,7 +99,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 | 当前限制 | 用户期望与后续验收方向 |
 | --- | --- |
-| 多数操作需要 JSON、手工 ID 和 jq | 后续实体命令应保留同一领域结果，并提供可发现的参数、ID 回传和帮助 |
+| 写操作仍多需 JSON、手工 ID 和 jq | 继续把写操作迁移为实体子命令，并保留同一领域结果、ID 回传和可发现帮助 |
 | `create_session` 仍要求 `agent_id` | Project 默认 Agent 当前是建议值；省略 Agent 的体验需单独设计和测试 |
 | 活动 Session 再次输入返回 `SESSION_BUSY` | ADR 要求进入现有 Run 队列；实现后需更新 WF-04 的当前行为断言并增加队列消费测试 |
 | `events` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |

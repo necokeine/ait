@@ -14,7 +14,7 @@ ait command '{"type":"send_message","session_id":"s-main","text":"执行一项�
 在终端 C 趁 Run 仍活动时读取 Session 的 `active_run_id`，查询并取消：
 
 ```bash
-ait command '{"type":"list_sessions","project_id":"p1"}' > "$WF_ROOT/running-sessions.json"
+ait session list --project-id p1 > "$WF_ROOT/running-sessions.json"
 RUN_ID="$(jq -r '.result.value[] | select(.id=="s-main") | .active_run_id' "$WF_ROOT/running-sessions.json")"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"cancel_run",run_id:$id}')"

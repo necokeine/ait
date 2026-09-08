@@ -20,7 +20,7 @@ npm run dev
 
 ```bash
 cargo run -p ait-daemon -- --database ./ait.sqlite3
-cargo run -p ait-cli -- command '{"type":"list_projects"}'
+cargo run -p ait-cli -- project list
 ```
 
 daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/register`、

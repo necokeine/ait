@@ -16,9 +16,9 @@ ait command '{"type":"send_message","session_id":"s-open","text":"沿这个方�
 
 ait command "$(jq -nc --arg at "$ROOT_ID" \
   '{type:"fork_session",id:"s-fork",project_id:"p1",agent_id:"agent-demo",at_message_id:$at,text:"从这里提出另一个方案"}')"
-ait command '{"type":"list_sessions","project_id":"p1"}'
-ait command '{"type":"list_messages","project_id":"p1"}'
-ait command '{"type":"list_runs","project_id":"p1"}'
+ait session list --project-id p1
+ait message list --project-id p1
+ait run list --project-id p1
 ```
 
 ## 验收与失败恢复

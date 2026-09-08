@@ -69,9 +69,9 @@ cd '演练目录'
 `AIT_ENDPOINT`，重新启动。
 
 ```bash
-ait command '{"type":"list_projects"}'
-ait command '{"type":"list_agents"}'
-ait command '{"type":"list_sessions","project_id":null}'
+ait project list
+ait agent list
+ait session list
 ```
 
 ### 3. 创建 example-project 和第一个空提交
@@ -117,9 +117,9 @@ ait command "$(jq -nc \
     text:"Create a minimal Rust binary package named example-project at the repository root, with Cargo.toml, Cargo.lock, src/main.rs and .gitignore ignoring /target/. Use no external dependencies. cargo run --offline --quiet must print exactly Hello, world! followed by a newline. Verify it. Do not create a Git commit; AIT will commit your changes."}')" \
   | tee "$WF_ROOT/run.json"
 jq -e '.ok == true and .result.value.status == "completed" and .result.value.error == null' "$WF_ROOT/run.json"
-ait command '{"type":"list_sessions","project_id":"example-project"}' | tee "$WF_ROOT/final-sessions.json"
-ait command '{"type":"list_messages","project_id":"example-project"}' | tee "$WF_ROOT/final-messages.json"
-ait command '{"type":"list_runs","project_id":"example-project"}' | tee "$WF_ROOT/final-runs.json"
+ait session list --project-id example-project | tee "$WF_ROOT/final-sessions.json"
+ait message list --project-id example-project | tee "$WF_ROOT/final-messages.json"
+ait run list --project-id example-project | tee "$WF_ROOT/final-runs.json"
 git -C "$WF_ROOT/example-project" log --oneline
 git -C "$WF_ROOT/example-project" status --porcelain=v1
 (

@@ -12,36 +12,7 @@ use rusqlite::{Connection, MAIN_DB, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
 const RETAINED_EVENTS: usize = 50_000;
-
-/// SQLite-backed normalized application records and transactional event outbox.
-pub struct SqliteControlStore {
-    connection: Mutex<Connection>,
-}
-
-impl SqliteControlStore {
-    /// Opens or creates a store, applies the schema, and migrates the retired JSON blob.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the database cannot be opened, initialized, or migrated.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, ControlStoreError> {
-        let connection = Connection::open(path).map_err(sql_error)?;
-        Self::initialize(connection)
-    }
-
-    /// Creates an isolated in-memory store for tests and embedded callers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the in-memory database cannot be initialized.
-    pub fn in_memory() -> Result<Self, ControlStoreError> {
-        Self::initialize(Connection::open_in_memory().map_err(sql_error)?)
-    }
-
-    fn initialize(mut connection: Connection) -> Result<Self, ControlStoreError> {
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode = WAL;
+const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
                  PRAGMA synchronous = FULL;
                  PRAGMA wal_autocheckpoint = 1000;
                  PRAGMA foreign_keys = ON;
@@ -139,9 +110,35 @@ impl SqliteControlStore {
                    run_id TEXT PRIMARY KEY,
                    body_json TEXT NOT NULL CHECK (json_valid(body_json)),
                    updated_at INTEGER NOT NULL
-                 ) STRICT;",
-            )
-            .map_err(sql_error)?;
+                 ) STRICT;";
+
+/// SQLite-backed normalized application records and transactional event outbox.
+pub struct SqliteControlStore {
+    connection: Mutex<Connection>,
+}
+
+impl SqliteControlStore {
+    /// Opens or creates a store, applies the schema, and migrates the retired JSON blob.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the database cannot be opened, initialized, or migrated.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, ControlStoreError> {
+        let connection = Connection::open(path).map_err(sql_error)?;
+        Self::initialize(connection)
+    }
+
+    /// Creates an isolated in-memory store for tests and embedded callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the in-memory database cannot be initialized.
+    pub fn in_memory() -> Result<Self, ControlStoreError> {
+        Self::initialize(Connection::open_in_memory().map_err(sql_error)?)
+    }
+
+    fn initialize(mut connection: Connection) -> Result<Self, ControlStoreError> {
+        connection.execute_batch(RECORD_SCHEMA).map_err(sql_error)?;
         migrate_legacy_blob(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),

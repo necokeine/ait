@@ -25,9 +25,9 @@ target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
   import --input "$WF_ROOT/project-archive.json" --workdir "$WF_ROOT/imported-project"
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
-  command '{"type":"list_sessions","project_id":"p1"}'
+  session list --project-id p1
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
-  command '{"type":"list_messages","project_id":"p1"}'
+  message list --project-id p1
 ```
 
 演练结束后在第三个终端按 Ctrl-C 停止目标服务。

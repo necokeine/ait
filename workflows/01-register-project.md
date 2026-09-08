@@ -6,7 +6,7 @@
 ## 操作
 
 ```bash
-ait command '{"type":"list_projects"}'
+ait project list
 ait command "$(jq -nc --arg workdir "$WF_ROOT/project" \
   '{type:"register_project",id:"p1",name:"演练项目",workdir:$workdir}')" \
   | tee "$WF_ROOT/project.json"
@@ -15,8 +15,8 @@ export ROOT_ID="$(jq -r '.result.value.root_message_id' "$WF_ROOT/project.json")
 ait command '{"type":"register_agent","id":"agent-demo","name":"Codex","config":{"provider_id":"builtin-codex","model":"gpt-5.6-sol","reasoning_effort":"high"}}'
 ait command '{"type":"set_project_default_agent","project_id":"p1","agent_id":"agent-demo"}'
 ait command '{"type":"create_session","id":"s-main","project_id":"p1","agent_id":"agent-demo"}'
-ait command '{"type":"list_sessions","project_id":"p1"}'
-ait command '{"type":"list_messages","project_id":"p1"}'
+ait session list --project-id p1
+ait message list --project-id p1
 ```
 
 本例使用 host sign-in 的 `builtin-codex`；发送输入前需确保本机 Codex 可用。真实端到端生成与提交见

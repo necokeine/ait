@@ -119,6 +119,19 @@ async fn wf01_register_project_and_agent() {
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["version"], 1);
     assert_eq!(session["name"], "");
+    assert_eq!(
+        success(
+            &workspace
+                .cli(&[
+                    "session",
+                    "list",
+                    "--project-id",
+                    project["id"].as_str().unwrap(),
+                ])
+                .await,
+        ),
+        json!([session])
+    );
     let snapshot = workspace.view().await;
     assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
     let root = entity(&snapshot, "messages", &project["root_message_id"]);
@@ -524,7 +537,20 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     let help = workspace.cli(&["--help"]).await;
     assert_eq!(help.status.code(), Some(0));
     let help_text = String::from_utf8(help.stdout).unwrap();
-    for command in ["command", "events", "export", "import", "--endpoint"] {
+    for command in [
+        "project",
+        "agent",
+        "agent-provider",
+        "session",
+        "message",
+        "run",
+        "cron",
+        "command",
+        "events",
+        "export",
+        "import",
+        "--endpoint",
+    ] {
         assert!(
             help_text.contains(command),
             "missing {command}: {help_text}"
@@ -533,6 +559,8 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     for arguments in [
         vec![],
         vec!["unknown"],
+        vec!["project"],
+        vec!["message", "list"],
         vec!["events", "--after", "invalid"],
         vec!["export"],
     ] {
@@ -559,9 +587,7 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         .await;
     assert_eq!(workspace.view().await, initial);
     workspace.stop().await;
-    let unavailable = workspace
-        .cli(&["command", r#"{"type":"list_projects"}"#])
-        .await;
+    let unavailable = workspace.cli(&["project", "list"]).await;
     assert_eq!(unavailable.status.code(), Some(1), "{unavailable:?}");
     assert!(unavailable.stdout.is_empty() && !unavailable.stderr.is_empty());
 }

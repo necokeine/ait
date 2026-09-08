@@ -152,28 +152,28 @@ impl Workspace {
 
     /// Test-only aggregate assembled through the public bounded list commands.
     pub async fn view(&self) -> Value {
-        let projects = self.command(json!({"type": "list_projects"})).await;
-        let agents = self.command(json!({"type": "list_agents"})).await;
-        let providers = self.command(json!({"type": "list_agent_providers"})).await;
-        let sessions = self
-            .command(json!({"type": "list_sessions", "project_id": null}))
-            .await;
-        let crons = self.command(json!({"type": "list_crons"})).await;
+        let projects = success(&self.cli(&["project", "list"]).await);
+        let agents = success(&self.cli(&["agent", "list"]).await);
+        let providers = success(&self.cli(&["agent-provider", "list"]).await);
+        let sessions = success(&self.cli(&["session", "list"]).await);
+        let crons = success(&self.cli(&["cron", "list"]).await);
         let mut messages = Vec::new();
         let mut runs = Vec::new();
         for project in projects.as_array().unwrap() {
             let project_id = project["id"].as_str().unwrap();
             messages.extend(
-                self.command(json!({"type": "list_messages", "project_id": project_id}))
-                    .await
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .cloned(),
+                success(
+                    &self
+                        .cli(&["message", "list", "--project-id", project_id])
+                        .await,
+                )
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
             );
             runs.extend(
-                self.command(json!({"type": "list_runs", "project_id": project_id}))
-                    .await
+                success(&self.cli(&["run", "list", "--project-id", project_id]).await)
                     .as_array()
                     .unwrap()
                     .iter()
