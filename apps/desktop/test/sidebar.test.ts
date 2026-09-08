@@ -71,6 +71,14 @@ test("starts branches only from the non-leaf Message context menu", async () => 
   assert.match(renderer, /directMessageChildren[\s\S]*branchSourceNodeId/);
 });
 
+test("keeps a long new-Session branch label inside the conversation pane", async () => {
+  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.conversation-pane \{[^}]*grid-template-columns: minmax\(0,1fr\);/);
+  assert.match(styles, /\.composer-wrap \{[^}]*min-width: 0;/);
+  assert.match(styles, /\.branch-context > span:nth-child\(2\) \{[^}]*flex: 1 1 0;[^}]*overflow: hidden;/);
+});
+
 test("shows Message provenance and child-path navigation in details", async () => {
   const renderer = await readFile(new URL("../src/renderer.ts", import.meta.url), "utf8");
 
