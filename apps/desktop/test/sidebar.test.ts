@@ -59,7 +59,7 @@ test("uses the titlebar toggle as the persistent Session tree state", async () =
   assert.match(styles, /\.icon-button\[aria-pressed="true"\]/);
 });
 
-test("starts branches only from the non-leaf Message context menu", async () => {
+test("derives from leaf and non-leaf Messages through the context menu", async () => {
   const [html, renderer] = await Promise.all([
     readFile(new URL("../src/index.html", import.meta.url), "utf8"),
     readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
@@ -67,8 +67,22 @@ test("starts branches only from the non-leaf Message context menu", async () => 
 
   assert.match(html, /id="message-context-menu"[\s\S]*id="message-start-session-action"/);
   assert.doesNotMatch(html, /Branch from here|select a tree node to branch/i);
-  assert.match(renderer, /addEventListener\("contextmenu"[\s\S]*node\?\.children\.length/);
-  assert.match(renderer, /directMessageChildren[\s\S]*branchSourceNodeId/);
+  assert.match(renderer, /addEventListener\("contextmenu"[\s\S]*openMessageContextMenu/);
+  assert.match(renderer, /isCurrentSessionLeaf\(view\.messages, session, source\.id\)/);
+  assert.doesNotMatch(renderer, /canBranch[\s\S]*directMessageChildren/);
+});
+
+test("marks multi-child Messages in the tree and expands their path selector", async () => {
+  const [renderer, styles] = await Promise.all([
+    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(renderer, /const hasBranches = node\.children\.length > 1/);
+  assert.match(renderer, /class="tree-branch-trigger"[\s\S]*aria-expanded/);
+  assert.match(renderer, /data-tree-child-root-id/);
+  assert.match(styles, /\.tree-branch-trigger/);
+  assert.match(styles, /\.tree-branches/);
 });
 
 test("keeps a long new-Session branch label inside the conversation pane", async () => {

@@ -17,6 +17,7 @@ import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messag
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
+import { submitSessionDerivation } from "./session-derivation.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
@@ -212,11 +213,25 @@ class DaemonClient {
     }
 
     const id = randomUUID();
-    const run = await this.post("/v1/session/submit-fork", "run", {
-      id, project_id: params.projectId, agent_id: params.agentId,
-      at_message_id: params.sourceMessageId, text: params.content,
-    }) as { id: string };
-    return { view: await this.view(String(params.projectId)), selectedSessionId: id, runId: run.id };
+    const currentSessionId = String(params.currentSessionId);
+    const result = await submitSessionDerivation({
+      currentSessionId,
+      newSessionId: id,
+      reuseCurrentSession: params.reuseCurrentSession === true,
+      submitCurrent: () => this.post("/v1/session/submit-message", "run", {
+        session_id: currentSessionId, text: params.content,
+      }) as Promise<{ id: string }>,
+      submitFork: () => this.post("/v1/session/submit-fork", "run", {
+        id, project_id: params.projectId, agent_id: params.agentId,
+        at_message_id: params.sourceMessageId, text: params.content,
+      }) as Promise<{ id: string }>,
+    });
+    return {
+      view: await this.view(String(params.projectId)),
+      selectedSessionId: result.selectedSessionId,
+      runId: result.run.id,
+      reusedCurrentSession: result.reusedCurrentSession,
+    };
   }
 
   stop(): void {

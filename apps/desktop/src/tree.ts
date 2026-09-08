@@ -121,6 +121,15 @@ export function directMessageChildren(
     .toSorted(compareMessages);
 }
 
+export function isCurrentSessionLeaf(
+  messages: DesktopMessage[],
+  session: DesktopSession,
+  messageId: string,
+): boolean {
+  return session.currentMessageId === messageId
+    && !messages.some((message) => message.parentMessageId === messageId);
+}
+
 function collectChildren(
   messages: DesktopMessage[],
   byId: ReadonlyMap<string, DesktopMessage>,

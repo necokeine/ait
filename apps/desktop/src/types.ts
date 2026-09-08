@@ -262,10 +262,15 @@ export interface AitDesktopApi {
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {
     projectId: string;
+    currentSessionId: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
-  }): Promise<RunSubmission & { selectedSessionId: string }>;
+    reuseCurrentSession: boolean;
+  }): Promise<RunSubmission & {
+    selectedSessionId: string;
+    reusedCurrentSession: boolean;
+  }>;
 }
 
 declare global {
