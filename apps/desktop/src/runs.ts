@@ -24,7 +24,7 @@ export interface RecoveryNotice {
   message: string;
 }
 
-interface StartupWorkspaceSnapshot {
+interface StartupWorkspaceView {
   projects: Array<{ id: string; name: string }>;
   sessions: Array<{ id: string; project_id: string; name?: string; title?: string | null }>;
   runs: Array<{
@@ -34,7 +34,7 @@ interface StartupWorkspaceSnapshot {
 }
 
 /** Projects startup-recovered Runs into persistent, location-aware UI notices. */
-export function startupRecoveryNotices(workspace: StartupWorkspaceSnapshot): RecoveryNotice[] {
+export function startupRecoveryNotices(workspace: StartupWorkspaceView): RecoveryNotice[] {
   return workspace.runs.flatMap((run) => {
     if (run.status !== "interrupted") return [];
     const project = workspace.projects.find((candidate) => candidate.id === run.project_id);
@@ -72,15 +72,15 @@ export function runFailure(value: unknown): RunFailure | undefined {
 /** Keeps a fork on its source Session until the new Session's Run is terminally complete. */
 export function pendingBranchResolution(
   pending: PendingBranch,
-  snapshot: {
+  view: {
     sessions: Array<{ id: string }>;
     runs: Array<{ id: string; status: string; error?: { message?: string } }>;
   },
 ): PendingBranchResolution {
-  const run = snapshot.runs.find((candidate) => candidate.id === pending.runId);
+  const run = view.runs.find((candidate) => candidate.id === pending.runId);
   if (!run || !isTerminalStatus(run.status)) return { kind: "pending" };
   if (run.status === "completed") {
-    return snapshot.sessions.some((session) => session.id === pending.sessionId)
+    return view.sessions.some((session) => session.id === pending.sessionId)
       ? { kind: "ready", sessionId: pending.sessionId }
       : { kind: "pending" };
   }

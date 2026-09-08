@@ -21,7 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
-  "workspace.snapshot", "settings.get", "settings.save", "settings.reset",
+  "workspace.view", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
@@ -55,8 +55,9 @@ interface WorkspaceView {
 class DaemonClient {
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
-  private snapshotRevision = 0;
-  private snapshotQueue: Promise<void> = Promise.resolve();
+  private viewRevision = 0;
+  private viewQueue: Promise<void> = Promise.resolve();
+  private viewedProjectId: string | undefined;
   private eventAbort: AbortController | undefined;
   private eventLoop: Promise<void> | undefined;
   private eventCursor = 0;
@@ -74,7 +75,9 @@ class DaemonClient {
     if (!allowedMethods.has(method)) throw new Error("Unsupported desktop operation.");
     await this.ensureStarted();
     const params = objectParams(rawParams);
-    if (method === "workspace.snapshot") return this.snapshot();
+    if (method === "workspace.view") {
+      return this.view(typeof params.projectId === "string" ? params.projectId : undefined);
+    }
     if (method === "settings.get") return this.get("/v1/settings", "settings");
     if (method === "settings.save") return this.post("/v1/settings/save", "settings", {
       expected_revision: params.expectedRevision, values: params.values,
@@ -82,7 +85,7 @@ class DaemonClient {
     if (method === "settings.reset") return this.post("/v1/settings/reset", "settings", {});
     if (method === "provider.save") {
       await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "provider.discover-models") {
       return this.post("/v1/agent-provider/discover-models", "provider_models", {
@@ -91,17 +94,17 @@ class DaemonClient {
     }
     if (method === "provider.refresh-models") {
       await this.post("/v1/agent-provider/refresh-models", "agent_provider", { provider_id: params.providerId });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "agent.save") {
       await this.post(params.id ? "/v1/agent/update" : "/v1/agent/register", "agent", {
         id: params.id || randomUUID(), name: params.name, config: params.config,
       });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "session.set-config") {
       await this.post("/v1/session/set-config", "session", { session_id: params.sessionId, config: params.config });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "project.choose-directory") {
       const result = await dialog.showOpenDialog({
@@ -113,8 +116,8 @@ class DaemonClient {
     if (method === "project.open-file") {
       const projectId = typeof params.projectId === "string" ? params.projectId : "";
       const reference = typeof params.path === "string" ? params.path : "";
-      const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
-      const project = workspace.projects.find((candidate) => candidate.id === projectId);
+      const projects = await this.get("/v1/project/list", "projects") as WorkspaceView["projects"];
+      const project = projects.find((candidate) => candidate.id === projectId);
       if (!project) throw new Error("Project not found.");
       const path = await resolveProjectPath(project.workdir, reference);
       const line = positiveInteger(params.line);
@@ -139,50 +142,50 @@ class DaemonClient {
       await this.post("/v1/project/set-default-agent", "project", {
         project_id: id, agent_id: params.agentId,
       });
-      return { snapshot: await this.snapshot(), selectedProjectId: id };
+      return { view: await this.view(id), selectedProjectId: id };
     }
     if (method === "project.set-default-agent") {
       await this.post("/v1/project/set-default-agent", "project", {
         project_id: params.projectId, agent_id: params.agentId,
       });
-      return this.snapshot();
+      return this.view(String(params.projectId));
     }
     if (method === "session.create") {
       const id = randomUUID();
       await this.post("/v1/session/create", "session", {
         id, project_id: params.projectId, agent_id: params.agentId,
       });
-      return { snapshot: await this.snapshot(), selectedSessionId: id };
+      return { view: await this.view(String(params.projectId)), selectedSessionId: id };
     }
     if (method === "session.set-agent") {
       await this.post("/v1/session/set-agent", "session", {
         session_id: params.sessionId, agent_id: params.agentId,
       });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "session.rename") {
       await this.post("/v1/session/rename", "session", {
         session_id: params.sessionId, name: params.name,
       });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "session.set-title") {
       await this.post("/v1/session/set-title", "session", {
         session_id: params.sessionId, title: params.title,
       });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "session.generate-title") {
       await this.post("/v1/session/generate-title", "session", {
         session_id: params.sessionId, prompt: params.prompt,
       });
-      return this.snapshot();
+      return this.view();
     }
     if (method === "session.send-message") {
       const run = await this.post("/v1/session/submit-message", "run", {
         session_id: params.sessionId, text: params.content,
       }) as { id: string };
-      return { snapshot: await this.snapshot(), runId: run.id };
+      return { view: await this.view(), runId: run.id };
     }
 
     const id = randomUUID();
@@ -190,7 +193,7 @@ class DaemonClient {
       id, project_id: params.projectId, agent_id: params.agentId,
       at_message_id: params.sourceMessageId, text: params.content,
     }) as { id: string };
-    return { snapshot: await this.snapshot(), selectedSessionId: id, runId: run.id };
+    return { view: await this.view(String(params.projectId)), selectedSessionId: id, runId: run.id };
   }
 
   stop(): void {
@@ -229,15 +232,18 @@ class DaemonClient {
   }
 
   private async ensureBuiltInAgents(): Promise<void> {
-    const workspace = await this.get("/v1/workspace/snapshot", "workspace") as WorkspaceView;
-    if (!workspace.agents.some((agent) => agent.id === builtInCodexAgentId)) {
+    const [projects, agents] = await Promise.all([
+      this.get("/v1/project/list", "projects") as Promise<WorkspaceView["projects"]>,
+      this.get("/v1/agent/list", "agents") as Promise<WorkspaceView["agents"]>,
+    ]);
+    if (!agents.some((agent) => agent.id === builtInCodexAgentId)) {
       await this.post("/v1/agent/register", "agent", {
         id: builtInCodexAgentId,
         name: "Codex",
         config: { provider_id: "builtin-codex", model: builtInCodexModel, reasoning_effort: "low" },
       });
     }
-    await Promise.all(workspace.projects
+    await Promise.all(projects
       .filter((project) => project.default_agent_id === legacyBuiltInCodexAgentId)
       .map((project) => this.post("/v1/project/set-default-agent", "project", {
         project_id: project.id, agent_id: builtInCodexAgentId,
@@ -246,7 +252,7 @@ class DaemonClient {
 
   private async isReady(): Promise<boolean> {
     try {
-      const response = await fetch(`${endpoint}/v1/workspace/snapshot`, { signal: AbortSignal.timeout(500) });
+      const response = await fetch(`${endpoint}/v1/project/list`, { signal: AbortSignal.timeout(500) });
       return response.ok;
     } catch { return false; }
   }
@@ -372,29 +378,44 @@ class DaemonClient {
     }
   }
 
-  private snapshot(): Promise<unknown> {
-    const result = this.snapshotQueue.then(() => this.readSnapshot());
-    this.snapshotQueue = result.then(() => undefined, () => undefined);
+  private view(projectId?: string): Promise<unknown> {
+    const result = this.viewQueue.then(() => this.readView(projectId));
+    this.viewQueue = result.then(() => undefined, () => undefined);
     return result;
   }
 
-  private async readSnapshot(): Promise<unknown> {
-    const [workspace, progressValues] = await Promise.all([
-      this.get("/v1/workspace/snapshot", "workspace") as Promise<WorkspaceView>,
+  private async readView(projectId?: string): Promise<unknown> {
+    const [projects, agents, providers, sessions, progressValues] = await Promise.all([
+      this.get("/v1/project/list", "projects") as Promise<WorkspaceView["projects"]>,
+      this.get("/v1/agent/list", "agents") as Promise<WorkspaceView["agents"]>,
+      this.get("/v1/agent-provider/list", "agent_providers") as Promise<WorkspaceView["providers"]>,
+      this.get("/v1/session/list", "sessions") as Promise<WorkspaceView["sessions"]>,
       fetch(`${endpoint}/v1/run/progress`).then(async (response) => {
         if (!response.ok) throw new Error(`Ait daemon returned HTTP ${response.status}.`);
         return response.json() as Promise<unknown[]>;
       }),
     ]);
+    const candidate = projectId ?? this.viewedProjectId;
+    const selectedProjectId = projects.some((project) => project.id === candidate)
+      ? candidate
+      : sessions.at(-1)?.project_id ?? projects[0]?.id;
+    this.viewedProjectId = selectedProjectId;
+    const [messages, runs] = selectedProjectId
+      ? await Promise.all([
+        this.get(`/v1/message/list?project_id=${encodeURIComponent(selectedProjectId)}`, "messages") as Promise<WorkspaceView["messages"]>,
+        this.get(`/v1/run/list?project_id=${encodeURIComponent(selectedProjectId)}`, "runs") as Promise<WorkspaceView["runs"]>,
+      ])
+      : [[], []];
+    const workspace: WorkspaceView = { projects, agents, providers, sessions, messages, runs };
     const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
     const activeRunIds = new Set(workspace.sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
     const runProgress = progressValues
       .map(progressFromCheckpoint)
       .filter((progress): progress is RunProgress => progress !== undefined && activeRunIds.has(progress.runId));
-    this.snapshotRevision += 1;
+    this.viewRevision += 1;
     return {
       protocolVersion: 1,
-      revision: this.snapshotRevision,
+      revision: this.viewRevision,
       projects: workspace.projects.map((project) => ({
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,

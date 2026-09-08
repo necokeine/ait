@@ -17,7 +17,9 @@ ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":178848
 ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788480000000}'
 # 另一个 occurrence
 ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788566400000}'
-ait snapshot
+ait cron list
+ait message list --project-id p1
+ait run list --project-id p1
 ```
 
 `scheduled_at` 是 Unix epoch 毫秒，示例固定数值仅标识演练 occurrence。

@@ -42,7 +42,7 @@ test("creates a Session directly with the Project default Agent", async () => {
   ]);
 
   assert.doesNotMatch(html, /id="session-dialog"/);
-  assert.match(renderer, /availableProjectDefaultAgentId\(project, snapshot\.agents\)/);
+  assert.match(renderer, /availableProjectDefaultAgentId\(project, view\.agents\)/);
   assert.match(renderer, /window\.ait\.createSession\(\{ projectId: project\.id, agentId \}\)/);
 });
 

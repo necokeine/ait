@@ -48,10 +48,10 @@ test("immediately completed first Runs still schedule their title", () => {
 
 test("terminal observation before submit response converges when the Run is registered", () => {
   const pending = new PendingSessionTitles();
-  const terminalSnapshot = [titleSession(false)];
+  const terminalView = [titleSession(false)];
   const terminalRuns = [titleRun("completed")];
-  assert.deepEqual(pending.takeReady(terminalSnapshot, terminalRuns), []);
+  assert.deepEqual(pending.takeReady(terminalView, terminalRuns), []);
 
   pending.register("run-a", "session-a", "Out-of-order prompt");
-  assert.equal(pending.takeReady(terminalSnapshot, terminalRuns)[0]?.prompt, "Out-of-order prompt");
+  assert.equal(pending.takeReady(terminalView, terminalRuns)[0]?.prompt, "Out-of-order prompt");
 });

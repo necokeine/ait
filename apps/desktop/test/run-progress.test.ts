@@ -8,7 +8,7 @@ import {
   progressFromCheckpoint,
   terminalRunForSession,
 } from "../src/run-progress.js";
-import type { DesktopSnapshot } from "../src/types.js";
+import type { DesktopView } from "../src/types.js";
 
 const base = {
   version: 1,
@@ -101,13 +101,13 @@ test("renders failure and cancellation as terminal states rather than connection
   assert.ok(cancelled.includes("Run cancelled"));
 });
 
-test("a cancellation event refreshes an active snapshot into its cancelled terminal card", () => {
+test("a cancellation event refreshes an active view into its cancelled terminal card", () => {
   const session = {
     id: "session-a", projectId: "project-a", name: "", title: "Session", description: "",
     titleGenerationStarted: false, currentMessageId: "message-a", agentId: "agent-a", version: 1,
     active: true, activeRunId: "run-a", updatedAt: 0,
   };
-  const active: Pick<DesktopSnapshot, "sessions" | "runs"> = {
+  const active: Pick<DesktopView, "sessions" | "runs"> = {
     sessions: [session],
     runs: [{
       id: "run-a", sessionId: "session-a", baseMessageId: "message-a",
@@ -122,7 +122,7 @@ test("a cancellation event refreshes an active snapshot into its cancelled termi
   assert.equal(terminalRunForSession(active, "session-a"), undefined);
   assert.equal(isTerminalRunEvent(cancelledEvent), true);
 
-  const authoritative: Pick<DesktopSnapshot, "sessions" | "runs"> = {
+  const authoritative: Pick<DesktopView, "sessions" | "runs"> = {
     sessions: [{ ...session, active: false, activeRunId: null, version: 2 }],
     runs: [{
       id: "run-a", sessionId: "session-a", baseMessageId: "message-a",

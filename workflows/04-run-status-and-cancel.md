@@ -14,8 +14,8 @@ ait command '{"type":"send_message","session_id":"s-main","text":"执行一项�
 在终端 C 趁 Run 仍活动时读取 Session 的 `active_run_id`，查询并取消：
 
 ```bash
-ait snapshot > "$WF_ROOT/running.json"
-RUN_ID="$(jq -r '.result.value.sessions[] | select(.id=="s-main") | .active_run_id' "$WF_ROOT/running.json")"
+ait session list --project-id p1 > "$WF_ROOT/running-sessions.json"
+RUN_ID="$(jq -r '.result.value[] | select(.id=="s-main") | .active_run_id' "$WF_ROOT/running-sessions.json")"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"cancel_run",run_id:$id}')"
 ait command '{"type":"send_message","session_id":"s-main","text":"取消后继续处理"}'
@@ -36,7 +36,7 @@ ait command '{"type":"send_message","session_id":"s-main","text":"取消后继�
 若任务在终端 C 读取前已经完成，`active_run_id` 会是 `null`；不要伪造 Run ID。换一个耗时任务重试，
 或直接检查已完成结果。取消与模型完成发生竞态时，以 `get_run` 返回的持久化终态为准。
 
-当前活动 Session 收到再次输入或改绑请求时返回 `SESSION_BUSY`，快照不变。
+当前活动 Session 收到再次输入或改绑请求时返回 `SESSION_BUSY`，相关记录不变。
 ADR 期望运行中的新输入进入同一 Run 队列；这是待实现差距。
 审批恢复和队列消费尚未接入这组 CLI 流程；runtime 已通过 scripted approval/tool ports 验证状态机。
 

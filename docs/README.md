@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/NEC-224/adr-001-record-oriented-control-storage.md`：控制面按实体记录和 Project 范围读取，
+  SQLite 具名表迁移，以及公开 Workspace Snapshot 命令/API/IPC 的移除；物理双层数据库继续遵循 NEC-146。
+
 - `decisions/NEC-212/adr-001-workspace-run-recovery-and-git-settlement.md`：在 NEC-209 隔离
   worktree/补偿发布协议之上保存稳定 operation/lease 与完整结果 checkpoint，并在 daemon readiness
   后安全续跑 queued Run 或对账已 checkpoint 的 Git 结果。

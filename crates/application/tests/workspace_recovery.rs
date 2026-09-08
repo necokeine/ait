@@ -1,6 +1,8 @@
 //! Cross-layer recovery tests using the production Codex Git adapter.
 #![allow(clippy::pedantic)]
 
+mod support;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -17,7 +19,7 @@ use ait_agent_adapters::{
     AgentStream, codex::CodexWorkspaceAgent,
 };
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult, RunView, WorkspaceView};
+use ait_contracts::{Command, CommandResult, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     ControlStore, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
@@ -31,6 +33,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::sync::Semaphore;
+
+use support::{ControlStoreTestExt, WorkspaceView, workspace as read_workspace};
 
 #[derive(Debug, Default)]
 struct ScriptedAdapter {
@@ -324,10 +328,7 @@ async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
 }
 
 async fn workspace(service: &LocalControlService) -> WorkspaceView {
-    let CommandResult::Workspace(workspace) = ok(service, Command::Snapshot).await else {
-        panic!("expected workspace")
-    };
-    workspace
+    read_workspace(service).await
 }
 
 async fn register_agent(service: &LocalControlService) {
@@ -421,10 +422,6 @@ async fn rewind_completed_runs(store: &SqliteControlStore, runs: &[RunView]) {
     let snapshot = store.load().await.unwrap();
     let mut value = snapshot.value;
     for completed in runs {
-        value["messages"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|message| message["id"].as_str() != completed.last_message_id.as_deref());
         let run = value["runs"]
             .as_array_mut()
             .unwrap()
@@ -588,8 +585,9 @@ async fn ambiguous_git_recovery_interrupts_only_its_run_and_healthy_recovery_con
         let healthy_after = view.runs.iter().find(|run| run.id == healthy.id).unwrap();
         assert_eq!(bad_after.status, "interrupted", "mismatch: {mismatch:?}");
         assert_eq!(healthy_after.status, "completed", "mismatch: {mismatch:?}");
-        assert_eq!(assistant_count(&view, &bad), 0);
-        assert_eq!(assistant_count(&view, &healthy), 1);
+        // Rewinding the Run cannot erase its immutable historical Message.
+        assert_eq!(assistant_count(&view, &bad), 1);
+        assert_eq!(assistant_count(&view, &healthy), 2);
         assert!(
             view.sessions
                 .iter()
@@ -643,7 +641,7 @@ async fn already_published_recovery_claims_finalization_before_cancel_can_win() 
     let view = workspace(&recovery).await;
     let final_run = view.runs.iter().find(|run| run.id == completed.id).unwrap();
     assert_eq!(final_run.status, "completed");
-    assert_eq!(assistant_count(&view, &completed), 1);
+    assert_eq!(assistant_count(&view, &completed), 2);
     let assistant = view
         .messages
         .iter()

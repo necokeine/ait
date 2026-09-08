@@ -31,7 +31,13 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/cron/create` | `CreateCron` |
 | `POST` | `/v1/cron/set-enabled` | `SetCronEnabled` |
 | `POST` | `/v1/cron/trigger` | `TriggerCron` |
-| `GET` | `/v1/workspace/snapshot` | `Snapshot` |
+| `GET` | `/v1/project/list` | `ListProjects` |
+| `GET` | `/v1/agent/list` | `ListAgents` |
+| `GET` | `/v1/agent-provider/list` | `ListAgentProviders` |
+| `GET` | `/v1/session/list` | `ListSessions` |
+| `GET` | `/v1/message/list?project_id=<id>` | `ListMessages` |
+| `GET` | `/v1/run/list?project_id=<id>` | `ListRuns` |
+| `GET` | `/v1/cron/list` | `ListCrons` |
 | `GET` | `/v1/settings` | `GetSettings` |
 | `POST` | `/v1/settings/save` | `SaveSettings` |
 | `POST` | `/v1/settings/reset` | `ResetSettings` |

@@ -17,7 +17,10 @@ use std::{
 use ait_application::LocalControlService;
 use ait_contracts::{Command as ControlCommand, CommandResult};
 use ait_domain::DomainError;
-use ait_ports::{ControlStore, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::{
+    ControlChange, ControlFilter, ControlRecordKind, ControlStore, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+};
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -207,16 +210,18 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
-    let snapshot: Value = client
-        .get(format!("{base_url}/v1/workspace/snapshot"))
+    let messages: Value = client
+        .get(format!(
+            "{base_url}/v1/message/list?project_id=daemon-codex-project"
+        ))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_ok(&snapshot);
-    let messages = snapshot["result"]["value"]["messages"].as_array().unwrap();
+    assert_ok(&messages);
+    let messages = messages["result"]["value"].as_array().unwrap();
     assert!(messages.iter().any(|message| {
         message["role"] == "assistant" && message["text"] == ASSISTANT_RESPONSE
     }));
@@ -281,22 +286,24 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     daemon.assert_running();
     let completed = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            let snapshot: Value = client
-                .get(format!("{base_url}/v1/workspace/snapshot"))
+            let runs: Value = client
+                .get(format!(
+                    "{base_url}/v1/run/list?project_id=recovery-project"
+                ))
                 .send()
                 .await
                 .unwrap()
                 .json()
                 .await
                 .unwrap();
-            let run = snapshot["result"]["value"]["runs"]
+            let run = runs["result"]["value"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .find(|run| run["id"] == run_id)
                 .unwrap();
             if run["status"] == "completed" {
-                break snapshot;
+                break runs;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -317,7 +324,11 @@ async fn bind_failure_does_not_claim_or_fence_a_queued_recovery() {
     let database = temporary.path().join("ait.sqlite3");
     let run_id = seed_queued_run(&database, &project).await;
     let store = SqliteControlStore::open(&database).unwrap();
-    let before = store.load().await.unwrap();
+    let filters = [
+        ControlFilter::project(ControlRecordKind::Run, "recovery-project"),
+        ControlFilter::project(ControlRecordKind::Session, "recovery-project"),
+    ];
+    let before = store.read(&filters).await.unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
 
@@ -332,16 +343,15 @@ async fn bind_failure_does_not_claim_or_fence_a_queued_recovery() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Address already in use"));
-    let after = store.load().await.unwrap();
+    let after = store.read(&filters).await.unwrap();
     assert_eq!(after, before);
-    let run = after.value["runs"]
-        .as_array()
-        .unwrap()
+    let run = after
+        .records
         .iter()
-        .find(|run| run["id"] == run_id)
+        .find(|record| record.kind == ControlRecordKind::Run && record.id == run_id)
         .unwrap();
-    assert_eq!(run["status"], "queued");
-    assert_eq!(run["phase"], "queued");
+    assert_eq!(run.value["status"], "queued");
+    assert_eq!(run.value["phase"], "queued");
 }
 
 async fn seed_queued_run(database: &Path, project: &Path) -> String {
@@ -384,21 +394,37 @@ async fn seed_queued_run(database: &Path, project: &Path) -> String {
     };
     assert_eq!(completed.status, "completed");
 
-    let snapshot = store.load().await.unwrap();
-    let mut value = snapshot.value;
-    value["messages"]
-        .as_array_mut()
+    let state = store
+        .read(&[
+            ControlFilter::id(ControlRecordKind::Run, &completed.id),
+            ControlFilter::id(ControlRecordKind::Session, "recovery-session"),
+        ])
+        .await
+        .unwrap();
+    let mut run = state
+        .records
+        .iter()
+        .find(|record| record.kind == ControlRecordKind::Run)
         .unwrap()
-        .retain(|message| message["id"] != completed.last_message_id.as_deref().unwrap());
-    let run = value["runs"].as_array_mut().unwrap().first_mut().unwrap();
-    run["status"] = Value::String("queued".into());
-    run["phase"] = Value::String("queued".into());
-    run["last_message_id"] = Value::Null;
-    run["error"] = Value::Null;
-    value["sessions"][0]["active_run_id"] = Value::String(completed.id.clone());
-    value["sessions"][0]["current_message_id"] = Value::String(completed.base_message_id.clone());
+        .clone();
+    run.value["status"] = Value::String("queued".into());
+    run.value["phase"] = Value::String("queued".into());
+    run.value["last_message_id"] = Value::Null;
+    run.value["error"] = Value::Null;
+    let mut session = state
+        .records
+        .iter()
+        .find(|record| record.kind == ControlRecordKind::Session)
+        .unwrap()
+        .clone();
+    session.value["active_run_id"] = Value::String(completed.id.clone());
+    session.value["current_message_id"] = Value::String(completed.base_message_id.clone());
     store
-        .commit(snapshot.revision, value, Vec::new())
+        .apply(
+            state.revision,
+            vec![ControlChange::Put(run), ControlChange::Put(session)],
+            Vec::new(),
+        )
         .await
         .unwrap();
     completed.id
@@ -414,7 +440,7 @@ fn unused_loopback_address() -> SocketAddr {
 async fn wait_until_ready(client: &Client, base_url: &str, daemon: &mut DaemonGuard) {
     for _ in 0..100 {
         if client
-            .get(format!("{base_url}/v1/workspace/snapshot"))
+            .get(format!("{base_url}/v1/project/list"))
             .send()
             .await
             .is_ok()
