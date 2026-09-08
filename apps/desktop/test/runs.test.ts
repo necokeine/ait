@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runFailure, startupRecoveryNotices } from "../src/runs.js";
+import { pendingBranchResolution, runFailure, startupRecoveryNotices } from "../src/runs.js";
 
 test("surfaces a failed Codex run returned by send-message", () => {
   assert.deepEqual(runFailure({
@@ -59,4 +59,28 @@ test("projects startup-interrupted Runs with Project and Session locations", () 
     code: "RUN_RECOVERY_FAILED",
     message: "Git index changed after checkpoint.",
   }]);
+});
+
+test("keeps a new branch pending until its Run is completed and its Session exists", () => {
+  const pending = { sourceMessageId: "message-a", sessionId: "session-new", runId: "run-new" };
+  assert.deepEqual(pendingBranchResolution(pending, {
+    sessions: [{ id: "session-new" }],
+    runs: [{ id: "run-new", status: "settling" }],
+  }), { kind: "pending" });
+  assert.deepEqual(pendingBranchResolution(pending, {
+    sessions: [],
+    runs: [{ id: "run-new", status: "completed" }],
+  }), { kind: "pending" });
+  assert.deepEqual(pendingBranchResolution(pending, {
+    sessions: [{ id: "session-new" }],
+    runs: [{ id: "run-new", status: "completed" }],
+  }), { kind: "ready", sessionId: "session-new" });
+});
+
+test("keeps the source Session selected when new branch generation fails", () => {
+  const pending = { sourceMessageId: "message-a", sessionId: "session-new", runId: "run-new" };
+  assert.deepEqual(pendingBranchResolution(pending, {
+    sessions: [{ id: "session-new" }],
+    runs: [{ id: "run-new", status: "failed", error: { message: "Provider unavailable." } }],
+  }), { kind: "failed", message: "Provider unavailable." });
 });

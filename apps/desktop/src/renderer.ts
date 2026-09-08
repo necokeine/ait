@@ -3,7 +3,8 @@ import { createAgentsPage } from "./agents-page.js";
 import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgress, renderRunTerminal } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
-import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
+import { pendingBranchResolution, type PendingBranch } from "./runs.js";
+import { buildMessageTimeline, directMessageChildren, messageText, pathToMessage, resolveBranchHead, sessionForBranch, type TimelineNode } from "./tree.js";
 import {
   agentDisplayName,
   agentLabel,
@@ -49,16 +50,19 @@ const projectDialog = $("#project-dialog");
 const projectSettingsDialog = $("#project-settings-dialog");
 const renameSessionDialog = $("#rename-session-dialog");
 const sessionContextMenu = $<HTMLElement>("#session-context-menu");
+const messageContextMenu = $<HTMLElement>("#message-context-menu");
 
 let snapshot: DesktopSnapshot | undefined;
 let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
-let selectedNodeId: string | undefined;
+let inspectedNodeId: string | undefined;
+let branchSourceNodeId: string | undefined;
+let messageContextNodeId: string | undefined;
+let pendingBranch: PendingBranch | undefined;
 let configuringProjectId: string | undefined;
 let renamingSessionId: string | undefined;
 let creatingSessionProjectId: string | undefined;
 let viewedTreeHeadId: string | undefined;
-let branchPickerNodeId: string | undefined;
 let configuringSessionId: string | undefined;
 let timeline: TimelineNode[] = [];
 const pendingSessions = new Set<string>();
@@ -118,7 +122,6 @@ function bindInteractions(): void {
   });
   $("#sidebar-toggle").addEventListener("click", () => appShell.classList.toggle("sidebar-collapsed"));
   $("#tree-toggle").addEventListener("click", toggleTree);
-  $("#tree-close").addEventListener("click", () => appShell.classList.add("tree-collapsed"));
   $("#settings-trigger").addEventListener("click", openSettings);
   $("#sessions-nav").addEventListener("click", () => showPage("sessions"));
   $("#agents-nav").addEventListener("click", () => showPage("agents"));
@@ -130,6 +133,7 @@ function bindInteractions(): void {
   $("#rename-session-close").addEventListener("click", closeRenameSessionDialog);
   $("#rename-session-cancel").addEventListener("click", closeRenameSessionDialog);
   $("#session-rename-action").addEventListener("click", openRenameSessionDialog);
+  $("#message-start-session-action").addEventListener("click", startBranchFromContextMenu);
   $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
   composerConfigTrigger.addEventListener("click", (event) => {
     event.preventDefault();
@@ -162,7 +166,7 @@ function bindInteractions(): void {
   $("#settings-cancel").addEventListener("click", closeSettings);
   $("#settings-save").addEventListener("click", () => void saveSettings());
   $("#settings-reset").addEventListener("click", () => void resetSettings());
-  $("#clear-selection").addEventListener("click", clearNodeSelection);
+  $("#clear-branch").addEventListener("click", clearBranchSource);
   $("#command-trigger").addEventListener("click", openCommandPalette);
   commandDialog.addEventListener("click", (event) => {
     if (event.target === commandDialog) closeCommandPalette();
@@ -194,6 +198,7 @@ function bindInteractions(): void {
   treeScroll.addEventListener("keydown", handleTreeKeyboard);
   document.addEventListener("pointerdown", (event) => {
     if (!sessionContextMenu.contains(event.target as Node)) closeSessionContextMenu();
+    if (!messageContextMenu.contains(event.target as Node)) closeMessageContextMenu();
   });
   document.addEventListener("keydown", handleGlobalKeyboard);
 }
@@ -221,6 +226,7 @@ function renderRecoveryNotices(): void {
   </button>`).join("");
   container.querySelectorAll<HTMLElement>("[data-recovery-project]").forEach((notice) => {
     notice.addEventListener("click", () => {
+      if (pendingBranch) return;
       selectedProjectId = notice.dataset.recoveryProject;
       selectedSessionId = notice.dataset.recoverySession;
       resetTreeView();
@@ -256,9 +262,11 @@ function currentProject() {
 }
 
 function resetTreeView(): void {
-  selectedNodeId = undefined;
+  inspectedNodeId = undefined;
+  branchSourceNodeId = undefined;
+  messageContextNodeId = undefined;
   viewedTreeHeadId = undefined;
-  branchPickerNodeId = undefined;
+  closeMessageContextMenu();
 }
 
 function renderProjects(): void {
@@ -272,9 +280,10 @@ function renderProjects(): void {
     const sessionRows = sessions.map((session) => {
       const agent = snapshot?.agents.find((candidate) => candidate.id === session.agentId);
       const selected = session.id === selectedSessionId;
-      return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}">
+      const branchGenerating = session.id === pendingBranch?.sessionId;
+      return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}"${pendingBranch ? ' disabled' : ""}${branchGenerating ? ' aria-busy="true"' : ""}>
         <span class="session-symbol">${session.active ? "◉" : "⑂"}</span>
-        <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(agent ? agentDisplayName(agent) : "Agent")} · ${relativeTime(session.updatedAt)}</small></span>
+        <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${branchGenerating ? "Generating new Session…" : `${escapeHtml(agent ? agentDisplayName(agent) : "Agent")} · ${relativeTime(session.updatedAt)}`}</small></span>
         ${session.active ? '<i class="running-dot" title="Run active"></i>' : ""}
       </button>`;
     }).join("") || '<p class="project-sessions-empty">No sessions</p>';
@@ -297,6 +306,7 @@ function renderProjects(): void {
   });
   projectList.querySelectorAll<HTMLElement>("[data-session-id]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (pendingBranch) return;
       const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
@@ -376,17 +386,17 @@ function renderConversation(): void {
       agent ? agentDisplayName(agent) : "Assistant",
     )
     : "";
-  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("") + live + terminal;
+  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents)).join("") + live + terminal;
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
-      selectTreeNode(item.dataset.messageId, false);
+      inspectTreeNode(item.dataset.messageId, false);
     });
     item.addEventListener("keydown", (event) => {
       if (event.target !== item) return;
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
-        selectTreeNode(item.dataset.messageId, false);
+        inspectTreeNode(item.dataset.messageId, false);
       }
     });
   });
@@ -482,6 +492,7 @@ function scheduleSnapshotRefresh(): void {
     try {
       snapshot = await window.ait.snapshot();
       refreshed = true;
+      reconcilePendingBranch();
       renderAll();
       startReadySessionTitles();
     } catch {
@@ -501,113 +512,137 @@ function startReadySessionTitles(): void {
   }
 }
 
+function reconcilePendingBranch(): void {
+  if (!snapshot || !pendingBranch) return;
+  const pending = pendingBranch;
+  const resolution = pendingBranchResolution(pending, snapshot);
+  if (resolution.kind === "pending") return;
+  pendingBranch = undefined;
+  if (resolution.kind === "ready") {
+    selectedSessionId = resolution.sessionId;
+    resetTreeView();
+    showToast("New Session is ready.");
+    return;
+  }
+  branchSourceNodeId = pending.sourceMessageId;
+  inspectedNodeId = pending.sourceMessageId;
+  showToast(resolution.message, true);
+}
+
 function renderTree(): void {
   if (!snapshot) return;
   const session = currentSession();
   const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
-  timeline = buildMessageTimeline(messages, session, viewedTreeHeadId, selectedNodeId);
+  timeline = buildMessageTimeline(messages, session, viewedTreeHeadId);
   const visible = timeline.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
     const preview = messageText(node.message).replace(/\s+/g, " ").trim() || "Empty message";
-    const pickerOpen = branchPickerNodeId === node.message.id;
-    const branchPicker = pickerOpen
-      ? `<div class="tree-branches" role="group" aria-label="Branches after ${escapeAttribute(preview)}">
-          ${node.branches.map((branch, index) => {
-            const branchPreview = messageText(branch.message).replace(/\s+/g, " ").trim() || "Empty message";
-            return `<button class="tree-branch${branch.active ? " is-active" : ""}" type="button" data-branch-root-id="${escapeAttribute(branch.message.id)}" aria-pressed="${branch.active}" title="${escapeAttribute(branchPreview)}"><span>${index + 1}</span>${escapeHtml(branchPreview)}</button>`;
-          }).join("")}
-        </div>`
-      : "";
     return `<div class="tree-timeline-item" role="none">
-      <div class="tree-node${node.selected ? " is-selected" : ""}${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" aria-selected="${node.selected}" tabindex="${node.selected ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}">
+      <div class="tree-node${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" tabindex="${node.message.id === inspectedNodeId ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}"${node.children.length > 0 ? ` title="Right-click to start a new Session from this Message"` : ""}>
         <span class="tree-marker" aria-hidden="true"></span>
         <span class="tree-role">${roleLetter(node.message.role)}</span>
         <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${renderMessageTime(node.message.createdAt)}</small></span>
-        ${node.branches.length > 0 ? `<button class="tree-branch-trigger" type="button" aria-label="Choose branch after this message" aria-expanded="${pickerOpen}">⑂ ${node.branches.length}</button>` : ""}
       </div>
-      ${branchPicker}
     </div>`;
   }).join("");
   if (timeline.length > visible.length) {
     treeList.insertAdjacentHTML("beforeend", `<div class="tree-limit">Showing first ${visible.length.toLocaleString()} of ${timeline.length.toLocaleString()} messages</div>`);
   }
   treeList.querySelectorAll<HTMLElement>(".tree-node").forEach((row) => {
-    row.addEventListener("click", () => selectTreeNode(row.dataset.messageId));
-    row.querySelector(".tree-branch-trigger")?.addEventListener("click", (event) => {
-      event.stopPropagation();
-      branchPickerNodeId = branchPickerNodeId === row.dataset.messageId ? undefined : row.dataset.messageId;
-      renderTree();
-      treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(row.dataset.messageId ?? "")}"] .tree-branch-trigger`)?.focus();
+    row.addEventListener("click", () => inspectTreeNode(row.dataset.messageId));
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      const node = timeline.find((candidate) => candidate.message.id === row.dataset.messageId);
+      if (node?.children.length) openMessageContextMenu(event.clientX, event.clientY, node.message.id);
     });
-  });
-  treeList.querySelectorAll<HTMLElement>("[data-branch-root-id]").forEach((button) => {
-    button.addEventListener("click", () => switchTreeBranch(button.dataset.branchRootId));
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+      event.preventDefault();
+      const node = timeline.find((candidate) => candidate.message.id === row.dataset.messageId);
+      if (!node?.children.length) return;
+      const bounds = row.getBoundingClientRect();
+      openMessageContextMenu(bounds.left + 16, bounds.top + bounds.height, node.message.id);
+    });
   });
   renderNodeDetails();
 }
 
-function selectTreeNode(id: string | undefined, focusTree = true): void {
+function inspectTreeNode(id: string | undefined, focusTree = true): void {
   if (!id || !snapshot || !selectedProjectId) return;
-  selectedNodeId = id;
-  const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
-  const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
-  const session = sessionForMessage(messages, sessions, id, selectedSessionId);
-  const sessionChanged = session !== undefined && session.id !== selectedSessionId;
-  if (session) selectedSessionId = session.id;
-  renderProjects();
-  if (sessionChanged) {
-    renderAgents();
-    renderConversation();
-  } else {
-    syncMessageSelection();
-  }
+  inspectedNodeId = id;
   renderTree();
-  updateComposerState();
   if (focusTree) treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)?.focus();
 }
 
-function syncMessageSelection(): void {
-  conversation.querySelectorAll<HTMLElement>(".message").forEach((message) => {
-    const selected = message.dataset.messageId === selectedNodeId;
-    message.classList.toggle("is-selected", selected);
-    message.setAttribute("aria-current", String(selected));
-  });
-}
-
 function switchTreeBranch(branchRootId: string | undefined): void {
-  if (!snapshot || !branchRootId || !selectedProjectId) return;
+  if (!snapshot || !branchRootId || !selectedProjectId || pendingBranch) return;
   const messages = snapshot.messages.filter((message) => message.projectId === selectedProjectId);
   const sessions = snapshot.sessions.filter((session) => session.projectId === selectedProjectId);
   const headId = resolveBranchHead(messages, sessions, branchRootId);
   if (!headId) return;
-  const session = sessionForMessage(messages, sessions, branchRootId, selectedSessionId);
+  const session = sessionForBranch(messages, sessions, branchRootId);
   if (session) selectedSessionId = session.id;
-  viewedTreeHeadId = headId;
-  branchPickerNodeId = undefined;
-  selectedNodeId = undefined;
+  viewedTreeHeadId = session ? undefined : headId;
+  inspectedNodeId = branchRootId;
+  branchSourceNodeId = undefined;
   renderAll();
   treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(branchRootId)}"]`)?.focus();
 }
 
 function renderNodeDetails(): void {
-  const selected = snapshot?.messages.find((message) => message.id === selectedNodeId);
-  if (!selected) {
-    nodeDetails.innerHTML = '<div class="empty-details"><span>⑂</span><p>Select a node to inspect it and start a branch.</p></div>';
-    $("#branch-context").classList.add("is-hidden");
-    return;
+  const inspected = snapshot?.messages.find((message) => message.id === inspectedNodeId);
+  if (!inspected || !snapshot) {
+    nodeDetails.innerHTML = '<div class="empty-details"><span>⑂</span><p>Click a Message to inspect its details.</p></div>';
+  } else {
+    const projectMessages = snapshot.messages.filter((message) => message.projectId === inspected.projectId);
+    const children = directMessageChildren(projectMessages, inspected.id);
+    const activeChildId = timeline
+      .find((node) => node.message.id === inspected.id)
+      ?.children.find((child) => child.active)?.message.id;
+    const preview = messageText(inspected);
+    const source = messageSourceLabel(inspected);
+    nodeDetails.innerHTML = `<div class="node-details-header"><span class="node-role-pill">${escapeHtml(inspected.role)}</span><code class="node-id">${escapeHtml(shortId(inspected.id))}</code></div>
+      <p class="node-preview">${escapeHtml(preview)}</p>
+      <dl class="node-metadata">
+        <div><dt>Source</dt><dd>${escapeHtml(source)}</dd></div>
+        <div><dt>Created</dt><dd>${renderMessageTime(inspected.createdAt)}</dd></div>
+        <div><dt>Git revision</dt><dd>${inspected.gitCommit ? `<code title="${escapeAttribute(inspected.gitCommit)}">${escapeHtml(inspected.gitCommit.slice(0, 12))}</code>` : "Not recorded"}</dd></div>
+      </dl>
+      <section class="node-children" aria-labelledby="node-children-title">
+        <header><strong id="node-children-title">Child paths</strong><span>${children.length}</span></header>
+        ${children.length > 0 ? children.map((child) => {
+          const childPreview = messageText(child).replace(/\s+/g, " ").trim() || "Empty message";
+          const active = child.id === activeChildId;
+          return `<button class="${active ? "is-active" : ""}" type="button" data-child-root-id="${escapeAttribute(child.id)}"${active ? ' aria-current="true"' : ""} title="Switch to the longest Session on this child path"><span class="tree-role">${roleLetter(child.role)}</span><span><strong>${escapeHtml(childPreview)}</strong><small>${escapeHtml(child.role)} · ${renderMessageTime(child.createdAt)}</small></span><i aria-hidden="true">${active ? "Current" : "›"}</i></button>`;
+        }).join("") : '<p class="node-children-empty">No child Messages</p>'}
+      </section>`;
+    nodeDetails.querySelectorAll<HTMLElement>("[data-child-root-id]").forEach((button) => {
+      button.addEventListener("click", () => switchTreeBranch(button.dataset.childRootId));
+    });
   }
-  const preview = messageText(selected);
-  nodeDetails.innerHTML = `<div class="node-details-header"><span class="node-role-pill">${selected.role}</span><code class="node-id">${escapeHtml(shortId(selected.id))}</code></div>
-    <p class="node-preview">${escapeHtml(preview)}</p>
-    <div class="node-actions"><button id="branch-focus" class="primary-button" type="button">Branch from here</button></div>`;
-  $("#branch-focus").addEventListener("click", () => messageInput.focus());
-  $("#branch-node-label").textContent = `${selected.role} · ${shortId(selected.id)}`;
-  $("#branch-context").classList.remove("is-hidden");
+  renderBranchContext();
 }
 
-function clearNodeSelection(): void {
-  selectedNodeId = undefined;
-  renderTree();
+function renderBranchContext(): void {
+  const sourceId = pendingBranch?.sourceMessageId ?? branchSourceNodeId;
+  const source = snapshot?.messages.find((message) => message.id === sourceId);
+  const context = $("#branch-context");
+  context.classList.toggle("is-hidden", !source);
+  if (!source) return;
+  const preview = messageText(source).replace(/\s+/g, " ").trim() || "Empty message";
+  $("#branch-state-label").textContent = pendingBranch
+    ? "Creating new Session from"
+    : "Branching new Session from";
+  $("#branch-node-label").textContent = `${messageSourceLabel(source)} · ${shortId(source.id)} · ${preview}`;
+  const clear = $<HTMLButtonElement>("#clear-branch");
+  clear.disabled = Boolean(pendingBranch);
+  clear.classList.toggle("is-hidden", Boolean(pendingBranch));
+}
+
+function clearBranchSource(): void {
+  if (pendingBranch) return;
+  branchSourceNodeId = undefined;
+  renderBranchContext();
   updateComposerState();
 }
 
@@ -615,22 +650,37 @@ async function submitMessage(): Promise<void> {
   const session = currentSession();
   const content = messageInput.value.trim();
   if (!snapshot || !session || !content || sendButton.disabled) return;
+  const source = branchSourceNodeId
+    ? snapshot.messages.find((message) => message.id === branchSourceNodeId)
+    : undefined;
+  if (branchSourceNodeId && (!source || directMessageChildren(snapshot.messages, branchSourceNodeId).length === 0)) {
+    branchSourceNodeId = undefined;
+    renderAll();
+    showToast("A new Session can only start from a Message that has replies.", true);
+    return;
+  }
   pendingSessions.add(session.id);
   updateComposerState();
   sendButton.disabled = true;
   sendButton.textContent = "…";
   try {
-    if (selectedNodeId) {
+    if (source) {
       const result = await window.ait.fork({
         projectId: session.projectId,
-        sourceMessageId: selectedNodeId,
+        sourceMessageId: source.id,
         agentId: composerAgent.value,
         content,
       });
       snapshot = result.snapshot;
-      selectedSessionId = result.selectedSessionId;
+      pendingBranch = {
+        sourceMessageId: source.id,
+        sessionId: result.selectedSessionId,
+        runId: result.runId,
+      };
+      branchSourceNodeId = undefined;
       pendingTitles.register(result.runId, result.selectedSessionId, content);
-      showToast("New branch created. The original session was left unchanged.");
+      reconcilePendingBranch();
+      if (pendingBranch) showToast("Creating the new Session. The current path will stay in place until it is ready.");
     } else {
       const result = await window.ait.sendMessage({
         sessionId: session.id,
@@ -639,10 +689,10 @@ async function submitMessage(): Promise<void> {
       snapshot = result.snapshot;
       pendingTitles.register(result.runId, session.id, content);
       showToast("Message accepted.");
+      resetTreeView();
     }
     startReadySessionTitles();
     scheduleSnapshotRefresh();
-    resetTreeView();
     messageInput.value = "";
     renderAll();
   } catch (error) {
@@ -682,6 +732,36 @@ function openSessionContextMenu(event: MouseEvent, sessionId?: string): void {
 
 function closeSessionContextMenu(): void {
   sessionContextMenu.classList.add("is-hidden");
+}
+
+function openMessageContextMenu(left: number, top: number, messageId: string): void {
+  if (currentSession()?.active || pendingBranch) return;
+  closeSessionContextMenu();
+  messageContextNodeId = messageId;
+  messageContextMenu.classList.remove("is-hidden");
+  const boundedLeft = Math.min(left, window.innerWidth - messageContextMenu.offsetWidth - 8);
+  const boundedTop = Math.min(top, window.innerHeight - messageContextMenu.offsetHeight - 8);
+  messageContextMenu.style.left = `${Math.max(8, boundedLeft)}px`;
+  messageContextMenu.style.top = `${Math.max(54, boundedTop)}px`;
+  $<HTMLButtonElement>("#message-start-session-action").focus();
+}
+
+function closeMessageContextMenu(): void {
+  messageContextMenu.classList.add("is-hidden");
+  messageContextNodeId = undefined;
+}
+
+function startBranchFromContextMenu(): void {
+  const sourceId = messageContextNodeId;
+  const source = snapshot?.messages.find((message) => message.id === sourceId);
+  const canBranch = source && directMessageChildren(snapshot?.messages ?? [], source.id).length > 0;
+  closeMessageContextMenu();
+  if (!source || !canBranch || currentSession()?.active || pendingBranch) return;
+  inspectedNodeId = source.id;
+  branchSourceNodeId = source.id;
+  renderTree();
+  updateComposerState();
+  messageInput.focus();
 }
 
 function openRenameSessionDialog(): void {
@@ -756,7 +836,7 @@ async function changeSessionAgent(): Promise<void> {
 
 function updateComposerState(): void {
   const session = currentSession();
-  const busy = !!session && (session.active || pendingSessions.has(session.id));
+  const busy = !!session && (session.active || pendingSessions.has(session.id) || Boolean(pendingBranch));
   if (!session || session.active || (configuringSessionId && configuringSessionId !== session.id)) {
     composerConfigPanel.hidePopover();
   }
@@ -769,14 +849,18 @@ function updateComposerState(): void {
   composerReasoning.disabled = composerReasoning.options.length <= 1 || !session || busy;
   messageInput.placeholder = !session
     ? "Create a Session to start…"
-    : selectedNodeId
-      ? "Write the first user message on this branch…"
-      : busy
-        ? "This Session is running…"
-        : "Send a message to this Session…";
-  $("#composer-hint").textContent = selectedNodeId
-    ? "A new immutable branch and Session will be created · ⌘ Enter to send"
-    : "Send to the current Session, or select a tree node to branch · ⌘ Enter to send";
+    : pendingBranch
+      ? "Creating the new Session…"
+      : branchSourceNodeId
+        ? "Write the first message for the new Session…"
+        : busy
+          ? "This Session is running…"
+          : "Send a message to this Session…";
+  $("#composer-hint").textContent = pendingBranch
+    ? "The current Session path stays visible until the new Session is fully generated"
+    : branchSourceNodeId
+      ? "Sending creates a new immutable branch and Session · ⌘ Enter to send"
+      : "Send to the current Session · Right-click a Message with replies to start a new Session · ⌘ Enter to send";
 }
 
 async function changeSessionConfig(modelChanged: boolean, providerChanged = false): Promise<void> {
@@ -797,26 +881,22 @@ async function changeSessionConfig(modelChanged: boolean, providerChanged = fals
 }
 
 function toggleTree(): void {
-  appShell.classList.toggle("tree-collapsed");
+  setTreeExpanded(appShell.classList.contains("tree-collapsed"));
+}
+
+function setTreeExpanded(expanded: boolean): void {
+  appShell.classList.toggle("tree-collapsed", !expanded);
+  $("#tree-toggle").setAttribute("aria-pressed", String(expanded));
 }
 
 function handleTreeKeyboard(event: KeyboardEvent): void {
-  if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) return;
+  if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
   event.preventDefault();
-  const currentIndex = Math.max(0, timeline.findIndex((node) => node.message.id === selectedNodeId));
-  if (event.key === "ArrowDown") selectTreeNode(timeline[Math.min(timeline.length - 1, currentIndex + 1)]?.message.id);
-  if (event.key === "ArrowUp") selectTreeNode(timeline[Math.max(0, currentIndex - 1)]?.message.id);
-  if (event.key === "Enter") messageInput.focus();
-  const current = timeline[currentIndex];
-  if (event.key === "ArrowLeft" && branchPickerNodeId === current?.message.id) {
-    branchPickerNodeId = undefined;
-    renderTree();
-  }
-  if (event.key === "ArrowRight" && current?.branches.length) {
-    branchPickerNodeId = current.message.id;
-    renderTree();
-    treeList.querySelector<HTMLElement>(".tree-branch.is-active")?.focus();
-  }
+  const foundIndex = timeline.findIndex((node) => node.message.id === inspectedNodeId);
+  const currentIndex = foundIndex < 0 ? 0 : foundIndex;
+  if (event.key === "ArrowDown") inspectTreeNode(timeline[Math.min(timeline.length - 1, currentIndex + 1)]?.message.id);
+  if (event.key === "ArrowUp") inspectTreeNode(timeline[Math.max(0, currentIndex - 1)]?.message.id);
+  if (event.key === "Enter") inspectTreeNode(timeline[currentIndex]?.message.id);
 }
 
 function handleGlobalKeyboard(event: KeyboardEvent): void {
@@ -837,6 +917,7 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
     closeCommandPalette();
     closeProjectDialog();
     closeSessionContextMenu();
+    closeMessageContextMenu();
     closeRenameSessionDialog();
     closeProjectSettingsDialog();
   }
@@ -875,7 +956,7 @@ function closeProjectSettingsDialog(): void {
 }
 
 function selectProject(projectId: string | undefined): void {
-  if (!snapshot || !projectId || !snapshot.projects.some((project) => project.id === projectId)) return;
+  if (!snapshot || pendingBranch || !projectId || !snapshot.projects.some((project) => project.id === projectId)) return;
   selectedProjectId = projectId;
   selectedSessionId = snapshot.sessions
     .filter((session) => session.projectId === projectId)
@@ -937,7 +1018,7 @@ async function saveProjectBackend(): Promise<void> {
 }
 
 async function createSession(projectId = selectedProjectId): Promise<void> {
-  if (!snapshot || creatingSessionProjectId) return;
+  if (!snapshot || creatingSessionProjectId || pendingBranch) return;
   const project = snapshot.projects.find((candidate) => candidate.id === projectId);
   if (!project) {
     openProjectDialog();
@@ -1105,8 +1186,7 @@ function applyPreferences(): void {
   const theme = settings?.values["interface.theme"];
   document.documentElement.dataset.theme = typeof theme === "string" ? theme : "system";
   document.documentElement.dataset.density = settings?.values["interface.density"] === "comfortable" ? "comfortable" : "compact";
-  if (settings?.values["interface.session_tree_open"] === false) appShell.classList.add("tree-collapsed");
-  else appShell.classList.remove("tree-collapsed");
+  setTreeExpanded(settings?.values["interface.session_tree_open"] !== false);
 }
 
 function openCommandPalette(): void {
@@ -1138,6 +1218,7 @@ function renderCommandResults(): void {
   ].join("") || '<div class="empty-details"><p>No matching command</p></div>';
   $("#command-results").querySelectorAll<HTMLElement>("[data-session]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (pendingBranch) return;
       const session = snapshot?.sessions.find((candidate) => candidate.id === button.dataset.session);
       selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
@@ -1180,6 +1261,14 @@ function errorMessage(error: unknown): string {
 
 function roleLetter(role: DesktopMessage["role"]): string {
   return role === "assistant" ? "A" : role === "user" ? "U" : "S";
+}
+
+function messageSourceLabel(message: DesktopMessage): string {
+  if (message.kind === "tool_result") return "Tool result";
+  if (message.role === "user") return "Human input";
+  if (message.role === "system") return "System";
+  const agent = snapshot?.agents.find((candidate) => candidate.id === message.agentId);
+  return agent ? `${agentDisplayName(agent)} Agent` : "Agent output";
 }
 
 function shortId(id: string): string {

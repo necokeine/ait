@@ -7,7 +7,7 @@ import type {
   RunProgressItem,
 } from "./types.js";
 
-const terminalRunStatuses = new Set(["completed", "failed", "cancelled", "limit_exceeded"]);
+const terminalRunStatuses = new Set(["completed", "failed", "cancelled", "limit_exceeded", "interrupted"]);
 
 export function isTerminalRunEvent(event: ControlEvent): boolean {
   if (event.kind !== "run.updated" && event.kind !== "run.cancelled") return false;

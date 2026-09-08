@@ -3,6 +3,17 @@ interface RunFailure {
   message: string;
 }
 
+export interface PendingBranch {
+  sourceMessageId: string;
+  sessionId: string;
+  runId: string;
+}
+
+export type PendingBranchResolution =
+  | { kind: "pending" }
+  | { kind: "ready"; sessionId: string }
+  | { kind: "failed"; message: string };
+
 export interface RecoveryNotice {
   projectId: string;
   projectName: string;
@@ -58,9 +69,34 @@ export function runFailure(value: unknown): RunFailure | undefined {
   };
 }
 
+/** Keeps a fork on its source Session until the new Session's Run is terminally complete. */
+export function pendingBranchResolution(
+  pending: PendingBranch,
+  snapshot: {
+    sessions: Array<{ id: string }>;
+    runs: Array<{ id: string; status: string; error?: { message?: string } }>;
+  },
+): PendingBranchResolution {
+  const run = snapshot.runs.find((candidate) => candidate.id === pending.runId);
+  if (!run || !isTerminalStatus(run.status)) return { kind: "pending" };
+  if (run.status === "completed") {
+    return snapshot.sessions.some((session) => session.id === pending.sessionId)
+      ? { kind: "ready", sessionId: pending.sessionId }
+      : { kind: "pending" };
+  }
+  return {
+    kind: "failed",
+    message: run.error?.message?.trim() || `New Session generation ended with status ${run.status}.`,
+  };
+}
+
 function isTerminalFailure(status: unknown): boolean {
   return status === "failed" || status === "cancelled" || status === "limit_exceeded"
     || status === "interrupted";
+}
+
+function isTerminalStatus(status: unknown): boolean {
+  return status === "completed" || isTerminalFailure(status);
 }
 
 function record(value: unknown): Record<string, unknown> {
