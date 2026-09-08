@@ -54,6 +54,44 @@ async fn write_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: Val
     writer.flush().await.unwrap();
 }
 
+async fn respond_to_owner_policy_read<R, W>(
+    lines: &mut tokio::io::Lines<R>,
+    writer: &mut W,
+    shell_environment_policy: Value,
+) where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let request = read_json(lines).await;
+    assert_eq!(request["method"], "config/read");
+    assert_eq!(request["id"], -1);
+    assert_eq!(request["params"]["cwd"], "/workspace");
+    write_json(
+        writer,
+        json!({
+            "id": -1,
+            "result": {
+                "config": {"shell_environment_policy": shell_environment_policy},
+                "origins": {}
+            }
+        }),
+    )
+    .await;
+}
+
+fn assert_legacy_owner_config(thread: &Value) {
+    let owner_config = &thread["params"]["config"];
+    assert!(
+        owner_config["shell_environment_policy.set.AIT_CODEX_PROCESS_OWNER"]
+            .as_str()
+            .is_some_and(|marker| !marker.is_empty())
+    );
+    assert_eq!(
+        owner_config["shell_environment_policy.include_only"],
+        json!(["PATH", "AIT_CODEX_PROCESS_OWNER"])
+    );
+}
+
 #[tokio::test]
 async fn discovers_picker_visible_models_and_reasoning_efforts_across_pages() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
@@ -114,6 +152,10 @@ async fn discovers_picker_visible_models_and_reasoning_efforts_across_pages() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the protocol lifecycle and ownership handshake are one conformance scenario"
+)]
 async fn maps_codex_jsonl_lifecycle_and_usage() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
@@ -124,6 +166,14 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
         assert_eq!(initialize["method"], "initialize");
         write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
         assert_eq!(read_json(&mut lines).await["method"], "initialized");
+        respond_to_owner_policy_read(
+            &mut lines,
+            &mut server_write,
+            json!({
+                "inherit":"none", "include_only":["PATH"]
+            }),
+        )
+        .await;
         let thread = read_json(&mut lines).await;
         assert_eq!(thread["method"], "thread/start");
         assert_eq!(thread["params"]["sandbox"], "workspace-write");
@@ -144,6 +194,7 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
                 "must preserve native core {key}"
             );
         }
+        assert_legacy_owner_config(&thread);
         write_json(
             &mut server_write,
             json!({"id": 1, "result": {"thread": {"id": "thr-1"}}}),
@@ -232,6 +283,12 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
         read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id":0,"result":{}})).await;
         read_json(&mut lines).await;
+        respond_to_owner_policy_read(
+            &mut lines,
+            &mut server_write,
+            json!({"filters":{"PATH":"include","SECRET_*":"exclude"}}),
+        )
+        .await;
         let thread = read_json(&mut lines).await;
         assert_eq!(thread["method"], "thread/resume");
         assert_eq!(thread["params"]["threadId"], "existing-thread");
@@ -248,6 +305,10 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
         for key in ["baseInstructions", "tools", "dynamicTools", "ephemeral"] {
             assert!(thread["params"].get(key).is_none());
         }
+        assert_eq!(
+            thread["params"]["config"]["shell_environment_policy.filters.AIT_CODEX_PROCESS_OWNER"],
+            "include"
+        );
         write_json(
             &mut server_write,
             json!({"id":1,"result":{"thread":{"id":"existing-thread"}}}),
@@ -309,6 +370,7 @@ async fn routes_command_approvals_through_handler() {
         let _ = read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
         let _ = read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
         let _ = read_json(&mut lines).await;
         write_json(
             &mut server_write,
@@ -369,6 +431,7 @@ async fn cancellation_waits_for_the_target_turn_to_report_interrupted() {
         read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id":0,"result":{}})).await;
         read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
         read_json(&mut lines).await;
         write_json(
             &mut server_write,
@@ -451,6 +514,7 @@ async fn missing_interrupt_ack_hits_the_grace_deadline() {
         read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id":0,"result":{}})).await;
         read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
         read_json(&mut lines).await;
         write_json(
             &mut server_write,
@@ -504,6 +568,7 @@ async fn interrupt_deadline_bounds_a_blocked_approval_handler() {
         read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id":0,"result":{}})).await;
         read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
         read_json(&mut lines).await;
         write_json(
             &mut server_write,
@@ -582,6 +647,7 @@ async fn interrupt_deadline_bounds_full_event_channel_backpressure() {
         read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id":0,"result":{}})).await;
         read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
         read_json(&mut lines).await;
         write_json(
             &mut server_write,

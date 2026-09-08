@@ -7,7 +7,7 @@ use std::{
     io::{BufRead as _, BufReader as StdBufReader, Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Child as ProcessChild, ChildStdin, Command as ProcessCommand, Stdio},
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -39,6 +39,7 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
+use uuid::Uuid;
 
 use crate::{
     AdapterError, AdapterErrorKind, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest,
@@ -147,14 +148,82 @@ impl CodexAppServerAdapter {
     }
 }
 
-const CODEX_THREAD_ID_ENV: &str = "CODEX_THREAD_ID";
+const CODEX_PROCESS_OWNER_ENV: &str = "AIT_CODEX_PROCESS_OWNER";
+const PROCESS_POLICY_REQUEST_ID: i64 = -1;
 
-fn tool_thread_ownership(request: &AgentRunRequest) -> Arc<OnceLock<String>> {
-    let ownership = Arc::new(OnceLock::new());
-    if let Some(thread_id) = &request.resume_thread_id {
-        let _ = ownership.set(thread_id.clone());
+fn process_owner_marker() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn process_owner_config(
+    config_read_result: &Value,
+    owner_marker: &str,
+) -> Result<HashMap<String, Value>, AdapterError> {
+    // Request overrides are dotted ConfigBuilder paths. Set only our key so
+    // existing (potentially sensitive) user-provided values never cross the
+    // app-server protocol. A non-empty allowlist also needs the key added.
+    let mut overrides = HashMap::from([(
+        format!("shell_environment_policy.set.{CODEX_PROCESS_OWNER_ENV}"),
+        json!(owner_marker),
+    )]);
+    let Some(policy) = config_read_result.pointer("/config/shell_environment_policy") else {
+        return Ok(overrides);
+    };
+    if policy.is_null() {
+        return Ok(overrides);
     }
-    ownership
+    let policy = policy.as_object().ok_or_else(|| {
+        AdapterError::protocol("Codex config/read returned an invalid shell environment policy")
+    })?;
+
+    if let Some(include_only) = policy.get("include_only")
+        && !include_only.is_null()
+    {
+        let include_only = include_only.as_array().ok_or_else(|| {
+            AdapterError::protocol(
+                "Codex config/read returned invalid shell_environment_policy.include_only",
+            )
+        })?;
+        if !include_only.is_empty() {
+            let mut include_only = include_only.clone();
+            if include_only.iter().any(|value| !value.is_string()) {
+                return Err(AdapterError::protocol(
+                    "Codex config/read returned a non-string shell environment include pattern",
+                ));
+            }
+            include_only.push(json!(CODEX_PROCESS_OWNER_ENV));
+            overrides.insert(
+                "shell_environment_policy.include_only".to_owned(),
+                Value::Array(include_only),
+            );
+        }
+    }
+
+    if let Some(filters) = policy.get("filters")
+        && !filters.is_null()
+    {
+        let filters = filters.as_object().ok_or_else(|| {
+            AdapterError::protocol(
+                "Codex config/read returned invalid shell_environment_policy.filters",
+            )
+        })?;
+        let mut has_include = false;
+        for action in filters.values() {
+            let Some(action) = action.as_str() else {
+                return Err(AdapterError::protocol(
+                    "Codex config/read returned a non-string shell environment filter action",
+                ));
+            };
+            has_include |= action.eq_ignore_ascii_case("include");
+        }
+        if has_include {
+            overrides.insert(
+                format!("shell_environment_policy.filters.{CODEX_PROCESS_OWNER_ENV}"),
+                json!("include"),
+            );
+        }
+    }
+    Ok(overrides)
 }
 
 #[cfg(unix)]
@@ -165,8 +234,8 @@ struct ProcessRecord {
 }
 
 #[cfg(unix)]
-async fn owned_tool_processes(thread_id: &str) -> Option<Vec<ProcessRecord>> {
-    let expected = OsString::from(format!("{CODEX_THREAD_ID_ENV}={thread_id}"));
+async fn owned_tool_processes(owner_marker: &str) -> Option<Vec<ProcessRecord>> {
+    let expected = OsString::from(format!("{CODEX_PROCESS_OWNER_ENV}={owner_marker}"));
     tokio::task::spawn_blocking(move || {
         let mut system = System::new();
         system.refresh_processes_specifics(
@@ -212,10 +281,10 @@ fn signal_process_group(leader: u32, signal: rustix::process::Signal) {
 }
 
 #[cfg(unix)]
-async fn reclaim_thread_processes(thread_id: &str) {
+async fn reclaim_marked_processes(owner_marker: &str) {
     let mut empty_passes = 0_u8;
     loop {
-        let Some(processes) = owned_tool_processes(thread_id).await else {
+        let Some(processes) = owned_tool_processes(owner_marker).await else {
             tokio::time::sleep(Duration::from_millis(10)).await;
             continue;
         };
@@ -234,11 +303,10 @@ async fn reclaim_thread_processes(thread_id: &str) {
             for pid in &alive {
                 signal_process(*pid, rustix::process::Signal::STOP);
             }
-            // Codex injects CODEX_THREAD_ID after applying the user-configured
-            // shell environment policy, so every newly forked or reparented
-            // tool descendant remains discoverable even with inherit=none.
-            // Repeating the global scan closes both the root-first-exit and
-            // scan-time fork/exit windows.
+            // Codex applies the invocation config override after loading the
+            // user's shell policy, so every newly forked or reparented tool
+            // descendant inherits this Run's marker. Repeating the global
+            // scan closes both root-first-exit and scan-time fork/exit windows.
             for pid in alive {
                 signal_process(pid, rustix::process::Signal::KILL);
             }
@@ -248,16 +316,14 @@ async fn reclaim_thread_processes(thread_id: &str) {
 }
 
 #[cfg(unix)]
-async fn terminate_owned_process_tree(child: &mut Child, tool_thread_id: Option<&str>) {
+async fn terminate_owned_process_tree(child: &mut Child, owner_marker: &str) {
     let root = child.id();
     if let Some(root) = root {
-        // Stop the normal fork source first. If it already exited, tool
-        // descendants remain discoverable by Codex thread regardless of PPID.
+        // Stop the normal fork source first. If it already exited, marked
+        // descendants remain discoverable regardless of PPID.
         signal_process(root, rustix::process::Signal::STOP);
     }
-    if let Some(thread_id) = tool_thread_id {
-        reclaim_thread_processes(thread_id).await;
-    }
+    reclaim_marked_processes(owner_marker).await;
     if let Some(root) = root {
         signal_process_group(root, rustix::process::Signal::KILL);
         signal_process(root, rustix::process::Signal::KILL);
@@ -266,13 +332,11 @@ async fn terminate_owned_process_tree(child: &mut Child, tool_thread_id: Option<
         let _ = child.start_kill();
     }
     let _ = child.wait().await;
-    if let Some(thread_id) = tool_thread_id {
-        reclaim_thread_processes(thread_id).await;
-    }
+    reclaim_marked_processes(owner_marker).await;
 }
 
 #[cfg(windows)]
-async fn terminate_owned_process_tree(child: &mut Child, _tool_thread_id: Option<&str>) {
+async fn terminate_owned_process_tree(child: &mut Child, _owner_marker: &str) {
     if let Some(pid) = child.id() {
         let _ = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -3930,7 +3994,7 @@ impl AgentAdapter for CodexAppServerAdapter {
             ));
         }
 
-        let tool_thread_id = tool_thread_ownership(&request);
+        let owner_marker = process_owner_marker();
         let mut child = self.spawn_process(&request.cwd)?;
         let stdout = child.stdout.take().ok_or_else(|| {
             AdapterError::new(
@@ -3955,7 +4019,7 @@ impl AgentAdapter for CodexAppServerAdapter {
         };
         let approvals = Arc::clone(&self.config.approval_handler);
         let interrupt_grace_period = self.config.interrupt_grace_period;
-        let protocol_tool_thread_id = Arc::clone(&tool_thread_id);
+        let protocol_owner_marker = owner_marker.clone();
         tokio::spawn(async move {
             let stderr_task = stderr.map(|stderr| {
                 tokio::spawn(async move {
@@ -3974,12 +4038,11 @@ impl AgentAdapter for CodexAppServerAdapter {
                     approvals,
                     &sender,
                     interrupt_grace_period,
-                    protocol_tool_thread_id,
+                    protocol_owner_marker,
                 ) => result,
                 () = sender.closed() => Err(AdapterError::cancelled()),
             };
-            terminate_owned_process_tree(&mut child, tool_thread_id.get().map(String::as_str))
-                .await;
+            terminate_owned_process_tree(&mut child, &owner_marker).await;
             if let Some(task) = stderr_task {
                 task.abort();
                 let _ = task.await;
@@ -4160,7 +4223,7 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let tool_thread_id = tool_thread_ownership(&request);
+    let owner_marker = process_owner_marker();
     drive_protocol_with_interrupt_grace_and_ownership(
         reader,
         writer,
@@ -4169,7 +4232,7 @@ where
         approvals,
         sender,
         interrupt_grace_period,
-        tool_thread_id,
+        owner_marker,
     )
     .await
 }
@@ -4183,7 +4246,7 @@ async fn drive_protocol_with_interrupt_grace_and_ownership<R, W>(
     approvals: Arc<dyn ApprovalHandler>,
     sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
     interrupt_grace_period: Duration,
-    tool_thread_id: Arc<OnceLock<String>>,
+    owner_marker: String,
 ) -> Result<(), AdapterError>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -4196,6 +4259,27 @@ where
         () = cancellation.cancelled() => return Err(AdapterError::cancelled()),
     }
 
+    // CODEX_THREAD_ID survives environment filtering but is shared by every
+    // resumed Run. Read the effective policy and inject a fresh invocation
+    // marker through Codex's request-scoped config layer instead.
+    let policy_exchange = async {
+        write_message(
+            &mut writer,
+            &json!({
+                "method": "config/read",
+                "id": PROCESS_POLICY_REQUEST_ID,
+                "params": {"cwd": request.cwd, "includeLayers": false},
+            }),
+        )
+        .await?;
+        wait_for_response(&mut lines, PROCESS_POLICY_REQUEST_ID).await
+    };
+    let (config_read_result, _) = tokio::select! {
+        result = policy_exchange => result?,
+        () = cancellation.cancelled() => return Err(AdapterError::cancelled()),
+    };
+    let owner_config = process_owner_config(&config_read_result, &owner_marker)?;
+
     // Keep the model-specific base prompt and native tools owned by codex-core.
     // Apply the same Ait/Project developer layer on new and resumed threads.
     let mut thread_params = json!({
@@ -4204,6 +4288,7 @@ where
         "sandbox": request.sandbox.as_wire_value(),
         "approvalPolicy": request.approval_policy.as_wire_value(),
         "developerInstructions": CodexToolSet.developer_instructions(request.project_instructions.as_deref()),
+        "config": owner_config,
     });
     let thread_method;
     if let Some(thread_id) = &request.resume_thread_id {
@@ -4231,15 +4316,13 @@ where
         .or(request.resume_thread_id.as_deref())
         .ok_or_else(|| AdapterError::protocol("Codex thread response has no thread id"))?
         .to_owned();
-    if let Some(recorded) = tool_thread_id.get() {
-        if recorded != &thread_id {
-            return Err(AdapterError::protocol(
-                "Codex resumed a different thread than requested",
-            ));
-        }
-    } else if tool_thread_id.set(thread_id.clone()).is_err() {
+    if request
+        .resume_thread_id
+        .as_ref()
+        .is_some_and(|requested| requested != &thread_id)
+    {
         return Err(AdapterError::protocol(
-            "Codex thread ownership could not be recorded",
+            "Codex resumed a different thread than requested",
         ));
     }
     send_event(

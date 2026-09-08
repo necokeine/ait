@@ -97,13 +97,93 @@ async fn cancellation_during_handshake_reaps_the_owned_child() {
 }
 
 #[tokio::test]
+async fn cancellation_during_resume_handshake_preserves_preexisting_same_thread_processes() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let binary = cwd.join("stalled-resume-codex");
+    fs::write(
+        &binary,
+        r#"#!/bin/sh
+echo $$ > child.pid
+sleep 300 &
+echo $! > grandchild.pid
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
+    *'"id":-1'*) printf '%s\n' '{"id":-1,"result":{"config":{"shell_environment_policy":{"inherit":"none","include_only":["PATH"]}},"origins":{}}}' ;;
+    *'"id":1'*)
+      printf '%s' "$line" | "$(command -v python3)" -c 'import json,sys; request=json.load(sys.stdin); config=request["params"]["config"]; assert request["method"] == "thread/resume"; assert request["params"]["threadId"] == "existing-thread"; assert config["shell_environment_policy.include_only"] == ["PATH", "AIT_CODEX_PROCESS_OWNER"]; assert config["shell_environment_policy.set.AIT_CODEX_PROCESS_OWNER"]'
+      : > resume-seen
+      ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexAppServerAdapter::new(CodexAppServerConfig {
+        codex_binary: binary,
+        ..CodexAppServerConfig::default()
+    })
+    .unwrap();
+    let mut same_thread_preexisting = std::process::Command::new("sleep")
+        .arg("300")
+        .env("CODEX_THREAD_ID", "existing-thread")
+        .spawn()
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut stream = adapter
+        .run(AgentRunRequest {
+            request_id: "cancel-resume-handshake".into(),
+            model: None,
+            reasoning_effort: None,
+            project_instructions: None,
+            prompt: "hello".into(),
+            cwd: cwd.clone(),
+            resume_thread_id: Some("existing-thread".into()),
+            sandbox: SandboxMode::ReadOnly,
+            approval_policy: ApprovalPolicy::Never,
+            output_schema: None,
+            cancellation: cancellation.clone(),
+        })
+        .await
+        .unwrap();
+    let root_pid = read_pid(&cwd, "child.pid").await;
+    let grandchild_pid = read_pid(&cwd, "grandchild.pid").await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !cwd.join("resume-seen").exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("fake app-server must receive the resume ownership override");
+
+    cancellation.cancel();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(error.kind, AdapterErrorKind::Cancelled);
+        assert!(stream.next().await.is_none());
+    })
+    .await
+    .expect("resume handshake cancellation must settle");
+    assert_dead(root_pid.trim()).await;
+    assert_dead(grandchild_pid.trim()).await;
+    assert!(
+        same_thread_preexisting.try_wait().unwrap().is_none(),
+        "per-Run cleanup must not kill a process that predates this invocation"
+    );
+    same_thread_preexisting.kill().unwrap();
+    same_thread_preexisting.wait().unwrap();
+}
+
+#[tokio::test]
 async fn missing_interrupt_terminal_forces_the_owned_process_tree_to_exit() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
     let binary = cwd.join("unresponsive-codex");
-    let mut unrelated = std::process::Command::new("sleep")
+    let mut same_thread_preexisting = std::process::Command::new("sleep")
         .arg("300")
-        .env("CODEX_THREAD_ID", "unrelated-thread")
+        .env("CODEX_THREAD_ID", "thread-force")
         .spawn()
         .unwrap();
     fs::write(
@@ -113,9 +193,14 @@ echo $$ > child.pid
 while IFS= read -r line; do
   case "$line" in
     *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
-    *'"id":1'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-force"}}}' ;;
+    *'"id":-1'*) printf '%s\n' '{"id":-1,"result":{"config":{"shell_environment_policy":{"inherit":"none","include_only":["PATH"]}},"origins":{}}}' ;;
+    *'"id":1'*)
+      printf '%s' "$line" | "$(command -v python3)" -c 'import json,sys,pathlib; config=json.load(sys.stdin)["params"]["config"]; assert config["shell_environment_policy.include_only"] == ["PATH", "AIT_CODEX_PROCESS_OWNER"]; pathlib.Path("owner-marker").write_text(config["shell_environment_policy.set.AIT_CODEX_PROCESS_OWNER"])'
+      printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-force"}}}'
+      ;;
     *'"id":2'*)
-      /usr/bin/env -i CODEX_THREAD_ID=thread-force "$(command -v python3)" -c 'import os,time,pathlib; assert "AIT_CODEX_PROCESS_OWNER" not in os.environ; assert os.environ["CODEX_THREAD_ID"] == "thread-force"; os.setsid(); pathlib.Path("detached.pid").write_text(str(os.getpid())); child=os.fork(); pathlib.Path("detached-grandchild.pid").write_text(str(os.getpid())) if child == 0 else None; time.sleep(300)' </dev/null >/dev/null 2>&1 &
+      owner_marker=$(cat owner-marker)
+      /usr/bin/env -i CODEX_THREAD_ID=thread-force AIT_CODEX_PROCESS_OWNER="$owner_marker" "$(command -v python3)" -c 'import os,time,pathlib; assert os.environ["AIT_CODEX_PROCESS_OWNER"] == pathlib.Path("owner-marker").read_text(); assert os.environ["CODEX_THREAD_ID"] == "thread-force"; os.setsid(); pathlib.Path("detached.pid").write_text(str(os.getpid())); child=os.fork(); pathlib.Path("detached-grandchild.pid").write_text(str(os.getpid())) if child == 0 else None; time.sleep(300)' </dev/null >/dev/null 2>&1 &
       printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-force"}}}'
       ;;
     *'"id":3'*) : > interrupt-seen ;;
@@ -188,11 +273,11 @@ done
     assert_dead(detached_pid.trim()).await;
     assert_dead(detached_grandchild_pid.trim()).await;
     assert!(
-        unrelated.try_wait().unwrap().is_none(),
-        "descendant cleanup must not kill a pre-existing unrelated process"
+        same_thread_preexisting.try_wait().unwrap().is_none(),
+        "per-Run cleanup must not kill a pre-existing process from the same thread"
     );
-    unrelated.kill().unwrap();
-    unrelated.wait().unwrap();
+    same_thread_preexisting.kill().unwrap();
+    same_thread_preexisting.wait().unwrap();
 }
 
 #[tokio::test]
@@ -210,7 +295,7 @@ async fn filtered_tool_environment_does_not_orphan_thread_descendants() {
 import pathlib
 import time
 
-assert "AIT_CODEX_PROCESS_OWNER" not in os.environ
+assert os.environ["AIT_CODEX_PROCESS_OWNER"] == pathlib.Path("owner-marker").read_text()
 assert os.environ["CODEX_THREAD_ID"] == "thread-root-exit"
 os.setsid()
 
@@ -251,9 +336,14 @@ echo $$ > child.pid
 while IFS= read -r line; do
   case "$line" in
     *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
-    *'"id":1'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-root-exit"}}}' ;;
+    *'"id":-1'*) printf '%s\n' '{"id":-1,"result":{"config":{"shell_environment_policy":{"inherit":"core","include_only":["PATH"]}},"origins":{}}}' ;;
+    *'"id":1'*)
+      printf '%s' "$line" | "$(command -v python3)" -c 'import json,sys,pathlib; config=json.load(sys.stdin)["params"]["config"]; assert config["shell_environment_policy.include_only"] == ["PATH", "AIT_CODEX_PROCESS_OWNER"]; pathlib.Path("owner-marker").write_text(config["shell_environment_policy.set.AIT_CODEX_PROCESS_OWNER"])'
+      printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-root-exit"}}}'
+      ;;
     *'"id":2'*)
-      /usr/bin/env -i CODEX_THREAD_ID=thread-root-exit "$(command -v python3)" forking-tool.py </dev/null >/dev/null 2>&1 &
+      owner_marker=$(cat owner-marker)
+      /usr/bin/env -i CODEX_THREAD_ID=thread-root-exit AIT_CODEX_PROCESS_OWNER="$owner_marker" "$(command -v python3)" forking-tool.py </dev/null >/dev/null 2>&1 &
       printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-root-exit"}}}'
       ;;
     *'"id":3'*)
