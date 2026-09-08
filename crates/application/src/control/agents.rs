@@ -568,7 +568,12 @@ impl LocalControlService {
 }
 
 fn domain_error(failure: DomainError) -> ApiError {
-    error(failure.code, failure.message, failure.retryable)
+    ApiError {
+        code: failure.code,
+        message: failure.message,
+        retryable: failure.retryable,
+        details: failure.details.map(Box::new),
+    }
 }
 
 /// Upgrade legacy JSON snapshots in memory; the next atomic commit stores v3.

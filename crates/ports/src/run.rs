@@ -382,6 +382,12 @@ pub trait SessionTitleGenerator: Send + Sync {
 #[async_trait]
 pub trait WorkspaceAgent: Send + Sync {
     /// Runs the selected harness and commits any generated workspace changes.
+    ///
+    /// Returning is also the execution settlement barrier: implementations
+    /// must not return until every process owned by the invocation has exited
+    /// and any Git side effect that already started has a known outcome.
+    /// Cancellation requests cooperative interruption, but does not permit the
+    /// caller to drop this future and assume the external work was undone.
     async fn invoke(
         &self,
         request: WorkspaceAgentInvocation,

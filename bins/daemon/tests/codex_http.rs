@@ -293,8 +293,14 @@ printf '%s\n' '{{"id":0,"result":{{}}}}'
 read_line
 read_line
 case "$line" in
+  *'"method":"config/read"'*) ;;
+  *) exit 4 ;;
+esac
+printf '%s\n' '{{"id":-1,"result":{{"config":{{"shell_environment_policy":{{}}}},"origins":{{}}}}}}'
+read_line
+case "$line" in
   *'"model":"gpt-5.6-sol"'*) ;;
-  *) printf '%s\n' '{{"id":1,"error":{{"code":-32602,"message":"unsupported model"}}}}'; exit 4 ;;
+  *) printf '%s\n' '{{"id":1,"error":{{"code":-32602,"message":"unsupported model"}}}}'; exit 5 ;;
 esac
 printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
 read_line

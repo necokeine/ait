@@ -1,11 +1,13 @@
 //! In-memory protocol conformance tests for the Codex app-server adapter.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use ait_agent_adapters::{
     AgentEvent, AgentRunRequest, AgentRunStatus, ApprovalDecision, ApprovalHandler, ApprovalPolicy,
     ApprovalRequest, SandboxMode,
-    codex::{ClientInfo, drive_model_list_protocol, drive_protocol},
+    codex::{
+        ClientInfo, drive_model_list_protocol, drive_protocol, drive_protocol_with_interrupt_grace,
+    },
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -50,6 +52,44 @@ async fn write_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: Val
         .unwrap();
     writer.write_all(b"\n").await.unwrap();
     writer.flush().await.unwrap();
+}
+
+async fn respond_to_owner_policy_read<R, W>(
+    lines: &mut tokio::io::Lines<R>,
+    writer: &mut W,
+    shell_environment_policy: Value,
+) where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let request = read_json(lines).await;
+    assert_eq!(request["method"], "config/read");
+    assert_eq!(request["id"], -1);
+    assert_eq!(request["params"]["cwd"], "/workspace");
+    write_json(
+        writer,
+        json!({
+            "id": -1,
+            "result": {
+                "config": {"shell_environment_policy": shell_environment_policy},
+                "origins": {}
+            }
+        }),
+    )
+    .await;
+}
+
+fn assert_legacy_owner_config(thread: &Value) {
+    let owner_config = &thread["params"]["config"];
+    assert!(
+        owner_config["shell_environment_policy.set.AIT_CODEX_PROCESS_OWNER"]
+            .as_str()
+            .is_some_and(|marker| !marker.is_empty())
+    );
+    assert_eq!(
+        owner_config["shell_environment_policy.include_only"],
+        json!(["PATH", "AIT_CODEX_PROCESS_OWNER"])
+    );
 }
 
 #[tokio::test]
@@ -112,6 +152,10 @@ async fn discovers_picker_visible_models_and_reasoning_efforts_across_pages() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the protocol lifecycle and ownership handshake are one conformance scenario"
+)]
 async fn maps_codex_jsonl_lifecycle_and_usage() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
@@ -122,6 +166,14 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
         assert_eq!(initialize["method"], "initialize");
         write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
         assert_eq!(read_json(&mut lines).await["method"], "initialized");
+        respond_to_owner_policy_read(
+            &mut lines,
+            &mut server_write,
+            json!({
+                "inherit":"none", "include_only":["PATH"]
+            }),
+        )
+        .await;
         let thread = read_json(&mut lines).await;
         assert_eq!(thread["method"], "thread/start");
         assert_eq!(thread["params"]["sandbox"], "workspace-write");
@@ -142,6 +194,7 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
                 "must preserve native core {key}"
             );
         }
+        assert_legacy_owner_config(&thread);
         write_json(
             &mut server_write,
             json!({"id": 1, "result": {"thread": {"id": "thr-1"}}}),
@@ -216,6 +269,10 @@ async fn maps_codex_jsonl_lifecycle_and_usage() {
 #[derive(Debug)]
 struct AcceptOnce;
 
+struct BlockingApproval {
+    entered: tokio::sync::Semaphore,
+}
+
 #[tokio::test]
 async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
@@ -226,6 +283,12 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
         read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id":0,"result":{}})).await;
         read_json(&mut lines).await;
+        respond_to_owner_policy_read(
+            &mut lines,
+            &mut server_write,
+            json!({"filters":{"PATH":"include","SECRET_*":"exclude"}}),
+        )
+        .await;
         let thread = read_json(&mut lines).await;
         assert_eq!(thread["method"], "thread/resume");
         assert_eq!(thread["params"]["threadId"], "existing-thread");
@@ -242,6 +305,10 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
         for key in ["baseInstructions", "tools", "dynamicTools", "ephemeral"] {
             assert!(thread["params"].get(key).is_none());
         }
+        assert_eq!(
+            thread["params"]["config"]["shell_environment_policy.filters.AIT_CODEX_PROCESS_OWNER"],
+            "include"
+        );
         write_json(
             &mut server_write,
             json!({"id":1,"result":{"thread":{"id":"existing-thread"}}}),
@@ -285,6 +352,14 @@ impl ApprovalHandler for AcceptOnce {
     }
 }
 
+#[async_trait]
+impl ApprovalHandler for BlockingApproval {
+    async fn decide(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+        self.entered.add_permits(1);
+        std::future::pending().await
+    }
+}
+
 #[tokio::test]
 async fn routes_command_approvals_through_handler() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
@@ -295,6 +370,7 @@ async fn routes_command_approvals_through_handler() {
         let _ = read_json(&mut lines).await;
         write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
         let _ = read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
         let _ = read_json(&mut lines).await;
         write_json(
             &mut server_write,
@@ -342,4 +418,284 @@ async fn routes_command_approvals_through_handler() {
     drive.await.unwrap().unwrap();
     server.await.unwrap();
     assert!(saw_approval);
+}
+
+#[tokio::test]
+async fn cancellation_waits_for_the_target_turn_to_report_interrupted() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let (turn_started, start_cancellation) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-cancel"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-cancel"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"method":"item/started","params":{"item":{"id":"command-1","type":"commandExecution","status":"inProgress","command":"cargo test"}}}),
+        )
+        .await;
+        turn_started.send(()).unwrap();
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["turnId"], "turn-cancel");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        write_json(&mut server_write, json!({"id":3,"result":{}})).await;
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-cancel","status":"interrupted"}}}),
+        )
+        .await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    let (sender, mut receiver) = mpsc::channel(32);
+    let drive = tokio::spawn(async move {
+        drive_protocol_with_interrupt_grace(
+            client_read,
+            client_write,
+            request,
+            client(),
+            Arc::new(ait_agent_adapters::DenyAllApprovals),
+            &sender,
+            Duration::from_secs(1),
+        )
+        .await
+    });
+    start_cancellation.await.unwrap();
+    let started = tokio::time::Instant::now();
+    cancellation.cancel();
+    let error = drive.await.unwrap().unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    assert!(started.elapsed() >= Duration::from_millis(40));
+    server.await.unwrap();
+    let mut interrupted = false;
+    let mut saw_running_command = false;
+    while let Ok(event) = receiver.try_recv() {
+        match event.unwrap() {
+            AgentEvent::Completed {
+                status: AgentRunStatus::Interrupted,
+                ..
+            } => interrupted = true,
+            AgentEvent::ItemStarted { item }
+                if item.get("type").and_then(Value::as_str) == Some("commandExecution") =>
+            {
+                saw_running_command = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(interrupted);
+    assert!(saw_running_command);
+}
+
+#[tokio::test]
+async fn missing_interrupt_ack_hits_the_grace_deadline() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let (turn_started, start_cancellation) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-timeout"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-timeout"}}}),
+        )
+        .await;
+        turn_started.send(()).unwrap();
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        std::future::pending::<()>().await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    let (sender, _receiver) = mpsc::channel(32);
+    let drive = tokio::spawn(async move {
+        drive_protocol_with_interrupt_grace(
+            client_read,
+            client_write,
+            request,
+            client(),
+            Arc::new(ait_agent_adapters::DenyAllApprovals),
+            &sender,
+            Duration::from_millis(40),
+        )
+        .await
+    });
+    start_cancellation.await.unwrap();
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_secs(1), drive)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    server.abort();
+}
+
+#[tokio::test]
+async fn interrupt_deadline_bounds_a_blocked_approval_handler() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-approval"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-approval"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"id":90,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-approval"}}),
+        )
+        .await;
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        write_json(&mut server_write, json!({"id":3,"result":{}})).await;
+        write_json(
+            &mut server_write,
+            json!({"id":91,"method":"item/commandExecution/requestApproval","params":{"turnId":"turn-approval"}}),
+        )
+        .await;
+        std::future::pending::<()>().await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    let approvals = Arc::new(BlockingApproval {
+        entered: tokio::sync::Semaphore::new(0),
+    });
+    let (sender, mut receiver) = mpsc::channel(32);
+    let drive = tokio::spawn({
+        let approvals = approvals.clone();
+        async move {
+            drive_protocol_with_interrupt_grace(
+                client_read,
+                client_write,
+                request,
+                client(),
+                approvals,
+                &sender,
+                Duration::from_millis(40),
+            )
+            .await
+        }
+    });
+    let drain = tokio::spawn(async move { while receiver.recv().await.is_some() {} });
+    tokio::time::timeout(Duration::from_secs(1), approvals.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let started = tokio::time::Instant::now();
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_millis(500), drive)
+        .await
+        .expect("blocked approval handling must obey the interrupt deadline")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    server.abort();
+    drain.await.unwrap();
+}
+
+#[tokio::test]
+async fn interrupt_deadline_bounds_full_event_channel_backpressure() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let (turn_exists, start_cancellation) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        respond_to_owner_policy_read(&mut lines, &mut server_write, json!({})).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thread-backpressure"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-backpressure"}}}),
+        )
+        .await;
+        turn_exists.send(()).unwrap();
+        let interrupt = read_json(&mut lines).await;
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        write_json(&mut server_write, json!({"id":3,"result":{}})).await;
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-backpressure","status":"interrupted"}}}),
+        )
+        .await;
+    });
+    let request = request();
+    let cancellation = request.cancellation.clone();
+    // ThreadStarted fills the only slot; TurnStarted then blocks until cancel.
+    let (sender, _receiver) = mpsc::channel(1);
+    let drive = tokio::spawn(async move {
+        drive_protocol_with_interrupt_grace(
+            client_read,
+            client_write,
+            request,
+            client(),
+            Arc::new(ait_agent_adapters::DenyAllApprovals),
+            &sender,
+            Duration::from_millis(40),
+        )
+        .await
+    });
+    start_cancellation.await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let started = tokio::time::Instant::now();
+    cancellation.cancel();
+    let error = tokio::time::timeout(Duration::from_millis(500), drive)
+        .await
+        .expect("event backpressure must obey the interrupt deadline")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    server.await.unwrap();
 }

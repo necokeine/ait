@@ -6,7 +6,7 @@ use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
     ProviderSecret, RunView, WorkspaceView,
 };
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{DomainError, DomainMetadata, ErrorCode};
 use ait_ports::{
     AgentProviderGateway, ControlSnapshot, ControlStore, ControlStoreError, DurableEvent,
     HostProviderModelCatalog, PendingEvent, ProviderMessage, RunOutputArchive, WorkspaceAgent,
@@ -15,7 +15,7 @@ use ait_ports::{
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -965,7 +965,7 @@ async fn cancellation_wins_the_finalization_gate_before_integration() {
     else {
         panic!()
     };
-    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(cancelled.status, "cancelling");
     agent.begin_integration.add_permits(1);
 
     let CommandResult::Run(settled) = running.await.unwrap() else {
@@ -1469,6 +1469,278 @@ async fn cancelling_an_active_call_releases_the_session_and_discards_its_output(
         panic!()
     };
     assert_eq!(next.status, "completed");
+}
+
+struct LateCommitAgent {
+    entered: Semaphore,
+    release: Semaphore,
+}
+
+struct PendingGateway {
+    entered: Semaphore,
+    secrets: Mutex<HashMap<String, String>>,
+}
+
+#[async_trait]
+impl AgentProviderGateway for PendingGateway {
+    async fn store_secret(&self, reference: &str, secret: &str) -> Result<(), DomainError> {
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert(reference.into(), secret.into());
+        Ok(())
+    }
+
+    async fn delete_secret(&self, reference: &str) -> Result<(), DomainError> {
+        self.secrets.lock().unwrap().remove(reference);
+        Ok(())
+    }
+
+    async fn list_models(
+        &self,
+        _: &AgentProvider,
+        _: &str,
+    ) -> Result<Vec<ProviderModel>, DomainError> {
+        Ok(vec![ProviderModel {
+            id: "pending-model".into(),
+            name: "Pending".into(),
+            reasoning_efforts: Vec::new(),
+        }])
+    }
+
+    async fn list_models_with_secret(
+        &self,
+        provider: &AgentProvider,
+        _: &str,
+    ) -> Result<Vec<ProviderModel>, DomainError> {
+        self.list_models(provider, "stored").await
+    }
+
+    async fn complete(
+        &self,
+        _: &AgentProvider,
+        reference: &str,
+        _: &AgentConfiguration,
+        _: Vec<ProviderMessage>,
+    ) -> Result<String, DomainError> {
+        assert!(self.secrets.lock().unwrap().contains_key(reference));
+        self.entered.add_permits(1);
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn cancellation_drops_pending_api_requests_and_releases_the_session_promptly() {
+    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let gateway = Arc::new(PendingGateway {
+            entered: Semaphore::new(0),
+            secrets: Mutex::default(),
+        });
+        let service =
+            Arc::new(LocalControlService::new(store).with_provider_gateway(gateway.clone()));
+        let provider = AgentProvider {
+            id: format!("pending-{kind:?}").to_lowercase(),
+            name: "Pending provider".into(),
+            kind,
+            url: (kind == AgentMode::OpenAI).then(|| "https://example.com/v1".into()),
+            models: vec![ProviderModel {
+                id: "pending-model".into(),
+                name: "Pending".into(),
+                reasoning_efforts: Vec::new(),
+            }],
+        };
+        ok(
+            &service,
+            Command::SaveAgentProvider {
+                provider: provider.clone(),
+                secret: Some(ProviderSecret("test-secret".into())),
+            },
+        )
+        .await;
+        let _directory = setup(
+            &service,
+            AgentConfiguration {
+                provider_id: provider.id,
+                model: "pending-model".into(),
+                reasoning_effort: None,
+            },
+        )
+        .await;
+        let execution = {
+            let service = service.clone();
+            tokio::spawn(async move { ok(&service, send("one")).await })
+        };
+        tokio::time::timeout(Duration::from_secs(3), gateway.entered.acquire())
+            .await
+            .unwrap()
+            .unwrap()
+            .forget();
+        let run_id = view(&service).await.runs[0].id.clone();
+        let CommandResult::Run(stopping) = ok(
+            &service,
+            Command::CancelRun {
+                run_id: run_id.clone(),
+            },
+        )
+        .await
+        else {
+            panic!()
+        };
+        assert_eq!(stopping.status, "cancelling");
+        let CommandResult::Run(cancelled) =
+            tokio::time::timeout(Duration::from_millis(500), execution)
+                .await
+                .expect("API cancellation must not wait for the HTTP timeout")
+                .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(view(&service).await.sessions[0].active_run_id.is_none());
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for LateCommitAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.entered.add_permits(1);
+        request.cancellation.cancelled().await;
+        self.release.acquire().await.unwrap().forget();
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "late success must not become a Message".into(),
+            commit_id: Some("late-commit".into()),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn cancellation_holds_the_session_until_late_commit_settlement_is_audited() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(LateCommitAgent {
+        entered: Semaphore::new(0),
+        release: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    tokio::time::timeout(Duration::from_secs(3), agent.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let run_id = view(&service).await.runs[0].id.clone();
+    let CommandResult::Run(stopping) = ok(
+        &service,
+        Command::CancelRun {
+            run_id: run_id.clone(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(stopping.status, "cancelling");
+    let CommandResult::Run(repeated) = ok(
+        &service,
+        Command::CancelRun {
+            run_id: run_id.clone(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(repeated, stopping);
+    assert_eq!(
+        service.execute(send("one")).await.error.unwrap().code,
+        ErrorCode::SessionBusy
+    );
+    assert_eq!(view(&service).await.sessions[0].active_run_id, Some(run_id));
+
+    agent.release.add_permits(1);
+    let CommandResult::Run(cancelled) = running.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(cancelled.status, "cancelled");
+    assert_eq!(
+        cancelled.workspace_commit_id.as_deref(),
+        Some("late-commit")
+    );
+    let settled = view(&service).await;
+    assert!(settled.sessions[0].active_run_id.is_none());
+    assert_eq!(settled.messages.len(), 2);
+}
+
+struct SettlementFailureAgent {
+    entered: Semaphore,
+}
+
+#[async_trait]
+impl WorkspaceAgent for SettlementFailureAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.entered.add_permits(1);
+        request.cancellation.cancelled().await;
+        Err(
+            DomainError::invariant(ErrorCode::ProjectGitInitFailed, "hook rejected").with_details(
+                DomainMetadata(BTreeMap::from([(
+                    "workspace_settlement".into(),
+                    serde_json::json!({
+                        "status": "failed",
+                        "operation": "git_commit",
+                        "index_dirty": true,
+                    }),
+                )])),
+            ),
+        )
+    }
+}
+
+#[tokio::test]
+async fn cancellation_keeps_structured_git_settlement_failure_on_the_run() {
+    let agent = Arc::new(SettlementFailureAgent {
+        entered: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let execution = {
+        let service = service.clone();
+        tokio::spawn(async move { ok(&service, send("one")).await })
+    };
+    tokio::time::timeout(Duration::from_secs(3), agent.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let run_id = view(&service).await.runs[0].id.clone();
+    ok(&service, Command::CancelRun { run_id }).await;
+    let CommandResult::Run(cancelled) = execution.await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(cancelled.status, "cancelled");
+    let error = cancelled.error.unwrap();
+    assert_eq!(error.code, ErrorCode::RunCancelled);
+    let details = error.details.unwrap();
+    assert_eq!(details.0["workspace_settlement"]["operation"], "git_commit");
+    assert_eq!(details.0["workspace_settlement"]["index_dirty"], true);
+    assert!(view(&service).await.sessions[0].active_run_id.is_none());
 }
 
 #[derive(Default)]

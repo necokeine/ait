@@ -37,6 +37,7 @@ const composerProvider = $<HTMLSelectElement>("#composer-provider");
 const composerModel = $<HTMLSelectElement>("#composer-model");
 const composerReasoning = $<HTMLSelectElement>("#composer-reasoning");
 const sendButton = $<HTMLButtonElement>("#send-button");
+const stopButton = $<HTMLButtonElement>("#stop-button");
 const settingsDialog = $("#settings-dialog");
 const commandDialog = $("#command-dialog");
 const projectDialog = $("#project-dialog");
@@ -194,6 +195,7 @@ function bindInteractions(): void {
     event.preventDefault();
     void submitMessage();
   });
+  stopButton.addEventListener("click", () => void stopRun());
   treeScroll.addEventListener("keydown", handleTreeKeyboard);
   document.addEventListener("pointerdown", (event) => {
     if (!sessionContextMenu.contains(event.target as Node)) closeSessionContextMenu();
@@ -346,8 +348,11 @@ function renderConversation(): void {
     ? snapshot.runProgress.find((candidate) => candidate.runId === session.activeRunId && candidate.sessionId === session.id)
     : undefined;
   const agent = snapshot.agents.find((candidate) => candidate.id === session.agentId);
+  const activeRun = session.activeRunId
+    ? snapshot.runs.find((run) => run.id === session.activeRunId)
+    : undefined;
   const live = session.activeRunId
-    ? renderRunProgress(progress, agent ? agentDisplayName(agent) : "Assistant", streamConnected)
+    ? renderRunProgress(progress, agent ? agentDisplayName(agent) : "Assistant", streamConnected, activeRun?.status)
     : "";
   const latestRun = terminalRunForSession(snapshot, session.id);
   const terminal = latestRun
@@ -358,6 +363,7 @@ function renderConversation(): void {
       latestRun.partialOutput,
       latestRun.id,
       session.projectId,
+      latestRun.workspaceCommitId,
     )
     : "";
   conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("") + live + terminal;
@@ -399,6 +405,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
   }
   let refresh = false;
   let renderCurrent = false;
+  let renderCurrentState = false;
   const gappedRuns = new Set<string>();
   for (const update of updates) {
     if (update.type === "connection") {
@@ -435,10 +442,12 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       const run = event.body as Record<string, unknown>;
       const runId = typeof run.id === "string" ? run.id : undefined;
       const status = typeof run.status === "string" ? run.status : undefined;
-      if (runId && status === "settling") {
+      if (runId && ["cancelling", "settling"].includes(status ?? "")) {
+        const existing = snapshot.runs.find((candidate) => candidate.id === runId);
+        if (existing && status) existing.status = status;
         const progress = snapshot.runProgress.find((candidate) => candidate.runId === runId);
-        if (progress) progress.status = "settling";
-        renderCurrent ||= currentSession()?.activeRunId === runId;
+        if (progress && status) progress.status = status;
+        renderCurrentState ||= currentSession()?.activeRunId === runId;
       }
       if (isTerminalRunEvent(event)) {
         refresh = true;
@@ -448,6 +457,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
     if (event.kind === "stream.reset_required") refresh = true;
   }
   if (refresh) scheduleSnapshotRefresh();
+  else if (renderCurrentState) renderAll();
   else if (renderCurrent) renderConversation();
 }
 
@@ -684,6 +694,26 @@ async function submitMessage(): Promise<void> {
   }
 }
 
+async function stopRun(): Promise<void> {
+  const session = currentSession();
+  const runId = session?.activeRunId;
+  const run = snapshot?.runs.find((candidate) => candidate.id === runId);
+  if (!snapshot || !session || !runId || run?.status === "cancelling" || stopButton.disabled) return;
+  pendingSessions.add(session.id);
+  updateComposerState();
+  try {
+    snapshot = await window.ait.cancelRun(runId);
+    renderAll();
+    showToast("Stop requested. Waiting for Codex and workspace settlement.");
+  } catch (error) {
+    try { snapshot = await window.ait.snapshot(); renderAll(); } catch { /* Keep the last visible snapshot if disconnected. */ }
+    showToast(errorMessage(error), true);
+  } finally {
+    pendingSessions.delete(session.id);
+    updateComposerState();
+  }
+}
+
 async function generateFirstSessionTitle(sessionId: string, prompt: string): Promise<void> {
   const title = temporarySessionTitle(prompt);
   const modelPrompt = sanitizeSessionPrompt(prompt);
@@ -785,11 +815,19 @@ async function changeSessionAgent(): Promise<void> {
 
 function updateComposerState(): void {
   const session = currentSession();
+  const activeRun = snapshot?.runs.find((run) => run.id === session?.activeRunId);
   const busy = !!session && (session.active || pendingSessions.has(session.id));
   if (!session || session.active || (configuringSessionId && configuringSessionId !== session.id)) {
     composerConfigPanel.hidePopover();
   }
   sendButton.disabled = !session || messageInput.value.trim().length === 0 || busy;
+  sendButton.classList.toggle("is-hidden", !!session?.activeRunId);
+  stopButton.classList.toggle("is-hidden", !session?.activeRunId);
+  stopButton.disabled = !session?.activeRunId
+    || activeRun?.status === "cancelling"
+    || pendingSessions.has(session.id);
+  stopButton.textContent = activeRun?.status === "cancelling" ? "…" : "■";
+  stopButton.setAttribute("aria-label", activeRun?.status === "cancelling" ? "Run is stopping" : "Stop Run");
   messageInput.disabled = !session || busy;
   composerConfigTrigger.disabled = !session || busy;
   composerAgent.disabled = !session || busy;
@@ -801,7 +839,9 @@ function updateComposerState(): void {
     : selectedNodeId
       ? "Write the first user message on this branch…"
       : busy
-        ? "This Session is running…"
+        ? activeRun?.status === "cancelling"
+          ? "This Session is stopping and settling…"
+          : "This Session is running…"
         : "Send a message to this Session…";
   $("#composer-hint").textContent = selectedNodeId
     ? "A new immutable branch and Session will be created · ⌘ Enter to send"

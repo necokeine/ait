@@ -1796,12 +1796,88 @@ async fn commit_failure_retains_confirmed_output_and_staged_isolated_changes() {
         .await
         .unwrap_err();
     assert_eq!(error.code, ait_domain::ErrorCode::ProjectGitInitFailed);
+    let details = error.details.as_ref().unwrap();
+    assert_eq!(details.0["workspace_settlement"]["operation"], "git_commit");
+    assert_eq!(details.0["workspace_settlement"]["index_dirty"], true);
+    assert!(details.0["retained_worktree_path"].is_string());
     assert!(progress.0.lock().unwrap().iter().any(|event| matches!(
         event,
         WorkspaceProgressEvent::MessageCompleted { id, .. } if id == "final-1"
     )));
     let status = git_output(&retained_workspace(&error), &["status", "--porcelain=v1"]);
     assert!(status.contains("A  answer.txt"));
+    assert!(!project.path().join("answer.txt").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_during_failed_hook_preserves_isolated_settlement_audit() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let project = initialized_project();
+    let hook = project.path().join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        r#"#!/bin/sh
+common="$(git rev-parse --git-common-dir)"
+: > "$common/hook-started"
+while [ ! -f "$common/hook-release" ]; do sleep 0.01; done
+echo hook rejected >&2
+exit 1
+"#,
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&hook).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&hook, permissions).unwrap();
+    let cancellation = CancellationToken::new();
+    let baseline_commit = head(project.path());
+    let baseline_index_tree = index_tree(project.path());
+    let cwd = project.path().to_path_buf();
+    let running = tokio::spawn({
+        let cancellation = cancellation.clone();
+        async move {
+            CodexWorkspaceAgent::new(Arc::new(EditingAdapter))
+                .invoke(WorkspaceAgentInvocation {
+                    request_id: "cancelled-failed-hook".into(),
+                    model: "test-model".into(),
+                    reasoning_effort: None,
+                    prompt: "Create answer.txt".into(),
+                    project_instructions: Some("Keep generated files small.".into()),
+                    commit_subject: "Create answer.txt".into(),
+                    cwd,
+                    adopted_worktree: None,
+                    baseline_commit,
+                    baseline_index_tree,
+                    cancellation,
+                    integration_gate: None,
+                })
+                .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !project.path().join(".git/hook-started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cancellation.cancel();
+    assert!(
+        !running.is_finished(),
+        "an in-flight hook remains inside workspace settlement"
+    );
+    std::fs::write(project.path().join(".git/hook-release"), "release").unwrap();
+    let failure = tokio::time::timeout(std::time::Duration::from_secs(3), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::ProjectGitInitFailed);
+    let details = failure.details.unwrap();
+    assert_eq!(details.0["workspace_settlement"]["operation"], "git_commit");
+    assert_eq!(details.0["workspace_settlement"]["index_dirty"], true);
+    assert!(details.0["retained_worktree_path"].is_string());
     assert!(!project.path().join("answer.txt").exists());
 }
 

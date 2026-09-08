@@ -1,7 +1,7 @@
 //! Versioned transport DTOs shared by HTTP, CLI, IPC, and future UI clients.
 #![allow(missing_docs)]
 
-use ait_domain::ErrorCode;
+use ait_domain::{DomainMetadata, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -134,6 +134,9 @@ pub struct ApiError {
     pub code: ErrorCode,
     pub message: String,
     pub retryable: bool,
+    /// Optional non-secret machine-readable failure context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<DomainMetadata>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -237,6 +240,11 @@ pub struct RunView {
     /// Failed Run whose explicitly adopted workspace this Run continues.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_of_run_id: Option<ait_domain::RunId>,
+    /// Git commit produced during workspace settlement, including a commit
+    /// that finished after cancellation was requested. Such a commit remains
+    /// auditable even though no successful assistant Message is appended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_commit_id: Option<String>,
 }
 
 pub use ait_domain::{RunPartialOutput, RunWorktreeChange, RunWorktreeState};

@@ -340,13 +340,21 @@ export function renderMessage(message: DesktopMessage, agents: AgentSummary[], s
   </article>`;
 }
 
-export function renderRunProgress(progress: RunProgress | undefined, author: string, connected: boolean): string {
+export function renderRunProgress(
+  progress: RunProgress | undefined,
+  author: string,
+  connected: boolean,
+  runStatus?: string,
+): string {
   const latestWarning = progress?.warnings.at(-1);
+  const effectiveStatus = runStatus ?? progress?.status;
   const status = !connected
     ? "Connection interrupted — reconnecting without stopping the Run."
     : latestWarning?.retrying
       ? `Retrying — ${latestWarning.message}`
-      : progress?.status === "completed" || progress?.status === "settling"
+      : effectiveStatus === "cancelling"
+        ? "Stopping Codex; waiting for process and workspace settlement…"
+        : effectiveStatus === "completed" || effectiveStatus === "settling"
         ? "Codex finished; Ait is saving the result…"
         : "Codex is working…";
   const content = progress?.items.length
@@ -372,6 +380,7 @@ export function renderRunTerminal(
   },
   runId = "",
   projectId = "",
+  workspaceCommitId?: string,
 ): string {
   const cancelled = status === "cancelled";
   const heading = cancelled ? "Run cancelled" : status === "limit_exceeded" ? "Run limit reached" : "Run failed";
@@ -391,10 +400,14 @@ export function renderRunTerminal(
   const inspectionFailure = unknown.length
     ? `<section class="partial-run-unknown"><strong>Some terminal state could not be inspected</strong><p>${escapeHtml(unknown.join(" "))}</p></section>`
     : "";
+  const commit = workspaceCommitId
+    ? `<p>Workspace commit <code>${escapeHtml(workspaceCommitId)}</code> completed during settlement and remains attached to this cancelled Run.</p>`
+    : "";
   return `<article class="message assistant run-terminal status-${escapeHtml(status)}" data-run-id="${escapeHtml(runId)}" aria-live="polite">
     <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
     <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong></div>
-      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>${partialProgress}${inspectionFailure}${worktree}
+      <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p>${commit}</div>
+      ${partialProgress}${inspectionFailure}${worktree}
     </div>
   </article>`;
 }

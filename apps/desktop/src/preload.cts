@@ -41,6 +41,7 @@ const api: AitDesktopApi = {
   generateSessionTitle: (input) => invoke("session.generate-title", input),
   sendMessage: (input) => invoke("session.send-message", input),
   continueRun: (input) => invoke("run.continue", input),
+  cancelRun: (runId) => invoke("run.cancel", { runId }),
   subscribeRunEvents: (listener) => {
     runEventListeners.add(listener);
     if (!runEventsReady) {
