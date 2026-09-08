@@ -7,9 +7,8 @@ export interface TimelineBranch {
 
 export interface TimelineNode {
   message: DesktopMessage;
-  selected: boolean;
   onCurrentBranch: boolean;
-  branches: TimelineBranch[];
+  children: TimelineBranch[];
 }
 
 export function messageText(message: DesktopMessage): string {
@@ -43,7 +42,6 @@ export function buildMessageTimeline(
   messages: DesktopMessage[],
   currentSession: DesktopSession | undefined,
   viewedHeadId: string | undefined,
-  selectedId: string | undefined,
 ): TimelineNode[] {
   const byId = new Map(messages.map((message) => [message.id, message]));
   const children = collectChildren(messages, byId);
@@ -58,14 +56,11 @@ export function buildMessageTimeline(
     const activeSuccessorId = path[index + 1]?.id;
     return {
       message,
-      selected: message.id === selectedId,
       onCurrentBranch: currentBranch.has(message.id),
-      branches: successors.length > 1
-        ? successors.map((successor) => ({
-            message: successor,
-            active: successor.id === activeSuccessorId,
-          }))
-        : [],
+      children: successors.map((successor) => ({
+        message: successor,
+        active: successor.id === activeSuccessorId,
+      })),
     };
   });
 }
@@ -78,35 +73,52 @@ export function resolveBranchHead(
   const byId = new Map(messages.map((message) => [message.id, message]));
   if (!byId.has(branchRootId)) return undefined;
 
-  const session = sessions
-    .filter((candidate) => isDescendantOf(byId, candidate.currentMessageId, branchRootId))
-    .toSorted((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0];
+  const session = sessionForBranch(messages, sessions, branchRootId);
   if (session) return session.currentMessageId;
 
   const children = collectChildren(messages, byId);
-  let cursor = byId.get(branchRootId);
+  let deepest = byId.get(branchRootId)!;
+  let deepestDepth = 0;
+  const stack = [{ message: deepest, depth: 0 }];
   const seen = new Set<string>();
-  while (cursor && !seen.has(cursor.id)) {
-    seen.add(cursor.id);
-    const successor = (children.get(cursor.id) ?? []).at(-1);
-    if (!successor) return cursor.id;
-    cursor = successor;
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (seen.has(current.message.id)) continue;
+    seen.add(current.message.id);
+    if (current.depth > deepestDepth
+      || current.depth === deepestDepth && compareMessages(deepest, current.message) < 0) {
+      deepest = current.message;
+      deepestDepth = current.depth;
+    }
+    for (const child of children.get(current.message.id) ?? []) {
+      stack.push({ message: child, depth: current.depth + 1 });
+    }
   }
-  return branchRootId;
+  return deepest.id;
 }
 
-export function sessionForMessage(
+export function sessionForBranch(
   messages: DesktopMessage[],
   sessions: DesktopSession[],
-  messageId: string,
-  preferredSessionId: string | undefined,
+  branchRootId: string,
 ): DesktopSession | undefined {
   const byId = new Map(messages.map((message) => [message.id, message]));
-  const candidates = sessions.filter((session) =>
-    isDescendantOf(byId, session.currentMessageId, messageId));
-  return candidates.find((session) => session.id === preferredSessionId)
-    ?? candidates.toSorted((left, right) =>
-      right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))[0];
+  return sessions.flatMap((session) => {
+    const depth = descendantDepth(byId, session.currentMessageId, branchRootId);
+    return depth === undefined ? [] : [{ session, depth }];
+  }).toSorted((left, right) =>
+    right.depth - left.depth
+      || right.session.updatedAt - left.session.updatedAt
+      || left.session.id.localeCompare(right.session.id))[0]?.session;
+}
+
+export function directMessageChildren(
+  messages: DesktopMessage[],
+  parentId: string,
+): DesktopMessage[] {
+  return messages
+    .filter((message) => message.parentMessageId === parentId)
+    .toSorted(compareMessages);
 }
 
 function collectChildren(
@@ -121,24 +133,30 @@ function collectChildren(
     children.set(message.parentMessageId, siblings);
   }
   for (const siblings of children.values()) {
-    siblings.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+    siblings.sort(compareMessages);
   }
   return children;
 }
 
-function isDescendantOf(
+function descendantDepth(
   byId: ReadonlyMap<string, DesktopMessage>,
   candidateId: string,
   ancestorId: string,
-): boolean {
+): number | undefined {
   const seen = new Set<string>();
   let cursor = byId.get(candidateId);
+  let depth = 0;
   while (cursor && !seen.has(cursor.id)) {
-    if (cursor.id === ancestorId) return true;
+    if (cursor.id === ancestorId) return depth;
     seen.add(cursor.id);
     cursor = cursor.parentMessageId ? byId.get(cursor.parentMessageId) : undefined;
+    depth += 1;
   }
-  return false;
+  return undefined;
+}
+
+function compareMessages(left: DesktopMessage, right: DesktopMessage): number {
+  return left.createdAt - right.createdAt || left.id.localeCompare(right.id);
 }
 
 function collectAncestors(

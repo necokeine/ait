@@ -45,3 +45,38 @@ test("creates a Session directly with the Project default Agent", async () => {
   assert.match(renderer, /availableProjectDefaultAgentId\(project, snapshot\.agents\)/);
   assert.match(renderer, /window\.ait\.createSession\(\{ projectId: project\.id, agentId \}\)/);
 });
+
+test("uses the titlebar toggle as the persistent Session tree state", async () => {
+  const [html, renderer, styles] = await Promise.all([
+    readFile(new URL("../src/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /id="tree-toggle"[^>]*aria-pressed="true"/);
+  assert.doesNotMatch(html, /id="tree-close"|Session timeline|legend-selected|>Selected</);
+  assert.match(renderer, /setTreeExpanded[\s\S]*setAttribute\("aria-pressed", String\(expanded\)\)/);
+  assert.match(styles, /\.icon-button\[aria-pressed="true"\]/);
+});
+
+test("starts branches only from the non-leaf Message context menu", async () => {
+  const [html, renderer] = await Promise.all([
+    readFile(new URL("../src/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(html, /id="message-context-menu"[\s\S]*id="message-start-session-action"/);
+  assert.doesNotMatch(html, /Branch from here|select a tree node to branch/i);
+  assert.match(renderer, /addEventListener\("contextmenu"[\s\S]*node\?\.children\.length/);
+  assert.match(renderer, /directMessageChildren[\s\S]*branchSourceNodeId/);
+});
+
+test("shows Message provenance and child-path navigation in details", async () => {
+  const renderer = await readFile(new URL("../src/renderer.ts", import.meta.url), "utf8");
+
+  assert.match(renderer, /<dt>Source<\/dt>/);
+  assert.match(renderer, /<dt>Created<\/dt>/);
+  assert.match(renderer, /<dt>Git revision<\/dt>/);
+  assert.match(renderer, /data-child-root-id/);
+  assert.match(renderer, /sessionForBranch\(messages, sessions, branchRootId\)/);
+});

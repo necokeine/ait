@@ -26,7 +26,7 @@
         </button>
         <div class="title-actions">
           <span id="core-status" class="core-status"><i></i> Starting core</span>
-          <button id="tree-toggle" class="icon-button" type="button" aria-label="Toggle session tree">⑂</button>
+          <button id="tree-toggle" class="icon-button" type="button" aria-label="Toggle session tree" aria-pressed="true">⑂</button>
         </div>
       </header>
 
@@ -67,8 +67,8 @@
           </div>
           <footer class="composer-wrap">
             <div id="branch-context" class="branch-context is-hidden">
-              <span>⑂</span><span>Branching from <strong id="branch-node-label">selected node</strong></span>
-              <button id="clear-selection" class="small-icon-button" type="button" aria-label="Clear selected node">×</button>
+              <span>⑂</span><span><span id="branch-state-label">Branching new Session from</span> <strong id="branch-node-label">message</strong></span>
+              <button id="clear-branch" class="small-icon-button" type="button" aria-label="Cancel new Session branch">×</button>
             </div>
             <form id="composer" class="composer">
               <textarea id="message-input" rows="2" placeholder="Ask Ait to work on this session…" aria-label="Message"></textarea>
@@ -101,21 +101,17 @@
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>
             </form>
-            <p id="composer-hint" class="composer-hint">Send to the current Session, or select a tree node to branch · ⌘ Enter to send</p>
+            <p id="composer-hint" class="composer-hint">Send to the current Session · Right-click a Message with replies to start a new Session · ⌘ Enter to send</p>
           </footer>
         </section>
 
         <aside id="tree-panel" class="tree-panel">
-          <header class="panel-header">
-            <div><span class="eyebrow">Project history</span><h2>Session timeline</h2></div>
-            <button id="tree-close" class="icon-button" type="button" aria-label="Close session tree">×</button>
-          </header>
-          <div class="tree-legend"><span><i class="legend-current"></i>Current path</span><span><i class="legend-selected"></i>Selected</span></div>
+          <div class="tree-legend"><span><i class="legend-current"></i>Current path</span><small>Right-click a Message with replies to start a new Session</small></div>
           <div id="tree-scroll" class="tree-scroll" tabindex="0" role="tree" aria-label="Message timeline">
             <div id="tree-list" class="tree-list"></div>
           </div>
           <section id="node-details" class="node-details">
-            <div class="empty-details"><span>⑂</span><p>Select a node to inspect it and start a branch.</p></div>
+            <div class="empty-details"><span>⑂</span><p>Click a Message to inspect its details.</p></div>
           </section>
         </aside>
       </main>
@@ -187,6 +183,10 @@
 
       <div id="session-context-menu" class="context-menu is-hidden" role="menu" aria-label="Session actions">
         <button id="session-rename-action" type="button" role="menuitem">Rename</button>
+      </div>
+
+      <div id="message-context-menu" class="context-menu is-hidden" role="menu" aria-label="Message actions">
+        <button id="message-start-session-action" type="button" role="menuitem">Start new Session here</button>
       </div>
 
       <div id="rename-session-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="rename-session-title">

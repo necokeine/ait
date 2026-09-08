@@ -39,7 +39,7 @@ export class PendingSessionTitles {
       } else if (run?.status === "completed") {
         this.requests.delete(runId);
         ready.push(request);
-      } else if (run && ["failed", "cancelled", "limit_exceeded"].includes(run.status)) {
+      } else if (run && ["failed", "cancelled", "limit_exceeded", "interrupted"].includes(run.status)) {
         this.requests.delete(runId);
       }
     }
