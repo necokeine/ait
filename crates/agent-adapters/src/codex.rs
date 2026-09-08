@@ -5033,44 +5033,284 @@ fn project_file_changes(changes: &[Value]) -> Result<Vec<NativeApprovalFileChang
 }
 
 fn approval_command(value: Option<&Value>) -> Result<String, String> {
-    let command = match value {
-        Some(Value::String(command)) => command.clone(),
+    let arguments = match value {
+        Some(Value::String(command)) => {
+            let command = validate_bounded_string(command, "command")?;
+            parse_approval_command(&command)?
+        }
         Some(Value::Array(arguments)) if !arguments.is_empty() => arguments
             .iter()
-            .map(|argument| argument.as_str().map(str::to_owned))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| "command approval contains a non-string argument".to_owned())?
-            .join(" "),
+            .map(|argument| {
+                argument
+                    .as_str()
+                    .ok_or_else(|| "command approval contains a non-string argument".to_owned())
+                    .and_then(|argument| validate_bounded_string(argument, "command argument"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         _ => return Err("command approval has no concrete command".into()),
     };
-    redact_approval_command(&validate_bounded_string(&command, "command")?)
+    redact_approval_arguments(&arguments)
 }
 
-fn redact_approval_command(command: &str) -> Result<String, String> {
-    let mut redact_next = false;
+fn parse_approval_command(command: &str) -> Result<Vec<String>, String> {
+    #[derive(Clone, Copy)]
+    enum Quote {
+        Single,
+        Double,
+    }
+
+    let mut arguments = Vec::new();
+    let mut argument = String::new();
+    let mut argument_started = false;
+    let mut quote = None;
+    let mut escaped = false;
+    for character in command.chars() {
+        match quote {
+            Some(Quote::Single) => {
+                if character == '\'' {
+                    quote = None;
+                } else {
+                    argument.push(character);
+                }
+            }
+            Some(Quote::Double) => {
+                if escaped {
+                    argument.push(character);
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    quote = None;
+                } else {
+                    argument.push(character);
+                }
+            }
+            None => {
+                if escaped {
+                    argument.push(character);
+                    escaped = false;
+                } else if character == '\\' {
+                    argument_started = true;
+                    escaped = true;
+                } else if character == '\'' {
+                    argument_started = true;
+                    quote = Some(Quote::Single);
+                } else if character == '"' {
+                    argument_started = true;
+                    quote = Some(Quote::Double);
+                } else if character.is_whitespace() {
+                    if argument_started {
+                        arguments.push(std::mem::take(&mut argument));
+                        argument_started = false;
+                    }
+                } else {
+                    argument_started = true;
+                    argument.push(character);
+                }
+            }
+        }
+    }
+    if quote.is_some() || escaped {
+        return Err("command approval has unsupported quoting or escaping".into());
+    }
+    if argument_started {
+        arguments.push(argument);
+    }
+    if arguments.is_empty() {
+        return Err("command approval has no concrete command".into());
+    }
+    Ok(arguments)
+}
+
+fn redact_approval_arguments(arguments: &[String]) -> Result<String, String> {
     let mut redacted = Vec::new();
-    for token in command.split_whitespace() {
-        let token = redact_url_credentials(token);
+    let mut index = 0;
+    while index < arguments.len() {
+        let token = redact_url_credentials(&arguments[index]);
         let lower = token.to_ascii_lowercase();
-        if redact_next {
-            redacted.push("[REDACTED]".to_owned());
-            redact_next = false;
-            continue;
-        }
-        if is_sensitive_key(lower.trim_start_matches('-')) || lower == "bearer" {
+
+        if token == "-H" || lower == "--header" {
+            let Some(header) = arguments.get(index + 1) else {
+                return Err("command approval has a header option without a value".into());
+            };
             redacted.push(token);
-            redact_next = true;
+            let (projected, trailing) = redact_header_value(header);
+            redacted.push(projected);
+            index += 2;
+            index += redact_header_tail(arguments, index, trailing);
             continue;
         }
+
+        if let Some(header) = strip_ascii_case_prefix(&token, "--header=") {
+            if header.is_empty() {
+                return Err("command approval has an empty header value".into());
+            }
+            let (projected, trailing) = redact_header_value(header);
+            redacted.push(format!("--header={projected}"));
+            index += 1;
+            index += redact_header_tail(arguments, index, trailing);
+            continue;
+        }
+
+        if let Some(header) = token.strip_prefix("-H")
+            && !header.is_empty()
+        {
+            let (projected, trailing) = redact_header_value(header);
+            redacted.push(format!("-H{projected}"));
+            index += 1;
+            index += redact_header_tail(arguments, index, trailing);
+            continue;
+        }
+
+        if let Some((projected, trailing)) = redact_sensitive_header(&token) {
+            redacted.push(projected);
+            index += 1;
+            index += redact_header_tail(arguments, index, trailing);
+            continue;
+        }
+
         if let Some((key, _)) = token.split_once('=')
             && is_sensitive_key(key.to_ascii_lowercase().trim_start_matches('-'))
         {
             redacted.push(format!("{key}=[REDACTED]"));
+            index += 1;
             continue;
         }
+
+        if lower == "bearer" {
+            redacted.push("Bearer".to_owned());
+            if index + 1 < arguments.len() {
+                redacted.push("[REDACTED]".to_owned());
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+
+        if let Some(projected) = redact_inline_bearer(&token) {
+            redacted.push(projected);
+            index += 1;
+            continue;
+        }
+
+        if is_sensitive_key(lower.trim_start_matches('-')) {
+            redacted.push(token);
+            let Some(_) = arguments.get(index + 1) else {
+                return Err("command approval has a sensitive option without a value".into());
+            };
+            redacted.push("[REDACTED]".to_owned());
+            index += 2;
+            continue;
+        }
+
         redacted.push(token);
+        index += 1;
     }
     validate_bounded_string(&redacted.join(" "), "redacted command")
+}
+
+#[derive(Clone, Copy)]
+enum HeaderTail {
+    None,
+    Authorization,
+    Cookie,
+    OneValue,
+}
+
+fn redact_header_value(header: &str) -> (String, HeaderTail) {
+    if let Some((projected, trailing)) = redact_sensitive_header(header) {
+        return (projected, trailing);
+    }
+    if let Some(projected) = redact_inline_bearer(header) {
+        return (projected, HeaderTail::None);
+    }
+    let redacted = redact_url_credentials(header);
+    if is_sensitive_key(redacted.to_ascii_lowercase().trim_start_matches('-')) {
+        ("[REDACTED]".to_owned(), HeaderTail::None)
+    } else {
+        (redacted, HeaderTail::None)
+    }
+}
+
+fn redact_sensitive_header(header: &str) -> Option<(String, HeaderTail)> {
+    let (name, value) = header.split_once(':')?;
+    let normalized = name.trim().to_ascii_lowercase();
+    if !is_sensitive_key(&normalized) {
+        return None;
+    }
+    let value = value.trim();
+    let trailing = if value.is_empty() {
+        if normalized.contains("authorization") {
+            HeaderTail::Authorization
+        } else if normalized.contains("cookie") {
+            HeaderTail::Cookie
+        } else {
+            HeaderTail::OneValue
+        }
+    } else if normalized.contains("authorization") && is_authorization_scheme(value) {
+        HeaderTail::OneValue
+    } else {
+        HeaderTail::None
+    };
+    Some((format!("{}:[REDACTED]", name.trim()), trailing))
+}
+
+fn redact_header_tail(arguments: &[String], start: usize, trailing: HeaderTail) -> usize {
+    match trailing {
+        HeaderTail::None => 0,
+        HeaderTail::OneValue => usize::from(start < arguments.len()),
+        HeaderTail::Authorization => {
+            let Some(value) = arguments.get(start) else {
+                return 0;
+            };
+            if is_authorization_scheme(value) {
+                1 + usize::from(start + 1 < arguments.len())
+            } else {
+                1
+            }
+        }
+        HeaderTail::Cookie => arguments[start..]
+            .iter()
+            .take_while(|argument| !is_command_boundary(argument))
+            .count(),
+    }
+}
+
+fn is_authorization_scheme(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "bearer" | "basic" | "digest" | "negotiate" | "aws4-hmac-sha256"
+    )
+}
+
+fn is_command_boundary(value: &str) -> bool {
+    value.starts_with('-') || value.contains("://") || matches!(value, "|" | "||" | "&&" | ";")
+}
+
+fn redact_inline_bearer(value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    let mut search_start = 0;
+    while let Some(relative) = lower[search_start..].find("bearer") {
+        let start = search_start + relative;
+        let end = start + "bearer".len();
+        let left_boundary = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let right_boundary = end == lower.len()
+            || lower.as_bytes()[end].is_ascii_whitespace()
+            || matches!(lower.as_bytes()[end], b':' | b'=');
+        if left_boundary && right_boundary && !value[end..].trim().is_empty() {
+            return Some(format!("{} [REDACTED]", value[..end].trim_end()));
+        }
+        search_start = end;
+    }
+    None
+}
+
+fn strip_ascii_case_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
 }
 
 fn is_sensitive_key(key: &str) -> bool {
@@ -5091,13 +5331,22 @@ fn is_sensitive_key(key: &str) -> bool {
 }
 
 fn redact_url_credentials(token: &str) -> String {
-    let Some((scheme, remainder)) = token.split_once("://") else {
-        return token.to_owned();
-    };
-    let Some((_, host)) = remainder.split_once('@') else {
-        return token.to_owned();
-    };
-    format!("{scheme}://[REDACTED]@{host}")
+    let mut redacted = token.to_owned();
+    let mut search_start = 0;
+    while let Some(relative_scheme_end) = redacted[search_start..].find("://") {
+        let authority_start = search_start + relative_scheme_end + 3;
+        let authority_end = redacted[authority_start..]
+            .find(['/', '?', '#', ' ', '\t'])
+            .map_or(redacted.len(), |relative| authority_start + relative);
+        let authority = &redacted[authority_start..authority_end];
+        let Some(relative_at) = authority.rfind('@') else {
+            search_start = authority_end;
+            continue;
+        };
+        redacted.replace_range(authority_start..authority_start + relative_at, "[REDACTED]");
+        search_start = authority_start + "[REDACTED]@".len();
+    }
+    redacted
 }
 
 fn optional_bounded_target_string(
@@ -5389,19 +5638,97 @@ mod workspace_cleanup_tests {
 
     #[test]
     fn command_approval_projection_redacts_credentials() {
-        let target = approval_target(
+        for (command, secrets) in [
+            (
+                "curl --api-key very-secret https://url-user:password@example.test/v1",
+                &["very-secret", "url-user", "password"][..],
+            ),
+            (
+                "curl -H X-Api-Key:header-secret https://example.test/v1",
+                &["header-secret"][..],
+            ),
+            (
+                "curl -H \"Authorization: Bearer auth-secret\" https://example.test/v1",
+                &["auth-secret"][..],
+            ),
+            (
+                "curl --header='Cookie: session=cookie-secret' https://example.test/v1",
+                &["cookie-secret"][..],
+            ),
+            (
+                "curl --header=Authorization:Bearer opaque-value https://example.test/v1",
+                &["opaque-value"][..],
+            ),
+            (
+                "curl Authorization: Bearer another-opaque-value https://example.test/v1",
+                &["another-opaque-value"][..],
+            ),
+            (
+                "curl -H Cookie: first=opaque-cookie second=more-cookie https://example.test/v1",
+                &["opaque-cookie", "more-cookie"][..],
+            ),
+        ] {
+            let target = approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({"command": command, "cwd": "/workspace"}),
+                &HashMap::new(),
+            )
+            .unwrap();
+            let NativeApprovalTarget::Command { command, cwd } = target else {
+                panic!("expected a command target");
+            };
+            for secret in secrets {
+                assert!(!command.contains(secret), "secret leaked from {command:?}");
+            }
+            assert!(command.contains("curl"));
+            assert!(command.contains("example.test"));
+            assert!(command.contains("[REDACTED]"));
+            assert_eq!(cwd, "/workspace");
+        }
+
+        let array_target = approval_target(
             ApprovalKind::CommandExecution,
             &json!({
-                "command": "curl --api-key very-secret https://user:password@example.test",
+                "command": [
+                    "curl",
+                    "--header",
+                    "Authorization: Bearer array-secret",
+                    "https://array-user:array-password@example.test/v1"
+                ],
                 "cwd": "/workspace"
             }),
             &HashMap::new(),
         )
         .unwrap();
-        let rendered = format!("{target:?}");
-        assert!(!rendered.contains("very-secret"));
-        assert!(!rendered.contains("password"));
-        assert!(rendered.contains("[REDACTED]"));
+        let NativeApprovalTarget::Command { command, .. } = array_target else {
+            panic!("expected a command target");
+        };
+        assert_eq!(
+            command,
+            "curl --header Authorization:[REDACTED] https://[REDACTED]@example.test/v1"
+        );
+        for secret in ["array-secret", "array-user", "array-password"] {
+            assert!(!command.contains(secret));
+        }
+    }
+
+    #[test]
+    fn command_approval_projection_fails_closed_on_ambiguous_syntax() {
+        for command in [
+            "curl -H \"Authorization: Bearer unfinished",
+            "curl --header",
+            "curl --api-key",
+        ] {
+            assert!(
+                approval_target(
+                    ApprovalKind::CommandExecution,
+                    &json!({"command": command, "cwd": "/workspace"}),
+                    &HashMap::new(),
+                )
+                .is_err(),
+                "unsafe command projection was accepted: {command}"
+            );
+        }
     }
 
     #[test]

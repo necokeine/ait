@@ -1904,6 +1904,135 @@ async fn native_approval_wait_is_nonblocking_durable_and_duplicate_safe() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn command_approval_secrets_never_reach_durable_or_reconnected_views() {
+    use ait_agent_adapters::codex::CodexAppServerConfig;
+    use ait_contracts::ProtocolRequestId;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fake_server = tempfile::tempdir().unwrap();
+    let binary = fake_server.path().join("fake-codex");
+    std::fs::write(
+        &binary,
+        r#"#!/bin/sh
+IFS= read -r _ || exit 60
+printf '%s\n' '{"id":0,"result":{}}'
+IFS= read -r _ || exit 61
+IFS= read -r _ || exit 62
+printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-a"}}}'
+IFS= read -r _ || exit 63
+printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-a"}}}'
+printf '%s\n' '{"id":73,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","command":"curl -H X-Api-Key:header-secret --header=\"Authorization: Bearer auth-secret\" -H \"Cookie: session=cookie-secret\" https://url-user:url-secret@example.test/v1","cwd":"/workspace","reason":"offline fixture"}}'
+IFS= read -r approval_response || exit 64
+case "$approval_response" in
+  *'"id":73'*'"decision":"accept"'*) ;;
+  *) exit 65 ;;
+esac
+printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"answer-a","delta":"approved"}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-a","turn":{"id":"turn-a","items":[],"status":"completed"}}}'
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(
+        CodexWorkspaceAgent::from_config(CodexAppServerConfig {
+            codex_binary: binary,
+            ..CodexAppServerConfig::default()
+        })
+        .unwrap(),
+    );
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    let (run_id, approval_id) = pending_approval(&service).await;
+
+    let persisted = serde_json::to_string(&store.load().await.unwrap().value).unwrap();
+    for secret in [
+        "header-secret",
+        "auth-secret",
+        "cookie-secret",
+        "url-user",
+        "url-secret",
+    ] {
+        assert!(
+            !persisted.contains(secret),
+            "secret reached storage: {secret}"
+        );
+    }
+
+    // A desktop reconnect obtains a fresh workspace.view from the same durable daemon state.
+    let reconnected_service =
+        LocalControlService::with_workspace_agent(store.clone(), agent.clone());
+    let reconnected = view(&reconnected_service).await;
+    let approval = reconnected
+        .runs
+        .iter()
+        .flat_map(|run| &run.native_approvals)
+        .find(|approval| approval.id == approval_id)
+        .unwrap();
+    assert_eq!(approval.protocol_request_id, ProtocolRequestId::Integer(73));
+    assert_eq!(approval.thread_id, "thread-a");
+    assert_eq!(approval.turn_id, "turn-a");
+    assert_eq!(approval.item_id, "command-a");
+    let NativeApprovalTarget::Command { command, .. } = &approval.target else {
+        panic!("expected command approval target");
+    };
+    assert!(command.contains("curl"));
+    assert!(command.contains("example.test/v1"));
+    assert!(command.contains("X-Api-Key:[REDACTED]"));
+    assert!(command.contains("Authorization:[REDACTED]"));
+    assert!(command.contains("Cookie:[REDACTED]"));
+    for secret in [
+        "header-secret",
+        "auth-secret",
+        "cookie-secret",
+        "url-user",
+        "url-secret",
+    ] {
+        assert!(!command.contains(secret));
+    }
+
+    let resolved = service
+        .execute(Command::ResolveNativeApproval {
+            run_id: run_id.clone(),
+            approval_id,
+            action: NativeApprovalAction::Approve,
+            scope: Some(ApprovalGrantScope::OneShot),
+        })
+        .await;
+    assert!(resolved.ok, "{:?}", resolved.error);
+    let completed = tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(completed.ok, "{:?}", completed.error);
+    let final_view = view(&service).await;
+    assert_eq!(
+        final_view
+            .runs
+            .iter()
+            .find(|run| run.id == run_id)
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let final_rendered = format!("{final_view:?}");
+    assert!(!final_rendered.contains("header-secret"));
+    assert!(!final_rendered.contains("auth-secret"));
+    assert!(!final_rendered.contains("cookie-secret"));
+    assert!(!final_rendered.contains("url-user"));
+    assert!(!final_rendered.contains("url-secret"));
+}
+
 #[tokio::test]
 async fn denial_is_not_approval_and_session_grants_respect_administrator_policy() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());

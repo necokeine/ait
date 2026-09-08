@@ -357,13 +357,27 @@ struct InspectingCommandApproval;
 #[async_trait]
 impl ApprovalHandler for InspectingCommandApproval {
     async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        assert_eq!(request.request_id, json!(99));
+        assert_eq!(request.thread_id, "thr-1");
+        assert_eq!(request.turn_id, "turn-1");
+        assert_eq!(request.item_id, "cmd-1");
         assert_eq!(
             request.target,
             NativeApprovalTarget::Command {
-                command: "curl --token [REDACTED] https://[REDACTED]@example.com".into(),
+                command: "curl -H X-Api-Key:[REDACTED] --header=Authorization:[REDACTED] -H Cookie:[REDACTED] https://[REDACTED]@example.com".into(),
                 cwd: "/workspace".into(),
             }
         );
+        let rendered = format!("{:?}", request.target);
+        for secret in [
+            "header-secret",
+            "auth-secret",
+            "cookie-secret",
+            "url-user",
+            "url-secret",
+        ] {
+            assert!(!rendered.contains(secret));
+        }
         assert!(request.params["reason"].as_str().is_some());
         ApprovalDecision::Accept
     }
@@ -393,7 +407,7 @@ async fn routes_command_approvals_through_handler() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","command":"curl --token super-secret https://user:password@example.com","cwd":"/workspace","reason":"needs permission"}}),
+            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","command":"curl -H X-Api-Key:header-secret --header=\"Authorization: Bearer auth-secret\" -H \"Cookie: session=cookie-secret\" https://url-user:url-secret@example.com","cwd":"/workspace","reason":"needs permission"}}),
         )
         .await;
         let response = read_json(&mut lines).await;
