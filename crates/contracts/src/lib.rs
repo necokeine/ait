@@ -1,7 +1,9 @@
 //! Versioned transport DTOs shared by HTTP, CLI, IPC, and future UI clients.
 #![allow(missing_docs)]
 
-use ait_domain::ErrorCode;
+use ait_domain::{
+    ApprovalGrantScope, ErrorCode, NativeApprovalKind, NativeApprovalStatus, RunPermissionProfile,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -91,6 +93,13 @@ pub enum Command {
     CancelRun {
         run_id: String,
     },
+    ResolveNativeApproval {
+        run_id: String,
+        approval_id: String,
+        action: NativeApprovalAction,
+        #[serde(default)]
+        scope: Option<ApprovalGrantScope>,
+    },
     CreateCron {
         id: String,
         name: String,
@@ -135,6 +144,15 @@ pub enum Command {
         project_id: String,
     },
     ListCrons,
+}
+
+/// Member action on one pending Codex-native approval request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeApprovalAction {
+    Approve,
+    Deny,
+    Cancel,
 }
 
 /// Stable API error envelope.
@@ -214,6 +232,133 @@ pub struct MessageView {
     pub data: Option<Value>,
 }
 
+/// String or integer JSON-RPC identity supplied by Codex app-server.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProtocolRequestId {
+    String(String),
+    Integer(i64),
+}
+
+/// Explicit network permission set requested by Codex.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeNetworkPermissions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// Explicit filesystem permission set requested by Codex.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeFileSystemPermissions {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub entries: Vec<NativeFileSystemPermission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glob_scan_max_depth: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub read: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub write: Vec<String>,
+}
+
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// One filesystem path and its requested access.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeFileSystemPermission {
+    pub access: NativeFileSystemAccess,
+    pub path: NativeFileSystemPath,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeFileSystemAccess {
+    Read,
+    Write,
+    Deny,
+}
+
+/// Provider path vocabulary retained without granting renderer filesystem authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeFileSystemPath {
+    Path { path: String },
+    GlobPattern { pattern: String },
+    Special { value: NativeFileSystemSpecialPath },
+}
+
+/// Special roots understood by the current Codex permission protocol.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeFileSystemSpecialPath {
+    Root,
+    Minimal,
+    ProjectRoots {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subpath: Option<String>,
+    },
+    Tmpdir,
+    SlashTmp,
+    Unknown {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subpath: Option<String>,
+    },
+}
+
+/// Exact additional capabilities requested or granted for a native operation.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativePermissionProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_system: Option<NativeFileSystemPermissions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NativeNetworkPermissions>,
+}
+
+/// Durable, non-secret audit record for one Codex-native approval request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NativeApprovalView {
+    pub id: String,
+    pub run_id: String,
+    pub protocol_request_id: ProtocolRequestId,
+    pub method: String,
+    pub kind: NativeApprovalKind,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_permissions: Option<NativePermissionProfile>,
+    pub status: NativeApprovalStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_scope: Option<ApprovalGrantScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_permissions: Option<NativePermissionProfile>,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
+}
+
 /// Run result or query snapshot; this DTO never requests execution.
 /// Synchronous command routes return the final state. Explicit asynchronous
 /// submission routes and queries can expose an intermediate state.
@@ -228,6 +373,12 @@ pub struct RunView {
     pub agent_revision: u64,
     pub config: AgentConfiguration,
     pub provider: AgentProvider,
+    /// Effective non-secret permission policy fixed when this Run was created.
+    #[serde(default)]
+    pub permission_profile: RunPermissionProfile,
+    /// Codex-native approval audit records. They are not Ait ToolUse/ToolResult.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_approvals: Vec<NativeApprovalView>,
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,

@@ -21,9 +21,10 @@ pub use project::{
 pub use provider::{AgentProviderGateway, HostProviderModelCatalog, ProviderMessage};
 pub use run::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult,
-    GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator, RunStore,
-    RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
+    DenyWorkspaceApprovals, GeneratedSessionTitle, RunAgent, RunApproval, RunClock, RunIdGenerator,
+    RunStore, RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
     ToolOutcome, ToolRecovery, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceApproval, WorkspaceApprovalDecision, WorkspaceApprovalRequest,
     WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
     WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
 };

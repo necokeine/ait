@@ -1,8 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use ait_domain::{
-    DomainError, Message, MessageId, ProjectedMessage, Run, RunAttempt, RunAttemptId, RunId,
-    RunUsage, TimestampMs, ToolExecution, ToolExecutionId,
+    ApprovalGrantScope, DomainError, Message, MessageId, NativeApprovalKind, ProjectedMessage, Run,
+    RunAttempt, RunAttemptId, RunId, RunPermissionProfile, RunUsage, TimestampMs, ToolExecution,
+    ToolExecutionId,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -187,7 +188,7 @@ pub enum WorkspaceIntegrationCheckpoint {
 }
 
 /// One workspace-scoped invocation of a complete coding Agent harness.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct WorkspaceAgentInvocation {
     /// Stable correlation identity for the external turn.
     pub request_id: String,
@@ -211,10 +212,103 @@ pub struct WorkspaceAgentInvocation {
     pub baseline_commit: String,
     /// Exact index tree captured with `baseline_commit` at write admission.
     pub baseline_index_tree: String,
+    /// Effective permission policy snapshotted when the owning Run was created.
+    pub permission_profile: RunPermissionProfile,
+    /// Run-scoped native approval boundary owned by the application service.
+    pub approvals: Arc<dyn WorkspaceApproval>,
     /// Cooperative cancellation shared with the caller.
     pub cancellation: CancellationToken,
     /// Shared cancellation/finalization decision owned by the application supervisor.
     pub integration_gate: Option<Arc<dyn WorkspaceIntegrationGate>>,
+}
+
+impl std::fmt::Debug for WorkspaceAgentInvocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceAgentInvocation")
+            .field("request_id", &self.request_id)
+            .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("project_instructions", &self.project_instructions)
+            .field("prompt", &self.prompt)
+            .field("commit_subject", &self.commit_subject)
+            .field("cwd", &self.cwd)
+            .field("baseline_commit", &self.baseline_commit)
+            .field("baseline_index_tree", &self.baseline_index_tree)
+            .field("permission_profile", &self.permission_profile)
+            .field("approvals", &"<workspace approval port>")
+            .field("cancellation", &self.cancellation)
+            .field("integration_gate", &self.integration_gate)
+            .finish()
+    }
+}
+
+/// Provider-normalized native approval request associated with one Run and turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkspaceApprovalRequest {
+    /// Stable Ait Run identifier.
+    pub run_id: String,
+    /// Original JSON-RPC string or integer id. Other JSON kinds are rejected by the adapter.
+    pub protocol_request_id: Value,
+    /// Native JSON-RPC method name.
+    pub method: String,
+    /// Normalized native approval kind.
+    pub kind: NativeApprovalKind,
+    /// Codex thread identifier.
+    pub thread_id: String,
+    /// Codex turn identifier.
+    pub turn_id: String,
+    /// Codex item identifier.
+    pub item_id: String,
+    /// Exact protocol permission profile, only for permission requests.
+    pub requested_permissions: Option<Value>,
+}
+
+/// Answer returned to the native harness after durable authorization recording.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkspaceApprovalDecision {
+    /// The member explicitly approved the request with the recorded scope.
+    Approved {
+        /// Provider-supported one-shot or session grant scope.
+        scope: ApprovalGrantScope,
+        /// Exact, validated permission profile for permission requests.
+        permissions: Option<Value>,
+    },
+    /// The member explicitly rejected the request.
+    Denied,
+    /// The request was cancelled rather than authorized.
+    Cancelled,
+}
+
+/// Application-owned persistence and user-decision boundary for native approvals.
+#[async_trait]
+pub trait WorkspaceApproval: Send + Sync {
+    /// Persists the request, publishes it to clients, and waits without blocking event dispatch.
+    async fn decide(
+        &self,
+        request: WorkspaceApprovalRequest,
+    ) -> Result<WorkspaceApprovalDecision, DomainError>;
+
+    /// Expires a still-pending request withdrawn by the harness or its turn.
+    async fn expire(&self, request: &WorkspaceApprovalRequest) -> Result<(), DomainError>;
+}
+
+/// Fail-closed approval port for callers that cannot surface native prompts.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DenyWorkspaceApprovals;
+
+#[async_trait]
+impl WorkspaceApproval for DenyWorkspaceApprovals {
+    async fn decide(
+        &self,
+        _request: WorkspaceApprovalRequest,
+    ) -> Result<WorkspaceApprovalDecision, DomainError> {
+        Ok(WorkspaceApprovalDecision::Denied)
+    }
+
+    async fn expire(&self, _request: &WorkspaceApprovalRequest) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 /// Durable-facing result of one workspace Agent turn.

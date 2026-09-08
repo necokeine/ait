@@ -95,7 +95,29 @@ export interface DesktopRun {
   baseMessageId: string;
   lastMessageId: string | null;
   status: string;
+  permissionProfile: {
+    sandbox: "read_only" | "workspace_write" | "full_access";
+    approval: "on_request" | "untrusted_only";
+  };
+  nativeApprovals: NativeApproval[];
   error?: { code?: string; message: string };
+}
+
+export interface NativeApproval {
+  id: string;
+  runId: string;
+  protocolRequestId: string | number;
+  method: string;
+  kind: "command_execution" | "file_change" | "permissions" | "legacy_command" | "legacy_patch";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  requestedPermissions?: Record<string, unknown>;
+  status: "pending" | "approved" | "denied" | "cancelled" | "expired";
+  grantedScope?: "one_shot" | "turn" | "session";
+  grantedPermissions?: Record<string, unknown>;
+  createdAt: number;
+  decidedAt?: number;
 }
 
 export interface ControlEvent {
@@ -226,6 +248,12 @@ export interface AitDesktopApi {
     sessionId: string;
     content: string;
   }): Promise<RunSubmission>;
+  resolveApproval(input: {
+    runId: string;
+    approvalId: string;
+    action: "approve" | "deny" | "cancel";
+    scope?: "one_shot" | "turn" | "session";
+  }): Promise<DesktopView>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {
     projectId: string;

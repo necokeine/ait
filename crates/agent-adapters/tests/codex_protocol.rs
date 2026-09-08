@@ -34,6 +34,7 @@ fn request() -> AgentRunRequest {
         sandbox: SandboxMode::WorkspaceWrite,
         approval_policy: ApprovalPolicy::OnRequest,
         output_schema: Some(json!({"type":"object"})),
+        approval_handler: None,
         cancellation: CancellationToken::new(),
     }
 }
@@ -57,6 +58,63 @@ async fn write_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: Val
         .unwrap();
     writer.write_all(b"\n").await.unwrap();
     writer.flush().await.unwrap();
+}
+
+async fn observed_sandbox(mode: SandboxMode) -> String {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        let thread = read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thr-1"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+        )
+        .await;
+        thread["params"]["sandbox"].as_str().unwrap().to_owned()
+    });
+    let mut run = request();
+    run.sandbox = mode;
+    let (sender, _receiver) = mpsc::channel(32);
+    drive_protocol(
+        client_read,
+        client_write,
+        run,
+        client(),
+        Arc::new(ait_agent_adapters::DenyAllApprovals),
+        &sender,
+    )
+    .await
+    .unwrap();
+    server.await.unwrap()
+}
+
+#[tokio::test]
+async fn sends_each_selected_sandbox_as_the_real_codex_run_argument() {
+    assert_eq!(observed_sandbox(SandboxMode::ReadOnly).await, "read-only");
+    assert_eq!(
+        observed_sandbox(SandboxMode::WorkspaceWrite).await,
+        "workspace-write"
+    );
+    assert_eq!(
+        observed_sandbox(SandboxMode::DangerFullAccess).await,
+        "danger-full-access"
+    );
 }
 
 #[tokio::test]
@@ -351,6 +409,163 @@ async fn routes_command_approvals_through_handler() {
     assert!(saw_approval);
 }
 
+#[derive(Debug)]
+struct PermissionGrant;
+
+#[async_trait]
+impl ApprovalHandler for PermissionGrant {
+    async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        assert_eq!(request.request_id, json!("permission-7"));
+        assert_eq!(request.thread_id, "thr-1");
+        assert_eq!(request.turn_id, "turn-1");
+        assert_eq!(request.item_id, "permission-item");
+        ApprovalDecision::Raw(json!({
+            "permissions": request.params["permissions"].clone(),
+            "scope": "session"
+        }))
+    }
+}
+
+#[tokio::test]
+async fn permission_approval_answers_the_original_request_id_with_explicit_profile_and_scope() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let permissions = json!({
+        "fileSystem": {"write": ["/workspace"]},
+        "network": {"enabled": false}
+    });
+    let expected = permissions.clone();
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thr-1"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({
+                "id":"permission-7",
+                "method":"item/permissions/requestApproval",
+                "params":{
+                    "threadId":"thr-1",
+                    "turnId":"turn-1",
+                    "itemId":"permission-item",
+                    "permissions": permissions
+                }
+            }),
+        )
+        .await;
+        let response = read_json(&mut lines).await;
+        assert_eq!(response["id"], "permission-7");
+        assert_eq!(response["result"]["permissions"], expected);
+        assert_eq!(response["result"]["scope"], "session");
+        assert!(response["result"].get("decision").is_none());
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+        )
+        .await;
+    });
+    let (sender, mut receiver) = mpsc::channel(32);
+    let drive = tokio::spawn(async move {
+        drive_protocol(
+            client_read,
+            client_write,
+            request(),
+            client(),
+            Arc::new(PermissionGrant),
+            &sender,
+        )
+        .await
+    });
+    while receiver.recv().await.is_some() {}
+    drive.await.unwrap().unwrap();
+    server.await.unwrap();
+}
+
+#[derive(Debug)]
+struct CountingApprovals(Arc<AtomicUsize>);
+
+#[async_trait]
+impl ApprovalHandler for CountingApprovals {
+    async fn decide(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        ApprovalDecision::Accept
+    }
+}
+
+#[tokio::test]
+async fn mismatched_approval_correlation_fails_closed_before_the_handler() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id":0,"result":{}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":1,"result":{"thread":{"id":"thr-1"}}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
+        )
+        .await;
+        write_json(
+            &mut server_write,
+            json!({"id":91,"method":"item/fileChange/requestApproval","params":{"threadId":"other-thread","turnId":"turn-1","itemId":"patch-1"}}),
+        )
+        .await;
+        let response = read_json(&mut lines).await;
+        assert_eq!(response["id"], 91);
+        assert_eq!(response["error"]["code"], -32602);
+        write_json(
+            &mut server_write,
+            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+        )
+        .await;
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (sender, mut receiver) = mpsc::channel(32);
+    let handler = Arc::clone(&calls);
+    let drive = tokio::spawn(async move {
+        drive_protocol(
+            client_read,
+            client_write,
+            request(),
+            client(),
+            Arc::new(CountingApprovals(handler)),
+            &sender,
+        )
+        .await
+    });
+    let mut saw_warning = false;
+    while let Some(event) = receiver.recv().await {
+        saw_warning |= matches!(event.unwrap(), AgentEvent::AdapterWarning { code: Some(code), .. } if code == "CODEX_APPROVAL_CORRELATION_INVALID");
+    }
+    drive.await.unwrap().unwrap();
+    server.await.unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(saw_warning);
+}
+
 #[tokio::test]
 async fn declines_mcp_elicitation_with_the_original_id_and_continues() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
@@ -402,7 +617,7 @@ async fn declines_mcp_elicitation_with_the_original_id_and_continues() {
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"itemId":"answer","delta":"continued"}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"answer","delta":"continued"}}),
         )
         .await;
         write_json(
@@ -512,7 +727,7 @@ async fn rejects_unavailable_server_request_methods_without_leaking_params() {
         }
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"itemId":"answer","delta":"still running"}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"answer","delta":"still running"}}),
         )
         .await;
         write_json(
@@ -602,7 +817,7 @@ async fn preserves_decline_and_cancel_approval_decisions() {
         ] {
             write_json(
                 &mut server_write,
-                json!({"id":id,"method":method,"params":{"itemId":format!("item-{id}")}}),
+                json!({"id":id,"method":method,"params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("item-{id}")}}),
             )
             .await;
             let response = read_json(&mut lines).await;
@@ -678,7 +893,7 @@ async fn buffered_resolution_wins_over_immediately_completed_approvals() {
         for request_id in 100..132 {
             write_json(
                 &mut server_write,
-                json!({"id":request_id,"method":"item/commandExecution/requestApproval","params":{"itemId":format!("cmd-{request_id}")}}),
+                json!({"id":request_id,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("cmd-{request_id}")}}),
             )
             .await;
             write_json(
@@ -689,7 +904,7 @@ async fn buffered_resolution_wins_over_immediately_completed_approvals() {
         }
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"itemId":"answer","delta":"not blocked"}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"answer","delta":"not blocked"}}),
         )
         .await;
         assert!(
@@ -768,7 +983,7 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
         )
         .await;
-        let answered = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-99"}});
+        let answered = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-99"}});
         write_json(&mut server_write, answered.clone()).await;
         let response = read_json(&mut lines).await;
         assert_eq!(response["id"], 99);
@@ -781,7 +996,7 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
             "an answered request must not receive a second response"
         );
 
-        let pending = json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-100"}});
+        let pending = json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-100"}});
         write_json(&mut server_write, pending.clone()).await;
         write_json(&mut server_write, pending).await;
         let response = read_json(&mut lines).await;
@@ -863,7 +1078,7 @@ async fn cancellation_interrupts_a_turn_while_approval_is_pending() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"itemId":"cmd-1"}}),
+            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1"}}),
         )
         .await;
         let interrupt = read_json(&mut lines).await;

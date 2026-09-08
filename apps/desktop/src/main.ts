@@ -16,6 +16,7 @@ import { startupRecoveryNotices } from "./runs.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
+import { approvalAction, approvalScope } from "./approval-ui.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const endpoint = "http://127.0.0.1:7314";
@@ -25,6 +26,7 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
+  "run.resolve-approval",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -48,6 +50,13 @@ interface WorkspaceView {
   runs: Array<{
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
+    permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
+    native_approvals?: Array<{
+      id: string; run_id: string; protocol_request_id: string | number; method: string; kind: string;
+      thread_id: string; turn_id: string; item_id: string;
+      requested_permissions?: Record<string, unknown>; status: string; granted_scope?: string;
+      granted_permissions?: Record<string, unknown>; created_at: number; decided_at?: number;
+    }>;
     error?: { code?: string; message?: string } | null;
   }>;
 }
@@ -186,6 +195,19 @@ class DaemonClient {
         session_id: params.sessionId, text: params.content,
       }) as { id: string };
       return { view: await this.view(), runId: run.id };
+    }
+    if (method === "run.resolve-approval") {
+      const runId = boundedId(params.runId, "Run");
+      const approvalId = boundedId(params.approvalId, "approval");
+      const action = approvalAction(params.action);
+      const scope = approvalScope(params.scope, action);
+      await this.post("/v1/run/approval/resolve", "run", {
+        run_id: runId,
+        approval_id: approvalId,
+        action,
+        ...(scope ? { scope } : {}),
+      });
+      return this.view();
     }
 
     const id = randomUUID();
@@ -438,6 +460,23 @@ class DaemonClient {
         baseMessageId: run.base_message_id,
         lastMessageId: run.last_message_id,
         status: run.status,
+        permissionProfile: run.permission_profile,
+        nativeApprovals: (run.native_approvals ?? []).map((approval) => ({
+          id: approval.id,
+          runId: approval.run_id,
+          protocolRequestId: approval.protocol_request_id,
+          method: approval.method,
+          kind: approval.kind,
+          threadId: approval.thread_id,
+          turnId: approval.turn_id,
+          itemId: approval.item_id,
+          ...(approval.requested_permissions ? { requestedPermissions: approval.requested_permissions } : {}),
+          status: approval.status,
+          ...(approval.granted_scope ? { grantedScope: approval.granted_scope } : {}),
+          ...(approval.granted_permissions ? { grantedPermissions: approval.granted_permissions } : {}),
+          createdAt: approval.created_at,
+          ...(approval.decided_at !== undefined ? { decidedAt: approval.decided_at } : {}),
+        })),
         ...(run.error?.message ? {
           error: { message: run.error.message, ...(run.error.code ? { code: run.error.code } : {}) },
         } : {}),
@@ -456,6 +495,14 @@ function objectParams(value: unknown): Record<string, unknown> {
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
+
+function boundedId(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+    throw new Error(`${label} identifier is invalid.`);
+  }
+  return value;
+}
+
 
 const daemon = new DaemonClient();
 

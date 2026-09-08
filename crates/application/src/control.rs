@@ -17,23 +17,26 @@ use std::{
 use ait_contracts::{
     API_VERSION, AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView,
     ApiError, Command, CommandResult, CronView, Event, EventPage, MessageView,
-    PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunView,
-    SessionView, SettingKind, SettingsDocument, SettingsView, default_settings, settings_schema,
+    NativeApprovalAction, NativeApprovalView, NativePermissionProfile, PROJECT_EXPORT_VERSION,
+    ProjectExport, ProjectView, ProtocolRequestId, ProviderModel, Response, RunView, SessionView,
+    SettingKind, SettingsDocument, SettingsView, default_settings, settings_schema,
 };
 use ait_domain::{
-    AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
-    MessageId, ProjectId, TimestampMs,
+    AgentId, ApprovalGrantScope, ApprovalMode, Cron, CronConcurrencyPolicy, CronId,
+    CronMisfirePolicy, DomainError, ErrorCode, MessageId, NativeApprovalKind, NativeApprovalStatus,
+    ProjectId, RunPermissionProfile, SandboxAccess, TimestampMs,
 };
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
     ControlRecordKind, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
     ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationGate,
-    WorkspaceOutputItem, WorkspaceResultSink,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceApprovalDecision,
+    WorkspaceApprovalRequest, WorkspaceIntegrationGate, WorkspaceOutputItem, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod agents;
@@ -333,10 +336,29 @@ pub struct LocalControlService {
     workspace_leases: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
     cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     workspace_run_controls: Arc<Mutex<HashMap<String, Weak<WorkspaceRunControl>>>>,
+    approval_waiters:
+        Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<WorkspaceApprovalDecision>>>>>,
+    permission_limits: PermissionPolicyLimits,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
+}
+
+/// Administrator-owned ceiling applied before a Run or approval can have side effects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PermissionPolicyLimits {
+    pub max_sandbox: SandboxAccess,
+    pub allow_session_approvals: bool,
+}
+
+impl Default for PermissionPolicyLimits {
+    fn default() -> Self {
+        Self {
+            max_sandbox: SandboxAccess::FullAccess,
+            allow_session_approvals: true,
+        }
+    }
 }
 
 impl LocalControlService {
@@ -348,6 +370,8 @@ impl LocalControlService {
             workspace_leases: Arc::new(Mutex::new(HashMap::new())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
+            approval_waiters: Arc::new(Mutex::new(HashMap::new())),
+            permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
             host_provider_catalog: None,
             workspace_agent: None,
@@ -367,6 +391,8 @@ impl LocalControlService {
             workspace_leases: Arc::new(Mutex::new(HashMap::new())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
+            approval_waiters: Arc::new(Mutex::new(HashMap::new())),
+            permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
             host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
@@ -377,6 +403,13 @@ impl LocalControlService {
     #[must_use]
     pub fn with_provider_gateway(mut self, gateway: Arc<dyn AgentProviderGateway>) -> Self {
         self.provider_gateway = Some(gateway);
+        self
+    }
+
+    /// Applies an administrator-owned upper bound to subsequent Run admission.
+    #[must_use]
+    pub fn with_permission_limits(mut self, limits: PermissionPolicyLimits) -> Self {
+        self.permission_limits = limits;
         self
     }
 
@@ -480,6 +513,7 @@ impl LocalControlService {
                 ControlFilter::id(Kind::Provider, &provider_id),
                 ControlFilter::id(Kind::ProviderCredential, provider_id),
                 ControlFilter::id(Kind::Message, message_id),
+                ControlFilter::all(Kind::Settings),
             ];
             filters.extend(extra.iter().cloned());
             let loaded = self.read_records(filters).await?;
@@ -654,6 +688,7 @@ impl LocalControlService {
                     ControlFilter::id(Kind::Provider, &provider_id),
                     ControlFilter::id(Kind::ProviderCredential, provider_id),
                     ControlFilter::runs_for_cron(cron_id),
+                    ControlFilter::all(Kind::Settings),
                 ])
                 .await?;
             if loaded.revision == cron_read.revision {
@@ -903,7 +938,9 @@ impl LocalControlService {
             | Command::SendMessage { session_id, .. } => {
                 self.read_session_records(session_id).await
             }
-            Command::GetRun { run_id } | Command::CancelRun { run_id } => {
+            Command::GetRun { run_id }
+            | Command::CancelRun { run_id }
+            | Command::ResolveNativeApproval { run_id, .. } => {
                 self.read_run_control_records(run_id).await
             }
             Command::SetCronEnabled { cron_id, .. } | Command::TriggerCron { cron_id, .. } => {
@@ -1265,7 +1302,7 @@ impl LocalControlService {
                 "Codex workspace executor is not configured",
             )
         })?;
-        let invocation = workspace_invocation(state, run, control)?;
+        let invocation = workspace_invocation(state, run, control, Arc::new(self.clone()))?;
         executor
             .invoke_with_progress_and_checkpoint(invocation, progress, result_sink)
             .await
@@ -1594,12 +1631,22 @@ impl LocalControlService {
             } else {
                 apply_workspace_terminal_result(&mut state, &mut run, &result);
             }
+            let approval_status = if result
+                .as_ref()
+                .is_err_and(|failure| failure.code == ErrorCode::RunCancelled)
+            {
+                NativeApprovalStatus::Cancelled
+            } else {
+                NativeApprovalStatus::Expired
+            };
+            expire_pending_native_approvals(&mut run, approval_status);
             run.phase = Some("terminal".into());
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.updated", Some(lease.run_id.clone()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
+                    self.notify_approval_waiters(&run);
                     let _ = self.store.clear_progress(&lease.run_id).await;
                     return Ok(run);
                 }
@@ -1939,7 +1986,7 @@ impl LocalControlService {
             .begin_integration()
             .await
             .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
-        let invocation = workspace_invocation(&state, run, control)
+        let invocation = workspace_invocation(&state, run, control, Arc::new(self.clone()))
             .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
         let output = match executor
             .recover_checkpointed(invocation, result, journal.baseline_ref.clone())
@@ -1975,6 +2022,7 @@ impl LocalControlService {
             run.status = "interrupted".into();
             run.phase = Some("terminal".into());
             run.error = Some(error(ErrorCode::RunRecoveryFailed, &failure.message, false));
+            expire_pending_native_approvals(run, NativeApprovalStatus::Expired);
             if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
                 journal.lease_epoch = run.lease_epoch;
             }
@@ -1983,6 +2031,7 @@ impl LocalControlService {
             let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
+                    self.notify_approval_waiters(&run);
                     let _ = self.store.clear_progress(run_id).await;
                     return Ok(run);
                 }
@@ -2132,7 +2181,9 @@ impl LocalControlService {
             let loaded = self.read_command_records(&command).await?;
             let mut state = loaded.original.clone();
             check_session_admission(&state, &command)?;
-            if !has_workspace_lease && workspace_write_path(&state, &command)?.is_some() {
+            if !has_workspace_lease
+                && workspace_write_path(&state, &command, self.permission_limits)?.is_some()
+            {
                 return Err(error(
                     ErrorCode::ProjectWorkspaceBusy,
                     "Agent configuration changed to a workspace-writing provider during admission; retry the request",
@@ -2140,10 +2191,24 @@ impl LocalControlService {
                 ));
             }
             let git_baseline = command_git_baseline(&state, &command)?;
-            let (result, events) =
-                apply_command(&mut state, command.clone(), git_baseline.as_ref())?;
+            let (result, events) = apply_command(
+                &mut state,
+                command.clone(),
+                git_baseline.as_ref(),
+                self.permission_limits,
+            )?;
             match self.persist_records(&loaded, &state, events).await {
-                Ok(()) => return Ok(result),
+                Ok(()) => {
+                    if matches!(
+                        command,
+                        Command::ResolveNativeApproval { .. } | Command::CancelRun { .. }
+                    ) && let CommandOutcome::Ready(value) = &result
+                        && let CommandResult::Run(run) = value.as_ref()
+                    {
+                        self.notify_approval_waiters(run);
+                    }
+                    return Ok(result);
+                }
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -2155,13 +2220,30 @@ impl LocalControlService {
         ))
     }
 
+    fn notify_approval_waiters(&self, run: &RunView) {
+        let Ok(mut waiters) = self.approval_waiters.lock() else {
+            return;
+        };
+        for approval in &run.native_approvals {
+            if approval.status == NativeApprovalStatus::Pending {
+                continue;
+            }
+            let Some(sender) = waiters.remove(&approval.id) else {
+                continue;
+            };
+            let decision =
+                approval_decision(approval).unwrap_or(WorkspaceApprovalDecision::Cancelled);
+            sender.send_replace(Some(decision));
+        }
+    }
+
     async fn acquire_workspace_write(
         &self,
         command: &Command,
     ) -> Result<Option<WorkspaceWriteLease>, ApiError> {
         let state = self.read_command_records(command).await?.original;
         check_session_admission(&state, command)?;
-        let Some(workdir) = workspace_write_path(&state, command)? else {
+        let Some(workdir) = workspace_write_path(&state, command, self.permission_limits)? else {
             return Ok(None);
         };
         self.acquire_workspace_path(&workdir).await.map(Some)
@@ -2256,10 +2338,198 @@ impl LocalControlService {
     }
 }
 
+#[async_trait::async_trait]
+impl WorkspaceApproval for LocalControlService {
+    async fn decide(
+        &self,
+        request: WorkspaceApprovalRequest,
+    ) -> Result<WorkspaceApprovalDecision, DomainError> {
+        let approval = native_approval_record(&request).map_err(api_domain_error)?;
+        let approval_id = approval.id.clone();
+        let cancellation = self
+            .cancellations
+            .lock()
+            .ok()
+            .and_then(|cancellations| cancellations.get(&request.run_id).cloned())
+            .ok_or_else(|| {
+                DomainError::invariant(
+                    ErrorCode::RunNotResumable,
+                    "native approval has no active Run supervisor",
+                )
+            })?;
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        {
+            let mut waiters = self.approval_waiters.lock().map_err(|_| {
+                DomainError::invariant(
+                    ErrorCode::ToolApprovalRequired,
+                    "native approval registry is unavailable",
+                )
+            })?;
+            if waiters.contains_key(&approval_id) {
+                return Err(DomainError::invariant(
+                    ErrorCode::ToolCallDuplicate,
+                    "duplicate native approval request",
+                ));
+            }
+            waiters.insert(approval_id.clone(), sender);
+        }
+        let saved = match self.persist_native_approval(approval).await {
+            Ok(saved) => saved,
+            Err(failure) => {
+                self.approval_waiters
+                    .lock()
+                    .ok()
+                    .and_then(|mut waiters| waiters.remove(&approval_id));
+                return Err(api_domain_error(failure));
+            }
+        };
+        if saved.status != NativeApprovalStatus::Pending {
+            self.approval_waiters
+                .lock()
+                .ok()
+                .and_then(|mut waiters| waiters.remove(&approval_id));
+            return approval_decision(&saved).ok_or_else(|| {
+                DomainError::invariant(
+                    ErrorCode::ToolApprovalRequired,
+                    "native approval has no usable decision",
+                )
+            });
+        }
+        let decision = loop {
+            tokio::select! {
+                biased;
+                () = cancellation.cancelled() => break WorkspaceApprovalDecision::Cancelled,
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        break WorkspaceApprovalDecision::Cancelled;
+                    }
+                    if let Some(decision) = receiver.borrow_and_update().clone() {
+                        break decision;
+                    }
+                }
+            }
+        };
+        self.approval_waiters
+            .lock()
+            .ok()
+            .and_then(|mut waiters| waiters.remove(&approval_id));
+        Ok(decision)
+    }
+
+    async fn expire(&self, request: &WorkspaceApprovalRequest) -> Result<(), DomainError> {
+        let approval_id = native_approval_id(&request.run_id, &request.protocol_request_id)
+            .map_err(api_domain_error)?;
+        for _ in 0..4 {
+            let loaded = self
+                .read_run_records(&request.run_id)
+                .await
+                .map_err(api_domain_error)?;
+            let mut state = loaded.original.clone();
+            let Some(run) = state.runs.iter_mut().find(|run| run.id == request.run_id) else {
+                return Err(DomainError::invariant(
+                    ErrorCode::InvalidRun,
+                    "native approval Run not found",
+                ));
+            };
+            let Some(approval) = run
+                .native_approvals
+                .iter_mut()
+                .find(|approval| approval.id == approval_id)
+            else {
+                return Ok(());
+            };
+            if approval.status != NativeApprovalStatus::Pending {
+                return Ok(());
+            }
+            approval.status = NativeApprovalStatus::Expired;
+            approval.decided_at = Some(now());
+            if !run
+                .native_approvals
+                .iter()
+                .any(|candidate| candidate.status == NativeApprovalStatus::Pending)
+                && !is_terminal_workspace_status(&run.status)
+            {
+                run.phase = Some("calling_agent".into());
+            }
+            let run = run.clone();
+            let event = pending("run.approval_expired", Some(request.run_id.clone()), &run);
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => {
+                    self.notify_approval_waiters(&run);
+                    return Ok(());
+                }
+                Err(ControlStoreError::Conflict) => {}
+                Err(failure) => return Err(api_domain_error(store_error(failure))),
+            }
+        }
+        Err(DomainError::transient(
+            ErrorCode::RunQueueConflict,
+            "native approval expiry did not settle",
+        ))
+    }
+}
+
+impl LocalControlService {
+    async fn persist_native_approval(
+        &self,
+        approval: NativeApprovalView,
+    ) -> Result<NativeApprovalView, ApiError> {
+        for _ in 0..4 {
+            let loaded = self.read_run_records(&approval.run_id).await?;
+            let mut state = loaded.original.clone();
+            let run = state
+                .runs
+                .iter_mut()
+                .find(|run| run.id == approval.run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            if is_terminal_workspace_status(&run.status) {
+                return Err(error(
+                    ErrorCode::RunAlreadyTerminal,
+                    "native approval belongs to a terminal Run",
+                    false,
+                ));
+            }
+            if let Some(existing) = run
+                .native_approvals
+                .iter()
+                .find(|existing| existing.id == approval.id)
+            {
+                if existing.protocol_request_id != approval.protocol_request_id
+                    || existing.thread_id != approval.thread_id
+                    || existing.turn_id != approval.turn_id
+                    || existing.item_id != approval.item_id
+                {
+                    return Err(error(
+                        ErrorCode::ToolCallDuplicate,
+                        "native approval identity was reused with different correlation",
+                        false,
+                    ));
+                }
+                return Ok(existing.clone());
+            }
+            run.native_approvals.push(approval.clone());
+            run.phase = Some("waiting_approval".into());
+            let run = run.clone();
+            let event = pending("run.approval_requested", Some(run.id.clone()), &run);
+            match self.persist_records(&loaded, &state, vec![event]).await {
+                Ok(()) => return Ok(approval),
+                Err(ControlStoreError::Conflict) => {}
+                Err(failure) => return Err(store_error(failure)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "native approval request did not settle",
+            true,
+        ))
+    }
+}
+
 fn workspace_invocation(
     state: &WorkingSet,
     run: &RunView,
     control: Arc<WorkspaceRunControl>,
+    approvals: Arc<dyn WorkspaceApproval>,
 ) -> Result<WorkspaceAgentInvocation, DomainError> {
     let project = state
         .projects
@@ -2310,6 +2580,8 @@ fn workspace_invocation(
         cwd: PathBuf::from(&project.workdir),
         baseline_commit,
         baseline_index_tree,
+        permission_profile: run.permission_profile,
+        approvals,
         cancellation: control.cancellation.clone(),
         integration_gate: Some(control),
     })
@@ -2348,6 +2620,288 @@ fn recovery_policy(state: &WorkingSet) -> RecoveryPolicy {
         Some("ask") => RecoveryPolicy::Ask,
         Some("fail") => RecoveryPolicy::Fail,
         _ => RecoveryPolicy::ResumeSafe,
+    }
+}
+
+fn effective_permission_profile(
+    settings: &SettingsDocument,
+    provider: &AgentProvider,
+    limits: PermissionPolicyLimits,
+) -> Result<RunPermissionProfile, ApiError> {
+    if provider.kind != AgentMode::Codex {
+        return Ok(RunPermissionProfile::default());
+    }
+    let sandbox = match settings
+        .0
+        .get("permissions.sandbox")
+        .and_then(Value::as_str)
+    {
+        Some("read_only" | "strict") => SandboxAccess::ReadOnly,
+        Some("workspace_write") => SandboxAccess::WorkspaceWrite,
+        Some("full_access") => SandboxAccess::FullAccess,
+        Some(value) => {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                format!("unsupported Codex sandbox policy {value:?}"),
+                false,
+            ));
+        }
+        None => {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "Codex sandbox policy is missing",
+                false,
+            ));
+        }
+    };
+    if sandbox > limits.max_sandbox {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            format!(
+                "Codex sandbox policy {sandbox:?} exceeds the administrator limit {:?}",
+                limits.max_sandbox
+            ),
+            false,
+        ));
+    }
+    let approval = match settings
+        .0
+        .get("permissions.approval")
+        .and_then(Value::as_str)
+    {
+        Some("on_request") => ApprovalMode::OnRequest,
+        Some("untrusted_only") => ApprovalMode::UntrustedOnly,
+        Some("always") => {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "Codex app-server cannot guarantee approval for every native operation; permissions.approval=always is unsupported",
+                false,
+            ));
+        }
+        Some(value) => {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                format!("unsupported Codex approval policy {value:?}"),
+                false,
+            ));
+        }
+        None => {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "Codex approval policy is missing",
+                false,
+            ));
+        }
+    };
+    Ok(RunPermissionProfile { sandbox, approval })
+}
+
+fn native_approval_record(
+    request: &WorkspaceApprovalRequest,
+) -> Result<NativeApprovalView, ApiError> {
+    if request.run_id.trim().is_empty()
+        || request.thread_id.trim().is_empty()
+        || request.turn_id.trim().is_empty()
+        || request.item_id.trim().is_empty()
+        || request.method.trim().is_empty()
+        || request.run_id.len() > 512
+        || request.thread_id.len() > 512
+        || request.turn_id.len() > 512
+        || request.item_id.len() > 512
+        || request.method.len() > 128
+        || request.run_id.contains('\0')
+        || request.thread_id.contains('\0')
+        || request.turn_id.contains('\0')
+        || request.item_id.contains('\0')
+        || request.method.contains('\0')
+    {
+        return Err(error(
+            ErrorCode::ToolApprovalRequired,
+            "native approval correlation is incomplete",
+            false,
+        ));
+    }
+    let protocol_request_id = match &request.protocol_request_id {
+        Value::String(value) if !value.is_empty() && value.len() <= 512 => {
+            ProtocolRequestId::String(value.clone())
+        }
+        Value::Number(value) if value.is_i64() => {
+            ProtocolRequestId::Integer(value.as_i64().expect("checked integer"))
+        }
+        _ => {
+            return Err(error(
+                ErrorCode::ToolApprovalRequired,
+                "native approval request id must be a bounded string or integer",
+                false,
+            ));
+        }
+    };
+    let requested_permissions = if request.kind == NativeApprovalKind::Permissions {
+        let value = request.requested_permissions.clone().ok_or_else(|| {
+            error(
+                ErrorCode::ToolApprovalRequired,
+                "permission approval omitted its explicit permission profile",
+                false,
+            )
+        })?;
+        let profile: NativePermissionProfile =
+            serde_json::from_value(value).map_err(|failure| {
+                error(
+                    ErrorCode::ToolApprovalRequired,
+                    format!("invalid Codex permission profile: {failure}"),
+                    false,
+                )
+            })?;
+        validate_native_permission_profile(&profile)?;
+        if serde_json::to_vec(&profile)
+            .map_err(|_| {
+                error(
+                    ErrorCode::ToolApprovalRequired,
+                    "Codex permission profile is not serializable",
+                    false,
+                )
+            })?
+            .len()
+            > 128 * 1_024
+        {
+            return Err(error(
+                ErrorCode::ToolApprovalRequired,
+                "Codex permission profile exceeds the persistence and UI limit",
+                false,
+            ));
+        }
+        Some(profile)
+    } else {
+        None
+    };
+    Ok(NativeApprovalView {
+        id: native_approval_id(&request.run_id, &request.protocol_request_id)?,
+        run_id: request.run_id.clone(),
+        protocol_request_id,
+        method: request.method.clone(),
+        kind: request.kind,
+        thread_id: request.thread_id.clone(),
+        turn_id: request.turn_id.clone(),
+        item_id: request.item_id.clone(),
+        requested_permissions,
+        status: NativeApprovalStatus::Pending,
+        granted_scope: None,
+        granted_permissions: None,
+        created_at: now(),
+        decided_at: None,
+    })
+}
+
+fn native_approval_id(run_id: &str, request_id: &Value) -> Result<String, ApiError> {
+    let request_id = serde_json::to_vec(request_id).map_err(|_| {
+        error(
+            ErrorCode::ToolApprovalRequired,
+            "native approval request id is not serializable",
+            false,
+        )
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(run_id.as_bytes());
+    digest.update([0]);
+    digest.update(request_id);
+    Ok(format!("native-{:x}", digest.finalize()))
+}
+
+fn validate_native_permission_profile(profile: &NativePermissionProfile) -> Result<(), ApiError> {
+    let mut explicit = false;
+    if let Some(network) = &profile.network {
+        if network.enabled.is_none() {
+            return Err(error(
+                ErrorCode::ToolApprovalRequired,
+                "network permission must explicitly state enabled",
+                false,
+            ));
+        }
+        explicit = true;
+    }
+    if let Some(file_system) = &profile.file_system {
+        if file_system.glob_scan_max_depth == Some(0) {
+            return Err(error(
+                ErrorCode::ToolApprovalRequired,
+                "filesystem glob scan depth must be positive",
+                false,
+            ));
+        }
+        if file_system.entries.len() > 128
+            || file_system.read.len() > 128
+            || file_system.write.len() > 128
+        {
+            return Err(error(
+                ErrorCode::ToolApprovalRequired,
+                "filesystem permission profile is too large",
+                false,
+            ));
+        }
+        for value in file_system.read.iter().chain(&file_system.write) {
+            validate_permission_path(value)?;
+        }
+        for entry in &file_system.entries {
+            match &entry.path {
+                ait_contracts::NativeFileSystemPath::Path { path } => {
+                    validate_permission_path(path)?;
+                }
+                ait_contracts::NativeFileSystemPath::GlobPattern { pattern } => {
+                    validate_permission_path(pattern)?;
+                }
+                ait_contracts::NativeFileSystemPath::Special { value } => match value {
+                    ait_contracts::NativeFileSystemSpecialPath::ProjectRoots {
+                        subpath: Some(subpath),
+                    } => validate_permission_path(subpath)?,
+                    ait_contracts::NativeFileSystemSpecialPath::Unknown { .. } => {
+                        return Err(error(
+                            ErrorCode::ToolApprovalRequired,
+                            "unknown special filesystem permission path",
+                            false,
+                        ));
+                    }
+                    _ => {}
+                },
+            }
+        }
+        explicit |= !file_system.entries.is_empty()
+            || !file_system.read.is_empty()
+            || !file_system.write.is_empty();
+    }
+    if !explicit {
+        return Err(error(
+            ErrorCode::ToolApprovalRequired,
+            "permission profile does not contain an explicit capability",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_permission_path(value: &str) -> Result<(), ApiError> {
+    if value.is_empty() || value.len() > 4_096 || value.contains('\0') {
+        return Err(error(
+            ErrorCode::ToolApprovalRequired,
+            "permission path is empty or outside size limits",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn approval_decision(approval: &NativeApprovalView) -> Option<WorkspaceApprovalDecision> {
+    match approval.status {
+        NativeApprovalStatus::Approved => Some(WorkspaceApprovalDecision::Approved {
+            scope: approval.granted_scope?,
+            permissions: approval
+                .granted_permissions
+                .as_ref()
+                .and_then(|profile| serde_json::to_value(profile).ok()),
+        }),
+        NativeApprovalStatus::Denied => Some(WorkspaceApprovalDecision::Denied),
+        NativeApprovalStatus::Cancelled | NativeApprovalStatus::Expired => {
+            Some(WorkspaceApprovalDecision::Cancelled)
+        }
+        NativeApprovalStatus::Pending => None,
     }
 }
 
@@ -2390,6 +2944,7 @@ fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, mess
         message,
         false,
     ));
+    expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
     release_session(state, &run);
     state.runs[index] = run;
 }
@@ -2397,6 +2952,7 @@ fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, mess
 fn workspace_write_path(
     state: &WorkingSet,
     command: &Command,
+    permission_limits: PermissionPolicyLimits,
 ) -> Result<Option<PathBuf>, ApiError> {
     let target = match command {
         Command::SendMessage { session_id, .. } => {
@@ -2434,9 +2990,11 @@ fn workspace_write_path(
         return Ok(None);
     };
     let agent = require_agent(state, agent_id)?;
-    if validate_config(state, &agent.config)?.kind != AgentMode::Codex {
+    let provider = validate_config(state, &agent.config)?;
+    if provider.kind != AgentMode::Codex {
         return Ok(None);
     }
+    let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
     let project = state
         .projects
         .iter()
@@ -2550,6 +3108,7 @@ fn apply_command(
     state: &mut WorkingSet,
     command: Command,
     user_git_baseline: Option<&GitBaseline>,
+    permission_limits: PermissionPolicyLimits,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     let (result, events) = match command {
         Command::RegisterProject {
@@ -2592,6 +3151,7 @@ fn apply_command(
                 session_id,
                 text,
                 require_user_git_baseline(user_git_baseline)?,
+                permission_limits,
             );
         }
         Command::ForkSession {
@@ -2611,9 +3171,23 @@ fn apply_command(
                     text,
                 },
                 require_user_git_baseline(user_git_baseline)?,
+                permission_limits,
             );
         }
         Command::CancelRun { run_id } => cancel_run(state, &run_id),
+        Command::ResolveNativeApproval {
+            run_id,
+            approval_id,
+            action,
+            scope,
+        } => resolve_native_approval(
+            state,
+            &run_id,
+            &approval_id,
+            action,
+            scope,
+            permission_limits,
+        ),
         Command::CreateCron {
             id,
             name,
@@ -2636,7 +3210,15 @@ fn apply_command(
         Command::TriggerCron {
             cron_id,
             scheduled_at,
-        } => return trigger_cron(state, &cron_id, scheduled_at, user_git_baseline),
+        } => {
+            return trigger_cron(
+                state,
+                &cron_id,
+                scheduled_at,
+                user_git_baseline,
+                permission_limits,
+            );
+        }
         Command::ImportProject { archive, workdir } => import_project(state, archive, &workdir),
         Command::SaveSettings {
             expected_revision,
@@ -2685,6 +3267,7 @@ fn fork_session(
     state: &mut WorkingSet,
     input: ForkSessionInput,
     git_baseline: &GitBaseline,
+    permission_limits: PermissionPolicyLimits,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     let (_, mut events) = create_session(
         state,
@@ -2693,7 +3276,8 @@ fn fork_session(
         &input.agent_id,
         Some(input.at_message_id),
     )?;
-    let (result, mut run_events) = send_message(state, input.id, input.text, git_baseline)?;
+    let (result, mut run_events) =
+        send_message(state, input.id, input.text, git_baseline, permission_limits)?;
     events.append(&mut run_events);
     Ok((result, events))
 }
@@ -3070,6 +3654,7 @@ fn send_message(
     session_id: String,
     text: String,
     git_baseline: &GitBaseline,
+    permission_limits: PermissionPolicyLimits,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     if text.trim().is_empty() {
         return Err(error(
@@ -3093,6 +3678,8 @@ fn send_message(
     }
     let agent = require_agent(state, &session.agent_id)?.clone();
     let provider = validate_config(state, &agent.config)?.clone();
+    let permission_profile =
+        effective_permission_profile(&state.settings, &provider, permission_limits)?;
     let user = message(
         &session.project_id,
         Some(&session.current_message_id),
@@ -3123,6 +3710,8 @@ fn send_message(
         agent_revision: agent.revision,
         config: agent.config.clone(),
         provider,
+        permission_profile,
+        native_approvals: Vec::new(),
         trigger: "manual".into(),
         cron_id: None,
         scheduled_at: None,
@@ -3237,6 +3826,7 @@ fn cancel_run(
     run.status = "cancelled".into();
     run.phase = Some("terminal".into());
     run.error = Some(error(ErrorCode::RunCancelled, "run was cancelled", false));
+    expire_pending_native_approvals(&mut run, NativeApprovalStatus::Cancelled);
     release_session(state, &run);
     state.runs[index] = run.clone();
     Ok((
@@ -3246,6 +3836,143 @@ fn cancel_run(
         // legacy run.cancelled events retained in older outboxes.
         vec![pending("run.updated", Some(run.id.clone()), &run)],
     ))
+}
+
+fn resolve_native_approval(
+    state: &mut WorkingSet,
+    run_id: &str,
+    approval_id: &str,
+    action: NativeApprovalAction,
+    scope: Option<ApprovalGrantScope>,
+    limits: PermissionPolicyLimits,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    let run = state
+        .runs
+        .iter_mut()
+        .find(|run| run.id == run_id)
+        .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+    if is_terminal_workspace_status(&run.status) {
+        return Err(error(
+            ErrorCode::RunAlreadyTerminal,
+            "native approval belongs to a terminal Run",
+            false,
+        ));
+    }
+    let approval = run
+        .native_approvals
+        .iter_mut()
+        .find(|approval| approval.id == approval_id)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::ToolApprovalRequired,
+                "native approval request not found",
+                false,
+            )
+        })?;
+    if approval.status != NativeApprovalStatus::Pending {
+        return Err(error(
+            ErrorCode::ToolApprovalRequired,
+            "native approval request is no longer pending",
+            false,
+        ));
+    }
+    match action {
+        NativeApprovalAction::Approve => {
+            let scope = scope.ok_or_else(|| {
+                error(
+                    ErrorCode::InvalidConfiguration,
+                    "approval scope is required when approving",
+                    false,
+                )
+            })?;
+            validate_native_approval_grant(approval, scope, limits)?;
+            approval.status = NativeApprovalStatus::Approved;
+            approval.granted_scope = Some(scope);
+            approval
+                .granted_permissions
+                .clone_from(&approval.requested_permissions);
+        }
+        NativeApprovalAction::Deny => {
+            if scope.is_some() {
+                return Err(error(
+                    ErrorCode::InvalidConfiguration,
+                    "denial cannot carry an authorization scope",
+                    false,
+                ));
+            }
+            approval.status = NativeApprovalStatus::Denied;
+        }
+        NativeApprovalAction::Cancel => {
+            if scope.is_some() {
+                return Err(error(
+                    ErrorCode::InvalidConfiguration,
+                    "cancellation cannot carry an authorization scope",
+                    false,
+                ));
+            }
+            approval.status = NativeApprovalStatus::Cancelled;
+        }
+    }
+    approval.decided_at = Some(now());
+    if !run
+        .native_approvals
+        .iter()
+        .any(|candidate| candidate.status == NativeApprovalStatus::Pending)
+    {
+        run.phase = Some("calling_agent".into());
+    }
+    let run = run.clone();
+    Ok((
+        CommandResult::Run(run.clone()),
+        vec![pending("run.approval_resolved", Some(run.id.clone()), &run)],
+    ))
+}
+
+fn validate_native_approval_grant(
+    approval: &NativeApprovalView,
+    scope: ApprovalGrantScope,
+    limits: PermissionPolicyLimits,
+) -> Result<(), ApiError> {
+    if scope == ApprovalGrantScope::Session && !limits.allow_session_approvals {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            "session-scoped approvals are disabled by administrator policy",
+            false,
+        ));
+    }
+    if approval.kind == NativeApprovalKind::Permissions {
+        if approval.requested_permissions.is_none() {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "permission approval has no explicit permission profile",
+                false,
+            ));
+        }
+        if scope == ApprovalGrantScope::OneShot {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "Codex permission approvals support turn or session scope, not one-shot scope",
+                false,
+            ));
+        }
+    } else if scope == ApprovalGrantScope::Turn {
+        return Err(error(
+            ErrorCode::InvalidConfiguration,
+            "Codex command and file approvals support one-shot or session scope, not turn scope",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn expire_pending_native_approvals(run: &mut RunView, status: NativeApprovalStatus) {
+    let decided_at = now();
+    for approval in &mut run.native_approvals {
+        if approval.status == NativeApprovalStatus::Pending {
+            approval.status = status;
+            approval.decided_at = Some(decided_at);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3358,6 +4085,7 @@ fn trigger_cron(
     cron_id: &str,
     scheduled_at: i64,
     workspace_baseline: Option<&GitBaseline>,
+    permission_limits: PermissionPolicyLimits,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
     if let Some(existing) = state.runs.iter().find(|run| {
         run.cron_id.as_deref() == Some(cron_id) && run.scheduled_at == Some(scheduled_at)
@@ -3375,6 +4103,8 @@ fn trigger_cron(
         .ok_or_else(|| error(ErrorCode::InvalidCron, "enabled cron not found", false))?;
     let agent = require_agent(state, &cron.agent_id)?.clone();
     let provider = validate_config(state, &agent.config)?.clone();
+    let permission_profile =
+        effective_permission_profile(&state.settings, &provider, permission_limits)?;
     if provider.kind == AgentMode::Codex && workspace_baseline.is_none() {
         return Err(error(
             ErrorCode::ProjectGitHeadUnavailable,
@@ -3398,6 +4128,8 @@ fn trigger_cron(
         agent_revision: agent.revision,
         config: agent.config.clone(),
         provider,
+        permission_profile,
+        native_approvals: Vec::new(),
         trigger: "cron".into(),
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),

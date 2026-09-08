@@ -11,12 +11,16 @@ use std::{
     time::Duration,
 };
 
-use ait_domain::{AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderModel};
+use ait_domain::{
+    AgentProvider, ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, ProviderKind,
+    ProviderModel, SandboxAccess,
+};
 use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
-    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
+    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
+    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationCheckpoint,
+    WorkspaceIntegrationGate, WorkspaceOperation, WorkspaceOutputItem, WorkspaceProgressEvent,
+    WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -233,6 +237,89 @@ impl CodexWorkspaceAgent {
     }
 }
 
+#[derive(Clone)]
+struct WorkspaceApprovalBridge {
+    run_id: String,
+    approvals: Arc<dyn WorkspaceApproval>,
+}
+
+#[async_trait]
+impl ApprovalHandler for WorkspaceApprovalBridge {
+    async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        let Some(kind) = native_approval_kind(request.kind) else {
+            return ApprovalDecision::Cancel;
+        };
+        let decision = self
+            .approvals
+            .decide(WorkspaceApprovalRequest {
+                run_id: self.run_id.clone(),
+                protocol_request_id: request.request_id.clone(),
+                method: request.method.clone(),
+                kind,
+                thread_id: request.thread_id.clone(),
+                turn_id: request.turn_id.clone(),
+                item_id: request.item_id.clone(),
+                requested_permissions: request.params.get("permissions").cloned(),
+            })
+            .await;
+        match decision {
+            Ok(WorkspaceApprovalDecision::Denied) => ApprovalDecision::Decline,
+            Ok(WorkspaceApprovalDecision::Cancelled) | Err(_) => ApprovalDecision::Cancel,
+            Ok(WorkspaceApprovalDecision::Approved { scope, permissions }) => {
+                if request.kind == ApprovalKind::Permissions {
+                    let Some(permissions) = permissions else {
+                        return ApprovalDecision::Cancel;
+                    };
+                    ApprovalDecision::Raw(json!({
+                        "permissions": permissions,
+                        "scope": match scope {
+                            ApprovalGrantScope::Turn => "turn",
+                            ApprovalGrantScope::Session => "session",
+                            ApprovalGrantScope::OneShot => return ApprovalDecision::Cancel,
+                        }
+                    }))
+                } else {
+                    match scope {
+                        ApprovalGrantScope::OneShot => ApprovalDecision::Accept,
+                        ApprovalGrantScope::Session => ApprovalDecision::AcceptForSession,
+                        ApprovalGrantScope::Turn => ApprovalDecision::Cancel,
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resolved(&self, request: &ApprovalRequest) {
+        let Some(kind) = native_approval_kind(request.kind) else {
+            return;
+        };
+        let _ = self
+            .approvals
+            .expire(&WorkspaceApprovalRequest {
+                run_id: self.run_id.clone(),
+                protocol_request_id: request.request_id.clone(),
+                method: request.method.clone(),
+                kind,
+                thread_id: request.thread_id.clone(),
+                turn_id: request.turn_id.clone(),
+                item_id: request.item_id.clone(),
+                requested_permissions: None,
+            })
+            .await;
+    }
+}
+
+const fn native_approval_kind(kind: ApprovalKind) -> Option<NativeApprovalKind> {
+    match kind {
+        ApprovalKind::CommandExecution => Some(NativeApprovalKind::CommandExecution),
+        ApprovalKind::FileChange => Some(NativeApprovalKind::FileChange),
+        ApprovalKind::Permissions => Some(NativeApprovalKind::Permissions),
+        ApprovalKind::LegacyCommand => Some(NativeApprovalKind::LegacyCommand),
+        ApprovalKind::LegacyPatch => Some(NativeApprovalKind::LegacyPatch),
+        ApprovalKind::Unsupported => None,
+    }
+}
+
 async fn invoke_isolated_workspace(
     adapter: Arc<dyn AgentAdapter>,
     request: WorkspaceAgentInvocation,
@@ -254,22 +341,9 @@ async fn invoke_isolated_workspace(
     )?;
     let integration_gate = request.integration_gate.clone();
     let cancellation = request.cancellation.clone();
+    let agent_request = codex_run_request(&request, workspace.path().to_path_buf());
     let commit_subject = request.commit_subject;
-    let stream = adapter
-        .run(AgentRunRequest {
-            request_id: request.request_id,
-            model: Some(request.model),
-            reasoning_effort: request.reasoning_effort,
-            project_instructions: request.project_instructions,
-            prompt: request.prompt,
-            cwd: workspace.path().to_path_buf(),
-            resume_thread_id: None,
-            sandbox: crate::SandboxMode::WorkspaceWrite,
-            approval_policy: crate::ApprovalPolicy::Never,
-            output_schema: None,
-            cancellation: cancellation.clone(),
-        })
-        .await;
+    let stream = adapter.run(agent_request).await;
     let stream = match stream {
         Ok(stream) => stream,
         Err(failure) => {
@@ -328,6 +402,33 @@ async fn invoke_isolated_workspace(
         .integrate_or_reconcile(result.commit_id.as_deref(), integration_gate.as_deref())
         .await?;
     Ok(result)
+}
+
+fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: PathBuf) -> AgentRunRequest {
+    AgentRunRequest {
+        request_id: request.request_id.clone(),
+        model: Some(request.model.clone()),
+        reasoning_effort: request.reasoning_effort.clone(),
+        project_instructions: request.project_instructions.clone(),
+        prompt: request.prompt.clone(),
+        cwd,
+        resume_thread_id: None,
+        sandbox: match request.permission_profile.sandbox {
+            SandboxAccess::ReadOnly => crate::SandboxMode::ReadOnly,
+            SandboxAccess::WorkspaceWrite => crate::SandboxMode::WorkspaceWrite,
+            SandboxAccess::FullAccess => crate::SandboxMode::DangerFullAccess,
+        },
+        approval_policy: match request.permission_profile.approval {
+            ait_domain::ApprovalMode::OnRequest => crate::ApprovalPolicy::OnRequest,
+            ait_domain::ApprovalMode::UntrustedOnly => crate::ApprovalPolicy::Untrusted,
+        },
+        approval_handler: Some(Arc::new(WorkspaceApprovalBridge {
+            run_id: request.request_id.clone(),
+            approvals: Arc::clone(&request.approvals),
+        })),
+        output_schema: None,
+        cancellation: request.cancellation.clone(),
+    }
 }
 
 #[allow(
@@ -1445,6 +1546,7 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
                 approval_policy: crate::ApprovalPolicy::Never,
                 reasoning_effort: Some("low".into()),
                 output_schema: Some(output_schema),
+                approval_handler: None,
                 cancellation: request.cancellation,
             })
             .await
@@ -3881,7 +3983,10 @@ impl AgentAdapter for CodexAppServerAdapter {
             title: self.config.client_title.clone(),
             version: self.config.client_version.clone(),
         };
-        let approvals = Arc::clone(&self.config.approval_handler);
+        let approvals = request
+            .approval_handler
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&self.config.approval_handler));
         let cancellation = request.cancellation.clone();
         tokio::spawn(async move {
             let stderr_task = stderr.map(|stderr| {
@@ -4125,7 +4230,7 @@ where
 
     let mut deferred = VecDeque::from(deferred);
     let mut approval_tasks = JoinSet::<ApprovalResolution>::new();
-    let mut pending_approvals = HashMap::<String, AbortHandle>::new();
+    let mut pending_approvals = HashMap::<String, PendingApprovalTask>::new();
     let mut seen_server_requests = HashSet::new();
     let mut answered_server_requests = HashSet::new();
     loop {
@@ -4204,9 +4309,10 @@ where
         if method == Some("serverRequest/resolved")
             && let Some(request_id) = message.pointer("/params/requestId")
             && let Some(request_key) = server_request_key(request_id)
-            && let Some(task) = pending_approvals.remove(&request_key)
+            && let Some(pending) = pending_approvals.remove(&request_key)
         {
-            task.abort();
+            pending.task.abort();
+            approvals.resolved(&pending.request).await;
         }
         if let (Some(method), Some(request_id)) = (method, message.get("id")) {
             let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -4214,6 +4320,8 @@ where
                 request_id,
                 method,
                 params,
+                &thread_id,
+                &turn_id,
                 &mut writer,
                 Arc::clone(&approvals),
                 sender,
@@ -4424,6 +4532,11 @@ struct ApprovalResolution {
     decision: ApprovalDecision,
 }
 
+struct PendingApprovalTask {
+    task: AbortHandle,
+    request: ApprovalRequest,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerRequestKind {
     Approval(ApprovalKind),
@@ -4440,11 +4553,13 @@ async fn handle_server_request<W>(
     request_id: &Value,
     method: &str,
     params: Value,
+    thread_id: &str,
+    turn_id: &str,
     writer: &mut W,
     approvals: Arc<dyn ApprovalHandler>,
     sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
     approval_tasks: &mut JoinSet<ApprovalResolution>,
-    pending_approvals: &mut HashMap<String, AbortHandle>,
+    pending_approvals: &mut HashMap<String, PendingApprovalTask>,
     seen_server_requests: &mut HashSet<String>,
     answered_server_requests: &mut HashSet<String>,
 ) -> Result<(), AdapterError>
@@ -4470,9 +4585,10 @@ where
         )
         .await?;
         if !answered_server_requests.contains(&request_key)
-            && let Some(task) = pending_approvals.remove(&request_key)
+            && let Some(pending) = pending_approvals.remove(&request_key)
         {
-            task.abort();
+            pending.task.abort();
+            approvals.resolved(&pending.request).await;
             write_rpc_error(
                 writer,
                 request_id,
@@ -4488,10 +4604,31 @@ where
     let request_kind = server_request_kind(method);
     match request_kind {
         ServerRequestKind::Approval(kind) => {
+            if let Err(reason) = validate_approval_correlation(method, &params, thread_id, turn_id)
+            {
+                send_server_request_warning(
+                    sender,
+                    method,
+                    &reason,
+                    "CODEX_APPROVAL_CORRELATION_INVALID",
+                )
+                .await?;
+                write_rpc_error(writer, request_id, -32602, reason).await?;
+                answered_server_requests.insert(request_key);
+                return Ok(());
+            }
             let request = ApprovalRequest {
                 request_id: request_id.clone(),
                 method: method.to_owned(),
                 kind,
+                thread_id: thread_id.to_owned(),
+                turn_id: turn_id.to_owned(),
+                item_id: params
+                    .get("itemId")
+                    .or_else(|| params.get("callId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(&request_key)
+                    .to_owned(),
                 params,
             };
             send_event(
@@ -4503,16 +4640,17 @@ where
             .await?;
             let task_request_key = request_key.clone();
             let task_method = method.to_owned();
+            let task_request = request.clone();
             let task = approval_tasks.spawn(async move {
-                let decision = approvals.decide(&request).await;
+                let decision = approvals.decide(&task_request).await;
                 ApprovalResolution {
-                    request_id: request.request_id,
+                    request_id: task_request.request_id,
                     request_key: task_request_key,
                     method: task_method,
                     decision,
                 }
             });
-            pending_approvals.insert(request_key.clone(), task);
+            pending_approvals.insert(request_key.clone(), PendingApprovalTask { task, request });
         }
         ServerRequestKind::McpElicitation => {
             write_message(
@@ -4574,6 +4712,42 @@ where
     }
     if !matches!(request_kind, ServerRequestKind::Approval(_)) {
         answered_server_requests.insert(request_key);
+    }
+    Ok(())
+}
+
+fn validate_approval_correlation(
+    method: &str,
+    params: &Value,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<(), String> {
+    if let Some(value) = params.get("threadId")
+        && value.as_str() != Some(thread_id)
+    {
+        return Err(format!(
+            "Codex approval {method} does not belong to the active thread"
+        ));
+    }
+    if let Some(value) = params.get("turnId")
+        && value.as_str() != Some(turn_id)
+    {
+        return Err(format!(
+            "Codex approval {method} does not belong to the active turn"
+        ));
+    }
+    if matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) && (params.get("threadId").and_then(Value::as_str).is_none()
+        || params.get("turnId").and_then(Value::as_str).is_none()
+        || params.get("itemId").and_then(Value::as_str).is_none())
+    {
+        return Err(format!(
+            "Codex approval {method} is missing threadId, turnId, or itemId"
+        ));
     }
     Ok(())
 }

@@ -3,17 +3,21 @@
 
 mod support;
 
-use ait_application::LocalControlService;
+use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_contracts::{
-    AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
-    ProviderSecret, RunView,
+    AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, NativeApprovalAction,
+    ProviderModel, ProviderSecret, RunView, default_settings,
 };
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{
+    ApprovalGrantScope, ApprovalMode, DomainError, ErrorCode, NativeApprovalKind,
+    RunPermissionProfile, SandboxAccess,
+};
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
     ControlRecordKind, ControlStore, ControlStoreError, DurableEvent, HostProviderModelCatalog,
     PendingEvent, ProviderMessage, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceAgentResponse, WorkspaceProgressReporter, WorkspaceResultSink,
+    WorkspaceAgentResponse, WorkspaceApprovalDecision, WorkspaceApprovalRequest,
+    WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -1505,6 +1509,379 @@ impl WorkspaceAgent for CapturingWorkspaceAgent {
             output_items: Vec::new(),
         })
     }
+}
+
+async fn save_permission_settings(service: &LocalControlService, sandbox: &str, approval: &str) {
+    let mut values = default_settings();
+    values
+        .0
+        .insert("permissions.sandbox".into(), serde_json::json!(sandbox));
+    values
+        .0
+        .insert("permissions.approval".into(), serde_json::json!(approval));
+    let _ = ok(
+        service,
+        Command::SaveSettings {
+            expected_revision: 1,
+            values,
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invocation() {
+    for (setting, expected) in [
+        ("read_only", SandboxAccess::ReadOnly),
+        ("strict", SandboxAccess::ReadOnly),
+        ("workspace_write", SandboxAccess::WorkspaceWrite),
+        ("full_access", SandboxAccess::FullAccess),
+    ] {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let native = Arc::new(CapturingWorkspaceAgent::default());
+        let service = LocalControlService::with_workspace_agent(store, native.clone());
+        let _directory = setup(&service, config("high")).await;
+        save_permission_settings(&service, setting, "untrusted_only").await;
+        let CommandResult::Run(run) = ok(&service, send("one")).await else {
+            panic!("expected Run")
+        };
+        let expected_profile = RunPermissionProfile {
+            sandbox: expected,
+            approval: ApprovalMode::UntrustedOnly,
+        };
+        assert_eq!(run.permission_profile, expected_profile);
+        assert_eq!(
+            native.0.lock().unwrap()[0].permission_profile,
+            expected_profile
+        );
+
+        let mut changed = default_settings();
+        changed
+            .0
+            .insert("permissions.sandbox".into(), serde_json::json!("read_only"));
+        let _ = ok(
+            &service,
+            Command::SaveSettings {
+                expected_revision: 2,
+                values: changed,
+            },
+        )
+        .await;
+        let persisted = view(&service)
+            .await
+            .runs
+            .into_iter()
+            .find(|candidate| candidate.id == run.id)
+            .unwrap();
+        assert_eq!(persisted.permission_profile, expected_profile);
+    }
+}
+
+#[tokio::test]
+async fn unsupported_or_administrator_conflicting_policies_fail_before_messages_or_agents() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let native = Arc::new(CapturingWorkspaceAgent::default());
+    let service = LocalControlService::with_workspace_agent(store.clone(), native.clone())
+        .with_permission_limits(PermissionPolicyLimits {
+            max_sandbox: SandboxAccess::ReadOnly,
+            allow_session_approvals: true,
+        });
+    let _directory = setup(&service, config("high")).await;
+    save_permission_settings(&service, "full_access", "on_request").await;
+    let rejected = service.execute(send("one")).await;
+    assert_eq!(
+        rejected.error.unwrap().code,
+        ErrorCode::InvalidConfiguration
+    );
+    assert_eq!(view(&service).await.messages.len(), 1);
+    assert!(native.0.lock().unwrap().is_empty());
+
+    let mut always = default_settings();
+    always
+        .0
+        .insert("permissions.sandbox".into(), serde_json::json!("read_only"));
+    always
+        .0
+        .insert("permissions.approval".into(), serde_json::json!("always"));
+    let _ = ok(
+        &service,
+        Command::SaveSettings {
+            expected_revision: 2,
+            values: always,
+        },
+    )
+    .await;
+    let rejected = service.execute(send("two")).await;
+    assert_eq!(
+        rejected.error.unwrap().code,
+        ErrorCode::InvalidConfiguration
+    );
+    assert_eq!(view(&service).await.messages.len(), 1);
+    assert!(native.0.lock().unwrap().is_empty());
+
+    let snapshot = store.load().await.unwrap();
+    let mut corrupted = snapshot.value;
+    corrupted["settings"]["permissions.sandbox"] = serde_json::json!("unknown-policy");
+    store
+        .replace_state(snapshot.revision, corrupted, Vec::new())
+        .await
+        .unwrap();
+    let rejected = service.execute(send("two")).await;
+    assert_eq!(
+        rejected.error.unwrap().code,
+        ErrorCode::InvalidConfiguration
+    );
+    assert_eq!(view(&service).await.messages.len(), 1);
+    assert!(native.0.lock().unwrap().is_empty());
+}
+
+struct ApprovalAgent {
+    kind: NativeApprovalKind,
+    requested: Semaphore,
+    decision: Mutex<Option<WorkspaceApprovalDecision>>,
+}
+
+impl ApprovalAgent {
+    fn new(kind: NativeApprovalKind) -> Self {
+        Self {
+            kind,
+            requested: Semaphore::new(0),
+            decision: Mutex::new(None),
+        }
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for ApprovalAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        self.requested.add_permits(1);
+        let decision = request
+            .approvals
+            .decide(WorkspaceApprovalRequest {
+                run_id: request.request_id,
+                protocol_request_id: serde_json::json!(73),
+                method: match self.kind {
+                    NativeApprovalKind::Permissions => "item/permissions/requestApproval",
+                    _ => "item/commandExecution/requestApproval",
+                }
+                .into(),
+                kind: self.kind,
+                thread_id: "thread-a".into(),
+                turn_id: "turn-a".into(),
+                item_id: "item-a".into(),
+                requested_permissions: (self.kind == NativeApprovalKind::Permissions).then(|| {
+                    serde_json::json!({
+                        "fileSystem": {"write": ["/workspace"]}
+                    })
+                }),
+            })
+            .await?;
+        *self.decision.lock().unwrap() = Some(decision);
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "approval settled".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_approval_wait_is_nonblocking_durable_and_duplicate_safe() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::CommandExecution));
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    wait_for_signal(&agent.requested).await;
+
+    let pending = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let runs = view(&service).await.runs;
+            if let Some(approval) = runs
+                .iter()
+                .flat_map(|run| &run.native_approvals)
+                .find(|approval| approval.status == ait_domain::NativeApprovalStatus::Pending)
+            {
+                break (approval.run_id.clone(), approval.id.clone());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Reads and event dispatch remain live while the provider task awaits a member decision.
+    tokio::time::timeout(Duration::from_millis(500), view(&service))
+        .await
+        .unwrap();
+    let resolved = service
+        .execute(Command::ResolveNativeApproval {
+            run_id: pending.0.clone(),
+            approval_id: pending.1.clone(),
+            action: NativeApprovalAction::Approve,
+            scope: Some(ApprovalGrantScope::OneShot),
+        })
+        .await;
+    assert!(resolved.ok, "{:?}", resolved.error);
+    let duplicate = service
+        .execute(Command::ResolveNativeApproval {
+            run_id: pending.0,
+            approval_id: pending.1,
+            action: NativeApprovalAction::Deny,
+            scope: None,
+        })
+        .await;
+    assert_eq!(
+        duplicate.error.unwrap().code,
+        ErrorCode::ToolApprovalRequired
+    );
+    assert!(running.await.unwrap().ok);
+    assert_eq!(
+        *agent.decision.lock().unwrap(),
+        Some(WorkspaceApprovalDecision::Approved {
+            scope: ApprovalGrantScope::OneShot,
+            permissions: None,
+        })
+    );
+}
+
+#[tokio::test]
+async fn denial_is_not_approval_and_session_grants_respect_administrator_policy() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::Permissions));
+    let service = Arc::new(
+        LocalControlService::with_workspace_agent(store, agent.clone()).with_permission_limits(
+            PermissionPolicyLimits {
+                max_sandbox: SandboxAccess::FullAccess,
+                allow_session_approvals: false,
+            },
+        ),
+    );
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    wait_for_signal(&agent.requested).await;
+    let (run_id, approval_id) = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(approval) = view(&service)
+                .await
+                .runs
+                .iter()
+                .flat_map(|run| &run.native_approvals)
+                .find(|approval| approval.status == ait_domain::NativeApprovalStatus::Pending)
+            {
+                break (approval.run_id.clone(), approval.id.clone());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let wrong_scope = service
+        .execute(Command::ResolveNativeApproval {
+            run_id: run_id.clone(),
+            approval_id: approval_id.clone(),
+            action: NativeApprovalAction::Approve,
+            scope: Some(ApprovalGrantScope::OneShot),
+        })
+        .await;
+    assert_eq!(
+        wrong_scope.error.unwrap().code,
+        ErrorCode::InvalidConfiguration
+    );
+    let prohibited = service
+        .execute(Command::ResolveNativeApproval {
+            run_id: run_id.clone(),
+            approval_id: approval_id.clone(),
+            action: NativeApprovalAction::Approve,
+            scope: Some(ApprovalGrantScope::Session),
+        })
+        .await;
+    assert_eq!(
+        prohibited.error.unwrap().code,
+        ErrorCode::InvalidConfiguration
+    );
+    let denied = service
+        .execute(Command::ResolveNativeApproval {
+            run_id,
+            approval_id,
+            action: NativeApprovalAction::Deny,
+            scope: None,
+        })
+        .await;
+    assert!(denied.ok, "{:?}", denied.error);
+    assert!(running.await.unwrap().ok);
+    assert_eq!(
+        *agent.decision.lock().unwrap(),
+        Some(WorkspaceApprovalDecision::Denied)
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_run_cancels_its_pending_native_approval_without_hanging() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::Permissions));
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store,
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    wait_for_signal(&agent.requested).await;
+    let run_id = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(run) = view(&service)
+                .await
+                .runs
+                .into_iter()
+                .find(|run| !run.native_approvals.is_empty())
+            {
+                break run.id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let cancelled = service
+        .execute(Command::CancelRun {
+            run_id: run_id.clone(),
+        })
+        .await;
+    assert!(cancelled.ok, "{:?}", cancelled.error);
+    tokio::time::timeout(Duration::from_secs(3), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        *agent.decision.lock().unwrap(),
+        Some(WorkspaceApprovalDecision::Cancelled)
+    );
+    let run = view(&service)
+        .await
+        .runs
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .unwrap();
+    assert_eq!(run.status, "cancelled");
+    assert_eq!(
+        run.native_approvals[0].status,
+        ait_domain::NativeApprovalStatus::Cancelled
+    );
 }
 
 #[tokio::test]

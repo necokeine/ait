@@ -10,13 +10,15 @@ use std::{
 
 use ait_agent_adapters::{
     AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
-    AgentStream, SandboxMode,
+    AgentStream, ApprovalPolicy, SandboxMode,
     codex::{CodexSessionTitleGenerator, CodexWorkspaceAgent},
 };
+use ait_domain::{ApprovalMode, RunPermissionProfile, SandboxAccess};
 use ait_ports::{
-    SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceAgentResponse, WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate,
-    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
+    DenyWorkspaceApprovals, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationCheckpoint,
+    WorkspaceIntegrationGate, WorkspaceOutputItem, WorkspaceProgressEvent,
+    WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -56,6 +58,39 @@ struct NoopProgress;
 #[async_trait]
 impl WorkspaceProgressReporter for NoopProgress {
     async fn report(&self, _event: WorkspaceProgressEvent) {}
+}
+
+#[derive(Default)]
+struct PolicyCapturingAdapter(Mutex<Vec<(SandboxMode, ApprovalPolicy, bool)>>);
+
+#[async_trait]
+impl AgentAdapter for PolicyCapturingAdapter {
+    fn driver(&self) -> &'static str {
+        "policy_capture"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            streaming: true,
+            thread_resume: false,
+            approvals: true,
+            command_execution: true,
+            file_changes: true,
+            usage: false,
+        }
+    }
+
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        self.0.lock().unwrap().push((
+            request.sandbox,
+            request.approval_policy,
+            request.approval_handler.is_some(),
+        ));
+        Ok(test_completion_stream(
+            "policy-final",
+            "Permission policy captured.",
+        ))
+    }
 }
 
 #[derive(Debug)]
@@ -1262,9 +1297,51 @@ fn paused_request(project: &Path, request_id: &str) -> WorkspaceAgentInvocation 
         cwd: project.to_path_buf(),
         baseline_commit: head(project),
         baseline_index_tree: index_tree(project),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: None,
     }
+}
+
+#[tokio::test]
+async fn maps_snapshotted_profiles_to_real_codex_run_arguments() {
+    let project = initialized_project();
+    let adapter = Arc::new(PolicyCapturingAdapter::default());
+    let agent = CodexWorkspaceAgent::new(adapter.clone());
+    for (index, profile) in [
+        RunPermissionProfile {
+            sandbox: SandboxAccess::ReadOnly,
+            approval: ApprovalMode::OnRequest,
+        },
+        RunPermissionProfile {
+            sandbox: SandboxAccess::WorkspaceWrite,
+            approval: ApprovalMode::UntrustedOnly,
+        },
+        RunPermissionProfile {
+            sandbox: SandboxAccess::FullAccess,
+            approval: ApprovalMode::OnRequest,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut invocation = paused_request(project.path(), &format!("policy-{index}"));
+        invocation.permission_profile = profile;
+        agent.invoke(invocation).await.unwrap();
+    }
+    assert_eq!(
+        *adapter.0.lock().unwrap(),
+        vec![
+            (SandboxMode::ReadOnly, ApprovalPolicy::OnRequest, true),
+            (SandboxMode::WorkspaceWrite, ApprovalPolicy::Untrusted, true),
+            (
+                SandboxMode::DangerFullAccess,
+                ApprovalPolicy::OnRequest,
+                true
+            ),
+        ]
+    );
 }
 
 async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResponse {
@@ -1280,6 +1357,8 @@ async fn invoke_script(events: Vec<AgentEvent>) -> ait_ports::WorkspaceAgentResp
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })
@@ -1540,6 +1619,8 @@ async fn returns_assistant_result_and_commits_generated_changes() {
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })
@@ -1695,6 +1776,8 @@ async fn detached_primary_head_advances_without_moving_the_original_branch() {
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })
@@ -1841,6 +1924,8 @@ async fn refuses_to_mix_existing_user_changes_into_codex_commit() {
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })
@@ -2119,6 +2204,8 @@ async fn publication_phase_failures_roll_back_run_changes_and_preserve_external_
                 cwd: project.path().to_path_buf(),
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
+                permission_profile: RunPermissionProfile::default(),
+                approvals: Arc::new(DenyWorkspaceApprovals),
                 cancellation: CancellationToken::new(),
                 integration_gate: Some(Arc::new(TransactionInjectingGate {
                     project: project.path().to_path_buf(),
@@ -2289,6 +2376,8 @@ async fn ignored_files_that_candidate_paths_would_replace_are_rejected_before_mu
                 cwd: project.path().to_path_buf(),
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
+                permission_profile: RunPermissionProfile::default(),
+                approvals: Arc::new(DenyWorkspaceApprovals),
                 cancellation: CancellationToken::new(),
                 integration_gate: None,
             })
@@ -2361,6 +2450,8 @@ async fn ignored_file_created_after_collision_scan_is_quarantined_and_restored_b
         cwd: project.path().to_path_buf(),
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: Some(Arc::new(TransactionInjectingGate {
             project: project.path().to_path_buf(),
@@ -2421,6 +2512,8 @@ async fn ignored_child_created_after_df_scan_is_restored_with_its_directory() {
         cwd: project.path().to_path_buf(),
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: Some(Arc::new(TransactionInjectingGate {
             project: project.path().to_path_buf(),
@@ -2477,6 +2570,8 @@ async fn rollback_atomically_isolates_live_file_or_directory_before_candidate_va
                 cwd: project.path().to_path_buf(),
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
+                permission_profile: RunPermissionProfile::default(),
+                approvals: Arc::new(DenyWorkspaceApprovals),
                 cancellation: CancellationToken::new(),
                 integration_gate: Some(Arc::new(TransactionInjectingGate {
                     project: project.path().to_path_buf(),
@@ -2540,6 +2635,8 @@ async fn baseline_ref_reconciliation_locks_before_confirming_the_noop() {
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: Some(Arc::new(TransactionInjectingGate {
                 project: project.path().to_path_buf(),
@@ -2605,6 +2702,8 @@ async fn open_file_handle_writes_after_quarantine_are_detected_and_restored() {
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: Some(Arc::new(OpenHandleWritingGate {
                 writer: OpenHandleWriter::File(Mutex::new(open_file)),
@@ -2662,6 +2761,8 @@ async fn open_directory_handle_writes_after_quarantine_are_detected_and_restored
         cwd: project.path().to_path_buf(),
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: Some(Arc::new(OpenHandleWritingGate {
             writer: OpenHandleWriter::Directory(open_directory),
@@ -2720,6 +2821,8 @@ async fn rollback_retains_candidate_file_writes_after_quarantine_verification() 
         cwd: project.path().to_path_buf(),
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: Some(Arc::new(RollbackOpenHandleWritingGate {
             candidate: project.path().join("shape"),
@@ -2779,6 +2882,8 @@ async fn rollback_retains_candidate_directory_writes_after_quarantine_verificati
         cwd: project.path().to_path_buf(),
         baseline_commit: baseline.clone(),
         baseline_index_tree: baseline_index.clone(),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: Some(Arc::new(RollbackOpenHandleWritingGate {
             candidate: project.path().join("shape"),
@@ -2838,6 +2943,8 @@ async fn successful_publication_retains_an_inode_for_writes_after_return() {
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })
@@ -2895,6 +3002,8 @@ async fn successful_df_publication_retains_an_open_directory_inode() {
         cwd: project.path().to_path_buf(),
         baseline_commit: head(project.path()),
         baseline_index_tree: index_tree(project.path()),
+        permission_profile: RunPermissionProfile::default(),
+        approvals: Arc::new(DenyWorkspaceApprovals),
         cancellation: CancellationToken::new(),
         integration_gate: None,
     })
@@ -2963,6 +3072,8 @@ async fn ancestor_links_never_redirect_publication_or_rollback_outside_the_proje
                 cwd: project.path().to_path_buf(),
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
+                permission_profile: RunPermissionProfile::default(),
+                approvals: Arc::new(DenyWorkspaceApprovals),
                 cancellation: CancellationToken::new(),
                 integration_gate: Some(Arc::new(AncestorSwappingGate {
                     project: project.path().to_path_buf(),
@@ -3046,6 +3157,8 @@ async fn untouched_later_roots_do_not_turn_an_early_collision_into_recovery_fail
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: Some(Arc::new(TransactionInjectingGate {
                 project: project.path().to_path_buf(),
@@ -3102,6 +3215,8 @@ async fn rollback_classifies_filter_owned_files_before_removing_gitattributes() 
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: Some(Arc::new(TransactionInjectingGate {
                 project: project.path().to_path_buf(),
@@ -3155,6 +3270,8 @@ async fn rollback_preserves_a_target_ref_replaced_by_a_candidate_resolving_symre
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: Some(Arc::new(TransactionInjectingGate {
                 project: project.path().to_path_buf(),
@@ -3232,6 +3349,8 @@ async fn directory_file_transitions_roll_back_ref_index_and_worktree_after_publi
                 cwd: project.path().to_path_buf(),
                 baseline_commit: baseline.clone(),
                 baseline_index_tree: baseline_index.clone(),
+                permission_profile: RunPermissionProfile::default(),
+                approvals: Arc::new(DenyWorkspaceApprovals),
                 cancellation: CancellationToken::new(),
                 integration_gate: Some(Arc::new(TransactionInjectingGate {
                     project: project.path().to_path_buf(),
@@ -3305,6 +3424,8 @@ async fn detached_head_rollback_preserves_a_later_symbolic_head() {
             cwd: project.path().to_path_buf(),
             baseline_commit: baseline.clone(),
             baseline_index_tree: baseline_index.clone(),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: Some(Arc::new(TransactionInjectingGate {
                 project: project.path().to_path_buf(),
@@ -3382,6 +3503,8 @@ async fn controlled_worktree_setup_skips_successful_and_failing_post_checkout_ho
                 cwd: project.path().to_path_buf(),
                 baseline_commit: head(project.path()),
                 baseline_index_tree: index_tree(project.path()),
+                permission_profile: RunPermissionProfile::default(),
+                approvals: Arc::new(DenyWorkspaceApprovals),
                 cancellation: CancellationToken::new(),
                 integration_gate: None,
             })
@@ -3415,6 +3538,8 @@ async fn successful_runs_rewrite_absolute_workspace_paths_before_cleanup() {
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })
@@ -3471,6 +3596,8 @@ async fn initialized_submodules_are_rejected_with_an_actionable_error() {
             cwd: project.path().to_path_buf(),
             baseline_commit: head(project.path()),
             baseline_index_tree: index_tree(project.path()),
+            permission_profile: RunPermissionProfile::default(),
+            approvals: Arc::new(DenyWorkspaceApprovals),
             cancellation: CancellationToken::new(),
             integration_gate: None,
         })

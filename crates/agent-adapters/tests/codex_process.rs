@@ -40,6 +40,7 @@ async fn cancellation_during_handshake_reaps_the_owned_child() {
             sandbox: SandboxMode::ReadOnly,
             approval_policy: ApprovalPolicy::Never,
             output_schema: None,
+            approval_handler: None,
             cancellation: cancellation.clone(),
         })
         .await
