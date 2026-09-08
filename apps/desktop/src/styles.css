@@ -331,8 +331,6 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .path-control { display: flex; gap: 6px; }
 .path-control input { min-width: 0; }
 .path-control .secondary-button { flex: 0 0 auto; margin: 0; }
-.session-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(140px, auto) 58px; }
-.session-window .settings-footer { justify-content: flex-end; }
 .rename-session-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(150px, auto) 58px; }
 .rename-session-window .settings-footer { justify-content: flex-end; }
 .action-form { padding: 24px; }

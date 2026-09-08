@@ -4,7 +4,13 @@ import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgre
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
-import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
+import {
+  agentDisplayName,
+  agentLabel,
+  availableProjectDefaultAgentId,
+  groupProjects,
+  projectNameFromWorkdir,
+} from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import type {
   DesktopMessage,
@@ -41,7 +47,6 @@ const settingsDialog = $("#settings-dialog");
 const commandDialog = $("#command-dialog");
 const projectDialog = $("#project-dialog");
 const projectSettingsDialog = $("#project-settings-dialog");
-const sessionDialog = $("#session-dialog");
 const renameSessionDialog = $("#rename-session-dialog");
 const sessionContextMenu = $<HTMLElement>("#session-context-menu");
 
@@ -51,6 +56,7 @@ let selectedSessionId: string | undefined;
 let selectedNodeId: string | undefined;
 let configuringProjectId: string | undefined;
 let renamingSessionId: string | undefined;
+let creatingSessionProjectId: string | undefined;
 let viewedTreeHeadId: string | undefined;
 let branchPickerNodeId: string | undefined;
 let configuringSessionId: string | undefined;
@@ -121,8 +127,6 @@ function bindInteractions(): void {
   $("#project-cancel").addEventListener("click", closeProjectDialog);
   $("#project-settings-close").addEventListener("click", closeProjectSettingsDialog);
   $("#project-settings-cancel").addEventListener("click", closeProjectSettingsDialog);
-  $("#session-close").addEventListener("click", closeSessionDialog);
-  $("#session-cancel").addEventListener("click", closeSessionDialog);
   $("#rename-session-close").addEventListener("click", closeRenameSessionDialog);
   $("#rename-session-cancel").addEventListener("click", closeRenameSessionDialog);
   $("#session-rename-action").addEventListener("click", openRenameSessionDialog);
@@ -150,10 +154,6 @@ function bindInteractions(): void {
     event.preventDefault();
     void saveProjectBackend();
   });
-  $("#session-create").addEventListener("submit", (event) => {
-    event.preventDefault();
-    void createSession();
-  });
   $("#rename-session-form").addEventListener("submit", (event) => {
     event.preventDefault();
     void renameSession();
@@ -172,9 +172,6 @@ function bindInteractions(): void {
   });
   projectSettingsDialog.addEventListener("click", (event) => {
     if (event.target === projectSettingsDialog) closeProjectSettingsDialog();
-  });
-  sessionDialog.addEventListener("click", (event) => {
-    if (event.target === sessionDialog) closeSessionDialog();
   });
   renameSessionDialog.addEventListener("click", (event) => {
     if (event.target === renameSessionDialog) closeRenameSessionDialog();
@@ -289,7 +286,7 @@ function renderProjects(): void {
         </button>
         <div class="project-actions">
           <button class="project-action" type="button" data-project-settings-id="${escapeAttribute(project.id)}" aria-label="Configure ${escapeAttribute(project.name)}">•••</button>
-          <button class="project-action" type="button" data-new-session-project-id="${escapeAttribute(project.id)}" aria-label="Create Session in ${escapeAttribute(project.name)}">＋</button>
+          <button class="project-action" type="button" data-new-session-project-id="${escapeAttribute(project.id)}" aria-label="Create Session in ${escapeAttribute(project.name)}"${creatingSessionProjectId === project.id ? ' disabled aria-busy="true"' : ""}>${creatingSessionProjectId === project.id ? "…" : "＋"}</button>
         </div>
       </div>
       <div class="project-sessions">${sessionRows}</div>
@@ -312,8 +309,8 @@ function renderProjects(): void {
       openSessionContextMenu(event, button.dataset.sessionId);
     });
   });
-  projectList.querySelectorAll<HTMLElement>("[data-new-session-project-id]").forEach((button) => {
-    button.addEventListener("click", () => openSessionDialog(button.dataset.newSessionProjectId));
+  projectList.querySelectorAll<HTMLButtonElement>("[data-new-session-project-id]").forEach((button) => {
+    button.addEventListener("click", () => void createSession(button.dataset.newSessionProjectId));
   });
   projectList.querySelectorAll<HTMLElement>("[data-project-settings-id]").forEach((button) => {
     button.addEventListener("click", () => openProjectSettingsDialog(button.dataset.projectSettingsId));
@@ -842,7 +839,6 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
     closeSessionContextMenu();
     closeRenameSessionDialog();
     closeProjectSettingsDialog();
-    closeSessionDialog();
   }
 }
 
@@ -940,37 +936,26 @@ async function saveProjectBackend(): Promise<void> {
   }
 }
 
-function openSessionDialog(projectId?: string): void {
-  if (projectId) selectProject(projectId);
-  const project = currentProject();
+async function createSession(projectId = selectedProjectId): Promise<void> {
+  if (!snapshot || creatingSessionProjectId) return;
+  const project = snapshot.projects.find((candidate) => candidate.id === projectId);
   if (!project) {
     openProjectDialog();
     return;
   }
-  const select = $<HTMLSelectElement>("#session-agent");
-  select.innerHTML = agentOptions();
-  if (project.defaultAgentId) select.value = project.defaultAgentId;
-  $("#session-project-copy").textContent = `The Session belongs to ${project.name}; its Agent can be changed while idle.`;
-  sessionDialog.classList.remove("is-hidden");
-}
-
-function closeSessionDialog(): void {
-  sessionDialog.classList.add("is-hidden");
-}
-
-async function createSession(): Promise<void> {
-  const project = currentProject();
-  const agentId = $<HTMLSelectElement>("#session-agent").value;
-  if (!project || !agentId) return;
-  const button = $<HTMLButtonElement>("#session-create-submit");
-  button.disabled = true;
-  button.textContent = "Creating…";
+  const agentId = availableProjectDefaultAgentId(project, snapshot.agents);
+  if (!agentId) {
+    showToast(`Set an enabled default Agent for ${project.name} in Project settings.`, true);
+    return;
+  }
+  creatingSessionProjectId = project.id;
+  renderProjects();
   try {
     const result = await window.ait.createSession({ projectId: project.id, agentId });
     snapshot = result.snapshot;
+    selectedProjectId = project.id;
     selectedSessionId = result.selectedSessionId;
     resetTreeView();
-    closeSessionDialog();
     showPage("sessions");
     renderAll();
     messageInput.focus();
@@ -978,8 +963,8 @@ async function createSession(): Promise<void> {
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
-    button.disabled = false;
-    button.textContent = "Create Session";
+    creatingSessionProjectId = undefined;
+    renderProjects();
   }
 }
 
@@ -1166,7 +1151,7 @@ function renderCommandResults(): void {
     button.addEventListener("click", () => {
       closeCommandPalette();
       if (button.dataset.command === "new-project") openProjectDialog();
-      if (button.dataset.command === "new-session") openSessionDialog();
+      if (button.dataset.command === "new-session") void createSession();
       if (button.dataset.command === "settings") openSettings();
       if (button.dataset.command === "agents") showPage("agents");
       if (button.dataset.command === "tree") toggleTree();

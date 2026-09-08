@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "../src/projects.js";
-import type { DesktopProject, DesktopSession, DesktopSnapshot } from "../src/types.js";
+import {
+  agentDisplayName,
+  agentLabel,
+  availableProjectDefaultAgentId,
+  groupProjects,
+  projectNameFromWorkdir,
+} from "../src/projects.js";
+import type { AgentSummary, DesktopProject, DesktopSession, DesktopSnapshot } from "../src/types.js";
+
+const codex: AgentSummary = {
+  id: "codex-local",
+  name: "Codex",
+  model: "gpt-5.6-sol",
+  mode: "codex",
+  enabled: true,
+  config: { provider_id: "builtin-codex", model: "gpt-5.6-sol", reasoning_effort: null },
+  ownerSessionId: null,
+};
 
 const project = (id: string): DesktopProject => ({
   id,
@@ -56,11 +72,20 @@ test("derives the default Project name from the selected directory", () => {
 });
 
 test("labels named presets and Session-owned Agents", () => {
-  const codex = { id: "codex-app-server", name: "Codex", model: "gpt-5.6-sol", mode: "codex", enabled: true };
   const custom = { ...codex, id: "session-agent", name: "", ownerSessionId: "session-a" };
 
   assert.equal(agentDisplayName(codex), "Codex");
   assert.equal(agentLabel(codex), "Codex · gpt-5.6-sol");
   assert.equal(agentDisplayName(custom), "Custom");
   assert.equal(agentLabel(custom), "Custom · gpt-5.6-sol");
+});
+
+test("uses only an enabled named Project default for a new Session", () => {
+  const configured = project("project-a");
+  const alternate = { ...codex, id: "alternate" };
+
+  assert.equal(availableProjectDefaultAgentId(configured, [alternate, codex]), codex.id);
+  assert.equal(availableProjectDefaultAgentId({ ...configured, defaultAgentId: null }, [codex]), undefined);
+  assert.equal(availableProjectDefaultAgentId(configured, [{ ...codex, enabled: false }]), undefined);
+  assert.equal(availableProjectDefaultAgentId(configured, [{ ...codex, ownerSessionId: "session-a" }]), undefined);
 });
