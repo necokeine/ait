@@ -408,8 +408,12 @@ pub trait WorkspaceAgent: Send + Sync {
         progress: Arc<dyn WorkspaceProgressReporter>,
         result_sink: &dyn WorkspaceResultSink,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let integration_gate = request.integration_gate.clone();
         let result = self.invoke_with_progress(request, progress).await?;
         result_sink.checkpoint(result.clone()).await?;
+        if let Some(gate) = integration_gate.as_deref() {
+            gate.begin_integration().await?;
+        }
         Ok(result)
     }
 

@@ -309,6 +309,41 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     assert_eq!(protocol.matches("\"method\":\"turn/start\"").count(), 1);
 }
 
+#[tokio::test]
+async fn bind_failure_does_not_claim_or_fence_a_queued_recovery() {
+    let temporary = TempDir::new().unwrap();
+    let project = temporary.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let database = temporary.path().join("ait.sqlite3");
+    let run_id = seed_queued_run(&database, &project).await;
+    let store = SqliteControlStore::open(&database).unwrap();
+    let before = store.load().await.unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ait-daemon"))
+        .args([
+            "--database",
+            database.to_str().unwrap(),
+            "--listen",
+            &address.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Address already in use"));
+    let after = store.load().await.unwrap();
+    assert_eq!(after, before);
+    let run = after.value["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|run| run["id"] == run_id)
+        .unwrap();
+    assert_eq!(run["status"], "queued");
+    assert_eq!(run["phase"], "queued");
+}
+
 async fn seed_queued_run(database: &Path, project: &Path) -> String {
     let store = Arc::new(SqliteControlStore::open(database).unwrap());
     let service = LocalControlService::with_workspace_agent(store.clone(), Arc::new(SeedAgent));

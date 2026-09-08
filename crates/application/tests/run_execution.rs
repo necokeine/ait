@@ -575,6 +575,34 @@ async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_se
     assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
 }
 
+#[tokio::test]
+async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
+    for (policy, expected_status) in [("ask", "interrupted"), ("fail", "failed")] {
+        let fixture = Fixture::new().await;
+        let completed = run(&fixture.service, send_message()).await;
+        rewind_completed_run(&fixture.store, &completed, "queued").await;
+        let snapshot = fixture.store.load().await.unwrap();
+        let mut value = snapshot.value;
+        value["settings"]["runtime.recovery"] = Value::String(policy.into());
+        fixture
+            .store
+            .commit(snapshot.revision, value, Vec::new())
+            .await
+            .unwrap();
+        let calls = fixture.agent.calls.load(Ordering::Relaxed);
+        let service =
+            LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+
+        let recovered = service.recover_interrupted_runs().await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].status, expected_status);
+        assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
+        assert!(
+            fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null()
+        );
+    }
+}
+
 async fn rewind_completed_run(store: &ConflictingStore, completed: &RunView, status: &str) {
     let snapshot = store.load().await.unwrap();
     let mut value = snapshot.value;

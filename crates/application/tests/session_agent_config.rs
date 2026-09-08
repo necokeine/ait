@@ -10,7 +10,8 @@ use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     AgentProviderGateway, ControlSnapshot, ControlStore, ControlStoreError, DurableEvent,
     HostProviderModelCatalog, PendingEvent, ProviderMessage, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceProgressReporter,
+    WorkspaceResultSink,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -339,10 +340,26 @@ impl FinalizationRaceAgent {
 impl WorkspaceAgent for FinalizationRaceAgent {
     async fn invoke(
         &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("FinalizationRaceAgent requires the checkpointed invocation boundary")
+    }
+
+    async fn invoke_with_progress_and_checkpoint(
+        &self,
         request: WorkspaceAgentInvocation,
+        _progress: Arc<dyn WorkspaceProgressReporter>,
+        result_sink: &dyn WorkspaceResultSink,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         self.entered.add_permits(1);
         self.begin_integration.acquire().await.unwrap().forget();
+        let result = WorkspaceAgentResponse {
+            assistant_text: "integrated result".into(),
+            commit_id: Some("fixture-commit".into()),
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        };
+        result_sink.checkpoint(result.clone()).await?;
         request
             .integration_gate
             .as_ref()
@@ -351,12 +368,7 @@ impl WorkspaceAgent for FinalizationRaceAgent {
             .await?;
         self.integration_started.add_permits(1);
         self.complete.acquire().await.unwrap().forget();
-        Ok(WorkspaceAgentResponse {
-            assistant_text: "integrated result".into(),
-            commit_id: Some("fixture-commit".into()),
-            operations: Vec::new(),
-            output_items: Vec::new(),
-        })
+        Ok(result)
     }
 }
 
@@ -985,7 +997,7 @@ async fn integration_wins_the_finalization_gate_and_its_output_is_persisted() {
             .find(|run| run.id == active)
             .unwrap()
             .status,
-        "running"
+        "settling"
     );
 
     agent.complete.add_permits(1);
@@ -1219,15 +1231,16 @@ async fn admitted_run_reaches_terminal_after_running_transition_conflict_or_stor
     .await;
 }
 
-async fn verify_settling_transition_failure_preserves_integrated_result(
+async fn verify_result_checkpoint_failure_never_claims_integration(
     failures: VecDeque<ControlStoreError>,
+    expected_code: ErrorCode,
 ) {
     let store = Arc::new(TerminalFailingStore {
         inner: SqliteControlStore::in_memory().unwrap(),
         failure_status: "settling",
-        pause_status: "completed",
+        pause_status: "failed",
         failures: Mutex::new(failures),
-        pause_once: AtomicBool::new(true),
+        pause_once: AtomicBool::new(false),
         failures_exhausted: Semaphore::new(0),
         allow_terminal_commit: Semaphore::new(0),
         terminal_committed: Semaphore::new(0),
@@ -1242,92 +1255,50 @@ async fn verify_settling_transition_failure_preserves_integrated_result(
     let accepted = submit_run(&service, send("one")).await;
     agent.started().await;
     agent.begin_integration.add_permits(1);
-    wait_for_signal(&agent.integration_started).await;
-    agent.complete.add_permits(1);
-    wait_for_signal(&store.failures_exhausted).await;
-
-    let pending = view(&service).await;
-    assert_eq!(
-        pending
-            .runs
-            .iter()
-            .find(|run| run.id == accepted.id)
-            .unwrap()
-            .status,
-        "running"
-    );
-    assert_eq!(
-        service
-            .execute(Command::CancelRun {
-                run_id: accepted.id.clone(),
-            })
-            .await
-            .error
-            .unwrap()
-            .code,
-        ErrorCode::RunAlreadyTerminal
-    );
-    let second = {
-        let service = service.clone();
-        tokio::spawn(async move { submit_run(&service, send("two")).await })
-    };
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
-            .await
-            .is_err(),
-        "same-Project admission escaped before integrated output became terminal"
-    );
-
-    store.allow_terminal_commit.add_permits(1);
     wait_for_signal(&store.terminal_committed).await;
-    let completed = view(&service).await;
-    let first = completed
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            agent.integration_started.acquire()
+        )
+        .await
+        .is_err(),
+        "integration was claimed without a durable result checkpoint"
+    );
+    let workspace = view(&service).await;
+    let failed = workspace
         .runs
         .iter()
         .find(|run| run.id == accepted.id)
         .unwrap();
-    assert_eq!(first.status, "completed");
-    let output = completed
-        .messages
-        .iter()
-        .find(|message| Some(&message.id) == first.last_message_id.as_ref())
-        .unwrap();
-    assert_eq!(output.text.as_deref(), Some("integrated result"));
-    assert_eq!(
-        output.data.as_ref().unwrap()["codex"]["commit_id"],
-        serde_json::json!("fixture-commit")
-    );
-
-    let second = second.await.unwrap();
-    agent.started().await;
-    agent.begin_integration.add_permits(1);
-    wait_for_signal(&agent.integration_started).await;
-    agent.complete.add_permits(1);
-    wait_for_signal(&store.terminal_committed).await;
-    assert_eq!(
-        view(&service)
-            .await
-            .runs
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.error.as_ref().unwrap().code, expected_code);
+    assert!(
+        workspace
+            .messages
             .iter()
-            .find(|run| run.id == second.id)
-            .unwrap()
-            .status,
-        "completed"
+            .all(|message| message.role != "assistant")
     );
 }
 
 #[tokio::test]
-async fn integrated_run_ignores_settling_transition_conflict_or_store_error() {
-    verify_settling_transition_failure_preserves_integrated_result(VecDeque::from([
-        ControlStoreError::Conflict,
-        ControlStoreError::Conflict,
-        ControlStoreError::Conflict,
-        ControlStoreError::Conflict,
-    ]))
+async fn result_checkpoint_failure_never_claims_integration_or_completes() {
+    verify_result_checkpoint_failure_never_claims_integration(
+        VecDeque::from([
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+        ]),
+        ErrorCode::RunQueueConflict,
+    )
     .await;
-    verify_settling_transition_failure_preserves_integrated_result(VecDeque::from([
-        ControlStoreError::Other("injected settling transition failure".into()),
-    ]))
+    verify_result_checkpoint_failure_never_claims_integration(
+        VecDeque::from([ControlStoreError::Other(
+            "injected settling transition failure".into(),
+        )]),
+        ErrorCode::RunRecoveryFailed,
+    )
     .await;
 }
 

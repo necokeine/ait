@@ -37,17 +37,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
     );
+    let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
+    eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
+    // Binding is the daemon ownership boundary. Startup scanning is read-only,
+    // and every Run claim happens later while its Project advisory lock is held.
     let recovery_plan = service
         .prepare_startup_recovery()
         .await
         .map_err(|failure| {
             std::io::Error::other(format!(
-                "failed to scan and claim interrupted Runs ({}): {}",
+                "failed to scan interrupted Runs ({}): {}",
                 failure.code, failure.message
             ))
         })?;
-    let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
-    eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
     let recovery_count = recovery_plan.len();
     let recovery_service = service.clone();
     let mut recovery =

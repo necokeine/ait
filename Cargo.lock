@@ -88,6 +88,7 @@ dependencies = [
 name = "ait-application"
 version = "0.1.0"
 dependencies = [
+ "ait-agent-adapters",
  "ait-contracts",
  "ait-domain",
  "ait-ports",

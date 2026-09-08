@@ -323,12 +323,9 @@ async fn invoke_isolated_workspace(
             false,
         )));
     }
-    if let Err(failure) = workspace
-        .integrate(result.commit_id.as_deref(), integration_gate.as_deref())
-        .await
-    {
-        return Err(workspace.retain(failure));
-    }
+    workspace
+        .integrate_or_reconcile(result.commit_id.as_deref(), integration_gate.as_deref())
+        .await?;
     Ok(result)
 }
 
@@ -348,6 +345,15 @@ async fn recover_isolated_workspace(
             false,
         )
     })?;
+    if let Some(gate) = request.integration_gate.as_deref() {
+        gate.begin_integration().await?;
+    } else if request.cancellation.is_cancelled() {
+        return Err(domain_error(
+            ErrorCode::RunCancelled,
+            "run was cancelled before checkpointed changes were recovered",
+            false,
+        ));
+    }
     let current_ref = ensure_primary_baseline_or_integrated(
         &primary,
         &request.baseline_commit,
@@ -435,22 +441,12 @@ async fn recover_isolated_workspace(
         baseline_index_tree: request.baseline_index_tree,
         primary_head_ref: baseline_ref.map(str::to_owned),
     };
-    if let Some(gate) = request.integration_gate.as_deref() {
-        gate.begin_integration().await?;
-    } else if request.cancellation.is_cancelled() {
-        return Err(domain_error(
-            ErrorCode::RunCancelled,
-            "run was cancelled before checkpointed changes were recovered",
-            false,
-        ));
-    }
     workspace
-        .integrate(
+        .integrate_or_reconcile(
             result.commit_id.as_deref(),
             request.integration_gate.as_deref(),
         )
         .await
-        .map_err(|failure| workspace.retain(failure))
 }
 
 fn ensure_primary_baseline_or_integrated(
@@ -716,6 +712,68 @@ impl IsolatedWorkspace {
         // a failed Run whose side effect nevertheless landed.
         let _ = delete_git_ref(&self.primary, &self.run_ref);
         Ok(())
+    }
+
+    async fn integrate_or_reconcile(
+        &mut self,
+        commit_id: Option<&str>,
+        integration_gate: Option<&dyn WorkspaceIntegrationGate>,
+    ) -> Result<(), DomainError> {
+        let failure = match self.integrate(commit_id, integration_gate).await {
+            Ok(()) => return Ok(()),
+            Err(failure) => failure,
+        };
+        match self.proves_primary_publication(commit_id) {
+            Ok(true) => {
+                let _ = delete_git_ref(&self.primary, &self.run_ref);
+                Ok(())
+            }
+            Ok(false) => Err(self.retain(failure)),
+            Err(proof_failure) => {
+                let mut failure = failure;
+                failure.message = format!(
+                    "{}; failed to prove whether workspace publication completed: {}",
+                    failure.message, proof_failure.message
+                );
+                Err(self.retain(failure))
+            }
+        }
+    }
+
+    fn proves_primary_publication(&self, commit_id: Option<&str>) -> Result<bool, DomainError> {
+        if self.worktree.exists() {
+            return Ok(false);
+        }
+        let expected = commit_id.unwrap_or(&self.baseline);
+        if git_head(&self.primary).as_deref() != Some(expected) {
+            return Ok(false);
+        }
+        if symbolic_head(&self.primary)? != self.primary_head_ref {
+            return Ok(false);
+        }
+        if let Some(target_ref) = self.primary_head_ref.as_deref()
+            && (symbolic_ref(&self.primary, target_ref)?.is_some()
+                || exact_ref_oid(&self.primary, target_ref)?.as_deref() != Some(expected))
+        {
+            return Ok(false);
+        }
+        if let Some(commit_id) = commit_id {
+            let rollback_root = absolute_git_dir(&self.primary)?
+                .join("ait")
+                .join("integration-rollbacks")
+                .join(commit_id);
+            if rollback_root.exists() {
+                return Ok(false);
+            }
+        }
+        // Validate through a locked copy so proof cannot refresh or otherwise
+        // rewrite the canonical index that a failed NEC-209 transaction just
+        // restored byte-for-byte.
+        let index = LockedIndex::acquire(&self.primary)?;
+        let expected_tree = git_commit_tree(&self.primary, expected)?;
+        ensure_index_and_worktree(&self.primary, index.path(), &expected_tree)?;
+        index.ensure_canonical_unchanged()?;
+        Ok(true)
     }
 
     fn pin_commit(&self, commit_id: &str) -> Result<(), DomainError> {
