@@ -1,14 +1,14 @@
 import { catalogOption as option, escapeCatalog as escape } from "./agent-settings.js";
-import type { DesktopSnapshot } from "./types.js";
+import type { DesktopView } from "./types.js";
 
 interface AgentsPageActions {
-  update(snapshot: DesktopSnapshot): void;
+  update(view: DesktopView): void;
   notify(message: string, failure?: boolean): void;
   configureProvider(id: string): void;
 }
 
 export function createAgentsPage(container: Element, actions: AgentsPageActions) {
-  let snapshot: DesktopSnapshot | undefined;
+  let view: DesktopView | undefined;
   container.innerHTML = `<header class="agents-page-header"><div><span class="eyebrow">Workspace</span><h1 id="agents-page-title" tabindex="-1">Agents</h1><p>Connections and reusable configurations for your Projects and Sessions.</p></div><button id="agent-create" class="primary-button" type="button">New Agent</button></header>
     <div class="agents-page-scroll">
       <section class="agents-catalog-section" aria-labelledby="providers-title"><header class="catalog-heading"><div><h2 id="providers-title">Agent providers</h2><p>Shared connections and the models you have enabled.</p></div><button id="agents-add-provider" class="secondary-button" type="button">Add provider</button></header><div id="agents-provider-list" class="provider-cards"></div></section>
@@ -25,9 +25,9 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   };
 
   const edit = (id?: string): void => {
-    if (!snapshot || saving) return;
-    const agent = snapshot.agents.find((item) => item.id === id && !item.ownerSessionId);
-    const providers = snapshot.providers.filter((provider) => provider.models.length || provider.id === agent?.config.provider_id);
+    if (!view || saving) return;
+    const agent = view.agents.find((item) => item.id === id && !item.ownerSessionId);
+    const providers = view.providers.filter((provider) => provider.models.length || provider.id === agent?.config.provider_id);
     const initial = agent?.config;
     editor.classList.remove("is-hidden");
     editor.innerHTML = `<form id="agent-config-form" aria-label="${agent ? "Edit Agent" : "New Agent"}"><header class="catalog-heading"><h3>${agent ? `Edit ${escape(agent.name)}` : "New Agent"}</h3><button class="small-icon-button" type="button" id="agent-editor-close" aria-label="Close Agent editor">×</button></header>
@@ -40,12 +40,12 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
       <div class="catalog-actions"><button class="secondary-button" type="button" id="agent-config-cancel">Cancel</button><button class="primary-button" type="submit" id="agent-config-save"${providers.length ? "" : " disabled"}>Save Agent</button></div></form>`;
     const select = (name: string): HTMLSelectElement => get(`#agent-config-${name}`);
     const efforts = (selected = ""): void => {
-      const model = snapshot?.providers.find((provider) => provider.id === select("provider").value)?.models.find((model) => model.id === select("model").value);
+      const model = view?.providers.find((provider) => provider.id === select("provider").value)?.models.find((model) => model.id === select("model").value);
       select("effort").innerHTML = option("", "Provider default") + (model?.reasoning_efforts.map((effort) => option(effort, effort, selected)).join("") ?? "");
       select("effort").disabled = !model?.reasoning_efforts.length;
     };
     const models = (selected = ""): void => {
-      const provider = snapshot?.providers.find((item) => item.id === select("provider").value);
+      const provider = view?.providers.find((item) => item.id === select("provider").value);
       select("model").innerHTML = provider?.models.map((model) => option(model.id, model.name, selected)).join("") ?? "";
       efforts();
     };
@@ -95,19 +95,19 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   get("#agent-create").addEventListener("click", () => edit());
   get("#agents-add-provider").addEventListener("click", () => actions.configureProvider(""));
 
-  const render = (updated: DesktopSnapshot): void => {
-    snapshot = updated;
-    get("#agents-provider-list").innerHTML = snapshot.providers.map((provider) => {
+  const render = (updated: DesktopView): void => {
+    view = updated;
+    get("#agents-provider-list").innerHTML = view.providers.map((provider) => {
       const remote = ["openai", "deepseek"].includes(provider.kind);
       return `<article class="provider-card"><header><strong>${escape(provider.name)}</strong><span class="catalog-badge${remote && !provider.has_secret ? " needs-setup" : ""}">${remote ? provider.has_secret ? "Secret saved" : "Needs secret" : "Built-in"}</span></header>
         <p class="provider-endpoint">${escape(provider.url ?? (remote ? "Official API endpoint" : provider.kind === "codex" ? "Host sign-in" : "Built-in provider"))}</p>
         <details><summary>${provider.models.length} enabled models</summary><ul>${provider.models.map((model) => `<li><strong>${escape(model.name)}</strong><code>${escape(model.id)}</code><small>${model.reasoning_efforts.length ? escape(model.reasoning_efforts.join(" · ")) : "Default reasoning"}</small></li>`).join("") || "<li>No models selected.</li>"}</ul></details>
         <button class="secondary-button" type="button" data-configure-provider="${escape(provider.id)}" aria-label="Configure ${escape(provider.name)} provider">Configure</button></article>`;
     }).join("") || '<div class="catalog-empty">Add your first provider to choose its models.</div>';
-    get("#named-agent-list").innerHTML = snapshot.agents.filter((agent) => !agent.ownerSessionId).map((agent) => {
-      const provider = snapshot!.providers.find((provider) => provider.id === agent.config.provider_id);
-      const sessions = snapshot!.sessions.filter((session) => session.agentId === agent.id).length;
-      const projects = snapshot!.projects.filter((project) => project.defaultAgentId === agent.id).length;
+    get("#named-agent-list").innerHTML = view.agents.filter((agent) => !agent.ownerSessionId).map((agent) => {
+      const provider = view!.providers.find((provider) => provider.id === agent.config.provider_id);
+      const sessions = view!.sessions.filter((session) => session.agentId === agent.id).length;
+      const projects = view!.projects.filter((project) => project.defaultAgentId === agent.id).length;
       return `<article class="named-agent-row"><div class="named-agent-identity"><span class="named-agent-icon" aria-hidden="true">◇</span><div><strong>${escape(agent.name)}</strong><small>${escape(provider?.name ?? "Unavailable provider")}${agent.enabled ? "" : " · Disabled"}</small></div></div><div class="named-agent-model"><strong>${escape(agent.config.model)}</strong><small>${escape(agent.config.reasoning_effort ?? "Provider default")}</small></div><small class="named-agent-usage">${projects} Projects · ${sessions} Sessions</small><button class="secondary-button" type="button" data-edit-agent="${escape(agent.id)}" aria-label="Edit ${escape(agent.name)} Agent">Edit</button></article>`;
     }).join("") || '<div class="catalog-empty">No named Agents yet. Create one to reuse a model and reasoning configuration.</div>';
     container.querySelectorAll<HTMLElement>("[data-configure-provider]").forEach((button) => button.addEventListener("click", () => actions.configureProvider(button.dataset.configureProvider!)));

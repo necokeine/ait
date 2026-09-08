@@ -121,7 +121,20 @@ pub enum Command {
         values: desktop::SettingsDocument,
     },
     ResetSettings,
-    Snapshot,
+    ListProjects,
+    ListAgents,
+    ListAgentProviders,
+    ListSessions {
+        #[serde(default)]
+        project_id: Option<String>,
+    },
+    ListMessages {
+        project_id: String,
+    },
+    ListRuns {
+        project_id: String,
+    },
+    ListCrons,
 }
 
 /// Stable API error envelope.
@@ -249,18 +262,6 @@ pub struct CronView {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceView {
-    pub projects: Vec<ProjectView>,
-    pub agents: Vec<AgentView>,
-    #[serde(default)]
-    pub providers: Vec<AgentProviderView>,
-    pub sessions: Vec<SessionView>,
-    pub messages: Vec<MessageView>,
-    pub runs: Vec<RunView>,
-    pub crons: Vec<CronView>,
-}
-
 /// Portable, credential-free Project and Session archive.
 ///
 /// Runtime attempts, active Run bindings, Cron registrations, attachment
@@ -295,7 +296,13 @@ pub enum CommandResult {
     Cron(CronView),
     ProjectExport(ProjectExport),
     Settings(desktop::SettingsView),
-    Workspace(WorkspaceView),
+    Projects(Vec<ProjectView>),
+    Agents(Vec<AgentView>),
+    AgentProviders(Vec<AgentProviderView>),
+    Sessions(Vec<SessionView>),
+    Messages(Vec<MessageView>),
+    Runs(Vec<RunView>),
+    Crons(Vec<CronView>),
 }
 
 /// Response shared by every transport.
@@ -355,7 +362,7 @@ pub mod desktop;
 
 pub use desktop::{
     AgentSummary, DESKTOP_PROTOCOL_VERSION, DesktopMessage, DesktopMessagePart, DesktopProject,
-    DesktopSession, DesktopSnapshot, ForkFromMessageRequest, SaveSettingsRequest, SettingCategory,
+    DesktopSession, DesktopView, ForkFromMessageRequest, SaveSettingsRequest, SettingCategory,
     SettingDefinition, SettingKind, SettingsDocument, SettingsSchema, SettingsView,
     default_settings, settings_schema,
 };

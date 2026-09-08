@@ -35,7 +35,7 @@ test("surfaces interrupted Runs that need workspace review", () => {
 });
 
 test("projects startup-interrupted Runs with Project and Session locations", () => {
-  const snapshot = {
+  const view = {
     projects: [{ id: "project-1", name: "Ait" }, { id: "project-2", name: "Docs" }],
     sessions: [{ id: "session-1", project_id: "project-1", name: "Recovery work", title: null }],
     runs: [
@@ -50,7 +50,7 @@ test("projects startup-interrupted Runs with Project and Session locations", () 
       },
     ],
   };
-  assert.deepEqual(startupRecoveryNotices(snapshot), [{
+  assert.deepEqual(startupRecoveryNotices(view), [{
     projectId: "project-1",
     projectName: "Ait",
     sessionId: "session-1",

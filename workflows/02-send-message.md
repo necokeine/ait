@@ -11,8 +11,9 @@ ait command '{"type":"send_message","session_id":"s-codex","text":"检查并总�
   | tee "$WF_ROOT/codex-run.json"
 RUN_ID="$(jq -r '.result.value.id' "$WF_ROOT/codex-run.json")"
 ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
-ait snapshot > "$WF_ROOT/after-run.json"
-jq '.result.value | {sessions,messages,runs}' "$WF_ROOT/after-run.json"
+ait session list --project-id p1 > "$WF_ROOT/sessions-after-run.json"
+ait message list --project-id p1 > "$WF_ROOT/messages-after-run.json"
+ait run list --project-id p1 > "$WF_ROOT/runs-after-run.json"
 ```
 
 ## 验收

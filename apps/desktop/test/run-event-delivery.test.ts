@@ -91,7 +91,7 @@ test("50k replay behind a slow renderer stays bounded and converges by resync", 
   assert.equal(delivery.size, 0);
 });
 
-test("renderer backlog stays bounded while a slow snapshot is in flight", () => {
+test("renderer backlog stays bounded while a slow view is in flight", () => {
   const backlog = new BoundedRunStreamBacklog();
   for (let cursor = 1; cursor <= 50_000; cursor += 1) {
     backlog.push([{ type: "event", event: event(cursor) }]);

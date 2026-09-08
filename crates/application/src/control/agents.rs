@@ -3,9 +3,8 @@ use super::{
     AgentConfiguration, AgentMode, AgentProvider, AgentProviderGateway, AgentProviderView,
     AgentView, ApiError, Arc, Command, CommandResult, ControlStoreError, DomainError, ErrorCode,
     HashMap, HashSet, HostProviderModelCatalog, LocalControlService, Mutex, PendingEvent,
-    ProviderMessage, ProviderModel, RunView, SessionView, State, Uuid, Value, Weak,
-    WorkspaceAgentResponse, decode_state, error, json, pending, require_agent, serialization_error,
-    store_error,
+    ProviderMessage, ProviderModel, RunView, SessionView, Uuid, Value, Weak, WorkingSet,
+    WorkspaceAgentResponse, error, json, pending, require_agent, serialization_error, store_error,
 };
 use ait_contracts::ProviderSecret;
 
@@ -70,7 +69,7 @@ pub(super) fn validate_provider(provider: &AgentProvider) -> Result<(), ApiError
 }
 
 pub(super) fn validate_config<'a>(
-    state: &'a State,
+    state: &'a WorkingSet,
     config: &AgentConfiguration,
 ) -> Result<&'a AgentProvider, ApiError> {
     let provider = state
@@ -102,7 +101,7 @@ fn validate_model(provider: &AgentProvider, config: &AgentConfiguration) -> Resu
 }
 
 pub(super) fn require_named_agent<'a>(
-    state: &'a State,
+    state: &'a WorkingSet,
     id: &str,
 ) -> Result<&'a AgentView, ApiError> {
     let agent = require_agent(state, id)?;
@@ -113,7 +112,7 @@ pub(super) fn require_named_agent<'a>(
 }
 
 pub(super) fn register_agent(
-    state: &mut State,
+    state: &mut WorkingSet,
     id: String,
     name: String,
     config: AgentConfiguration,
@@ -138,7 +137,7 @@ pub(super) fn register_agent(
 }
 
 pub(super) fn update_agent(
-    state: &mut State,
+    state: &mut WorkingSet,
     id: &str,
     name: String,
     config: AgentConfiguration,
@@ -163,7 +162,7 @@ pub(super) fn update_agent(
 }
 
 pub(super) fn agent_for_session(
-    state: &mut State,
+    state: &mut WorkingSet,
     agent_id: &str,
     session_id: &str,
 ) -> Result<String, ApiError> {
@@ -185,7 +184,7 @@ pub(super) fn agent_for_session(
 }
 
 pub(super) fn set_session_config(
-    state: &mut State,
+    state: &mut WorkingSet,
     session_id: &str,
     config: AgentConfiguration,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -254,7 +253,10 @@ fn ensure_idle(session: &SessionView) -> Result<(), ApiError> {
         Ok(())
     }
 }
-pub(super) fn check_session_admission(state: &State, command: &Command) -> Result<(), ApiError> {
+pub(super) fn check_session_admission(
+    state: &WorkingSet,
+    command: &Command,
+) -> Result<(), ApiError> {
     if let Some(id) = command_session(command)
         && let Some(session) = state.sessions.iter().find(|s| s.id == id)
     {
@@ -331,8 +333,8 @@ impl LocalControlService {
         credential: Option<&str>,
     ) -> Result<CommandResult, ApiError> {
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut state = decode_state(snapshot.value)?;
+            let loaded = self.read_provider_records(&provider.id, true).await?;
+            let mut state = loaded.original.clone();
             if let Some(existing) = state
                 .providers
                 .iter()
@@ -373,16 +375,8 @@ impl LocalControlService {
                 Some(provider.id.clone()),
                 &view,
             )];
-            match self
-                .store
-                .commit(
-                    snapshot.revision,
-                    serde_json::to_value(state).map_err(serialization_error)?,
-                    events,
-                )
-                .await
-            {
-                Ok(_) => return Ok(CommandResult::AgentProvider(view)),
+            match self.persist_records(&loaded, &state, events).await {
+                Ok(()) => return Ok(CommandResult::AgentProvider(view)),
                 Err(ControlStoreError::Conflict) => {}
                 Err(failure) => return Err(store_error(failure)),
             }
@@ -415,7 +409,10 @@ impl LocalControlService {
         if !matches!(provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
             return Err(invalid("this provider does not expose model discovery"));
         }
-        let state = decode_state(self.store.load().await.map_err(store_error)?.value)?;
+        let state = self
+            .read_provider_records(&provider.id, false)
+            .await?
+            .original;
         let existing = state
             .providers
             .iter()
@@ -456,7 +453,10 @@ impl LocalControlService {
         &self,
         provider_id: &str,
     ) -> Result<CommandResult, ApiError> {
-        let state = decode_state(self.store.load().await.map_err(store_error)?.value)?;
+        let state = self
+            .read_provider_records(provider_id, false)
+            .await?
+            .original;
         let provider = state
             .providers
             .iter()
@@ -474,8 +474,8 @@ impl LocalControlService {
         // Apply fetched IDs to the latest configuration, preserving manually declared
         // capabilities because standard model-list APIs do not advertise effort levels.
         for _ in 0..4 {
-            let snapshot = self.store.load().await.map_err(store_error)?;
-            let mut latest = decode_state(snapshot.value)?;
+            let loaded = self.read_provider_records(provider_id, false).await?;
+            let mut latest = loaded.original.clone();
             let target = latest
                 .providers
                 .iter_mut()
@@ -502,16 +502,8 @@ impl LocalControlService {
                 Some(provider_id.into()),
                 &view,
             )];
-            match self
-                .store
-                .commit(
-                    snapshot.revision,
-                    serde_json::to_value(latest).map_err(serialization_error)?,
-                    events,
-                )
-                .await
-            {
-                Ok(_) => return Ok(CommandResult::AgentProvider(view)),
+            match self.persist_records(&loaded, &latest, events).await {
+                Ok(()) => return Ok(CommandResult::AgentProvider(view)),
                 Err(ControlStoreError::Conflict) => {}
                 Err(failure) => return Err(store_error(failure)),
             }
@@ -525,7 +517,7 @@ impl LocalControlService {
 
     pub(super) async fn invoke_provider(
         &self,
-        state: &State,
+        state: &WorkingSet,
         run: &RunView,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         let gateway = self.provider_gateway.as_deref().ok_or_else(|| {

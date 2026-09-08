@@ -1,7 +1,7 @@
 import type {
   ControlEvent,
   DesktopRun,
-  DesktopSnapshot,
+  DesktopView,
   MessagePart,
   RunProgress,
   RunProgressItem,
@@ -16,12 +16,12 @@ export function isTerminalRunEvent(event: ControlEvent): boolean {
 }
 
 export function terminalRunForSession(
-  snapshot: Pick<DesktopSnapshot, "sessions" | "runs">,
+  view: Pick<DesktopView, "sessions" | "runs">,
   sessionId: string,
 ): DesktopRun | undefined {
-  const session = snapshot.sessions.find((candidate) => candidate.id === sessionId);
+  const session = view.sessions.find((candidate) => candidate.id === sessionId);
   if (!session || session.activeRunId) return undefined;
-  const run = snapshot.runs.findLast((candidate) => candidate.sessionId === sessionId);
+  const run = view.runs.findLast((candidate) => candidate.sessionId === sessionId);
   return run
     && terminalRunStatuses.has(run.status)
     && run.status !== "completed"

@@ -10,7 +10,7 @@
 
 ```bash
 cargo run -p ait-daemon -- --database ./ait.sqlite3 --listen 127.0.0.1:7314
-cargo run -p ait-cli -- snapshot
+cargo run -p ait-cli -- project list
 ```
 
 CLI 的 `command` 子命令接受版本一的 JSON command。例如注册 Agent：
@@ -28,7 +28,8 @@ cargo run -p ait-cli -- command \
 - `send_message`、`get_run`、`cancel_run`：交互与 Run 生命周期；
 - `create_cron`、`set_cron_enabled`、`trigger_cron`：持久化 Cron、启停与幂等 occurrence 触发；
 - `export_project`、`import_project`：版本化导出/原子导入无凭证 Project archive；
-- `snapshot`：从 SQLite 恢复完整最终投影。
+- `project list`、`agent list`、`agent-provider list`、`session list`、`message list`、
+  `run list`、`cron list`：按实体或 Project 范围读取最终投影（NEC-224 修订）；底层仍复用相同 Command/API。
 
 生产命令不再通过 Provider kind 构造工具、排队、失败或审批状态。ToolUse/ToolResult 与审批恢复由
 runtime 的 scripted ports 覆盖；Provider 失败、queued checkpoint 与取消由 application 测试向
@@ -41,9 +42,9 @@ executor/store seam 注入。HTTP/CLI 测试同样注入确定性 `WorkspaceAgen
 - `GET /v1/event/list?after=<cursor>&limit=<n>` 返回 SSE。
 - `GET /v1/metric/list` 返回带 project/session/run/call 关联字段的进程内计数指标。
 
-状态快照和 durable event outbox 在同一 SQLite 事务提交。事件 cursor 单调递增；连接
+实体记录变更和 durable event outbox 在同一 SQLite 事务提交。事件 cursor 单调递增；连接
 断开后用最后收到的 SSE `id` 作为 `after` 即可无损续读。实时流不是最终状态权威，客户端
-始终可用 `snapshot` 或 `get_run` 从持久化数据恢复。
+始终可用对应实体 list command 或 `get_run` 从持久化数据恢复。
 
 ### 稳定错误
 

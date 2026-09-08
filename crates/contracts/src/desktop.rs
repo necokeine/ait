@@ -224,7 +224,7 @@ impl From<Message> for DesktopMessage {
 /// Complete, bounded desktop projection returned after every mutation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DesktopSnapshot {
+pub struct DesktopView {
     /// Protocol version understood by the Rust backend.
     pub protocol_version: u32,
     /// Monotonic state revision.

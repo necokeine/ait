@@ -119,11 +119,11 @@ export interface RunStreamFrame {
 }
 
 export interface RunSubmission {
-  snapshot: DesktopSnapshot;
+  view: DesktopView;
   runId: string;
 }
 
-export interface DesktopSnapshot {
+export interface DesktopView {
   protocolVersion: number;
   revision: number;
   projects: DesktopProject[];
@@ -185,12 +185,12 @@ export interface BridgeErrorShape {
 }
 
 export interface AitDesktopApi {
-  snapshot(): Promise<DesktopSnapshot>;
-  saveProvider(input: ProviderInput): Promise<DesktopSnapshot>;
+  view(projectId?: string): Promise<DesktopView>;
+  saveProvider(input: ProviderInput): Promise<DesktopView>;
   discoverProviderModels(input: ProviderInput): Promise<ProviderModel[]>;
-  refreshProviderModels(providerId: string): Promise<DesktopSnapshot>;
-  saveAgent(input: { id?: string; name: string; config: AgentConfiguration }): Promise<DesktopSnapshot>;
-  setSessionConfig(input: { sessionId: string; config: AgentConfiguration }): Promise<DesktopSnapshot>;
+  refreshProviderModels(providerId: string): Promise<DesktopView>;
+  saveAgent(input: { id?: string; name: string; config: AgentConfiguration }): Promise<DesktopView>;
+  setSessionConfig(input: { sessionId: string; config: AgentConfiguration }): Promise<DesktopView>;
   settings(): Promise<SettingsResponse>;
   saveSettings(expectedRevision: number, values: Record<string, unknown>): Promise<SettingsResponse>;
   resetSettings(): Promise<SettingsResponse>;
@@ -206,22 +206,22 @@ export interface AitDesktopApi {
     workdir: string;
     agentId: string;
     repoUrl?: string;
-  }): Promise<{ snapshot: DesktopSnapshot; selectedProjectId: string }>;
+  }): Promise<{ view: DesktopView; selectedProjectId: string }>;
   setProjectDefaultAgent(input: {
     projectId: string;
     agentId: string;
-  }): Promise<DesktopSnapshot>;
+  }): Promise<DesktopView>;
   createSession(input: {
     projectId: string;
     agentId: string;
-  }): Promise<{ snapshot: DesktopSnapshot; selectedSessionId: string }>;
+  }): Promise<{ view: DesktopView; selectedSessionId: string }>;
   setSessionAgent(input: {
     sessionId: string;
     agentId: string;
-  }): Promise<DesktopSnapshot>;
-  renameSession(input: { sessionId: string; name: string }): Promise<DesktopSnapshot>;
-  setSessionTitle(input: { sessionId: string; title: string }): Promise<DesktopSnapshot>;
-  generateSessionTitle(input: { sessionId: string; prompt: string }): Promise<DesktopSnapshot>;
+  }): Promise<DesktopView>;
+  renameSession(input: { sessionId: string; name: string }): Promise<DesktopView>;
+  setSessionTitle(input: { sessionId: string; title: string }): Promise<DesktopView>;
+  generateSessionTitle(input: { sessionId: string; prompt: string }): Promise<DesktopView>;
   sendMessage(input: {
     sessionId: string;
     content: string;

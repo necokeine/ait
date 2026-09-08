@@ -8,7 +8,7 @@ import {
   groupProjects,
   projectNameFromWorkdir,
 } from "../src/projects.js";
-import type { AgentSummary, DesktopProject, DesktopSession, DesktopSnapshot } from "../src/types.js";
+import type { AgentSummary, DesktopProject, DesktopSession, DesktopView } from "../src/types.js";
 
 const codex: AgentSummary = {
   id: "codex-local",
@@ -32,7 +32,10 @@ const project = (id: string): DesktopProject => ({
 const session = (id: string, projectId: string, updatedAt: number): DesktopSession => ({
   id,
   projectId,
+  name: id,
   title: id,
+  description: "",
+  titleGenerationStarted: false,
   currentMessageId: `${id}-message`,
   agentId: "codex-local",
   version: 1,
@@ -42,11 +45,12 @@ const session = (id: string, projectId: string, updatedAt: number): DesktopSessi
 });
 
 test("keeps every Project visible and groups Sessions beneath their owner", () => {
-  const snapshot: DesktopSnapshot = {
+  const view: DesktopView = {
     protocolVersion: 1,
     revision: 1,
     projects: [project("project-a"), project("project-b")],
     agents: [],
+    providers: [],
     sessions: [
       session("a-older", "project-a", 1),
       session("b-only", "project-b", 2),
@@ -57,7 +61,7 @@ test("keeps every Project visible and groups Sessions beneath their owner", () =
     runProgress: [],
   };
 
-  const groups = groupProjects(snapshot);
+  const groups = groupProjects(view);
 
   assert.deepEqual(groups.map(({ project: item }) => item.id), ["project-a", "project-b"]);
   assert.deepEqual(groups[0]?.sessions.map(({ id }) => id), ["a-newer", "a-older"]);

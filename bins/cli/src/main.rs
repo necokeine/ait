@@ -16,10 +16,43 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Execute JSON, or use `-` to read it from stdin without exposing secrets in argv.
+    /// Execute low-level JSON, or use `-` to read it from stdin.
     Command { json: String },
-    /// Print the complete durable workspace projection.
-    Snapshot,
+    /// Inspect Projects.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
+    /// Inspect Agents.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+    /// Inspect Agent Providers.
+    AgentProvider {
+        #[command(subcommand)]
+        command: AgentProviderCommand,
+    },
+    /// Inspect Sessions.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+    /// Inspect Messages.
+    Message {
+        #[command(subcommand)]
+        command: MessageCommand,
+    },
+    /// Inspect Runs.
+    Run {
+        #[command(subcommand)]
+        command: RunCommand,
+    },
+    /// Inspect Crons.
+    Cron {
+        #[command(subcommand)]
+        command: CronCommand,
+    },
     /// Replay durable Server-Sent Events after a cursor.
     Events {
         #[arg(long, default_value_t = 0)]
@@ -41,33 +74,107 @@ enum CliCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// List Projects.
+    List,
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// List Agents.
+    List,
+}
+
+#[derive(Subcommand)]
+enum AgentProviderCommand {
+    /// List Agent Providers.
+    List,
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// List Sessions, optionally scoped to one Project.
+    List {
+        #[arg(long)]
+        project_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MessageCommand {
+    /// List Messages in one Project.
+    List {
+        #[arg(long)]
+        project_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RunCommand {
+    /// List Runs in one Project.
+    List {
+        #[arg(long)]
+        project_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum CronCommand {
+    /// List Crons.
+    List,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
     let client = reqwest::Client::new();
     match arguments.command {
         CliCommand::Command { json } => {
-            let input = if json == "-" {
-                io::read_to_string(io::stdin())?
-            } else {
-                json
-            };
-            // Deserialization errors can quote unknown variants/fields, including a secret.
-            let command: Command = serde_json::from_str(&input).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "invalid command JSON at line {}, column {}",
-                        error.line(),
-                        error.column()
-                    ),
-                )
-            })?;
-            print_response(&send(&client, &arguments.endpoint, &command).await?);
+            execute(&client, &arguments.endpoint, parse_command(json)?).await?;
         }
-        CliCommand::Snapshot => {
-            print_response(&send(&client, &arguments.endpoint, &Command::Snapshot).await?);
+        CliCommand::Project {
+            command: ProjectCommand::List,
+        } => execute(&client, &arguments.endpoint, Command::ListProjects).await?,
+        CliCommand::Agent {
+            command: AgentCommand::List,
+        } => execute(&client, &arguments.endpoint, Command::ListAgents).await?,
+        CliCommand::AgentProvider {
+            command: AgentProviderCommand::List,
+        } => execute(&client, &arguments.endpoint, Command::ListAgentProviders).await?,
+        CliCommand::Session {
+            command: SessionCommand::List { project_id },
+        } => {
+            execute(
+                &client,
+                &arguments.endpoint,
+                Command::ListSessions { project_id },
+            )
+            .await?;
         }
+        CliCommand::Message {
+            command: MessageCommand::List { project_id },
+        } => {
+            execute(
+                &client,
+                &arguments.endpoint,
+                Command::ListMessages { project_id },
+            )
+            .await?;
+        }
+        CliCommand::Run {
+            command: RunCommand::List { project_id },
+        } => {
+            execute(
+                &client,
+                &arguments.endpoint,
+                Command::ListRuns { project_id },
+            )
+            .await?;
+        }
+        CliCommand::Cron {
+            command: CronCommand::List,
+        } => execute(&client, &arguments.endpoint, Command::ListCrons).await?,
         CliCommand::Events { after } => {
             let body = client
                 .get(format!(
@@ -112,19 +219,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn parse_command(json: String) -> Result<Command, io::Error> {
+    let input = if json == "-" {
+        io::read_to_string(io::stdin())?
+    } else {
+        json
+    };
+    // Deserialization errors can quote unknown variants/fields, including a secret.
+    serde_json::from_str(&input).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid command JSON at line {}, column {}",
+                error.line(),
+                error.column()
+            ),
+        )
+    })
+}
+
+async fn execute(
+    client: &reqwest::Client,
+    endpoint: &str,
+    command: Command,
+) -> Result<(), reqwest::Error> {
+    print_response(&send(client, endpoint, &command).await?);
+    Ok(())
+}
+
 async fn send(
     client: &reqwest::Client,
     endpoint: &str,
     command: &Command,
 ) -> Result<Response, reqwest::Error> {
-    if matches!(command, Command::Snapshot | Command::GetSettings) {
-        return client
-            .get(format!("{endpoint}{}", operation_path(command)))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await;
+    if matches!(
+        command,
+        Command::GetSettings
+            | Command::ListProjects
+            | Command::ListAgents
+            | Command::ListAgentProviders
+            | Command::ListSessions { .. }
+            | Command::ListMessages { .. }
+            | Command::ListRuns { .. }
+            | Command::ListCrons
+    ) {
+        let request = client.get(format!("{endpoint}{}", operation_path(command)));
+        let request = match command {
+            Command::ListSessions {
+                project_id: Some(project_id),
+            }
+            | Command::ListMessages { project_id }
+            | Command::ListRuns { project_id } => request.query(&[("project_id", project_id)]),
+            _ => request,
+        };
+        return request.send().await?.error_for_status()?.json().await;
     }
 
     let mut body = serde_json::to_value(command).expect("command serializes");
@@ -167,7 +315,13 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::GetSettings => "/v1/settings",
         Command::SaveSettings { .. } => "/v1/settings/save",
         Command::ResetSettings => "/v1/settings/reset",
-        Command::Snapshot => "/v1/workspace/snapshot",
+        Command::ListProjects => "/v1/project/list",
+        Command::ListAgents => "/v1/agent/list",
+        Command::ListAgentProviders => "/v1/agent-provider/list",
+        Command::ListSessions { .. } => "/v1/session/list",
+        Command::ListMessages { .. } => "/v1/message/list",
+        Command::ListRuns { .. } => "/v1/run/list",
+        Command::ListCrons => "/v1/cron/list",
     }
 }
 

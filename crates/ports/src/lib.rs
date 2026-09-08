@@ -9,8 +9,9 @@ mod scheduler;
 mod session;
 
 pub use control::{
-    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
-    PendingEvent, ProgressCheckpoint,
+    ControlChange, ControlFilter, ControlRead, ControlRecord, ControlRecordKind, ControlStore,
+    ControlStoreError, DurableEvent, DurableEventPage, EventBounds, PendingEvent,
+    ProgressCheckpoint,
 };
 pub use message::{MessageStore, MessageStoreError};
 pub use project::{

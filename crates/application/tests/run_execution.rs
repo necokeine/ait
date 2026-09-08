@@ -1,5 +1,7 @@
 //! Command execution, durable checkpoints, and read-only Run queries.
 
+mod support;
+
 use std::{
     collections::VecDeque,
     sync::{
@@ -12,15 +14,18 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProjectView, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
-    PendingEvent, ProgressCheckpoint, WorkspaceAgent, WorkspaceAgentInvocation,
-    WorkspaceAgentResponse, WorkspaceOperation, WorkspaceProgressEvent, WorkspaceProgressReporter,
+    ControlChange, ControlFilter, ControlRead, ControlStore, ControlStoreError, DurableEvent,
+    DurableEventPage, EventBounds, PendingEvent, ProgressCheckpoint, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation, WorkspaceProgressEvent,
+    WorkspaceProgressReporter,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::{sync::Semaphore, time::Duration};
+
+use support::{ControlStoreTestExt, terminal_run_status, workspace};
 
 struct ConflictingStore {
     inner: SqliteControlStore,
@@ -30,20 +35,17 @@ struct ConflictingStore {
 
 #[async_trait]
 impl ControlStore for ConflictingStore {
-    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
-        self.inner.load().await
+    async fn read(&self, filters: &[ControlFilter]) -> Result<ControlRead, ControlStoreError> {
+        self.inner.read(filters).await
     }
 
-    async fn commit(
+    async fn apply(
         &self,
         revision: u64,
-        value: Value,
+        changes: Vec<ControlChange>,
         events: Vec<PendingEvent>,
-    ) -> Result<ControlSnapshot, ControlStoreError> {
-        let status = value["runs"]
-            .as_array()
-            .and_then(|runs| runs.last())
-            .and_then(|run| run["status"].as_str());
+    ) -> Result<u64, ControlStoreError> {
+        let status = terminal_run_status(&changes);
         let conflict = {
             let mut checkpoints = self.checkpoints.lock().unwrap();
             if status.is_some() && status == checkpoints.front().copied() {
@@ -56,7 +58,7 @@ impl ControlStore for ConflictingStore {
         if conflict {
             return Err(ControlStoreError::Conflict);
         }
-        self.inner.commit(revision, value, events).await
+        self.inner.apply(revision, changes, events).await
     }
 
     async fn replay(
@@ -107,27 +109,23 @@ struct PausingProgressStore {
 
 #[async_trait]
 impl ControlStore for PausingProgressStore {
-    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
-        self.inner.load().await
+    async fn read(&self, filters: &[ControlFilter]) -> Result<ControlRead, ControlStoreError> {
+        self.inner.read(filters).await
     }
 
-    async fn commit(
+    async fn apply(
         &self,
         revision: u64,
-        value: Value,
+        changes: Vec<ControlChange>,
         events: Vec<PendingEvent>,
-    ) -> Result<ControlSnapshot, ControlStoreError> {
-        let terminal = value["runs"]
-            .as_array()
-            .and_then(|runs| runs.last())
-            .and_then(|run| run["status"].as_str())
-            .is_some_and(|status| {
-                matches!(
-                    status,
-                    "completed" | "failed" | "cancelled" | "limit_exceeded"
-                )
-            });
-        let result = self.inner.commit(revision, value, events).await;
+    ) -> Result<u64, ControlStoreError> {
+        let terminal = terminal_run_status(&changes).is_some_and(|status| {
+            matches!(
+                status,
+                "completed" | "failed" | "cancelled" | "limit_exceeded"
+            )
+        });
+        let result = self.inner.apply(revision, changes, events).await;
         if terminal && result.is_ok() {
             self.terminal_committed.add_permits(1);
         }
@@ -551,7 +549,9 @@ async fn startup_recovery_finalizes_a_checkpoint_without_reinvoking_the_agent() 
                 && message["role"] == "assistant"
         })
         .count();
-    assert_eq!(run_messages, 1);
+    // The completed fixture's historical assistant Message is immutable; recovery
+    // appends exactly one finalized Message beside it.
+    assert_eq!(run_messages, 2);
 }
 
 #[tokio::test]
@@ -606,10 +606,6 @@ async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
 async fn rewind_completed_run(store: &ConflictingStore, completed: &RunView, status: &str) {
     let snapshot = store.load().await.unwrap();
     let mut value = snapshot.value;
-    value["messages"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|message| message["id"] != completed.last_message_id.as_deref().unwrap());
     let run = value["runs"]
         .as_array_mut()
         .unwrap()
@@ -1029,9 +1025,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         .unwrap()
         .forget();
 
-    let CommandResult::Workspace(pending) = command(&service, Command::Snapshot).await else {
-        panic!("expected workspace")
-    };
+    let pending = workspace(&service).await;
     assert_eq!(
         pending
             .runs
@@ -1081,9 +1075,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         .unwrap()
         .forget();
 
-    let CommandResult::Workspace(settled) = command(&service, Command::Snapshot).await else {
-        panic!("expected workspace")
-    };
+    let settled = workspace(&service).await;
     let failed = settled.runs.iter().find(|run| run.id == first.id).unwrap();
     assert_eq!(failed.status, "failed");
     assert_eq!(

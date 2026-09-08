@@ -37,6 +37,7 @@ pub fn router(service: Arc<LocalControlService>) -> Router {
 pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telemetry) -> Router {
     Router::new()
         .route("/v1/project/register", post(register_project))
+        .route("/v1/project/list", get(list_projects))
         .route(
             "/v1/project/set-default-agent",
             post(set_project_default_agent),
@@ -44,8 +45,10 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/project/export", post(export_project))
         .route("/v1/project/import", post(import_project))
         .route("/v1/agent/register", post(register_agent))
+        .route("/v1/agent/list", get(list_agents))
         .route("/v1/agent/update", post(update_agent))
         .route("/v1/agent-provider/save", post(save_agent_provider))
+        .route("/v1/agent-provider/list", get(list_agent_providers))
         .route(
             "/v1/agent-provider/discover-models",
             post(discover_provider_models),
@@ -56,6 +59,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         )
         .route("/v1/session/set-config", post(set_session_config))
         .route("/v1/session/create", post(create_session))
+        .route("/v1/session/list", get(list_sessions))
         .route("/v1/session/set-agent", post(set_session_agent))
         .route("/v1/session/rename", post(rename_session))
         .route("/v1/session/set-title", post(set_session_title))
@@ -65,11 +69,13 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/session/fork", post(fork_session))
         .route("/v1/session/submit-fork", post(submit_fork_session))
         .route("/v1/run/get", post(get_run))
+        .route("/v1/run/list", get(list_runs))
         .route("/v1/run/cancel", post(cancel_run))
         .route("/v1/cron/create", post(create_cron))
+        .route("/v1/cron/list", get(list_crons))
         .route("/v1/cron/set-enabled", post(set_cron_enabled))
         .route("/v1/cron/trigger", post(trigger_cron))
-        .route("/v1/workspace/snapshot", get(workspace_snapshot))
+        .route("/v1/message/list", get(list_messages))
         .route("/v1/settings", get(get_settings))
         .route("/v1/settings/save", post(save_settings))
         .route("/v1/settings/reset", post(reset_settings))
@@ -485,8 +491,69 @@ async fn trigger_cron(
     .await
 }
 
-async fn workspace_snapshot(State(state): State<ApiState>) -> Json<Response> {
-    execute_command(state, Command::Snapshot).await
+async fn list_projects(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::ListProjects).await
+}
+
+async fn list_agents(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::ListAgents).await
+}
+
+async fn list_agent_providers(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::ListAgentProviders).await
+}
+
+#[derive(Deserialize)]
+struct OptionalProjectQuery {
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectQuery {
+    project_id: String,
+}
+
+async fn list_sessions(
+    State(state): State<ApiState>,
+    Query(query): Query<OptionalProjectQuery>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ListSessions {
+            project_id: query.project_id,
+        },
+    )
+    .await
+}
+
+async fn list_messages(
+    State(state): State<ApiState>,
+    Query(query): Query<ProjectQuery>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ListMessages {
+            project_id: query.project_id,
+        },
+    )
+    .await
+}
+
+async fn list_runs(
+    State(state): State<ApiState>,
+    Query(query): Query<ProjectQuery>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ListRuns {
+            project_id: query.project_id,
+        },
+    )
+    .await
+}
+
+async fn list_crons(State(state): State<ApiState>) -> Json<Response> {
+    execute_command(state, Command::ListCrons).await
 }
 
 async fn get_settings(State(state): State<ApiState>) -> Json<Response> {
@@ -728,6 +795,11 @@ fn correlation_for_command(command: &Command) -> Correlation {
         Command::ImportProject { archive, .. } => {
             correlation.project_id = Some(archive.project.id.clone());
         }
+        Command::ListMessages { project_id }
+        | Command::ListRuns { project_id }
+        | Command::ListSessions {
+            project_id: Some(project_id),
+        } => correlation.project_id = Some(project_id.clone()),
         Command::UpdateAgent { .. }
         | Command::SaveAgentProvider { .. }
         | Command::DiscoverProviderModels { .. }
@@ -738,7 +810,11 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::GetSettings
         | Command::SaveSettings { .. }
         | Command::ResetSettings
-        | Command::Snapshot => {}
+        | Command::ListProjects
+        | Command::ListAgents
+        | Command::ListAgentProviders
+        | Command::ListSessions { project_id: None }
+        | Command::ListCrons => {}
     }
     correlation
 }
@@ -780,7 +856,13 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
             | CommandResult::Agent(_)
             | CommandResult::Cron(_)
             | CommandResult::Settings(_)
-            | CommandResult::Workspace(_),
+            | CommandResult::Projects(_)
+            | CommandResult::Agents(_)
+            | CommandResult::AgentProviders(_)
+            | CommandResult::Sessions(_)
+            | CommandResult::Messages(_)
+            | CommandResult::Runs(_)
+            | CommandResult::Crons(_),
         )
         | None => {}
     }
@@ -812,7 +894,13 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::GetSettings => "get_settings",
         Command::SaveSettings { .. } => "save_settings",
         Command::ResetSettings => "reset_settings",
-        Command::Snapshot => "snapshot",
+        Command::ListProjects => "list_projects",
+        Command::ListAgents => "list_agents",
+        Command::ListAgentProviders => "list_agent_providers",
+        Command::ListSessions { .. } => "list_sessions",
+        Command::ListMessages { .. } => "list_messages",
+        Command::ListRuns { .. } => "list_runs",
+        Command::ListCrons => "list_crons",
     }
 }
 

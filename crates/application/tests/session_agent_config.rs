@@ -1,17 +1,19 @@
 //! Session exclusion, configuration ownership and provider credential boundaries.
 #![allow(clippy::pedantic)]
 
+mod support;
+
 use ait_application::LocalControlService;
 use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
-    ProviderSecret, RunView, WorkspaceView,
+    ProviderSecret, RunView,
 };
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    AgentProviderGateway, ControlSnapshot, ControlStore, ControlStoreError, DurableEvent,
-    HostProviderModelCatalog, PendingEvent, ProviderMessage, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceProgressReporter,
-    WorkspaceResultSink,
+    AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
+    ControlRecordKind, ControlStore, ControlStoreError, DurableEvent, HostProviderModelCatalog,
+    PendingEvent, ProviderMessage, WorkspaceAgent, WorkspaceAgentInvocation,
+    WorkspaceAgentResponse, WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -24,6 +26,8 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Semaphore;
+
+use support::{ControlStoreTestExt, WorkspaceView, terminal_run_status, workspace};
 
 fn config(effort: &str) -> AgentConfiguration {
     AgentConfiguration {
@@ -50,10 +54,7 @@ async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
     response.result.unwrap()
 }
 async fn view(service: &LocalControlService) -> WorkspaceView {
-    let CommandResult::Workspace(view) = ok(service, Command::Snapshot).await else {
-        panic!()
-    };
-    view
+    workspace(service).await
 }
 
 async fn submit_run(service: &Arc<LocalControlService>, command: Command) -> RunView {
@@ -385,21 +386,17 @@ struct TerminalFailingStore {
 
 #[async_trait]
 impl ControlStore for TerminalFailingStore {
-    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
-        self.inner.load().await
+    async fn read(&self, filters: &[ControlFilter]) -> Result<ControlRead, ControlStoreError> {
+        self.inner.read(filters).await
     }
 
-    async fn commit(
+    async fn apply(
         &self,
         revision: u64,
-        value: serde_json::Value,
+        changes: Vec<ControlChange>,
         events: Vec<PendingEvent>,
-    ) -> Result<ControlSnapshot, ControlStoreError> {
-        let status = value["runs"]
-            .as_array()
-            .and_then(|runs| runs.last())
-            .and_then(|run| run["status"].as_str())
-            .map(str::to_owned);
+    ) -> Result<u64, ControlStoreError> {
+        let status = terminal_run_status(&changes).map(str::to_owned);
         if status.as_deref() == Some(self.failure_status) {
             let injected = self.failures.lock().unwrap().pop_front();
             if let Some(failure) = injected {
@@ -412,7 +409,7 @@ impl ControlStore for TerminalFailingStore {
             self.failures_exhausted.add_permits(1);
             self.allow_terminal_commit.acquire().await.unwrap().forget();
         }
-        let result = self.inner.commit(revision, value, events).await;
+        let result = self.inner.apply(revision, changes, events).await;
         if result.is_ok()
             && matches!(
                 status.as_deref(),
@@ -542,8 +539,24 @@ async fn active_session_rejects_competitors_and_same_project_writers_are_seriali
             .iter()
             .all(|session| session.active_run_id.is_none())
     );
-    assert_eq!(finished.runs[0].config, config("high"));
-    assert_eq!(finished.runs[1].config, config("low"));
+    assert_eq!(
+        finished
+            .runs
+            .iter()
+            .find(|run| run.id == first_run.id)
+            .unwrap()
+            .config,
+        config("high")
+    );
+    assert_eq!(
+        finished
+            .runs
+            .iter()
+            .find(|run| run.id == second_run.id)
+            .unwrap()
+            .config,
+        config("low")
+    );
     assert_eq!(
         finished
             .messages
@@ -799,13 +812,18 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), file);
     }
     let workspace = view(&service).await;
-    let user_commits = workspace
-        .messages
-        .iter()
-        .filter(|message| message.role == "user")
-        .map(|message| message.git_commit.clone().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(user_commits, [initial, commits[0].1.clone()]);
+    let message_commit = |id: &str| {
+        workspace
+            .messages
+            .iter()
+            .find(|message| message.id == id)
+            .unwrap()
+            .git_commit
+            .clone()
+            .unwrap()
+    };
+    assert_eq!(message_commit(&first_run.base_message_id), initial);
+    assert_eq!(message_commit(&second_run.base_message_id), commits[0].1);
     assert_eq!(git_head(directory.path()), commits[1].1);
 }
 
@@ -1316,9 +1334,22 @@ async fn session_config_is_private_reused_and_copied_when_opening_another_sessio
     )
     .await;
     let first = view(&service).await;
-    let custom = first.sessions[0].agent_id.clone();
+    let first_session = first
+        .sessions
+        .iter()
+        .find(|session| session.id == "one")
+        .unwrap();
+    let custom = first_session.agent_id.clone();
     assert_ne!(custom, "preset");
-    assert_eq!(first.sessions[1].agent_id, "preset");
+    assert_eq!(
+        first
+            .sessions
+            .iter()
+            .find(|session| session.id == "two")
+            .unwrap()
+            .agent_id,
+        "preset"
+    );
     ok(
         &service,
         Command::SetSessionConfig {
@@ -1333,13 +1364,29 @@ async fn session_config_is_private_reused_and_copied_when_opening_another_sessio
             id: "branch".into(),
             project_id: "p".into(),
             agent_id: custom.clone(),
-            at_message_id: Some(first.sessions[0].current_message_id.clone()),
+            at_message_id: Some(first_session.current_message_id.clone()),
         },
     )
     .await;
     let after = view(&service).await;
-    assert_eq!(after.sessions[0].agent_id, custom);
-    assert_ne!(after.sessions[2].agent_id, custom);
+    assert_eq!(
+        after
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .agent_id,
+        custom
+    );
+    assert_ne!(
+        after
+            .sessions
+            .iter()
+            .find(|session| session.id == "branch")
+            .unwrap()
+            .agent_id,
+        custom
+    );
     let saved = after
         .agents
         .iter()
@@ -1348,7 +1395,15 @@ async fn session_config_is_private_reused_and_copied_when_opening_another_sessio
     assert!(saved.name.is_empty());
     assert_eq!(saved.revision, 2);
     assert_eq!(saved.config, config("medium"));
-    assert_eq!(after.agents[0].config, config("high"));
+    assert_eq!(
+        after
+            .agents
+            .iter()
+            .find(|agent| agent.id == "preset")
+            .unwrap()
+            .config,
+        config("high")
+    );
     let rejected = service
         .execute(Command::SetProjectDefaultAgent {
             project_id: "p".into(),
@@ -1488,13 +1543,6 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
             }
         };
         let _directory = setup(&service, configuration).await;
-        // Persist a distinct immutable system snapshot, then verify its projection.
-        let mut snapshot = store.load().await.unwrap();
-        snapshot.value["messages"][0]["text"] = serde_json::json!("Project instruction marker");
-        store
-            .commit(snapshot.revision, snapshot.value, vec![])
-            .await
-            .unwrap();
         let CommandResult::Run(run) = ok(
             &service,
             Command::SendMessage {
@@ -1512,13 +1560,9 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
             assert_eq!(native_calls.len(), 1);
             assert_eq!(
                 native_calls[0].project_instructions.as_deref(),
-                Some("Project instruction marker")
+                Some("AIT project instructions")
             );
-            assert!(
-                !native_calls[0]
-                    .prompt
-                    .contains("Project instruction marker")
-            );
+            assert!(!native_calls[0].prompt.contains("AIT project instructions"));
             assert!(
                 native_calls[0]
                     .prompt
@@ -1530,8 +1574,15 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
             assert_eq!(gateway.calls.lock().unwrap().len(), 1);
         }
         assert_eq!(
-            view(&service).await.messages[0].text.as_deref(),
-            Some("Project instruction marker")
+            view(&service)
+                .await
+                .messages
+                .into_iter()
+                .find(|message| message.role == "system")
+                .unwrap()
+                .text
+                .as_deref(),
+            Some("AIT project instructions")
         );
     }
 }
@@ -1946,14 +1997,55 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     )
     .await;
     let saved = store.load().await.unwrap();
-    assert_eq!(
-        saved.value["providers"].as_array().unwrap().len(),
-        before.providers.len()
-    );
+    // An unrelated Session write does not rewrite or compact the provider table.
+    assert_eq!(saved.value["providers"].as_array().unwrap().len(), 4);
+    assert_eq!(view(&reopened).await.providers, before.providers);
     assert_eq!(
         view(&LocalControlService::new(store)).await.messages,
         before.messages
     );
+}
+
+#[tokio::test]
+async fn unrelated_malformed_project_record_does_not_block_session_update() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let service = LocalControlService::new(store.clone());
+    let _directory = setup(&service, config("high")).await;
+    let revision = store.load().await.unwrap().revision;
+    store
+        .apply(
+            revision,
+            vec![ControlChange::Put(ControlRecord {
+                kind: ControlRecordKind::Message,
+                id: "malformed-unrelated-message".into(),
+                project_id: Some("p".into()),
+                value: serde_json::json!({"not": "a MessageView"}),
+            })],
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let CommandResult::Session(session) = ok(
+        &service,
+        Command::RenameSession {
+            session_id: "one".into(),
+            name: "Still available".into(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(session.name, "Still available");
+    let malformed = store
+        .read(&[ControlFilter::id(
+            ControlRecordKind::Message,
+            "malformed-unrelated-message",
+        )])
+        .await
+        .unwrap();
+    assert_eq!(malformed.records[0].value["not"], "a MessageView");
 }
 
 #[tokio::test]
@@ -1988,9 +2080,18 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
                 .commit(snapshot.revision, snapshot.value, vec![])
                 .await
                 .unwrap();
+            let command = match reference {
+                "agent" => send("one"),
+                "run" => Command::GetRun {
+                    run_id: saved.value["runs"][0]["id"].as_str().unwrap().into(),
+                },
+                "credential" | "custom" | "url" => Command::ListAgentProviders,
+                _ => unreachable!(),
+            };
             let rejected = LocalControlService::new(store.clone())
-                .execute(Command::Snapshot)
+                .execute(command)
                 .await;
+            assert!(!rejected.ok, "{kind}/{reference} unexpectedly decoded");
             assert_eq!(rejected.error.unwrap().code, ErrorCode::RunRecoveryFailed);
             assert_eq!(store.load().await.unwrap().value, saved.value);
         }
@@ -2103,8 +2204,11 @@ struct PausingStore {
 
 #[async_trait]
 impl ControlStore for PausingStore {
-    async fn load(&self) -> Result<ait_ports::ControlSnapshot, ait_ports::ControlStoreError> {
-        self.inner.load().await
+    async fn read(
+        &self,
+        filters: &[ait_ports::ControlFilter],
+    ) -> Result<ait_ports::ControlRead, ait_ports::ControlStoreError> {
+        self.inner.read(filters).await
     }
     async fn replay(
         &self,
@@ -2138,21 +2242,17 @@ impl ControlStore for PausingStore {
     async fn clear_progress(&self, run_id: &str) -> Result<(), ait_ports::ControlStoreError> {
         self.inner.clear_progress(run_id).await
     }
-    async fn commit(
+    async fn apply(
         &self,
         revision: u64,
-        value: serde_json::Value,
+        changes: Vec<ait_ports::ControlChange>,
         events: Vec<ait_ports::PendingEvent>,
-    ) -> Result<ait_ports::ControlSnapshot, ait_ports::ControlStoreError> {
-        if value["runs"]
-            .as_array()
-            .and_then(|runs| runs.last())
-            .is_some_and(|run| run["status"] == "queued")
-        {
+    ) -> Result<u64, ait_ports::ControlStoreError> {
+        if terminal_run_status(&changes) == Some("queued") {
             self.entered.add_permits(1);
             self.release.acquire().await.unwrap().forget();
         }
-        self.inner.commit(revision, value, events).await
+        self.inner.apply(revision, changes, events).await
     }
 }
 

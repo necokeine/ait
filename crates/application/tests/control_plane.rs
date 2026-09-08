@@ -1,6 +1,8 @@
 //! End-to-end control-plane acceptance coverage.
 #![allow(clippy::pedantic)]
 
+mod support;
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -16,6 +18,8 @@ use ait_ports::{
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use tempfile::TempDir;
+
+use support::workspace;
 
 async fn run(service: &LocalControlService, command: Command) -> CommandResult {
     let response = service.execute(command).await;
@@ -114,10 +118,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         },
     )
     .await;
-    let workspace = match run(&service, Command::Snapshot).await {
-        CommandResult::Workspace(workspace) => workspace,
-        _ => panic!(),
-    };
+    let workspace = workspace(&service).await;
     let user = workspace
         .messages
         .iter()
@@ -264,10 +265,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         },
     )
     .await;
-    let pointer_version = match run(&service, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value.sessions[0].version,
-        _ => panic!(),
-    };
+    let pointer_version = workspace(&service).await.sessions[0].version;
 
     let first = service
         .generate_session_title("named-session".into(), "x".repeat(2_100))
@@ -361,10 +359,7 @@ async fn failed_title_generation_keeps_temporary_title_without_conversation_or_g
     )
     .await;
 
-    let before = match run(&service, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let before = workspace(&service).await;
     let head_before = std::process::Command::new("git")
         .arg("-C")
         .arg(&project_dir)
@@ -378,10 +373,7 @@ async fn failed_title_generation_keeps_temporary_title_without_conversation_or_g
 
     assert!(!response.ok);
     assert_eq!(response.error.unwrap().code, ErrorCode::ProviderFailed);
-    let after = match run(&service, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let after = workspace(&service).await;
     let session = after
         .sessions
         .iter()
@@ -459,10 +451,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
     assert_eq!(completed.status, "completed");
     assert_eq!(completed.config.reasoning_effort.as_deref(), Some("high"));
 
-    let workspace = match run(&service, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let workspace = workspace(&service).await;
     let session = &workspace.sessions[0];
     assert!(session.active_run_id.is_none());
     let assistant = workspace
@@ -713,9 +702,7 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     assert!(!remainder.is_empty());
     assert!(remainder[0].cursor > first_page.last().unwrap().cursor);
 
-    let CommandResult::Workspace(before_restart) = run(&service, Command::Snapshot).await else {
-        panic!()
-    };
+    let before_restart = workspace(&service).await;
     let finished_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -736,10 +723,7 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     drop(service);
     let recovered =
         LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
-    let workspace = match run(&recovered, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let workspace = workspace(&recovered).await;
     assert_eq!(workspace.runs.len(), 2);
     assert_eq!(workspace.messages, before_restart.messages);
     assert_eq!(workspace.sessions.len(), 2);
@@ -954,10 +938,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         },
     )
     .await;
-    let workspace = match run(&target, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let workspace = workspace(&target).await;
     assert_eq!(workspace.projects[0].revision, archive.project.revision);
     assert_eq!(
         workspace.projects[0].default_agent_id,
@@ -1037,10 +1018,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
 
     let recovered =
         LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
-    let workspace = match run(&recovered, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let workspace = workspace(&recovered).await;
     assert_eq!(workspace.sessions.len(), 1);
     assert_eq!(workspace.messages.len(), 3);
     let settings = match run(&recovered, Command::GetSettings).await {
@@ -1131,10 +1109,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
         assert_eq!(completed.status, "completed");
     }
 
-    let workspace = match run(&service, Command::Snapshot).await {
-        CommandResult::Workspace(value) => value,
-        _ => panic!(),
-    };
+    let workspace = workspace(&service).await;
     assert_eq!(workspace.projects.len(), 2);
     assert!(workspace.projects.iter().all(|project| {
         project.default_agent_id.as_deref() == Some("tool-local") && project.revision == 2
