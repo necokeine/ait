@@ -732,6 +732,7 @@ impl CodexOutputCollector {
     }
 
     fn finish(mut self) -> (String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>) {
+        let assistant_text = self.assistant_text();
         let mut operations = Vec::new();
         let mut output_items = Vec::new();
         for item_id in self.item_order {
@@ -751,8 +752,27 @@ impl CodexOutputCollector {
                 operations.push(operation);
             }
         }
-        let assistant_text = final_assistant_text(&output_items);
         (assistant_text, operations, output_items)
+    }
+
+    fn assistant_text(&self) -> String {
+        let final_messages = self
+            .item_order
+            .iter()
+            .filter_map(|item_id| self.messages.get(item_id))
+            .filter(|message| message.phase.as_deref() == Some("final_answer"))
+            .map(CodexMessageBuffer::reconciled_text)
+            .collect::<Vec<_>>();
+        if !final_messages.is_empty() {
+            return final_messages.join("\n\n");
+        }
+        self.item_order
+            .iter()
+            .rev()
+            .filter_map(|item_id| self.messages.get(item_id))
+            .map(CodexMessageBuffer::reconciled_text)
+            .find(|text| !text.trim().is_empty())
+            .unwrap_or_default()
     }
 }
 
@@ -807,31 +827,6 @@ fn update_message_buffer(buffer: &mut CodexMessageBuffer, item: &Value, complete
             buffer.started = Some(text.to_owned());
         }
     }
-}
-
-fn final_assistant_text(items: &[WorkspaceOutputItem]) -> String {
-    let final_messages = items
-        .iter()
-        .filter_map(|item| match item {
-            WorkspaceOutputItem::Message {
-                phase: Some(phase),
-                text,
-                ..
-            } if phase == "final_answer" => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if !final_messages.is_empty() {
-        return final_messages.join("\n\n");
-    }
-    items
-        .iter()
-        .rev()
-        .find_map(|item| match item {
-            WorkspaceOutputItem::Message { text, .. } => Some(text.clone()),
-            WorkspaceOutputItem::Operation { .. } => None,
-        })
-        .unwrap_or_default()
 }
 
 const MAX_OPERATION_COUNT: usize = 200;
@@ -1203,18 +1198,15 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
             })
             .await
             .map_err(adapter_domain_error)?;
-        let mut assistant_text = String::new();
-        let mut completed_text = None;
+        let mut output = CodexOutputCollector::default();
         let mut completed = false;
         while let Some(event) = stream.next().await {
             match event.map_err(adapter_domain_error)? {
-                AgentEvent::MessageDelta { delta, .. } => assistant_text.push_str(&delta),
-                AgentEvent::ItemCompleted { item } => {
-                    if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
-                        completed_text =
-                            item.get("text").and_then(Value::as_str).map(str::to_owned);
-                    }
+                AgentEvent::MessageDelta { item_id, delta } => {
+                    output.message_delta(item_id, &delta);
                 }
+                AgentEvent::ItemStarted { item } => output.item_started(&item),
+                AgentEvent::ItemCompleted { item } => output.item_completed(&item),
                 AgentEvent::Completed { status, error, .. } => {
                     if status != AgentRunStatus::Completed {
                         return Err(domain_error(
@@ -1237,9 +1229,7 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
                 true,
             ));
         }
-        if assistant_text.trim().is_empty() {
-            assistant_text = completed_text.unwrap_or_default();
-        }
+        let (assistant_text, _, _) = output.finish();
         let payload: GeneratedTitlePayload =
             serde_json::from_str(assistant_text.trim()).map_err(|error| {
                 domain_error(
