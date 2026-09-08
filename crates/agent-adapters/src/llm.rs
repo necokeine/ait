@@ -32,6 +32,8 @@ pub enum LLMProvider {
     DeepSeek,
 }
 
+const DEEPSEEK_REASONING_EFFORTS: [&str; 4] = ["off", "low", "high", "max"];
+
 /// In-memory connection options. Deliberately not serializable.
 #[derive(Clone)]
 pub struct LLMClientConfig {
@@ -189,6 +191,20 @@ impl LLMClient {
         }
     }
 
+    /// Returns reasoning efforts owned by this API adapter rather than by one
+    /// model-list response.
+    ///
+    /// `DeepSeek` exposes the same ordered effort contract for every resolved
+    /// model. `OpenAI` capabilities remain model-specific and are therefore not
+    /// inferred from a standard `/models` response.
+    #[must_use]
+    pub fn supported_reasoning_efforts(&self) -> &'static [&'static str] {
+        match self.provider() {
+            LLMProvider::OpenAI => &[],
+            LLMProvider::DeepSeek => &DEEPSEEK_REASONING_EFFORTS,
+        }
+    }
+
     /// Fetches the models visible to the configured API key using Rig's lister.
     ///
     /// The list may include models for other API capabilities, such as embeddings.
@@ -292,6 +308,10 @@ impl LLMClient {
         if effort.trim().is_empty() {
             return Err(invalid("reasoning effort must be non-empty"));
         }
+        let provider = self.provider();
+        if provider == LLMProvider::DeepSeek && !DEEPSEEK_REASONING_EFFORTS.contains(&effort) {
+            return Err(invalid("unsupported DeepSeek reasoning effort"));
+        }
         if request.additional_params.is_none() {
             request.additional_params = Some(serde_json::json!({}));
         }
@@ -300,7 +320,7 @@ impl LLMClient {
             .as_mut()
             .and_then(serde_json::Value::as_object_mut)
             .ok_or_else(|| invalid("additional completion parameters must be an object"))?;
-        match self.provider() {
+        match provider {
             LLMProvider::OpenAI => {
                 let reasoning = params
                     .entry("reasoning")

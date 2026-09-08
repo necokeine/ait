@@ -12,13 +12,16 @@ export function modelChoices(discovered: ProviderModel[], saved: ProviderModel[]
   const available = new Set(discovered.map((model) => model.id));
   const required = new Set(configs.map((config) => config.model));
   const models = new Map([...saved, ...discovered].map((model) => [model.id, model]));
-  return Array.from(models.values(), (model) => ({
-    ...model,
-    reasoning_efforts: [...(previous.get(model.id)?.reasoning_efforts ?? existing.get(model.id)?.reasoning_efforts ?? model.reasoning_efforts)],
-    selected: required.has(model.id) || (previous.get(model.id)?.selected ?? existing.has(model.id)),
-    available: available.has(model.id),
-    required: required.has(model.id),
-  })).sort((left, right) => left.name.localeCompare(right.name));
+  return Array.from(models.values(), (model) => {
+    const advertised = model.reasoning_efforts.length ? model.reasoning_efforts : undefined;
+    return {
+      ...model,
+      reasoning_efforts: [...(previous.get(model.id)?.reasoning_efforts ?? advertised ?? existing.get(model.id)?.reasoning_efforts ?? [])],
+      selected: required.has(model.id) || (previous.get(model.id)?.selected ?? existing.has(model.id)),
+      available: available.has(model.id),
+      required: required.has(model.id),
+    };
+  }).sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export function selectedModels(choices: ModelChoice[]): ProviderModel[] {

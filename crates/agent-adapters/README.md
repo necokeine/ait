@@ -79,7 +79,10 @@ model-catalog value to the selected API dialect. OpenAI receives
 `reasoning.effort`; DeepSeek receives `thinking: enabled` plus
 `reasoning_effort`, except the adapter-owned `off` choice becomes
 `thinking: disabled` without an invalid `reasoning_effort: off`. Omitting the
-method preserves the provider default.
+method preserves the provider default. DeepSeek model discovery advertises the
+adapter-owned ordered catalog `off`, `low`, `high`, `max` for every returned
+model and rejects any other DeepSeek effort before network I/O; OpenAI discovery
+does not infer model-specific capabilities from `/models`.
 DeepSeek response normalization accepts null content and omitted tool-call
 indices before Rig deserialization; reasoning and call ids remain intact.
 Neither method executes tools, retries requests, or owns Message/Session/Run state.

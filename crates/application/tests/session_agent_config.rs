@@ -1461,6 +1461,7 @@ struct Gateway {
     omit_models: std::sync::atomic::AtomicBool,
     secrets: Mutex<HashMap<String, String>>,
     calls: Mutex<Vec<(AgentConfiguration, Vec<String>)>>,
+    reasoning_efforts: Mutex<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -1608,16 +1609,17 @@ impl AgentProviderGateway for Gateway {
         if self.omit_models.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(Vec::new());
         }
+        let reasoning_efforts = self.reasoning_efforts.lock().unwrap().clone();
         Ok(vec![
             ProviderModel {
                 id: "chat".into(),
                 name: "Chat".into(),
-                reasoning_efforts: Vec::new(),
+                reasoning_efforts: reasoning_efforts.clone(),
             },
             ProviderModel {
                 id: "new".into(),
                 name: "New".into(),
-                reasoning_efforts: Vec::new(),
+                reasoning_efforts,
             },
         ])
     }
@@ -1633,16 +1635,17 @@ impl AgentProviderGateway for Gateway {
             ));
         }
         assert!(!secret.is_empty());
+        let reasoning_efforts = self.reasoning_efforts.lock().unwrap().clone();
         Ok(vec![
             ProviderModel {
                 id: "chat".into(),
                 name: "Chat".into(),
-                reasoning_efforts: Vec::new(),
+                reasoning_efforts: reasoning_efforts.clone(),
             },
             ProviderModel {
                 id: "new".into(),
                 name: "New".into(),
-                reasoning_efforts: Vec::new(),
+                reasoning_efforts,
             },
         ])
     }
@@ -1790,6 +1793,52 @@ async fn discovery_previews_draft_credentials_without_saving_or_enabling_models(
         .find(|p| p.provider.id == "preview")
         .unwrap();
     assert_eq!(saved.provider.models, provider.models);
+
+    // Once an adapter advertises capabilities, those facts supersede an older
+    // empty/manual catalog. Preview remains side-effect-free; refresh persists
+    // the new capabilities for Agent validation and desktop projection.
+    let advertised = ["off", "low", "high", "max"].map(str::to_owned).to_vec();
+    gateway
+        .reasoning_efforts
+        .lock()
+        .unwrap()
+        .clone_from(&advertised);
+    let before = store.load().await.unwrap();
+    let CommandResult::ProviderModels(models) = ok(
+        &service,
+        Command::DiscoverProviderModels {
+            provider: provider.clone(),
+            secret: None,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert!(
+        models
+            .iter()
+            .all(|model| model.reasoning_efforts == advertised)
+    );
+    assert_eq!(store.load().await.unwrap(), before);
+
+    let CommandResult::AgentProvider(refreshed) = ok(
+        &service,
+        Command::RefreshProviderModels {
+            provider_id: provider.id.clone(),
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert!(
+        refreshed
+            .provider
+            .models
+            .iter()
+            .all(|model| model.reasoning_efforts == advertised)
+    );
 }
 
 #[tokio::test]
