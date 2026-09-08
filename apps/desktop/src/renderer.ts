@@ -1,13 +1,16 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
-import { bindCodeBlockActions, renderMessage, renderMessageTime } from "./message-renderer.js";
+import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgress, renderRunTerminal } from "./message-renderer.js";
+import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
+import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
 import { buildMessageTimeline, messageText, pathToMessage, resolveBranchHead, sessionForMessage, type TimelineNode } from "./tree.js";
 import { agentDisplayName, agentLabel, groupProjects, projectNameFromWorkdir } from "./projects.js";
-import { sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
+import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import type {
   DesktopMessage,
   DesktopSession,
   DesktopSnapshot,
+  RunStreamUpdate,
   SettingCategory,
   SettingDefinition,
   SettingsResponse,
@@ -60,12 +63,18 @@ let activePage: "sessions" | "agents" = "sessions";
 let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
 let toastTimer: number | undefined;
+let streamConnected = true;
+let renderedSessionId: string | undefined;
+let snapshotRefreshPending = false;
+const pendingTitles = new PendingSessionTitles();
+const pendingStream = new BoundedRunStreamBacklog();
 const agentsPage = createAgentsPage($("#agents-page"), {
   update: (updated) => { snapshot = updated; renderAll(); },
   notify: showToast,
   configureProvider: openProviderSettings,
 });
 
+window.ait.subscribeRunEvents(handleRunStreamFrame);
 void initialize();
 
 async function initialize(): Promise<void> {
@@ -84,6 +93,7 @@ async function initialize(): Promise<void> {
     selectedProjectId = loadedSnapshot.sessions.find((session) => session.id === newestSession)?.projectId
       ?? loadedSnapshot.projects[0]?.id;
     applyPreferences();
+    drainPendingStreamUpdates();
     renderAll();
     appShell.classList.remove("is-loading");
     const coreStatus = $("#core-status");
@@ -315,19 +325,39 @@ function renderConversation(): void {
   if (!snapshot) return;
   const session = currentSession();
   if (!session) {
+    renderedSessionId = undefined;
     $("#session-title").textContent = "No session selected";
     $("#session-breadcrumb").textContent = currentProject()?.name ?? "No Project";
     conversation.innerHTML = `<div class="empty-state"><p>${currentProject() ? "Create or choose a Session to begin." : "Create a Project to begin."}</p></div>`;
     return;
   }
   const project = snapshot.projects.find((candidate) => candidate.id === session.projectId);
+  const sameSession = renderedSessionId === session.id;
+  const shouldFollow = !sameSession
+    || conversationScroll.scrollHeight - conversationScroll.scrollTop - conversationScroll.clientHeight < 80;
+  const previousScrollTop = conversationScroll.scrollTop;
   $("#session-title").textContent = session.title;
   $("#session-breadcrumb").textContent = `${project?.name ?? "Project"} / Session v${session.version}`;
   const messages = pathToMessage(
     snapshot.messages.filter((message) => message.projectId === session.projectId),
     session.currentMessageId,
   );
-  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("");
+  const progress = session.activeRunId
+    ? snapshot.runProgress.find((candidate) => candidate.runId === session.activeRunId && candidate.sessionId === session.id)
+    : undefined;
+  const agent = snapshot.agents.find((candidate) => candidate.id === session.agentId);
+  const live = session.activeRunId
+    ? renderRunProgress(progress, agent ? agentDisplayName(agent) : "Assistant", streamConnected)
+    : "";
+  const latestRun = terminalRunForSession(snapshot, session.id);
+  const terminal = latestRun
+    ? renderRunTerminal(
+      latestRun.status,
+      latestRun.error?.message,
+      agent ? agentDisplayName(agent) : "Assistant",
+    )
+    : "";
+  conversation.innerHTML = messages.map((message) => renderMessage(message, snapshot!.agents, message.id === selectedNodeId)).join("") + live + terminal;
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
@@ -342,10 +372,114 @@ function renderConversation(): void {
     });
   });
   requestAnimationFrame(() => {
-    const finalAnswer = conversation.querySelector<HTMLElement>(".message:last-child [data-codex-final-answer]");
-    if (finalAnswer) finalAnswer.scrollIntoView({ block: "start" });
-    else conversationScroll.scrollTop = conversationScroll.scrollHeight;
+    if (shouldFollow) {
+      const finalAnswer = conversation.querySelector<HTMLElement>(".message:last-child:not(.live-run) [data-codex-final-answer]");
+      if (finalAnswer) finalAnswer.scrollIntoView({ block: "start" });
+      else conversationScroll.scrollTop = conversationScroll.scrollHeight;
+    } else {
+      conversationScroll.scrollTop = previousScrollTop;
+    }
   });
+  renderedSessionId = session.id;
+}
+
+function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
+  if (!snapshot || snapshotRefreshPending) {
+    queuePendingStreamUpdates(updates);
+    return;
+  }
+  let refresh = false;
+  let renderCurrent = false;
+  const gappedRuns = new Set<string>();
+  for (const update of updates) {
+    if (update.type === "connection") {
+      streamConnected = update.connected;
+      renderCurrent ||= Boolean(currentSession()?.activeRunId);
+      continue;
+    }
+    if (update.type === "resync") {
+      refresh = true;
+      continue;
+    }
+    const event = update.event;
+    if (event.kind === "run.progress") {
+      const body = event.body as Record<string, unknown>;
+      const runId = typeof body.run_id === "string" ? body.run_id : undefined;
+      if (!runId || gappedRuns.has(runId)) continue;
+      const index = snapshot.runProgress.findIndex((candidate) => candidate.runId === runId);
+      const current = index >= 0 ? snapshot.runProgress[index] : undefined;
+      const incomingSeq = typeof body.seq === "number" ? body.seq : undefined;
+      if (incomingSeq !== undefined
+        && ((current && incomingSeq > current.seq + 1) || (!current && incomingSeq > 1))) {
+        gappedRuns.add(runId);
+        refresh = true;
+        continue;
+      }
+      const next = applyProgressEvent(current, body);
+      if (!next) continue;
+      if (index >= 0) snapshot.runProgress[index] = next;
+      else snapshot.runProgress.push(next);
+      renderCurrent ||= currentSession()?.activeRunId === runId;
+      continue;
+    }
+    if (event.kind === "run.updated" || event.kind === "run.cancelled") {
+      const run = event.body as Record<string, unknown>;
+      const runId = typeof run.id === "string" ? run.id : undefined;
+      const status = typeof run.status === "string" ? run.status : undefined;
+      if (runId && status === "settling") {
+        const progress = snapshot.runProgress.find((candidate) => candidate.runId === runId);
+        if (progress) progress.status = "settling";
+        renderCurrent ||= currentSession()?.activeRunId === runId;
+      }
+      if (isTerminalRunEvent(event)) {
+        refresh = true;
+      }
+      continue;
+    }
+    if (event.kind === "stream.reset_required") refresh = true;
+  }
+  if (refresh) scheduleSnapshotRefresh();
+  else if (renderCurrent) renderConversation();
+}
+
+function queuePendingStreamUpdates(updates: RunStreamUpdate[]): void {
+  pendingStream.push(updates);
+}
+
+function drainPendingStreamUpdates(): void {
+  const pending = pendingStream.drain();
+  if (pending.resync) {
+    scheduleSnapshotRefresh();
+    return;
+  }
+  if (pending.updates.length > 0) handleRunStreamFrame(pending.updates);
+}
+
+function scheduleSnapshotRefresh(): void {
+  if (snapshotRefreshPending) return;
+  snapshotRefreshPending = true;
+  queueMicrotask(async () => {
+    let refreshed = false;
+    try {
+      snapshot = await window.ait.snapshot();
+      refreshed = true;
+      renderAll();
+      startReadySessionTitles();
+    } catch {
+      streamConnected = false;
+      if (currentSession()?.activeRunId) renderConversation();
+    } finally {
+      snapshotRefreshPending = false;
+    }
+    if (refreshed) drainPendingStreamUpdates();
+  });
+}
+
+function startReadySessionTitles(): void {
+  if (!snapshot) return;
+  for (const request of pendingTitles.takeReady(snapshot.sessions, snapshot.runs)) {
+    void generateFirstSessionTitle(request.sessionId, request.prompt);
+  }
 }
 
 function renderTree(): void {
@@ -476,23 +610,22 @@ async function submitMessage(): Promise<void> {
       });
       snapshot = result.snapshot;
       selectedSessionId = result.selectedSessionId;
+      pendingTitles.register(result.runId, result.selectedSessionId, content);
       showToast("New branch created. The original session was left unchanged.");
     } else {
-      snapshot = await window.ait.sendMessage({
+      const result = await window.ait.sendMessage({
         sessionId: session.id,
         content,
       });
-      showToast("Message sent.");
+      snapshot = result.snapshot;
+      pendingTitles.register(result.runId, session.id, content);
+      showToast("Message accepted.");
     }
+    startReadySessionTitles();
+    scheduleSnapshotRefresh();
     resetTreeView();
     messageInput.value = "";
     renderAll();
-    const titledSession = currentSession();
-    const titledHead = snapshot.messages.find((message) => message.id === titledSession?.currentMessageId);
-    if (titledSession && titledHead?.role === "assistant"
-      && !titledSession.titleGenerationStarted && !titledSession.name.trim()) {
-      void generateFirstSessionTitle(titledSession.id, content);
-    }
   } catch (error) {
     try { snapshot = await window.ait.snapshot(); renderAll(); } catch { /* Keep the last visible snapshot if disconnected. */ }
     showToast(errorMessage(error), true);

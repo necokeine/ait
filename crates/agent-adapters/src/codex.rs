@@ -16,7 +16,7 @@ use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
     WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
     WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
-    WorkspaceOutputItem,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -232,19 +232,10 @@ impl CodexWorkspaceAgent {
     }
 }
 
-#[async_trait]
-impl WorkspaceAgent for CodexWorkspaceAgent {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        invoke_isolated_workspace(Arc::clone(&self.adapter), request).await
-    }
-}
-
 async fn invoke_isolated_workspace(
     adapter: Arc<dyn AgentAdapter>,
     request: WorkspaceAgentInvocation,
+    progress: Option<Arc<dyn WorkspaceProgressReporter>>,
 ) -> Result<WorkspaceAgentResponse, DomainError> {
     if request.cancellation.is_cancelled() {
         return Err(domain_error(
@@ -284,7 +275,7 @@ async fn invoke_isolated_workspace(
         }
     };
     let (assistant_text, mut operations, output_items) =
-        collect_workspace_output(stream, &mut workspace).await?;
+        collect_workspace_output(stream, &mut workspace, progress.as_ref()).await?;
     rewrite_isolated_operation_paths(&mut operations, workspace.path());
     if cancellation.is_cancelled() {
         return Err(workspace.settle_failure(domain_error(
@@ -337,6 +328,7 @@ async fn invoke_isolated_workspace(
 async fn collect_workspace_output(
     mut stream: AgentStream,
     workspace: &mut IsolatedWorkspace,
+    progress: Option<&Arc<dyn WorkspaceProgressReporter>>,
 ) -> Result<(String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>), DomainError> {
     let mut completed = false;
     let mut output = CodexOutputCollector::default();
@@ -352,11 +344,48 @@ async fn collect_workspace_output(
         };
         match event {
             AgentEvent::MessageDelta { item_id, delta } => {
+                if let Some(progress) = progress {
+                    progress
+                        .report(WorkspaceProgressEvent::TextDelta {
+                            id: item_id.clone(),
+                            delta: delta.clone(),
+                        })
+                        .await;
+                }
                 output.message_delta(item_id, &delta);
             }
-            AgentEvent::ItemStarted { item } => output.item_started(&item),
-            AgentEvent::ItemCompleted { item } => output.item_completed(&item),
+            AgentEvent::ItemStarted { item } => {
+                report_item(progress, &item, false).await;
+                output.item_started(&item);
+            }
+            AgentEvent::ItemCompleted { item } => {
+                report_item(progress, &item, true).await;
+                output.item_completed(&item);
+            }
+            AgentEvent::AdapterWarning {
+                message,
+                retrying,
+                code,
+            } => {
+                if let Some(progress) = progress {
+                    progress
+                        .report(WorkspaceProgressEvent::Warning {
+                            message,
+                            retrying,
+                            code,
+                        })
+                        .await;
+                }
+            }
             AgentEvent::Completed { status, error, .. } => {
+                if let Some(progress) = progress {
+                    progress
+                        .report(WorkspaceProgressEvent::TurnStatus {
+                            status: agent_run_status(status).into(),
+                            error: error.clone(),
+                        })
+                        .await;
+                }
                 if status != AgentRunStatus::Completed {
                     let failure = domain_error(
                         ErrorCode::ProviderFailed,
@@ -575,6 +604,72 @@ impl IsolatedWorkspace {
             )
         };
         failure
+    }
+}
+
+#[async_trait]
+impl WorkspaceAgent for CodexWorkspaceAgent {
+    async fn invoke(
+        &self,
+        request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        invoke_isolated_workspace(Arc::clone(&self.adapter), request, None).await
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        invoke_isolated_workspace(Arc::clone(&self.adapter), request, Some(progress)).await
+    }
+}
+
+async fn report_item(
+    progress: Option<&Arc<dyn WorkspaceProgressReporter>>,
+    item: &Value,
+    completed: bool,
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+        let Some(id) = codex_item_id(item) else {
+            return;
+        };
+        let phase = item
+            .get("phase")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let event = if completed {
+            WorkspaceProgressEvent::MessageCompleted { id, phase, text }
+        } else {
+            WorkspaceProgressEvent::MessageStarted { id, phase, text }
+        };
+        progress.report(event).await;
+    } else if let Some(operation) = codex_operation(item) {
+        let event = if completed {
+            WorkspaceProgressEvent::OperationCompleted(operation)
+        } else {
+            WorkspaceProgressEvent::OperationStarted(operation)
+        };
+        progress.report(event).await;
+    }
+}
+
+const fn agent_run_status(status: AgentRunStatus) -> &'static str {
+    match status {
+        AgentRunStatus::Completed => "completed",
+        AgentRunStatus::Interrupted => "interrupted",
+        AgentRunStatus::Failed => "failed",
+        AgentRunStatus::InProgress => "in_progress",
+        AgentRunStatus::Unknown => "unknown",
     }
 }
 

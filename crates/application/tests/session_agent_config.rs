@@ -4,7 +4,7 @@
 use ait_application::LocalControlService;
 use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
-    ProviderSecret, WorkspaceView,
+    ProviderSecret, RunView, WorkspaceView,
 };
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
@@ -53,6 +53,23 @@ async fn view(service: &LocalControlService) -> WorkspaceView {
         panic!()
     };
     view
+}
+
+async fn submit_run(service: &Arc<LocalControlService>, command: Command) -> RunView {
+    let response = service.submit(command).await;
+    assert!(response.ok, "{:?}", response.error);
+    let CommandResult::Run(run) = response.result.unwrap() else {
+        panic!("expected Run")
+    };
+    run
+}
+
+async fn wait_for_signal(semaphore: &Semaphore) {
+    tokio::time::timeout(Duration::from_secs(3), semaphore.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
 }
 async fn setup(
     service: &LocalControlService,
@@ -345,10 +362,13 @@ impl WorkspaceAgent for FinalizationRaceAgent {
 
 struct TerminalFailingStore {
     inner: SqliteControlStore,
+    failure_status: &'static str,
+    pause_status: &'static str,
     failures: Mutex<VecDeque<ControlStoreError>>,
     pause_once: AtomicBool,
     failures_exhausted: Semaphore,
     allow_terminal_commit: Semaphore,
+    terminal_committed: Semaphore,
 }
 
 #[async_trait]
@@ -363,20 +383,33 @@ impl ControlStore for TerminalFailingStore {
         value: serde_json::Value,
         events: Vec<PendingEvent>,
     ) -> Result<ControlSnapshot, ControlStoreError> {
-        let completing = value["runs"]
+        let status = value["runs"]
             .as_array()
-            .is_some_and(|runs| runs.iter().any(|run| run["status"] == "completed"));
-        if completing {
+            .and_then(|runs| runs.last())
+            .and_then(|run| run["status"].as_str())
+            .map(str::to_owned);
+        if status.as_deref() == Some(self.failure_status) {
             let injected = self.failures.lock().unwrap().pop_front();
             if let Some(failure) = injected {
                 return Err(failure);
             }
-            if self.pause_once.swap(false, Ordering::SeqCst) {
-                self.failures_exhausted.add_permits(1);
-                self.allow_terminal_commit.acquire().await.unwrap().forget();
-            }
         }
-        self.inner.commit(revision, value, events).await
+        if status.as_deref() == Some(self.pause_status)
+            && self.pause_once.swap(false, Ordering::SeqCst)
+        {
+            self.failures_exhausted.add_permits(1);
+            self.allow_terminal_commit.acquire().await.unwrap().forget();
+        }
+        let result = self.inner.commit(revision, value, events).await;
+        if result.is_ok()
+            && matches!(
+                status.as_deref(),
+                Some("completed" | "failed" | "cancelled" | "limit_exceeded")
+            )
+        {
+            self.terminal_committed.add_permits(1);
+        }
+        result
     }
 
     async fn replay(
@@ -385,6 +418,34 @@ impl ControlStore for TerminalFailingStore {
         limit: usize,
     ) -> Result<Vec<DurableEvent>, ControlStoreError> {
         self.inner.replay(after, limit).await
+    }
+
+    async fn event_bounds(&self) -> Result<ait_ports::EventBounds, ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<ait_ports::DurableEventPage, ControlStoreError> {
+        self.inner.replay_page(after, limit).await
+    }
+
+    async fn save_progress(
+        &self,
+        checkpoint: ait_ports::ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        self.inner.save_progress(checkpoint, events).await
+    }
+
+    async fn load_progress(&self) -> Result<Vec<ait_ports::ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress().await
+    }
+
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
+        self.inner.clear_progress(run_id).await
     }
 }
 
@@ -957,10 +1018,13 @@ async fn integration_keeps_finalization_and_workspace_admission_until_terminal_s
     ]);
     let store = Arc::new(TerminalFailingStore {
         inner: SqliteControlStore::in_memory().unwrap(),
+        failure_status: "completed",
+        pause_status: "completed",
         failures: Mutex::new(failures),
         pause_once: AtomicBool::new(true),
         failures_exhausted: Semaphore::new(0),
         allow_terminal_commit: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
     });
     let agent = Arc::new(FinalizationRaceAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
@@ -992,7 +1056,7 @@ async fn integration_keeps_finalization_and_workspace_admission_until_terminal_s
             .find(|run| run.id == active)
             .unwrap()
             .status,
-        "running"
+        "settling"
     );
     let rejected = service
         .execute(Command::CancelRun {
@@ -1040,6 +1104,231 @@ async fn integration_keeps_finalization_and_workspace_admission_until_terminal_s
         assistant.data.as_ref().unwrap()["codex"]["commit_id"],
         serde_json::json!("fixture-commit")
     );
+}
+
+async fn verify_running_transition_failure_reaches_terminal(
+    failures: VecDeque<ControlStoreError>,
+    expected_code: ErrorCode,
+) {
+    let store = Arc::new(TerminalFailingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        failure_status: "running",
+        pause_status: "failed",
+        failures: Mutex::new(failures),
+        pause_once: AtomicBool::new(true),
+        failures_exhausted: Semaphore::new(0),
+        allow_terminal_commit: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
+    });
+    let agent = Arc::new(BlockingAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+
+    let accepted = submit_run(&service, send("one")).await;
+    assert_eq!(accepted.status, "queued");
+    wait_for_signal(&store.failures_exhausted).await;
+    let pending = view(&service).await;
+    assert_eq!(
+        pending
+            .runs
+            .iter()
+            .find(|run| run.id == accepted.id)
+            .unwrap()
+            .status,
+        "queued"
+    );
+    assert_eq!(
+        pending
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .as_deref(),
+        Some(accepted.id.as_str())
+    );
+
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { submit_run(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "same-Project admission escaped before the first Run was terminal"
+    );
+
+    store.allow_terminal_commit.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    let failed = view(&service).await;
+    let first = failed
+        .runs
+        .iter()
+        .find(|run| run.id == accepted.id)
+        .unwrap();
+    assert_eq!(first.status, "failed");
+    assert_eq!(first.error.as_ref().unwrap().code, expected_code);
+    assert!(
+        failed
+            .sessions
+            .iter()
+            .find(|session| session.id == "one")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+
+    let second = second.await.unwrap();
+    agent.started().await;
+    agent.release.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .iter()
+            .find(|run| run.id == second.id)
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn admitted_run_reaches_terminal_after_running_transition_conflict_or_store_error() {
+    verify_running_transition_failure_reaches_terminal(
+        VecDeque::from([
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+            ControlStoreError::Conflict,
+        ]),
+        ErrorCode::RunQueueConflict,
+    )
+    .await;
+    verify_running_transition_failure_reaches_terminal(
+        VecDeque::from([ControlStoreError::Other(
+            "injected running transition failure".into(),
+        )]),
+        ErrorCode::RunRecoveryFailed,
+    )
+    .await;
+}
+
+async fn verify_settling_transition_failure_preserves_integrated_result(
+    failures: VecDeque<ControlStoreError>,
+) {
+    let store = Arc::new(TerminalFailingStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        failure_status: "settling",
+        pause_status: "completed",
+        failures: Mutex::new(failures),
+        pause_once: AtomicBool::new(true),
+        failures_exhausted: Semaphore::new(0),
+        allow_terminal_commit: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
+    });
+    let agent = Arc::new(FinalizationRaceAgent::new());
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let _directory = setup(&service, config("high")).await;
+
+    let accepted = submit_run(&service, send("one")).await;
+    agent.started().await;
+    agent.begin_integration.add_permits(1);
+    wait_for_signal(&agent.integration_started).await;
+    agent.complete.add_permits(1);
+    wait_for_signal(&store.failures_exhausted).await;
+
+    let pending = view(&service).await;
+    assert_eq!(
+        pending
+            .runs
+            .iter()
+            .find(|run| run.id == accepted.id)
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(
+        service
+            .execute(Command::CancelRun {
+                run_id: accepted.id.clone(),
+            })
+            .await
+            .error
+            .unwrap()
+            .code,
+        ErrorCode::RunAlreadyTerminal
+    );
+    let second = {
+        let service = service.clone();
+        tokio::spawn(async move { submit_run(&service, send("two")).await })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "same-Project admission escaped before integrated output became terminal"
+    );
+
+    store.allow_terminal_commit.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    let completed = view(&service).await;
+    let first = completed
+        .runs
+        .iter()
+        .find(|run| run.id == accepted.id)
+        .unwrap();
+    assert_eq!(first.status, "completed");
+    let output = completed
+        .messages
+        .iter()
+        .find(|message| Some(&message.id) == first.last_message_id.as_ref())
+        .unwrap();
+    assert_eq!(output.text.as_deref(), Some("integrated result"));
+    assert_eq!(
+        output.data.as_ref().unwrap()["codex"]["commit_id"],
+        serde_json::json!("fixture-commit")
+    );
+
+    let second = second.await.unwrap();
+    agent.started().await;
+    agent.begin_integration.add_permits(1);
+    wait_for_signal(&agent.integration_started).await;
+    agent.complete.add_permits(1);
+    wait_for_signal(&store.terminal_committed).await;
+    assert_eq!(
+        view(&service)
+            .await
+            .runs
+            .iter()
+            .find(|run| run.id == second.id)
+            .unwrap()
+            .status,
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn integrated_run_ignores_settling_transition_conflict_or_store_error() {
+    verify_settling_transition_failure_preserves_integrated_result(VecDeque::from([
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+        ControlStoreError::Conflict,
+    ]))
+    .await;
+    verify_settling_transition_failure_preserves_integrated_result(VecDeque::from([
+        ControlStoreError::Other("injected settling transition failure".into()),
+    ]))
+    .await;
 }
 
 #[tokio::test]
@@ -1852,6 +2141,31 @@ impl ControlStore for PausingStore {
         limit: usize,
     ) -> Result<Vec<ait_ports::DurableEvent>, ait_ports::ControlStoreError> {
         self.inner.replay(after, limit).await
+    }
+    async fn event_bounds(&self) -> Result<ait_ports::EventBounds, ait_ports::ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<ait_ports::DurableEventPage, ait_ports::ControlStoreError> {
+        self.inner.replay_page(after, limit).await
+    }
+    async fn save_progress(
+        &self,
+        checkpoint: ait_ports::ProgressCheckpoint,
+        events: Vec<ait_ports::PendingEvent>,
+    ) -> Result<(), ait_ports::ControlStoreError> {
+        self.inner.save_progress(checkpoint, events).await
+    }
+    async fn load_progress(
+        &self,
+    ) -> Result<Vec<ait_ports::ProgressCheckpoint>, ait_ports::ControlStoreError> {
+        self.inner.load_progress().await
+    }
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ait_ports::ControlStoreError> {
+        self.inner.clear_progress(run_id).await
     }
     async fn commit(
         &self,

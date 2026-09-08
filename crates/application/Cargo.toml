@@ -11,6 +11,7 @@ ait-ports = { path = "../ports" }
 ait-runtime = { path = "../runtime" }
 ait-scheduler = { path = "../scheduler" }
 async-trait = "0.1"
+futures-util = "0.3"
 sha2 = "0.10"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

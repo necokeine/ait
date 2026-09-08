@@ -8,7 +8,10 @@ mod run;
 mod scheduler;
 mod session;
 
-pub use control::{ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, PendingEvent};
+pub use control::{
+    ControlSnapshot, ControlStore, ControlStoreError, DurableEvent, DurableEventPage, EventBounds,
+    PendingEvent, ProgressCheckpoint,
+};
 pub use message::{MessageStore, MessageStoreError};
 pub use project::{
     CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
@@ -21,7 +24,7 @@ pub use run::{
     RunStoreError, RunTool, SessionTitleGenerator, SessionTitleRequest, ToolInvocation,
     ToolOutcome, ToolRecovery, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
     WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
-    WorkspaceOutputItem,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,

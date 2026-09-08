@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
     fs::{File, OpenOptions},
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::{Arc, Mutex, Weak},
@@ -12,9 +13,10 @@ use std::{
 
 use ait_contracts::{
     API_VERSION, AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView,
-    ApiError, Command, CommandResult, CronView, Event, MessageView, PROJECT_EXPORT_VERSION,
-    ProjectExport, ProjectView, ProviderModel, Response, RunView, SessionView, SettingKind,
-    SettingsDocument, SettingsView, WorkspaceView, default_settings, settings_schema,
+    ApiError, Command, CommandResult, CronView, Event, EventPage, MessageView,
+    PROJECT_EXPORT_VERSION, ProjectExport, ProjectView, ProviderModel, Response, RunView,
+    SessionView, SettingKind, SettingsDocument, SettingsView, WorkspaceView, default_settings,
+    settings_schema,
 };
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, DomainError, ErrorCode,
@@ -26,16 +28,19 @@ use ait_ports::{
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationGate,
     WorkspaceOutputItem,
 };
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 mod agents;
+mod progress;
 use agents::{
     InvocationGuard, agent_for_session, builtin_providers, check_session_admission, migrate_state,
     register_agent, require_named_agent, set_session_config, update_agent, validate_config,
     validate_provider,
 };
+use progress::ProgressPump;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct State {
@@ -69,7 +74,7 @@ struct ForkSessionInput {
 /// is committed. A public `RunView` is a result snapshot, never an execution signal.
 enum CommandOutcome {
     Ready(Box<CommandResult>),
-    ExecuteWorkspaceRun(String),
+    ExecuteWorkspaceRun(Box<RunView>),
 }
 
 /// Owns both the async in-process queue position and the process-wide advisory
@@ -160,7 +165,7 @@ impl Drop for WorkspaceRunControlGuard {
 
 impl CommandOutcome {
     fn for_new_run(run: RunView) -> Self {
-        Self::ExecuteWorkspaceRun(run.id)
+        Self::ExecuteWorkspaceRun(Box::new(run))
     }
 }
 
@@ -280,6 +285,58 @@ impl LocalControlService {
         match self.try_execute(command).await {
             Ok(result) => Response::success(result),
             Err(error) => Response::failure(error),
+        }
+    }
+
+    /// Persists a new interactive Run and returns immediately while the
+    /// daemon-owned task continues independently of the requesting client.
+    pub async fn submit(self: &Arc<Self>, command: Command) -> Response {
+        match self.try_submit(command).await {
+            Ok(result) => Response::success(result),
+            Err(error) => Response::failure(error),
+        }
+    }
+
+    async fn try_submit(self: &Arc<Self>, command: Command) -> Result<CommandResult, ApiError> {
+        if !matches!(
+            command,
+            Command::SendMessage { .. } | Command::ForkSession { .. }
+        ) {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "only interactive Run commands support asynchronous submission",
+                false,
+            ));
+        }
+        let session_lease = self.acquire_session(&command)?;
+        let workspace_lease = self.acquire_workspace_write(&command).await?;
+        let has_workspace_lease = workspace_lease.is_some();
+        match self
+            .commit_with_finalization_gate(command, has_workspace_lease)
+            .await?
+        {
+            CommandOutcome::ExecuteWorkspaceRun(run) => {
+                let accepted = (*run).clone();
+                let run_id = run.id.clone();
+                let control = Arc::new(WorkspaceRunControl::new());
+                let invocation = InvocationGuard::new(
+                    Arc::clone(&self.cancellations),
+                    &run_id,
+                    control.cancellation.clone(),
+                );
+                let control_guard = WorkspaceRunControlGuard::new(
+                    Arc::clone(&self.workspace_run_controls),
+                    &run_id,
+                    &control,
+                );
+                let service = Arc::clone(self);
+                tokio::spawn(async move {
+                    let _owned = (session_lease, workspace_lease, invocation, control_guard);
+                    let _ = service.supervise_workspace_agent(run_id, control).await;
+                });
+                Ok(CommandResult::Run(accepted))
+            }
+            CommandOutcome::Ready(_) => unreachable!("interactive submission creates a Run"),
         }
     }
 
@@ -467,6 +524,8 @@ impl LocalControlService {
                 .find(|candidate| candidate.id == run.id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false));
         }
+        let progress = ProgressPump::start(self.store.clone(), run);
+        let reporter = progress.reporter();
         let cancellation = control.cancellation.clone();
         let call = async {
             match run.provider.kind {
@@ -479,25 +538,42 @@ impl LocalControlService {
                         user_text,
                         message_baseline,
                         control.clone(),
+                        reporter.clone(),
                     )
                     .await
                 }
             }
         };
-        let result = if run.provider.kind == AgentMode::Codex {
-            // Workspace execution owns its complete settlement path. The
-            // supervisor containing this call survives transport cancellation.
-            call.await
-        } else {
-            tokio::pin!(call);
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => {
-                    Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled"))
-                },
-                result = &mut call => result,
+        let result = AssertUnwindSafe(async {
+            if run.provider.kind == AgentMode::Codex {
+                // Workspace execution owns its complete settlement path. The
+                // supervisor containing this call survives transport cancellation.
+                call.await
+            } else {
+                tokio::pin!(call);
+                tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => {
+                        Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled"))
+                    },
+                    result = &mut call => result,
+                }
             }
-        };
+        })
+        .catch_unwind()
+        .await;
+        drop(reporter);
+        // Progress storage is deliberately best-effort: a display-channel
+        // failure must not prevent Git integration or terminal persistence.
+        // This drain also runs after a provider panic, before any terminal
+        // commit can clear the checkpoint.
+        let _ = progress.finish().await;
+        let result = result.unwrap_or_else(|_| {
+            Err(DomainError::invariant(
+                ErrorCode::ProviderFailed,
+                "workspace agent task panicked",
+            ))
+        });
         let result = if run.provider.kind == AgentMode::Codex {
             match result {
                 Ok(output) => control.begin_integration().await.map(|()| output),
@@ -506,9 +582,19 @@ impl LocalControlService {
         } else {
             result
         };
+        if result.is_ok() {
+            // Settling is an informational state for the live UI. Once the
+            // workspace result exists, failure to expose that intermediate
+            // state must not bypass the reliable terminal persistence path.
+            let _ = self.set_run_settling(&run.id).await;
+        }
         self.finish_workspace_run(&run.id, result).await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the invocation keeps immutable admission, finalization, and progress context together"
+    )]
     async fn invoke_codex_workspace(
         &self,
         state: &State,
@@ -517,6 +603,7 @@ impl LocalControlService {
         user_text: String,
         message_baseline: Option<String>,
         control: Arc<WorkspaceRunControl>,
+        progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
         let executor = self.workspace_agent.as_ref().ok_or_else(|| {
             DomainError::invariant(
@@ -552,19 +639,22 @@ impl LocalControlService {
         let (project_instructions, prompt) =
             codex_prompt(state, &run.base_message_id).map_err(api_domain_error)?;
         executor
-            .invoke(WorkspaceAgentInvocation {
-                request_id: run.id.clone(),
-                model: run.config.model.clone(),
-                reasoning_effort: run.config.reasoning_effort.clone(),
-                project_instructions,
-                prompt,
-                commit_subject: user_text,
-                cwd: workdir,
-                baseline_commit,
-                baseline_index_tree,
-                cancellation: control.cancellation.clone(),
-                integration_gate: Some(control),
-            })
+            .invoke_with_progress(
+                WorkspaceAgentInvocation {
+                    request_id: run.id.clone(),
+                    model: run.config.model.clone(),
+                    reasoning_effort: run.config.reasoning_effort.clone(),
+                    project_instructions,
+                    prompt,
+                    commit_subject: user_text,
+                    cwd: workdir,
+                    baseline_commit,
+                    baseline_index_tree,
+                    cancellation: control.cancellation.clone(),
+                    integration_gate: Some(control),
+                },
+                progress,
+            )
             .await
     }
 
@@ -582,7 +672,15 @@ impl LocalControlService {
                 .await
         });
         let result = match task.await {
-            Ok(result) => result,
+            Ok(Ok(run)) => Ok(run),
+            Ok(Err(failure)) => {
+                // Admission already made this Run visible to an asynchronous
+                // caller. Every later error therefore belongs to the Run and
+                // must be persisted before its Session and workspace leases
+                // are released.
+                self.finish_workspace_run(&run_id, Err(api_domain_error(failure)))
+                    .await
+            }
             Err(failure) => {
                 self.finish_workspace_run(
                     &run_id,
@@ -630,6 +728,42 @@ impl LocalControlService {
         ))
     }
 
+    async fn set_run_settling(&self, run_id: &str) -> Result<bool, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let run = state
+                .runs
+                .iter_mut()
+                .find(|run| run.id == run_id)
+                .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
+            if run.status != "running" {
+                return Ok(false);
+            }
+            run.status = "settling".into();
+            let event = pending("run.updated", Some(run_id.to_owned()), run);
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self
+                .store
+                .commit(snapshot.revision, value, vec![event])
+                .await
+            {
+                Ok(_) => return Ok(true),
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "concurrent run settling update did not settle",
+            true,
+        ))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the terminal snapshot and immutable Message must stay visibly atomic"
+    )]
     async fn finish_workspace_run(
         &self,
         run_id: &str,
@@ -648,7 +782,11 @@ impl LocalControlService {
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let mut run = state.runs[index].clone();
-            if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+            if matches!(
+                run.status.as_str(),
+                "completed" | "failed" | "cancelled" | "limit_exceeded"
+            ) {
+                let _ = self.store.clear_progress(run_id).await;
                 return Ok(run);
             }
             apply_workspace_terminal_result(&mut state, &mut run, &result);
@@ -661,7 +799,10 @@ impl LocalControlService {
                 .commit(snapshot.revision, value, vec![event])
                 .await
             {
-                Ok(_) => return Ok(run),
+                Ok(_) => {
+                    let _ = self.store.clear_progress(run_id).await;
+                    return Ok(run);
+                }
                 Err(ControlStoreError::Conflict | ControlStoreError::Other(_)) => {
                     // A workspace adapter may already have made its Git result
                     // externally visible. Keep the supervisor's finalization
@@ -700,6 +841,106 @@ impl LocalControlService {
             })
     }
 
+    /// Replays a page and reports whether a nonzero reconnect cursor is still
+    /// inside the retained event window.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable persistence error when bounds or events cannot be read.
+    pub async fn event_page(&self, after: u64, limit: usize) -> Result<EventPage, ApiError> {
+        let page = self
+            .store
+            .replay_page(after, limit.clamp(1, 1_000))
+            .await
+            .map_err(store_error)?;
+        Ok(EventPage {
+            events: page
+                .events
+                .into_iter()
+                .map(|event| Event {
+                    api_version: API_VERSION,
+                    cursor: event.cursor,
+                    kind: event.kind,
+                    entity_id: event.entity_id,
+                    body: event.body,
+                    created_at: event.created_at,
+                })
+                .collect(),
+            oldest_cursor: page.bounds.oldest,
+            latest_cursor: page.bounds.latest,
+            cursor_valid: page.cursor_valid,
+        })
+    }
+
+    /// Returns bounded live projections used after a refresh or cursor reset.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable persistence error when checkpoints cannot be read.
+    pub async fn progress_checkpoints(&self) -> Result<Vec<Value>, ApiError> {
+        self.store
+            .load_progress()
+            .await
+            .map_err(store_error)
+            .map(|values| values.into_iter().map(|value| value.body).collect())
+    }
+
+    /// Marks Runs left active by a previous daemon process as explicitly
+    /// unrecovered. Automatic provider-thread resume is outside this slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable persistence error when recovery cannot be committed.
+    pub async fn mark_interrupted_runs(&self) -> Result<usize, ApiError> {
+        for _ in 0..4 {
+            let snapshot = self.store.load().await.map_err(store_error)?;
+            let mut state = decode_state(snapshot.value)?;
+            let mut events = Vec::new();
+            let mut interrupted = Vec::new();
+            for run in &mut state.runs {
+                if matches!(run.status.as_str(), "queued" | "running" | "settling") {
+                    run.status = "failed".into();
+                    run.error = Some(error(
+                        ErrorCode::RunRecoveryFailed,
+                        "the daemon restarted before this Run completed; automatic resume is not available",
+                        false,
+                    ));
+                    interrupted.push(run.id.clone());
+                    events.push(pending("run.updated", Some(run.id.clone()), run));
+                }
+            }
+            if interrupted.is_empty() {
+                return Ok(0);
+            }
+            for session in &mut state.sessions {
+                if session
+                    .active_run_id
+                    .as_ref()
+                    .is_some_and(|id| interrupted.contains(id))
+                {
+                    session.active_run_id = None;
+                }
+            }
+            let count = interrupted.len();
+            let value = serde_json::to_value(&state).map_err(serialization_error)?;
+            match self.store.commit(snapshot.revision, value, events).await {
+                Ok(_) => {
+                    for run_id in interrupted {
+                        let _ = self.store.clear_progress(&run_id).await;
+                    }
+                    return Ok(count);
+                }
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "interrupted Run recovery did not settle",
+            true,
+        ))
+    }
+
     async fn try_execute(&self, command: Command) -> Result<CommandResult, ApiError> {
         if matches!(
             command,
@@ -736,7 +977,8 @@ impl LocalControlService {
             .await?;
         match outcome {
             CommandOutcome::Ready(result) => Ok(*result),
-            CommandOutcome::ExecuteWorkspaceRun(run_id) => {
+            CommandOutcome::ExecuteWorkspaceRun(run) => {
+                let run_id = run.id.clone();
                 let control = Arc::new(WorkspaceRunControl::new());
                 let invocation = InvocationGuard::new(
                     Arc::clone(&self.cancellations),
@@ -1716,7 +1958,10 @@ fn cancel_run(
     state.runs[index] = run.clone();
     Ok((
         CommandResult::Run(run.clone()),
-        vec![pending("run.cancelled", Some(run.id.clone()), &run)],
+        // Terminal Run transitions share one event contract so every client
+        // schedules an authoritative snapshot refresh. Renderers still accept
+        // legacy run.cancelled events retained in older outboxes.
+        vec![pending("run.updated", Some(run.id.clone()), &run)],
     ))
 }
 
@@ -2577,7 +2822,12 @@ fn apply_workspace_terminal_result(
             run.error = None;
         }
         Err(failure) => {
-            run.status = "failed".into();
+            run.status = match failure.code {
+                ErrorCode::RunCancelled => "cancelled",
+                ErrorCode::RunLimitExceeded => "limit_exceeded",
+                _ => "failed",
+            }
+            .into();
             run.error = Some(error(failure.code, &failure.message, failure.retryable));
         }
     }

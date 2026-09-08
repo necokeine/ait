@@ -26,6 +26,21 @@ date and time in the local timezone, including system and tool messages. Older
 records that never stored a timestamp display `Time unavailable`; loading them
 does not invent or rewrite historical times.
 
+Sending a message uses the daemon's asynchronous submission route. Electron
+main keeps one cursor-based progress stream for all windows and forwards only
+the fixed `ait:run-event-frame` IPC channel. A new document must announce a
+unique ready generation before main sends it events; frames and ACKs are scoped
+to that generation, and a missing ACK times out into checkpoint resync. Each
+window has at most one acknowledged frame in flight and a 512-update/1 MiB
+main-process buffer; the renderer uses the same limits while a snapshot is in
+flight. Overflow converges through a fresh checkpoint instead of accumulating
+IPC messages. Active Sessions render each frame once, preserving commentary as
+process output until an explicit final phase arrives. Refresh and reconnect
+recover from the daemon without restarting the Run. Closing a renderer
+subscription does not cancel execution. A disconnected stream is shown
+separately from Run failure, and the final immutable Message replaces the
+transient projection after Ait has finished saving it.
+
 ## Packaging
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.

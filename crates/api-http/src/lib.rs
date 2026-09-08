@@ -20,10 +20,12 @@ use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
 use axum::{
     Json, Router,
     extract::{Query, State},
+    http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
 use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio_stream::{self as stream, Stream};
 
 /// Builds the version-one local API router.
@@ -59,7 +61,9 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/session/set-title", post(set_session_title))
         .route("/v1/session/generate-title", post(generate_session_title))
         .route("/v1/session/send-message", post(send_message))
+        .route("/v1/session/submit-message", post(submit_message))
         .route("/v1/session/fork", post(fork_session))
+        .route("/v1/session/submit-fork", post(submit_fork_session))
         .route("/v1/run/get", post(get_run))
         .route("/v1/run/cancel", post(cancel_run))
         .route("/v1/cron/create", post(create_cron))
@@ -70,6 +74,8 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/settings/save", post(save_settings))
         .route("/v1/settings/reset", post(reset_settings))
         .route("/v1/event/list", get(events))
+        .route("/v1/event/stream", get(event_stream))
+        .route("/v1/run/progress", get(progress_checkpoints))
         .route("/v1/metric/list", get(metrics))
         .with_state(ApiState { service, telemetry })
 }
@@ -319,6 +325,20 @@ async fn send_message(
     .await
 }
 
+async fn submit_message(
+    State(state): State<ApiState>,
+    Json(request): Json<SendMessageRequest>,
+) -> Json<Response> {
+    submit_command(
+        state,
+        Command::SendMessage {
+            session_id: request.session_id,
+            text: request.text,
+        },
+    )
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ForkSessionRequest {
@@ -334,6 +354,23 @@ async fn fork_session(
     Json(request): Json<ForkSessionRequest>,
 ) -> Json<Response> {
     execute_command(
+        state,
+        Command::ForkSession {
+            id: request.id,
+            project_id: request.project_id,
+            agent_id: request.agent_id,
+            at_message_id: request.at_message_id,
+            text: request.text,
+        },
+    )
+    .await
+}
+
+async fn submit_fork_session(
+    State(state): State<ApiState>,
+    Json(request): Json<ForkSessionRequest>,
+) -> Json<Response> {
+    submit_command(
         state,
         Command::ForkSession {
             id: request.id,
@@ -522,6 +559,36 @@ async fn execute_command(state: ApiState, command: Command) -> Json<Response> {
     Json(response)
 }
 
+async fn submit_command(state: ApiState, command: Command) -> Json<Response> {
+    let started = Instant::now();
+    let operation_name = operation_name(&command);
+    let mut correlation = correlation_for_command(&command);
+    let response = state.service.submit(command).await;
+    enrich_correlation(&mut correlation, &response);
+    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    state
+        .telemetry
+        .metrics()
+        .increment("api_operations_total", correlation.clone(), 1);
+    state.telemetry.emit(&LogRecord {
+        timestamp_ms: now(),
+        level: if response.ok {
+            Level::Info
+        } else {
+            Level::Warn
+        },
+        target: "ait_api_http".into(),
+        event: "operation.accepted".into(),
+        correlation,
+        fields: BTreeMap::from([
+            ("operation".into(), operation_name.into()),
+            ("duration_ms".into(), elapsed.into()),
+            ("ok".into(), response.ok.into()),
+        ]),
+    });
+    Json(response)
+}
+
 #[derive(Deserialize)]
 struct EventQuery {
     #[serde(default)]
@@ -538,8 +605,13 @@ async fn events(
     State(state): State<ApiState>,
     Query(query): Query<EventQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let events = match state.service.replay_events(query.after, query.limit).await {
-        Ok(events) => events,
+    let events = match state.service.event_page(query.after, query.limit).await {
+        Ok(page) if page.cursor_valid => page.events,
+        Ok(page) => vec![reset_event(
+            page.oldest_cursor,
+            page.latest_cursor,
+            page.latest_cursor.unwrap_or_default(),
+        )],
         Err(error) => vec![error_event(error)],
     };
     let output = events.into_iter().map(|event| {
@@ -550,6 +622,74 @@ async fn events(
             .data(data))
     });
     Sse::new(stream::iter(output)).keep_alive(KeepAlive::default())
+}
+
+async fn event_stream(
+    State(state): State<ApiState>,
+    Query(query): Query<EventQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    const FOLLOW_PAGE_SIZE: usize = 256;
+    let service = state.service;
+    let output = async_stream::stream! {
+        let mut cursor = query.after;
+        loop {
+            match service.event_page(cursor, FOLLOW_PAGE_SIZE).await {
+                Ok(page) if !page.cursor_valid => {
+                    cursor = page.latest_cursor.unwrap_or_default();
+                    let event = reset_event(page.oldest_cursor, page.latest_cursor, cursor);
+                    yield Ok(sse_event(&event));
+                }
+                Ok(page) if page.events.is_empty() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Ok(page) => {
+                    for event in page.events {
+                        cursor = event.cursor;
+                        yield Ok(sse_event(&event));
+                    }
+                }
+                Err(error) => {
+                    yield Ok(sse_event(&error_event(error)));
+                    break;
+                }
+            }
+        }
+    };
+    Sse::new(output).keep_alive(KeepAlive::default())
+}
+
+async fn progress_checkpoints(
+    State(state): State<ApiState>,
+) -> Result<Json<Vec<Value>>, StatusCode> {
+    state
+        .service
+        .progress_checkpoints()
+        .await
+        .map(Json)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn sse_event(event: &ControlEvent) -> Event {
+    let data = serde_json::to_string(event).unwrap_or_else(|_| "{}".into());
+    Event::default()
+        .id(event.cursor.to_string())
+        .event(event.kind.clone())
+        .data(data)
+}
+
+fn reset_event(oldest: Option<u64>, latest: Option<u64>, cursor: u64) -> ControlEvent {
+    ControlEvent {
+        api_version: 1,
+        cursor,
+        kind: "stream.reset_required".into(),
+        entity_id: None,
+        body: json!({
+            "reason": "cursor_outside_retained_window",
+            "oldest_cursor": oldest,
+            "latest_cursor": latest,
+        }),
+        created_at: now(),
+    }
 }
 
 async fn metrics(State(state): State<ApiState>) -> Json<Vec<MetricPoint>> {
