@@ -13,6 +13,7 @@ import {
   projectNameFromWorkdir,
 } from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
+import { ProjectViewLoader } from "./project-view-loader.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -76,6 +77,7 @@ let toastTimer: number | undefined;
 let streamConnected = true;
 let renderedSessionId: string | undefined;
 let viewRefreshPending = false;
+const projectViews = new ProjectViewLoader<DesktopView>((projectId) => window.ait.view(projectId));
 const pendingTitles = new PendingSessionTitles();
 const pendingStream = new BoundedRunStreamBacklog();
 const agentsPage = createAgentsPage($("#agents-page"), {
@@ -94,12 +96,12 @@ async function initialize(): Promise<void> {
       window.ait.view(),
       window.ait.settings(),
     ]);
-    view = loadedView;
     settings = loadedSettings;
     settingsDraft = structuredClone(loadedSettings.values);
-    selectedProjectId = loadedView.messages[0]?.projectId
+    const initialProjectId = loadedView.messages[0]?.projectId
       ?? loadedView.sessions.at(-1)?.projectId
       ?? loadedView.projects[0]?.id;
+    replaceProjectView(initialProjectId, loadedView);
     const newestSession = loadedView.sessions
       .filter((session) => session.projectId === selectedProjectId)
       .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
@@ -114,6 +116,33 @@ async function initialize(): Promise<void> {
   } catch (error) {
     renderFatal(error);
   }
+}
+
+function replaceProjectView(projectId: string | undefined, updated: DesktopView): void {
+  projectViews.replace(projectId, updated);
+  selectedProjectId = projectId;
+  view = updated;
+}
+
+function acceptLoadedProjectView(): boolean {
+  const projectId = projectViews.projectId;
+  if (!projectViews.view || projectId !== projectViews.selectedProjectId) return false;
+  selectedProjectId = projectId;
+  view = projectViews.view;
+  return true;
+}
+
+async function selectProjectView(projectId: string): Promise<boolean> {
+  selectedProjectId = projectId;
+  return await projectViews.select(projectId) && acceptLoadedProjectView();
+}
+
+async function ensureProjectView(projectId: string): Promise<boolean> {
+  if (projectViews.projectId === projectId && projectViews.selectedProjectId === projectId) {
+    selectedProjectId = projectId;
+    return true;
+  }
+  return selectProjectView(projectId);
 }
 
 function bindInteractions(): void {
@@ -229,13 +258,13 @@ function renderRecoveryNotices(): void {
   container.querySelectorAll<HTMLElement>("[data-recovery-project]").forEach((notice) => {
     notice.addEventListener("click", async () => {
       if (pendingBranch) return;
-      if (notice.dataset.recoveryProject !== selectedProjectId) {
-        view = await window.ait.view(notice.dataset.recoveryProject);
-      }
-      selectedProjectId = notice.dataset.recoveryProject;
+      const projectId = notice.dataset.recoveryProject;
+      if (!projectId) return;
       selectedSessionId = notice.dataset.recoverySession;
       resetTreeView();
+      const loading = ensureProjectView(projectId);
       showPage("sessions");
+      if (!await loading) return;
       renderAll();
     });
   });
@@ -314,13 +343,11 @@ function renderProjects(): void {
       if (pendingBranch) return;
       const session = view?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
       if (!session) return;
-      if (session?.projectId !== selectedProjectId) {
-        view = await window.ait.view(session?.projectId);
-      }
-      selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
       resetTreeView();
+      const loading = ensureProjectView(session.projectId);
       showPage("sessions");
+      if (!await loading) return;
       renderAll();
     });
     button.addEventListener("contextmenu", (event) => {
@@ -498,19 +525,22 @@ function scheduleViewRefresh(): void {
   viewRefreshPending = true;
   queueMicrotask(async () => {
     let refreshed = false;
+    let settled = false;
     try {
-      view = await window.ait.view(selectedProjectId);
-      refreshed = true;
-      reconcilePendingBranch();
-      renderAll();
-      startReadySessionTitles();
+      refreshed = await projectViews.refresh();
+      settled = true;
+      if (refreshed && acceptLoadedProjectView()) {
+        reconcilePendingBranch();
+        renderAll();
+        startReadySessionTitles();
+      }
     } catch {
       streamConnected = false;
       if (currentSession()?.activeRunId) renderConversation();
     } finally {
       viewRefreshPending = false;
     }
-    if (refreshed) drainPendingStreamUpdates();
+    if (settled) drainPendingStreamUpdates();
   });
 }
 
@@ -705,7 +735,9 @@ async function submitMessage(): Promise<void> {
     messageInput.value = "";
     renderAll();
   } catch (error) {
-    try { view = await window.ait.view(selectedProjectId); renderAll(); } catch { /* Keep the last visible view if disconnected. */ }
+    try {
+      if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
+    } catch { /* Keep the last visible view if disconnected. */ }
     showToast(errorMessage(error), true);
   } finally {
     pendingSessions.delete(session.id);
@@ -966,13 +998,13 @@ function closeProjectSettingsDialog(): void {
 
 async function selectProject(projectId: string | undefined): Promise<void> {
   if (!view || pendingBranch || !projectId || !view.projects.some((project) => project.id === projectId)) return;
-  view = await window.ait.view(projectId);
-  selectedProjectId = projectId;
   selectedSessionId = view.sessions
     .filter((session) => session.projectId === projectId)
     .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
   resetTreeView();
+  const loading = selectProjectView(projectId);
   showPage("sessions");
+  if (!await loading) return;
   renderAll();
 }
 
@@ -995,10 +1027,10 @@ async function createProject(): Promise<void> {
   button.textContent = "Creating…";
   try {
     const result = await window.ait.createProject({ name, workdir, agentId });
-    view = result.view;
-    selectedProjectId = result.selectedProjectId;
     selectedSessionId = undefined;
     resetTreeView();
+    replaceProjectView(result.selectedProjectId, result.view);
+    await selectProjectView(result.selectedProjectId);
     $<HTMLInputElement>("#project-create-name").value = "";
     $<HTMLInputElement>("#project-create-path").value = "";
     closeProjectDialog();
@@ -1019,9 +1051,11 @@ async function saveProjectBackend(): Promise<void> {
   if (!project || !agentId) return;
   try {
     const updated = await window.ait.setProjectDefaultAgent({ projectId: project.id, agentId });
-    view = selectedProjectId && selectedProjectId !== project.id
-      ? await window.ait.view(selectedProjectId)
-      : updated;
+    if (selectedProjectId && selectedProjectId !== project.id) {
+      if (!await projectViews.refresh() || !acceptLoadedProjectView()) return;
+    } else {
+      view = updated;
+    }
     renderAll();
     closeProjectSettingsDialog();
     showToast(`${project.name} backend updated.`);
@@ -1046,11 +1080,12 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
   renderProjects();
   try {
     const result = await window.ait.createSession({ projectId: project.id, agentId });
-    view = result.view;
-    selectedProjectId = project.id;
+    replaceProjectView(project.id, result.view);
     selectedSessionId = result.selectedSessionId;
     resetTreeView();
+    const loading = selectProjectView(project.id);
     showPage("sessions");
+    if (!await loading) return;
     renderAll();
     messageInput.focus();
     showToast("Session created.");
@@ -1234,14 +1269,12 @@ function renderCommandResults(): void {
       if (pendingBranch) return;
       const session = view?.sessions.find((candidate) => candidate.id === button.dataset.session);
       if (!session) return;
-      if (session.projectId !== selectedProjectId) {
-        view = await window.ait.view(session.projectId);
-      }
-      selectedProjectId = session?.projectId;
       selectedSessionId = session?.id;
       resetTreeView();
       closeCommandPalette();
+      const loading = ensureProjectView(session.projectId);
       showPage("sessions");
+      if (!await loading) return;
       renderAll();
     });
   });
