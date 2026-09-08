@@ -18,6 +18,15 @@ export function agentLabel(agent: AgentSummary): string {
   return `${agentDisplayName(agent)} · ${agent.model}`;
 }
 
+export function availableProjectDefaultAgentId(
+  project: DesktopProject,
+  agents: AgentSummary[],
+): string | undefined {
+  if (!project.defaultAgentId) return undefined;
+  const agent = agents.find((candidate) => candidate.id === project.defaultAgentId);
+  return agent?.enabled && !agent.ownerSessionId ? agent.id : undefined;
+}
+
 export function groupProjects(snapshot: DesktopSnapshot): ProjectGroup[] {
   return snapshot.projects.map((project) => ({
     project,

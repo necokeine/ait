@@ -34,3 +34,14 @@ test("offers Session rename from a right-click action menu", async () => {
   assert.match(renderer, /addEventListener\("contextmenu"/);
   assert.match(renderer, /window\.ait\.renameSession/);
 });
+
+test("creates a Session directly with the Project default Agent", async () => {
+  const [html, renderer] = await Promise.all([
+    readFile(new URL("../src/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(html, /id="session-dialog"/);
+  assert.match(renderer, /availableProjectDefaultAgentId\(project, snapshot\.agents\)/);
+  assert.match(renderer, /window\.ait\.createSession\(\{ projectId: project\.id, agentId \}\)/);
+});
