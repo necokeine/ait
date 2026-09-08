@@ -1095,6 +1095,10 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
     messageInput.focus();
     showToast("Session created.");
   } catch (error) {
+    projectViews.discardMutation(mutation);
+    try {
+      if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
+    } catch { /* Keep the last visible view if disconnected. */ }
     showToast(errorMessage(error), true);
   } finally {
     creatingSessionProjectId = undefined;
