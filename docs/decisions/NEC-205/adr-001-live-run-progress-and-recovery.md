@@ -33,7 +33,9 @@
 6. provider turn 完成后尽力把 Run 展示为 `settling`；该中间状态写入失败不能阻断最终 Message 和 Run
    终态的可靠持久化，终态落库后才清除 checkpoint。Run admission 之后的普通错误、panic 和 terminal
    store 暂时故障均由 supervisor 收敛为可靠终态；在此之前继续持有 Session、Project workspace 和
-   finalization guards。所有终态统一发送 `run.updated`；renderer 也兼容保留窗口内旧版
+   finalization guards。provider panic 边界保留 `ProgressPump` 所有权，先 drain writer；超时则 abort
+   并等待 writer 确认退出，保证任何 `save_progress` 都先于 terminal commit 与 checkpoint clear。所有
+   终态统一发送 `run.updated`；renderer 也兼容保留窗口内旧版
    `run.cancelled`，收到两者后都重新读取 snapshot，以不可变 Message 或终态卡片替换临时投影。
 7. daemon 启动时把遗留的 `queued | running | settling` Run 明确标记为
    `RUN_RECOVERY_FAILED` 并释放 Session。自动续跑与 Codex thread resume 不在本票范围内。
@@ -56,7 +58,8 @@
   旧 generation 迟到 ACK、断线状态重同步、ACK 丢失后的超时恢复，以及 active snapshot 收到取消
   事件后清除 active Run 并展示 cancelled 终态。
 - application fault tests 在 queued→running 和 integrated→settling 分别注入 CAS conflict 与 store
-  error，验证异步 Run 终态、Session 释放、同 Project 租约和整合结果一致性。
+  error，验证异步 Run 终态、Session 释放、同 Project 租约和整合结果一致性；另在 adapter 写入 progress
+  后触发 panic 并暂停 writer，验证 terminal event 之前 drain、checkpoint 清理和后续同 Project 放行。
 - SQLite 并发裁剪测试保证边界读取只会得到连续 terminal event 或显式 cursor reset；普通状态与
   terminal commits 在 progress 填满上限后仍保持全局 50,000 项和正确 cursor bounds。
 - 真实 Codex 桌面验收覆盖异步接受、53 个顺序进度事件、运行中操作卡片、自动标题，以及最终 Message/文件落盘。

@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     fmt::Write as _,
     fs::{File, OpenOptions},
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::{Arc, Mutex, Weak},
@@ -27,6 +28,7 @@ use ait_ports::{
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationGate,
     WorkspaceOutputItem,
 };
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -542,24 +544,36 @@ impl LocalControlService {
                 }
             }
         };
-        let result = if run.provider.kind == AgentMode::Codex {
-            // Workspace execution owns its complete settlement path. The
-            // supervisor containing this call survives transport cancellation.
-            call.await
-        } else {
-            tokio::pin!(call);
-            tokio::select! {
-                biased;
-                () = cancellation.cancelled() => {
-                    Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled"))
-                },
-                result = &mut call => result,
+        let result = AssertUnwindSafe(async {
+            if run.provider.kind == AgentMode::Codex {
+                // Workspace execution owns its complete settlement path. The
+                // supervisor containing this call survives transport cancellation.
+                call.await
+            } else {
+                tokio::pin!(call);
+                tokio::select! {
+                    biased;
+                    () = cancellation.cancelled() => {
+                        Err(DomainError::invariant(ErrorCode::RunCancelled, "run was cancelled"))
+                    },
+                    result = &mut call => result,
+                }
             }
-        };
+        })
+        .catch_unwind()
+        .await;
         drop(reporter);
         // Progress storage is deliberately best-effort: a display-channel
         // failure must not prevent Git integration or terminal persistence.
+        // This drain also runs after a provider panic, before any terminal
+        // commit can clear the checkpoint.
         let _ = progress.finish().await;
+        let result = result.unwrap_or_else(|_| {
+            Err(DomainError::invariant(
+                ErrorCode::ProviderFailed,
+                "workspace agent task panicked",
+            ))
+        });
         let result = if run.provider.kind == AgentMode::Codex {
             match result {
                 Ok(output) => control.begin_integration().await.map(|()| output),

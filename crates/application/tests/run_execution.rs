@@ -96,6 +96,89 @@ impl ControlStore for ConflictingStore {
     }
 }
 
+struct PausingProgressStore {
+    inner: SqliteControlStore,
+    pause_once: AtomicBool,
+    save_started: Semaphore,
+    allow_save: Semaphore,
+    terminal_committed: Semaphore,
+    progress_cleared: Semaphore,
+}
+
+#[async_trait]
+impl ControlStore for PausingProgressStore {
+    async fn load(&self) -> Result<ControlSnapshot, ControlStoreError> {
+        self.inner.load().await
+    }
+
+    async fn commit(
+        &self,
+        revision: u64,
+        value: Value,
+        events: Vec<PendingEvent>,
+    ) -> Result<ControlSnapshot, ControlStoreError> {
+        let terminal = value["runs"]
+            .as_array()
+            .and_then(|runs| runs.last())
+            .and_then(|run| run["status"].as_str())
+            .is_some_and(|status| {
+                matches!(
+                    status,
+                    "completed" | "failed" | "cancelled" | "limit_exceeded"
+                )
+            });
+        let result = self.inner.commit(revision, value, events).await;
+        if terminal && result.is_ok() {
+            self.terminal_committed.add_permits(1);
+        }
+        result
+    }
+
+    async fn replay(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<DurableEvent>, ControlStoreError> {
+        self.inner.replay(after, limit).await
+    }
+
+    async fn event_bounds(&self) -> Result<EventBounds, ControlStoreError> {
+        self.inner.event_bounds().await
+    }
+
+    async fn replay_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<DurableEventPage, ControlStoreError> {
+        self.inner.replay_page(after, limit).await
+    }
+
+    async fn save_progress(
+        &self,
+        checkpoint: ProgressCheckpoint,
+        events: Vec<PendingEvent>,
+    ) -> Result<(), ControlStoreError> {
+        if self.pause_once.swap(false, Ordering::SeqCst) {
+            self.save_started.add_permits(1);
+            self.allow_save.acquire().await.unwrap().forget();
+        }
+        self.inner.save_progress(checkpoint, events).await
+    }
+
+    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress().await
+    }
+
+    async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
+        let result = self.inner.clear_progress(run_id).await;
+        if result.is_ok() {
+            self.progress_cleared.add_permits(1);
+        }
+        result
+    }
+}
+
 struct RecordingAgent {
     store: Arc<ConflictingStore>,
     calls: AtomicUsize,
@@ -412,6 +495,46 @@ struct SlowStreamingAgent {
     release: Semaphore,
 }
 
+struct PanickingProgressAgent {
+    calls: AtomicUsize,
+    entered: Semaphore,
+}
+
+#[async_trait]
+impl WorkspaceAgent for PanickingProgressAgent {
+    async fn invoke(
+        &self,
+        _request: WorkspaceAgentInvocation,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        panic!("progress-aware entry point expected")
+    }
+
+    async fn invoke_with_progress(
+        &self,
+        _request: WorkspaceAgentInvocation,
+        progress: Arc<dyn WorkspaceProgressReporter>,
+    ) -> Result<WorkspaceAgentResponse, DomainError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.entered.add_permits(1);
+        if call == 0 {
+            progress
+                .report(WorkspaceProgressEvent::MessageStarted {
+                    id: "commentary".into(),
+                    phase: Some("commentary".into()),
+                    text: "before panic".into(),
+                })
+                .await;
+            panic!("injected adapter panic after progress")
+        }
+        Ok(WorkspaceAgentResponse {
+            assistant_text: "second run completed".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        })
+    }
+}
+
 #[async_trait]
 impl WorkspaceAgent for SlowStreamingAgent {
     async fn invoke(
@@ -673,4 +796,225 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     assert!(second_completed.last_message_id.is_some());
     assert!(service.progress_checkpoints().await.unwrap().is_empty());
     assert!(!service.event_page(u64::MAX, 10).await.unwrap().cursor_valid);
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the deterministic panic ordering test keeps every lifecycle assertion in one fixture"
+)]
+async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_leases() {
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("panic-project");
+    std::fs::create_dir(&project_dir).unwrap();
+    let store = Arc::new(PausingProgressStore {
+        inner: SqliteControlStore::in_memory().unwrap(),
+        pause_once: AtomicBool::new(true),
+        save_started: Semaphore::new(0),
+        allow_save: Semaphore::new(0),
+        terminal_committed: Semaphore::new(0),
+        progress_cleared: Semaphore::new(0),
+    });
+    let agent = Arc::new(PanickingProgressAgent {
+        calls: AtomicUsize::new(0),
+        entered: Semaphore::new(0),
+    });
+    let service = Arc::new(LocalControlService::with_workspace_agent(
+        store.clone(),
+        agent.clone(),
+    ));
+    let CommandResult::Project(project) = command(
+        &service,
+        Command::RegisterProject {
+            id: "panic-project".into(),
+            name: "Panic project".into(),
+            workdir: project_dir.display().to_string(),
+            repo_url: None,
+        },
+    )
+    .await
+    else {
+        panic!("expected Project")
+    };
+    command(
+        &service,
+        Command::RegisterAgent {
+            id: "panic-agent".into(),
+            name: "Panic agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    for session_id in ["panic-session", "next-session"] {
+        command(
+            &service,
+            Command::CreateSession {
+                id: session_id.into(),
+                project_id: project.id.clone(),
+                agent_id: "panic-agent".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+    }
+
+    let accepted = service
+        .submit(Command::SendMessage {
+            session_id: "panic-session".into(),
+            text: "panic after progress".into(),
+        })
+        .await;
+    let CommandResult::Run(first) = accepted.result.unwrap() else {
+        panic!("expected accepted Run")
+    };
+    assert_eq!(first.status, "queued");
+    tokio::time::timeout(Duration::from_secs(2), agent.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    tokio::time::timeout(Duration::from_secs(2), store.save_started.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+
+    let CommandResult::Workspace(pending) = command(&service, Command::Snapshot).await else {
+        panic!("expected workspace")
+    };
+    assert_eq!(
+        pending
+            .runs
+            .iter()
+            .find(|run| run.id == first.id)
+            .unwrap()
+            .status,
+        "running"
+    );
+    assert_eq!(
+        pending
+            .sessions
+            .iter()
+            .find(|session| session.id == "panic-session")
+            .unwrap()
+            .active_run_id
+            .as_deref(),
+        Some(first.id.as_str())
+    );
+    let next_submission = {
+        let service = service.clone();
+        tokio::spawn(async move {
+            service
+                .submit(Command::SendMessage {
+                    session_id: "next-session".into(),
+                    text: "run after panic".into(),
+                })
+                .await
+        })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), agent.entered.acquire())
+            .await
+            .is_err(),
+        "same-Project execution entered before progress drain and terminal persistence"
+    );
+
+    store.allow_save.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), store.terminal_committed.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    tokio::time::timeout(Duration::from_secs(2), store.progress_cleared.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+
+    let CommandResult::Workspace(settled) = command(&service, Command::Snapshot).await else {
+        panic!("expected workspace")
+    };
+    let failed = settled.runs.iter().find(|run| run.id == first.id).unwrap();
+    assert_eq!(failed.status, "failed");
+    assert_eq!(
+        failed.error.as_ref().unwrap().code,
+        ErrorCode::ProviderFailed
+    );
+    assert!(
+        settled
+            .sessions
+            .iter()
+            .find(|session| session.id == "panic-session")
+            .unwrap()
+            .active_run_id
+            .is_none()
+    );
+    assert!(
+        store
+            .load_progress()
+            .await
+            .unwrap()
+            .iter()
+            .all(|checkpoint| checkpoint.run_id != first.id)
+    );
+    let run_events = store
+        .replay(0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.entity_id.as_deref() == Some(first.id.as_str()))
+        .collect::<Vec<_>>();
+    let terminal = run_events
+        .iter()
+        .position(|event| event.kind == "run.updated" && event.body["status"] == "failed")
+        .expect("failed terminal event");
+    assert!(
+        run_events[..terminal]
+            .iter()
+            .any(|event| event.kind == "run.progress")
+    );
+    assert!(
+        run_events[terminal + 1..]
+            .iter()
+            .all(|event| event.kind != "run.progress")
+    );
+    assert_eq!(
+        run_events.last().unwrap().cursor,
+        run_events[terminal].cursor
+    );
+
+    let next = tokio::time::timeout(Duration::from_secs(2), next_submission)
+        .await
+        .unwrap()
+        .unwrap();
+    let CommandResult::Run(next) = next.result.unwrap() else {
+        panic!("expected next accepted Run")
+    };
+    tokio::time::timeout(Duration::from_secs(2), agent.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    tokio::time::timeout(Duration::from_secs(2), store.terminal_committed.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    tokio::time::timeout(Duration::from_secs(2), store.progress_cleared.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let CommandResult::Run(completed) = command(
+        &service,
+        Command::GetRun {
+            run_id: next.id.clone(),
+        },
+    )
+    .await
+    else {
+        panic!("expected Run")
+    };
+    assert_eq!(completed.status, "completed");
+    assert!(store.load_progress().await.unwrap().is_empty());
 }

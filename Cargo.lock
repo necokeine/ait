@@ -96,6 +96,7 @@ dependencies = [
  "ait-storage-sqlite",
  "async-trait",
  "criterion",
+ "futures-util",
  "serde",
  "serde_json",
  "sha2 0.10.9",

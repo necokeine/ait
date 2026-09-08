@@ -22,8 +22,8 @@ const MAX_PROJECTED_ITEMS: usize = 512;
 const MAX_WARNINGS: usize = 8;
 
 pub(super) struct ProgressPump {
-    reporter: Arc<ChannelProgressReporter>,
-    writer: JoinHandle<Result<(), ControlStoreError>>,
+    reporter: Option<Arc<ChannelProgressReporter>>,
+    writer: Option<JoinHandle<Result<(), ControlStoreError>>>,
 }
 
 impl ProgressPump {
@@ -36,27 +36,42 @@ impl ProgressPump {
         };
         let writer = tokio::spawn(write_progress(store, identity, receiver));
         Self {
-            reporter: Arc::new(ChannelProgressReporter { sender }),
-            writer,
+            reporter: Some(Arc::new(ChannelProgressReporter { sender })),
+            writer: Some(writer),
         }
     }
 
     pub(super) fn reporter(&self) -> Arc<dyn WorkspaceProgressReporter> {
-        self.reporter.clone()
+        self.reporter
+            .as_ref()
+            .expect("progress reporter exists")
+            .clone()
     }
 
-    pub(super) async fn finish(self) -> Result<(), ControlStoreError> {
-        drop(self.reporter);
-        let mut writer = self.writer;
+    pub(super) async fn finish(mut self) -> Result<(), ControlStoreError> {
+        let writer = self.writer.take().expect("progress writer exists");
+        drop(self.reporter.take());
+        let mut writer = writer;
         if let Ok(result) = time::timeout(PROGRESS_DRAIN_DEADLINE, &mut writer).await {
             result.map_err(|error| {
                 ControlStoreError::Other(format!("progress writer task failed: {error}"))
             })?
         } else {
             writer.abort();
+            // `abort` requests cancellation; awaiting the handle establishes
+            // that no save_progress future can run after terminal cleanup.
+            let _ = writer.await;
             Err(ControlStoreError::Other(
                 "progress writer did not drain before the terminal deadline".into(),
             ))
+        }
+    }
+}
+
+impl Drop for ProgressPump {
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            writer.abort();
         }
     }
 }
