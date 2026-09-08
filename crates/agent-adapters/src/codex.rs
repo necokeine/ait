@@ -5123,158 +5123,146 @@ fn parse_approval_command(command: &str) -> Result<Vec<String>, String> {
 }
 
 fn redact_approval_arguments(arguments: &[String]) -> Result<String, String> {
-    let mut redacted = Vec::new();
+    let mut redacted = Vec::with_capacity(arguments.len());
+    let mut curl_headers = arguments.first().is_some_and(|argument| {
+        argument.rsplit(['/', '\\']).next().is_some_and(|name| {
+            name.eq_ignore_ascii_case("curl") || name.eq_ignore_ascii_case("curl.exe")
+        })
+    });
     let mut index = 0;
     while index < arguments.len() {
-        let token = redact_url_credentials(&arguments[index]);
-        let lower = token.to_ascii_lowercase();
-
-        if token == "-H" || lower == "--header" {
-            let Some(header) = arguments.get(index + 1) else {
-                return Err("command approval has a header option without a value".into());
-            };
-            redacted.push(token);
-            let (projected, trailing) = redact_header_value(header);
-            redacted.push(projected);
-            index += 2;
-            index += redact_header_tail(arguments, index, trailing);
-            continue;
-        }
-
-        if let Some(header) = strip_ascii_case_prefix(&token, "--header=") {
-            if header.is_empty() {
-                return Err("command approval has an empty header value".into());
-            }
-            let (projected, trailing) = redact_header_value(header);
-            redacted.push(format!("--header={projected}"));
+        let argument = &arguments[index];
+        if curl_headers && argument == "--" {
+            curl_headers = false;
+            redacted.push(argument.clone());
             index += 1;
-            index += redact_header_tail(arguments, index, trailing);
             continue;
         }
-
-        if let Some(header) = token.strip_prefix("-H")
+        if curl_headers && (argument == "-H" || argument.eq_ignore_ascii_case("--header")) {
+            let Some(header) = arguments.get(index + 1) else {
+                return Err("command approval has a header option without an argument".into());
+            };
+            redacted.push(argument.clone());
+            redacted.push(redact_proven_header(header)?);
+            index += 2;
+            continue;
+        }
+        if curl_headers && let Some(header) = strip_ascii_case_prefix(argument, "--header=") {
+            if header.is_empty() {
+                return Err("command approval has an empty header argument".into());
+            }
+            redacted.push(format!("--header={}", redact_proven_header(header)?));
+            index += 1;
+            continue;
+        }
+        if curl_headers
+            && let Some(header) = argument.strip_prefix("-H")
             && !header.is_empty()
         {
-            let (projected, trailing) = redact_header_value(header);
-            redacted.push(format!("-H{projected}"));
+            redacted.push(format!("-H{}", redact_proven_header(header)?));
             index += 1;
-            index += redact_header_tail(arguments, index, trailing);
             continue;
         }
 
-        if let Some((projected, trailing)) = redact_sensitive_header(&token) {
-            redacted.push(projected);
-            index += 1;
-            index += redact_header_tail(arguments, index, trailing);
-            continue;
+        let token = redact_url_credentials(argument);
+        let lower = token.to_ascii_lowercase();
+
+        if sensitive_header_parts(&token).is_some() {
+            return Err(
+                "command approval has a sensitive header outside a proven header argument".into(),
+            );
         }
 
-        if let Some((key, _)) = token.split_once('=')
+        if let Some((key, value)) = token.split_once('=')
             && is_sensitive_key(key.to_ascii_lowercase().trim_start_matches('-'))
         {
+            if value.trim().is_empty()
+                || (key.to_ascii_lowercase().contains("authorization")
+                    && is_authorization_scheme(value))
+            {
+                return Err(
+                    "command approval has a sensitive value outside its argument boundary".into(),
+                );
+            }
             redacted.push(format!("{key}=[REDACTED]"));
             index += 1;
             continue;
         }
 
-        if lower == "bearer" {
-            redacted.push("Bearer".to_owned());
-            if index + 1 < arguments.len() {
-                redacted.push("[REDACTED]".to_owned());
-                index += 2;
-            } else {
-                index += 1;
-            }
-            continue;
+        if lower == "bearer" && index + 1 < arguments.len() {
+            return Err("command approval has a bearer value outside its argument boundary".into());
         }
 
-        if let Some(projected) = redact_inline_bearer(&token) {
-            redacted.push(projected);
-            index += 1;
-            continue;
+        if redact_inline_bearer(&token).is_some() {
+            return Err(
+                "command approval has a bearer credential outside a proven header argument".into(),
+            );
         }
 
-        if is_sensitive_key(lower.trim_start_matches('-')) {
-            redacted.push(token);
-            let Some(_) = arguments.get(index + 1) else {
-                return Err("command approval has a sensitive option without a value".into());
-            };
-            redacted.push("[REDACTED]".to_owned());
-            index += 2;
-            continue;
+        if token.starts_with('-') && is_sensitive_key(lower.trim_start_matches('-')) {
+            return Err(
+                "command approval has a sensitive option outside its argument boundary".into(),
+            );
         }
 
         redacted.push(token);
         index += 1;
     }
-    validate_bounded_string(&redacted.join(" "), "redacted command")
+    let rendered = redacted
+        .iter()
+        .map(|argument| render_approval_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    validate_bounded_string(&rendered, "redacted command")
 }
 
-#[derive(Clone, Copy)]
-enum HeaderTail {
-    None,
-    Authorization,
-    Cookie,
-    OneValue,
+fn redact_proven_header(header: &str) -> Result<String, String> {
+    let header = redact_url_credentials(header);
+    if let Some((name, value)) = sensitive_header_parts(&header) {
+        let value = value.trim();
+        if value.is_empty()
+            || (name.trim().to_ascii_lowercase().contains("authorization")
+                && is_authorization_scheme(value))
+        {
+            return Err(
+                "command approval has a sensitive header value outside its argument boundary"
+                    .into(),
+            );
+        }
+        return Ok(format!("{}:[REDACTED]", name.trim()));
+    }
+    if let Some(projected) = redact_inline_bearer(&header) {
+        return Ok(projected);
+    }
+    if is_sensitive_key(&header.trim().to_ascii_lowercase()) {
+        return Err("command approval has a sensitive header without a value".into());
+    }
+    Ok(header)
 }
 
-fn redact_header_value(header: &str) -> (String, HeaderTail) {
-    if let Some((projected, trailing)) = redact_sensitive_header(header) {
-        return (projected, trailing);
-    }
-    if let Some(projected) = redact_inline_bearer(header) {
-        return (projected, HeaderTail::None);
-    }
-    let redacted = redact_url_credentials(header);
-    if is_sensitive_key(redacted.to_ascii_lowercase().trim_start_matches('-')) {
-        ("[REDACTED]".to_owned(), HeaderTail::None)
+fn render_approval_argument(argument: &str) -> String {
+    if !argument.is_empty()
+        && argument.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(
+                    character,
+                    '-' | '_' | '.' | '/' | ':' | '@' | '%' | '+' | ',' | '=' | '[' | ']'
+                )
+        })
+    {
+        argument.to_owned()
     } else {
-        (redacted, HeaderTail::None)
+        serde_json::to_string(argument).expect("validated display strings are JSON serializable")
     }
 }
 
-fn redact_sensitive_header(header: &str) -> Option<(String, HeaderTail)> {
+fn sensitive_header_parts(header: &str) -> Option<(&str, &str)> {
     let (name, value) = header.split_once(':')?;
     let normalized = name.trim().to_ascii_lowercase();
     if !is_sensitive_key(&normalized) {
         return None;
     }
-    let value = value.trim();
-    let trailing = if value.is_empty() {
-        if normalized.contains("authorization") {
-            HeaderTail::Authorization
-        } else if normalized.contains("cookie") {
-            HeaderTail::Cookie
-        } else {
-            HeaderTail::OneValue
-        }
-    } else if normalized.contains("authorization") && is_authorization_scheme(value) {
-        HeaderTail::OneValue
-    } else {
-        HeaderTail::None
-    };
-    Some((format!("{}:[REDACTED]", name.trim()), trailing))
-}
-
-fn redact_header_tail(arguments: &[String], start: usize, trailing: HeaderTail) -> usize {
-    match trailing {
-        HeaderTail::None => 0,
-        HeaderTail::OneValue => usize::from(start < arguments.len()),
-        HeaderTail::Authorization => {
-            let Some(value) = arguments.get(start) else {
-                return 0;
-            };
-            if is_authorization_scheme(value) {
-                1 + usize::from(start + 1 < arguments.len())
-            } else {
-                1
-            }
-        }
-        HeaderTail::Cookie => arguments[start..]
-            .iter()
-            .take_while(|argument| !is_command_boundary(argument))
-            .count(),
-    }
+    Some((name, value))
 }
 
 fn is_authorization_scheme(value: &str) -> bool {
@@ -5282,10 +5270,6 @@ fn is_authorization_scheme(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "bearer" | "basic" | "digest" | "negotiate" | "aws4-hmac-sha256"
     )
-}
-
-fn is_command_boundary(value: &str) -> bool {
-    value.starts_with('-') || value.contains("://") || matches!(value, "|" | "||" | "&&" | ";")
 }
 
 fn redact_inline_bearer(value: &str) -> Option<String> {
@@ -5640,7 +5624,7 @@ mod workspace_cleanup_tests {
     fn command_approval_projection_redacts_credentials() {
         for (command, secrets) in [
             (
-                "curl --api-key very-secret https://url-user:password@example.test/v1",
+                "curl --api-key=very-secret https://url-user:password@example.test/v1",
                 &["very-secret", "url-user", "password"][..],
             ),
             (
@@ -5656,16 +5640,8 @@ mod workspace_cleanup_tests {
                 &["cookie-secret"][..],
             ),
             (
-                "curl --header=Authorization:Bearer opaque-value https://example.test/v1",
+                "curl --header=\"Authorization:Bearer opaque-value\" https://example.test/v1",
                 &["opaque-value"][..],
-            ),
-            (
-                "curl Authorization: Bearer another-opaque-value https://example.test/v1",
-                &["another-opaque-value"][..],
-            ),
-            (
-                "curl -H Cookie: first=opaque-cookie second=more-cookie https://example.test/v1",
-                &["opaque-cookie", "more-cookie"][..],
             ),
         ] {
             let target = approval_target(
@@ -5716,8 +5692,11 @@ mod workspace_cleanup_tests {
     fn command_approval_projection_fails_closed_on_ambiguous_syntax() {
         for command in [
             "curl -H \"Authorization: Bearer unfinished",
-            "curl --header",
             "curl --api-key",
+            "curl --header=Authorization:Bearer opaque-value https://example.test/v1",
+            "curl Authorization: Bearer opaque-value https://example.test/v1",
+            "curl -H Cookie: first=opaque-cookie https://example.test/v1",
+            "curl -- -H Authorization: /etc/passwd",
         ] {
             assert!(
                 approval_target(
@@ -5729,6 +5708,59 @@ mod workspace_cleanup_tests {
                 "unsafe command projection was accepted: {command}"
             );
         }
+    }
+
+    #[test]
+    fn command_approval_projection_never_invents_header_argument_boundaries() {
+        for command in [
+            json!("grep -H Authorization: /etc/passwd"),
+            json!(["grep", "-H", "Authorization:", "/etc/passwd"]),
+        ] {
+            assert!(
+                approval_target(
+                    ApprovalKind::CommandExecution,
+                    &json!({"command": command, "cwd": "/workspace"}),
+                    &HashMap::new(),
+                )
+                .is_err(),
+                "an ambiguous argument was silently omitted"
+            );
+        }
+
+        for command in [
+            json!("curl -H Authorization:value /etc/passwd"),
+            json!(["curl", "-H", "Authorization:value", "/etc/passwd"]),
+        ] {
+            let target = approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({"command": command, "cwd": "/workspace"}),
+                &HashMap::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                target,
+                NativeApprovalTarget::Command {
+                    command: "curl -H Authorization:[REDACTED] /etc/passwd".into(),
+                    cwd: "/workspace".into(),
+                }
+            );
+        }
+
+        assert_eq!(
+            approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({
+                    "command": ["grep", "-H", "needle", "/etc/file with spaces"],
+                    "cwd": "/workspace"
+                }),
+                &HashMap::new(),
+            )
+            .unwrap(),
+            NativeApprovalTarget::Command {
+                command: "grep -H needle \"/etc/file with spaces\"".into(),
+                cwd: "/workspace".into(),
+            }
+        );
     }
 
     #[test]

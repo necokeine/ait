@@ -607,7 +607,7 @@ async fn mismatched_approval_correlation_fails_closed_before_the_handler() {
 }
 
 #[tokio::test]
-async fn approval_without_a_reviewable_target_fails_closed_before_the_handler() {
+async fn ambiguous_or_missing_approval_target_fails_closed_before_the_handler() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
     let (server_read, mut server_write) = split(server_io);
@@ -636,6 +636,19 @@ async fn approval_without_a_reviewable_target_fails_closed_before_the_handler() 
         let response = read_json(&mut lines).await;
         assert_eq!(response["id"], 92);
         assert_eq!(response["error"]["code"], -32602);
+        for (id, command) in [
+            (93, json!("grep -H Authorization: /etc/passwd")),
+            (94, json!(["grep", "-H", "Authorization:", "/etc/passwd"])),
+        ] {
+            write_json(
+                &mut server_write,
+                json!({"id":id,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("cmd-{id}"),"command":command,"cwd":"/workspace","reason":"ambiguous header boundary"}}),
+            )
+            .await;
+            let response = read_json(&mut lines).await;
+            assert_eq!(response["id"], id);
+            assert_eq!(response["error"]["code"], -32602);
+        }
         write_json(
             &mut server_write,
             json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
