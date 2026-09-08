@@ -18,10 +18,12 @@
    避免等待远端请求超时。
 4. Codex turn 建立前收到取消时直接回收进程树；建立后发送一次带目标 thread/turn 的
    `turn/interrupt`，等待目标 `turn/completed`，宽限期为 2 秒。同一绝对期限覆盖协议读写、审批
-   handler 和事件通道背压。每个 app-server 在 spawn 时取得只属于该 Run 的环境所有权标记，正常
-   继承到工具后代；ACK 或终态缺失超过期限后，Unix 按该标记反复扫描、冻结、强杀并等待到空集合
-   稳定，进程组只作补充安全网。身份不依赖 PPID，因此 app-server 先退出、`setsid()` 后代被
-   reparent，或扫描期间发生 fork+exit 都不会丢失归属。Windows 使用同一 PID 的 `/T` tree。
+   handler 和事件通道背压。工具进程归属使用 Codex 在用户 shell environment policy 全部过滤完成后
+   强制注入的 `CODEX_THREAD_ID`，不依赖 app-server 环境中可被 `inherit=core/none`、`exclude` 或
+   `include_only` 移除的自定义变量。ACK 或终态缺失超过期限后，Unix 按实际 thread id 反复扫描、
+   冻结、强杀并等待到空集合稳定，app-server PID/进程组只负责 root 和同组进程。身份不依赖 PPID，
+   因此 app-server 先退出、`setsid()` 后代被 reparent，或扫描期间发生 fork+exit 都不会丢失归属。
+   Windows 使用同一 PID 的 `/T` tree。
 5. Git 提交开始前再次检查取消。若取消已经记录，不启动 Git；一旦在 NEC-209 隔离 worktree 中进入
    Git 结算，`git add`、hook、commit 和 HEAD 读取不可因普通取消中途丢弃。Application 的 cancel
    与 Adapter 的主工作区发布共享同一 finalization gate：cancel 先赢时隔离 commit/ref 保留但不发布，
@@ -37,16 +39,16 @@
 - 持久化取消意图、停止请求与取消终态不再是同一个瞬间。
 - 迟到的成功输出不能覆盖取消状态或追加不可变 Message；已经完成的 Git commit 不会成为无归属副作用。
 - Session 与 Project workspace lease 覆盖完整外部执行、隔离 Git 结算、finalization gate 和可靠终态
-  落库。Unix 进程回收按 spawn 时的 Run 唯一继承标记识别，不按进程名、工作目录或清理时 PPID
-  猜测；脱组/reparent 后代仍可识别，预先存在或无关进程没有该标记而不会被命中。
+  落库。Unix 进程回收按 Codex 实际 thread id 识别工具进程，不按进程名、工作目录或清理时 PPID
+  猜测；该身份由 Codex 在用户环境策略之后注入，脱组/reparent 后代仍可识别，无关进程不会被命中。
 - daemon 崩溃后的持久恢复和无法确认的 Git/SQLite 对账仍由 NEC-212 负责；失败/取消部分输出保留由
   NEC-210 负责；同 Project 并发工作区隔离由 NEC-209 负责。
 
 ## 验证
 
 - 协议 fake 覆盖 interrupt ACK/终态延迟、ACK 缺失、阻塞 approval handler 和已满事件通道。
-- 进程测试覆盖握手取消、`setsid()` 脱组工具、脱组工具孙进程、app-server 先退出、扫描期间
-  fork+exit，以及无关预先存在进程。
+- 进程测试覆盖握手取消、模拟 `inherit=none` 过滤后仅由 Codex 注入 thread id 的 `setsid()` 工具、
+  脱组工具孙进程、app-server 先退出、扫描期间 fork+exit，以及无关预先存在进程。
 - application fake 覆盖重复取消、取消后立即发送、迟到成功、Session 延迟释放、Message 不追加与
   commit 审计，并覆盖 OpenAI/DeepSeek pending 请求的快速取消。
 - 临时 Git 仓库和延迟 pre-commit hook 覆盖 commit 开始后的 shielded settlement，以及取消后

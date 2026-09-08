@@ -7,7 +7,7 @@ use std::{
     io::{BufRead as _, BufReader as StdBufReader, Read as _, Write as _},
     path::{Path, PathBuf},
     process::{Child as ProcessChild, ChildStdin, Command as ProcessCommand, Stdio},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -121,11 +121,7 @@ impl CodexAppServerAdapter {
         Ok(Self { config })
     }
 
-    fn spawn_process(
-        &self,
-        cwd: &std::path::Path,
-        owner_marker: Option<&str>,
-    ) -> Result<Child, AdapterError> {
+    fn spawn_process(&self, cwd: &std::path::Path) -> Result<Child, AdapterError> {
         let mut command = Command::new(&self.config.codex_binary);
         command
             .arg("app-server")
@@ -137,9 +133,6 @@ impl CodexAppServerAdapter {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        if let Some(owner_marker) = owner_marker {
-            command.env(CODEX_PROCESS_OWNER_ENV, owner_marker);
-        }
         #[cfg(unix)]
         command.process_group(0);
         #[cfg(windows)]
@@ -154,10 +147,14 @@ impl CodexAppServerAdapter {
     }
 }
 
-const CODEX_PROCESS_OWNER_ENV: &str = "AIT_CODEX_PROCESS_OWNER";
+const CODEX_THREAD_ID_ENV: &str = "CODEX_THREAD_ID";
 
-fn process_owner_marker(request_id: &str) -> String {
-    format!("{:x}", Sha256::digest(request_id.as_bytes()))
+fn tool_thread_ownership(request: &AgentRunRequest) -> Arc<OnceLock<String>> {
+    let ownership = Arc::new(OnceLock::new());
+    if let Some(thread_id) = &request.resume_thread_id {
+        let _ = ownership.set(thread_id.clone());
+    }
+    ownership
 }
 
 #[cfg(unix)]
@@ -168,8 +165,8 @@ struct ProcessRecord {
 }
 
 #[cfg(unix)]
-async fn owned_processes(owner_marker: &str) -> Option<Vec<ProcessRecord>> {
-    let expected = OsString::from(format!("{CODEX_PROCESS_OWNER_ENV}={owner_marker}"));
+async fn owned_tool_processes(thread_id: &str) -> Option<Vec<ProcessRecord>> {
+    let expected = OsString::from(format!("{CODEX_THREAD_ID_ENV}={thread_id}"));
     tokio::task::spawn_blocking(move || {
         let mut system = System::new();
         system.refresh_processes_specifics(
@@ -215,10 +212,10 @@ fn signal_process_group(leader: u32, signal: rustix::process::Signal) {
 }
 
 #[cfg(unix)]
-async fn reclaim_marked_processes(owner_marker: &str) {
+async fn reclaim_thread_processes(thread_id: &str) {
     let mut empty_passes = 0_u8;
     loop {
-        let Some(processes) = owned_processes(owner_marker).await else {
+        let Some(processes) = owned_tool_processes(thread_id).await else {
             tokio::time::sleep(Duration::from_millis(10)).await;
             continue;
         };
@@ -237,9 +234,11 @@ async fn reclaim_marked_processes(owner_marker: &str) {
             for pid in &alive {
                 signal_process(*pid, rustix::process::Signal::STOP);
             }
-            // Every newly forked or reparented descendant inherits the stable
-            // owner marker. Repeating the global scan therefore closes both
-            // the root-first-exit and scan-time fork/exit windows.
+            // Codex injects CODEX_THREAD_ID after applying the user-configured
+            // shell environment policy, so every newly forked or reparented
+            // tool descendant remains discoverable even with inherit=none.
+            // Repeating the global scan closes both the root-first-exit and
+            // scan-time fork/exit windows.
             for pid in alive {
                 signal_process(pid, rustix::process::Signal::KILL);
             }
@@ -249,14 +248,16 @@ async fn reclaim_marked_processes(owner_marker: &str) {
 }
 
 #[cfg(unix)]
-async fn terminate_owned_process_tree(child: &mut Child, owner_marker: &str) {
+async fn terminate_owned_process_tree(child: &mut Child, tool_thread_id: Option<&str>) {
     let root = child.id();
     if let Some(root) = root {
-        // Stop the normal fork source first. If it already exited, marked
-        // descendants remain discoverable regardless of their new PPID.
+        // Stop the normal fork source first. If it already exited, tool
+        // descendants remain discoverable by Codex thread regardless of PPID.
         signal_process(root, rustix::process::Signal::STOP);
     }
-    reclaim_marked_processes(owner_marker).await;
+    if let Some(thread_id) = tool_thread_id {
+        reclaim_thread_processes(thread_id).await;
+    }
     if let Some(root) = root {
         signal_process_group(root, rustix::process::Signal::KILL);
         signal_process(root, rustix::process::Signal::KILL);
@@ -265,11 +266,13 @@ async fn terminate_owned_process_tree(child: &mut Child, owner_marker: &str) {
         let _ = child.start_kill();
     }
     let _ = child.wait().await;
-    reclaim_marked_processes(owner_marker).await;
+    if let Some(thread_id) = tool_thread_id {
+        reclaim_thread_processes(thread_id).await;
+    }
 }
 
 #[cfg(windows)]
-async fn terminate_owned_process_tree(child: &mut Child, _owner_marker: &str) {
+async fn terminate_owned_process_tree(child: &mut Child, _tool_thread_id: Option<&str>) {
     if let Some(pid) = child.id() {
         let _ = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -301,9 +304,7 @@ impl HostProviderModelCatalog for CodexAppServerAdapter {
                 false,
             )
         })?;
-        let mut child = self
-            .spawn_process(&cwd, None)
-            .map_err(adapter_domain_error)?;
+        let mut child = self.spawn_process(&cwd).map_err(adapter_domain_error)?;
         let stdout = child.stdout.take().ok_or_else(|| {
             domain_error(
                 ErrorCode::ProviderFailed,
@@ -3929,8 +3930,8 @@ impl AgentAdapter for CodexAppServerAdapter {
             ));
         }
 
-        let owner_marker = process_owner_marker(&request.request_id);
-        let mut child = self.spawn_process(&request.cwd, Some(&owner_marker))?;
+        let tool_thread_id = tool_thread_ownership(&request);
+        let mut child = self.spawn_process(&request.cwd)?;
         let stdout = child.stdout.take().ok_or_else(|| {
             AdapterError::new(
                 AdapterErrorKind::ProcessSpawn,
@@ -3954,6 +3955,7 @@ impl AgentAdapter for CodexAppServerAdapter {
         };
         let approvals = Arc::clone(&self.config.approval_handler);
         let interrupt_grace_period = self.config.interrupt_grace_period;
+        let protocol_tool_thread_id = Arc::clone(&tool_thread_id);
         tokio::spawn(async move {
             let stderr_task = stderr.map(|stderr| {
                 tokio::spawn(async move {
@@ -3964,7 +3966,7 @@ impl AgentAdapter for CodexAppServerAdapter {
                 })
             });
             let result = tokio::select! {
-                result = drive_protocol_with_interrupt_grace(
+                result = drive_protocol_with_interrupt_grace_and_ownership(
                     stdout,
                     stdin,
                     request,
@@ -3972,10 +3974,12 @@ impl AgentAdapter for CodexAppServerAdapter {
                     approvals,
                     &sender,
                     interrupt_grace_period,
+                    protocol_tool_thread_id,
                 ) => result,
                 () = sender.closed() => Err(AdapterError::cancelled()),
             };
-            terminate_owned_process_tree(&mut child, &owner_marker).await;
+            terminate_owned_process_tree(&mut child, tool_thread_id.get().map(String::as_str))
+                .await;
             if let Some(task) = stderr_task {
                 task.abort();
                 let _ = task.await;
@@ -4145,12 +4149,41 @@ where
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub async fn drive_protocol_with_interrupt_grace<R, W>(
     reader: R,
+    writer: W,
+    request: AgentRunRequest,
+    client: ClientInfo,
+    approvals: Arc<dyn ApprovalHandler>,
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+    interrupt_grace_period: Duration,
+) -> Result<(), AdapterError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let tool_thread_id = tool_thread_ownership(&request);
+    drive_protocol_with_interrupt_grace_and_ownership(
+        reader,
+        writer,
+        request,
+        client,
+        approvals,
+        sender,
+        interrupt_grace_period,
+        tool_thread_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+async fn drive_protocol_with_interrupt_grace_and_ownership<R, W>(
+    reader: R,
     mut writer: W,
     request: AgentRunRequest,
     client: ClientInfo,
     approvals: Arc<dyn ApprovalHandler>,
     sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
     interrupt_grace_period: Duration,
+    tool_thread_id: Arc<OnceLock<String>>,
 ) -> Result<(), AdapterError>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -4198,6 +4231,17 @@ where
         .or(request.resume_thread_id.as_deref())
         .ok_or_else(|| AdapterError::protocol("Codex thread response has no thread id"))?
         .to_owned();
+    if let Some(recorded) = tool_thread_id.get() {
+        if recorded != &thread_id {
+            return Err(AdapterError::protocol(
+                "Codex resumed a different thread than requested",
+            ));
+        }
+    } else if tool_thread_id.set(thread_id.clone()).is_err() {
+        return Err(AdapterError::protocol(
+            "Codex thread ownership could not be recorded",
+        ));
+    }
     send_event(
         sender,
         AgentEvent::ThreadStarted {

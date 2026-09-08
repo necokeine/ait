@@ -60,6 +60,7 @@ async fn cancellation_during_handshake_reaps_the_owned_child() {
     .unwrap();
     let mut unrelated = std::process::Command::new("sleep")
         .arg("300")
+        .env("CODEX_THREAD_ID", "unrelated-thread")
         .spawn()
         .unwrap();
     cancellation.cancel();
@@ -102,6 +103,7 @@ async fn missing_interrupt_terminal_forces_the_owned_process_tree_to_exit() {
     let binary = cwd.join("unresponsive-codex");
     let mut unrelated = std::process::Command::new("sleep")
         .arg("300")
+        .env("CODEX_THREAD_ID", "unrelated-thread")
         .spawn()
         .unwrap();
     fs::write(
@@ -113,7 +115,7 @@ while IFS= read -r line; do
     *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
     *'"id":1'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-force"}}}' ;;
     *'"id":2'*)
-      python3 -c 'import os,time,pathlib; os.setsid(); pathlib.Path("detached.pid").write_text(str(os.getpid())); child=os.fork(); pathlib.Path("detached-grandchild.pid").write_text(str(os.getpid())) if child == 0 else None; time.sleep(300)' </dev/null >/dev/null 2>&1 &
+      /usr/bin/env -i CODEX_THREAD_ID=thread-force "$(command -v python3)" -c 'import os,time,pathlib; assert "AIT_CODEX_PROCESS_OWNER" not in os.environ; assert os.environ["CODEX_THREAD_ID"] == "thread-force"; os.setsid(); pathlib.Path("detached.pid").write_text(str(os.getpid())); child=os.fork(); pathlib.Path("detached-grandchild.pid").write_text(str(os.getpid())) if child == 0 else None; time.sleep(300)' </dev/null >/dev/null 2>&1 &
       printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-force"}}}'
       ;;
     *'"id":3'*) : > interrupt-seen ;;
@@ -198,7 +200,7 @@ done
     clippy::too_many_lines,
     reason = "the production-wiring fixture keeps its process choreography visible"
 )]
-async fn root_exit_and_scan_time_forking_do_not_orphan_marked_descendants() {
+async fn filtered_tool_environment_does_not_orphan_thread_descendants() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
     let binary = cwd.join("exiting-codex");
@@ -208,6 +210,8 @@ async fn root_exit_and_scan_time_forking_do_not_orphan_marked_descendants() {
 import pathlib
 import time
 
+assert "AIT_CODEX_PROCESS_OWNER" not in os.environ
+assert os.environ["CODEX_THREAD_ID"] == "thread-root-exit"
 os.setsid()
 
 def record(pid):
@@ -249,7 +253,7 @@ while IFS= read -r line; do
     *'"id":0'*) printf '%s\n' '{"id":0,"result":{}}' ;;
     *'"id":1'*) printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-root-exit"}}}' ;;
     *'"id":2'*)
-      python3 forking-tool.py </dev/null >/dev/null 2>&1 &
+      /usr/bin/env -i CODEX_THREAD_ID=thread-root-exit "$(command -v python3)" forking-tool.py </dev/null >/dev/null 2>&1 &
       printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-root-exit"}}}'
       ;;
     *'"id":3'*)
@@ -298,6 +302,7 @@ done
     let root_pid = read_pid(&cwd, "child.pid").await;
     let mut unrelated = std::process::Command::new("sleep")
         .arg("300")
+        .env("CODEX_THREAD_ID", "unrelated-thread")
         .spawn()
         .unwrap();
 
@@ -321,7 +326,7 @@ done
     }
     assert!(
         unrelated.try_wait().unwrap().is_none(),
-        "owner-marker cleanup must not kill an unrelated process"
+        "thread-owned cleanup must not kill an unrelated process"
     );
     unrelated.kill().unwrap();
     unrelated.wait().unwrap();
