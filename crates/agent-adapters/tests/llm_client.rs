@@ -21,6 +21,17 @@ use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 const TEST_KEY: &str = "local-fixture-key";
 const PROVIDERS: [LLMProvider; 2] = [LLMProvider::OpenAI, LLMProvider::DeepSeek];
 
+#[test]
+fn deepseek_advertises_its_adapter_owned_reasoning_efforts() {
+    let openai = LLMClient::new(LLMClientConfig::new(LLMProvider::OpenAI, TEST_KEY)).unwrap();
+    let deepseek = LLMClient::new(LLMClientConfig::new(LLMProvider::DeepSeek, TEST_KEY)).unwrap();
+    assert!(openai.supported_reasoning_efforts().is_empty());
+    assert_eq!(
+        deepseek.supported_reasoning_efforts(),
+        ["off", "low", "high", "max"]
+    );
+}
+
 struct RecordedRequest {
     method: String,
     path: String,
@@ -249,6 +260,15 @@ fn reasoning_effort_rejects_invalid_local_request_values() {
             AdapterErrorKind::InvalidConfiguration
         );
     }
+    let client = LLMClient::new(LLMClientConfig::new(LLMProvider::DeepSeek, TEST_KEY)).unwrap();
+    let mut request = client.text_request("fixture-model", "hi");
+    assert_eq!(
+        client
+            .apply_reasoning_effort(&mut request, "medium")
+            .unwrap_err()
+            .kind,
+        AdapterErrorKind::InvalidConfiguration
+    );
 }
 
 #[tokio::test]

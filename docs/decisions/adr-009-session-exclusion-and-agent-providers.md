@@ -33,7 +33,7 @@ Provider kind 选择 Codex、OpenAI、DeepSeek 等适配器。URL、认证和模
 
 在设置中修改命名预设会更新该预设的后续使用。每个 Run 在创建事务内固定完整配置与 Provider 连接，并在私有状态中固定凭证引用；执行期间不重新解析可变 Agent。这样修改预设、URL 或轮换密钥不会改变已开始的 Run。
 
-模型与 reasoning effort 必须存在于 Provider catalog 中。空 effort 表示供应商默认值。模型 ID 和等级均为字符串，避免把所有供应商限制在 Codex 的固定枚举。模型发现使用实际 API 的 `/models`；该接口不提供等级时，新模型的等级为空，已有模型保留手工声明的等级，不从名称猜测能力。发现中若连接已变化，拒绝把旧响应写入新连接。模型下架后旧配置仍可查询，但新执行必须重新通过能力校验。
+模型与 reasoning effort 必须存在于 Provider catalog 中。空 effort 表示供应商默认值。模型 ID 和等级均为字符串，避免把所有供应商限制在 Codex 的固定枚举。模型发现使用实际 API 的 `/models`；该接口或 adapter 不提供等级时，新模型的等级为空，已有模型保留手工声明的等级，不从名称猜测能力。若 adapter 提供非空等级目录，则该能力事实优先于旧保存值；DeepSeek 的 adapter-owned 目录由 [NEC-218 ADR-001](NEC-218/adr-001-deepseek-reasoning-efforts.md) 定义。发现中若连接已变化，拒绝把旧响应写入新连接。模型下架后旧配置仍可查询，但新执行必须重新通过能力校验。
 
 OpenAI 的调用使用 Rig Responses API 的 `reasoning.effort`。DeepSeek Chat
 Completions 的非 `off` 等级显式发送 `thinking.type=enabled` 与

@@ -19,6 +19,12 @@ test("rediscovery preserves selected models and declared reasoning without enabl
   assert.deepEqual(saved[0]!.reasoning_efforts, ["low", "high"]);
 });
 
+test("rediscovery adopts non-empty reasoning capabilities advertised by the adapter", () => {
+  const saved = [model("chat")];
+  const discovered = [model("chat", ["off", "low", "high", "max"])];
+  assert.deepEqual(selectedModels(modelChoices(discovered, saved, [])), discovered);
+});
+
 test("a model in use remains selected even when absent from discovery", () => {
   const saved = [model("old", ["high"])];
   const choices = modelChoices([model("new")], saved, [{ provider_id: "p", model: "old", reasoning_effort: "high" }]);

@@ -10,6 +10,9 @@
 - `decisions/NEC-226/adr-001-atomic-session-derivation.md`：桌面派生意图由 daemon 在 Session
   租约与同一 CAS 快照内决定复用或分叉，消除 renderer 叶子快照与接纳之间的竞态。
 
+- `decisions/NEC-218/adr-001-deepseek-reasoning-efforts.md`：DeepSeek adapter-owned
+  `off / low / high / max` 能力目录、发现合并优先级与桌面对话框选择器。
+
 - `decisions/NEC-224/adr-001-record-oriented-control-storage.md`：控制面按实体记录和 Project 范围读取，
   SQLite 具名表迁移，以及公开 Workspace Snapshot 命令/API/IPC 的移除；物理双层数据库继续遵循 NEC-146。
 

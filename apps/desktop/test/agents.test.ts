@@ -43,3 +43,12 @@ test("unknown models do not receive invented reasoning capabilities", () => {
   assert.equal(summary.model, "unknown");
   assert.deepEqual(summary.supportedReasoningEfforts, []);
 });
+test("DeepSeek adapter capabilities reach the conversation reasoning selector", () => {
+  const deepseek: AgentProvider = {
+    ...provider,
+    kind: "deepseek",
+    models: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash", reasoning_efforts: ["off", "low", "high", "max"] }],
+  };
+  const summary = projectAgent({ ...agent, config: { provider_id: deepseek.id, model: "deepseek-v4-flash", reasoning_effort: "high" } }, [deepseek]);
+  assert.deepEqual(summary.supportedReasoningEfforts, ["off", "low", "high", "max"]);
+});

@@ -117,6 +117,24 @@ fn validate_model(provider: &AgentProvider, config: &AgentConfiguration) -> Resu
     Ok(())
 }
 
+fn preserve_unadvertised_reasoning_efforts(
+    models: &mut [ProviderModel],
+    existing: Option<&AgentProvider>,
+) {
+    for model in models {
+        if model.reasoning_efforts.is_empty()
+            && let Some(old) = existing.and_then(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .find(|candidate| candidate.id == model.id)
+            })
+        {
+            model.reasoning_efforts.clone_from(&old.reasoning_efforts);
+        }
+    }
+}
+
 pub(super) fn require_named_agent<'a>(
     state: &'a WorkingSet,
     id: &str,
@@ -508,13 +526,10 @@ impl LocalControlService {
             self.gateway()?.list_models(&provider, reference).await
         }
         .map_err(domain_error)?;
-        for model in &mut models {
-            if let Some(old) =
-                existing.and_then(|p| p.provider.models.iter().find(|m| m.id == model.id))
-            {
-                model.reasoning_efforts.clone_from(&old.reasoning_efforts);
-            }
-        }
+        preserve_unadvertised_reasoning_efforts(
+            &mut models,
+            existing.map(|provider| &provider.provider),
+        );
         provider.models = models;
         validate_provider(&provider)?;
         Ok(CommandResult::ProviderModels(provider.models))
@@ -548,8 +563,9 @@ impl LocalControlService {
             .list_models(&provider.provider, reference)
             .await
             .map_err(domain_error)?;
-        // Apply fetched IDs to the latest configuration, preserving manually declared
-        // capabilities because standard model-list APIs do not advertise effort levels.
+        // Apply fetched IDs to the latest configuration. Adapter-advertised
+        // capabilities win; otherwise preserve manual declarations because standard
+        // model-list APIs do not include effort levels.
         for _ in 0..4 {
             let loaded = self.read_provider_records(provider_id, false).await?;
             let mut latest = loaded.original.clone();
@@ -566,11 +582,7 @@ impl LocalControlService {
                 ));
             }
             let mut refreshed = models.clone();
-            for model in &mut refreshed {
-                if let Some(old) = target.provider.models.iter().find(|m| m.id == model.id) {
-                    model.reasoning_efforts.clone_from(&old.reasoning_efforts);
-                }
-            }
+            preserve_unadvertised_reasoning_efforts(&mut refreshed, Some(&target.provider));
             target.provider.models = refreshed;
             validate_provider(&target.provider)?;
             let view = target.clone();

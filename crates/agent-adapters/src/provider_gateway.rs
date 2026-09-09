@@ -60,13 +60,18 @@ fn client_with_secret(provider: &AgentProvider, secret: String) -> Result<LLMCli
 
 async fn discover_models(client: LLMClient) -> Result<Vec<ProviderModel>, DomainError> {
     let models = client.list_models().await.map_err(|_| provider_error())?;
+    let reasoning_efforts = client
+        .supported_reasoning_efforts()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     Ok(models
         .data
         .into_iter()
         .map(|model| ProviderModel {
             name: model.name.unwrap_or_else(|| model.id.clone()),
             id: model.id,
-            reasoning_efforts: Vec::new(),
+            reasoning_efforts: reasoning_efforts.clone(),
         })
         .collect())
 }
