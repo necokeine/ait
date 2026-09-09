@@ -84,6 +84,14 @@ fn config(effort: &str) -> AgentConfiguration {
         reasoning_effort: Some(effort.into()),
     }
 }
+#[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+fn mock_config() -> AgentConfiguration {
+    AgentConfiguration {
+        provider_id: "builtin-mock".into(),
+        model: "mock-local".into(),
+        reasoning_effort: None,
+    }
+}
 fn send(id: &str) -> Command {
     Command::SendMessage {
         session_id: id.into(),
@@ -2783,6 +2791,7 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
     );
 }
 
+#[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
 #[tokio::test]
 async fn fresh_workspace_exposes_only_the_codex_builtin() {
     let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
@@ -2790,9 +2799,133 @@ async fn fresh_workspace_exposes_only_the_codex_builtin() {
     assert_eq!(providers.len(), 1);
     assert_eq!(providers[0].provider.id, "builtin-codex");
     assert_eq!(providers[0].provider.kind, AgentMode::Codex);
+    assert!(serde_json::from_value::<AgentMode>(serde_json::json!("mock")).is_err());
     for kind in RETIRED_BUILTINS {
         assert!(serde_json::from_value::<AgentMode>(serde_json::json!(kind)).is_err());
     }
+}
+
+#[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+#[tokio::test]
+async fn development_mock_is_selectable_and_persists_without_external_executors() {
+    let database_directory = tempfile::tempdir().unwrap();
+    let database = database_directory.path().join("mock-control.sqlite3");
+    let store = Arc::new(SqliteControlStore::open(&database).unwrap());
+    // No Provider gateway or Codex workspace harness is installed. A completed
+    // result therefore proves the Mock invocation stayed on its local branch.
+    let service = LocalControlService::new(store.clone());
+    let providers = view(&service).await.providers;
+    assert_eq!(providers.len(), 2);
+    let mock = providers
+        .iter()
+        .find(|provider| provider.provider.id == "builtin-mock")
+        .expect("development Mock provider");
+    assert_eq!(mock.provider.kind, AgentMode::Mock);
+    assert_eq!(mock.provider.models[0].id, "mock-local");
+
+    let _directory = setup(&service, mock_config()).await;
+    let CommandResult::Run(run) = ok(
+        &service,
+        Command::SendMessage {
+            session_id: "one".into(),
+            text: "arbitrary user input".into(),
+        },
+    )
+    .await
+    else {
+        panic!("expected Run")
+    };
+    assert_eq!(run.status, "completed");
+    assert_eq!(run.provider.kind, AgentMode::Mock);
+    ok(
+        &service,
+        Command::SetSessionTitle {
+            session_id: "one".into(),
+            title: "Arbitrary user input".into(),
+        },
+    )
+    .await;
+    let title = service
+        .generate_session_title("one".into(), "arbitrary user input".into())
+        .await;
+    assert!(
+        title.ok,
+        "Mock title handling must not require a Codex title generator: {:?}",
+        title.error
+    );
+
+    let custom = service
+        .execute(Command::SaveAgentProvider {
+            provider: AgentProvider {
+                id: "custom-mock".into(),
+                name: "Custom Mock".into(),
+                kind: AgentMode::Mock,
+                url: None,
+                models: vec![ProviderModel {
+                    id: "custom".into(),
+                    name: "Custom".into(),
+                    reasoning_efforts: Vec::new(),
+                }],
+            },
+            secret: None,
+        })
+        .await;
+    assert_eq!(
+        custom.error.unwrap().code,
+        ErrorCode::InvalidAgentConfiguration
+    );
+    let archive = service
+        .execute(Command::ExportProject {
+            project_id: "p".into(),
+        })
+        .await;
+    assert_eq!(archive.error.unwrap().code, ErrorCode::InvalidProject);
+
+    drop(service);
+    drop(store);
+    let reopened_store = Arc::new(SqliteControlStore::open(&database).unwrap());
+    let reopened_service = LocalControlService::new(reopened_store);
+    let persisted = view(&reopened_service).await;
+    let user = persisted
+        .messages
+        .iter()
+        .find(|message| message.id == run.base_message_id)
+        .unwrap();
+    let assistant = persisted
+        .messages
+        .iter()
+        .find(|message| Some(message.id.as_str()) == run.last_message_id.as_deref())
+        .unwrap();
+    assert_eq!(user.role, "user");
+    assert_eq!(user.text.as_deref(), Some("arbitrary user input"));
+    assert_eq!(assistant.role, "assistant");
+    assert_eq!(assistant.text.as_deref(), Some("Mock assistant response."));
+    assert_eq!(
+        assistant.parent_message_id.as_deref(),
+        Some(user.id.as_str())
+    );
+    let restored_run = persisted
+        .runs
+        .iter()
+        .find(|item| item.id == run.id)
+        .unwrap();
+    assert_eq!(restored_run.status, "completed");
+    assert_eq!(
+        restored_run.last_message_id.as_deref(),
+        Some(assistant.id.as_str())
+    );
+    let restored_session = persisted
+        .sessions
+        .iter()
+        .find(|item| item.id == "one")
+        .unwrap();
+    assert_eq!(restored_session.current_message_id, assistant.id);
+    assert!(restored_session.active_run_id.is_none());
+    assert_eq!(
+        restored_session.title.as_deref(),
+        Some("Arbitrary user input")
+    );
+    assert!(restored_session.title_generation_started);
 }
 
 #[tokio::test]

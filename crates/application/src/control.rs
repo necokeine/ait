@@ -1190,8 +1190,9 @@ impl LocalControlService {
                 false,
             ));
         }
-        let (session, workdir, should_generate) = self.begin_title_generation(session_id).await?;
-        if !should_generate {
+        let (session, workdir, should_generate, local_only) =
+            self.begin_title_generation(session_id).await?;
+        if !should_generate || local_only {
             return Ok(session);
         }
         let generator = self.session_title_generator.as_ref().ok_or_else(|| {
@@ -1218,7 +1219,7 @@ impl LocalControlService {
     async fn begin_title_generation(
         &self,
         session_id: &str,
-    ) -> Result<(SessionView, String, bool), ApiError> {
+    ) -> Result<(SessionView, String, bool, bool), ApiError> {
         for _ in 0..4 {
             let loaded = self.read_session_title_records(session_id).await?;
             let mut state = loaded.original.clone();
@@ -1233,8 +1234,15 @@ impl LocalControlService {
                 .iter()
                 .find(|project| project.id == session.project_id)
                 .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+            let local_only = state.runs.iter().any(|run| {
+                run.session_id.as_deref() == Some(session_id)
+                    && run.provider.kind == AgentMode::Mock
+            });
+            #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
+            let local_only = false;
             if session.title_generation_started || !session.name.trim().is_empty() {
-                return Ok((session, project.workdir.clone(), false));
+                return Ok((session, project.workdir.clone(), false, local_only));
             }
             if !is_first_completed_interaction(&state, &session) {
                 return Err(error(
@@ -1251,7 +1259,9 @@ impl LocalControlService {
                 &session,
             );
             match self.persist_records(&loaded, &state, vec![event]).await {
-                Ok(()) => return Ok((session, project.workdir.clone(), true)),
+                Ok(()) => {
+                    return Ok((session, project.workdir.clone(), true, local_only));
+                }
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
             }
@@ -1341,6 +1351,8 @@ impl LocalControlService {
                     )
                     .await
                 }
+                #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+                AgentMode::Mock => Ok(Self::invoke_mock()),
             }
         };
         let result = AssertUnwindSafe(async {
@@ -5615,6 +5627,12 @@ fn validate_archive_catalog(archive: &ProjectExport) -> Result<(), ApiError> {
     let mut provider_ids = HashSet::new();
     for provider in &archive.providers {
         validate_provider(provider)?;
+        #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+        if provider.kind == AgentMode::Mock {
+            return Err(invalid_archive(
+                "development Mock providers cannot be imported or exported",
+            ));
+        }
         if !provider_ids.insert(&provider.id) {
             return Err(invalid_archive("duplicate provider"));
         }

@@ -17,9 +17,11 @@ import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messag
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
+import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const endpoint = "http://127.0.0.1:7314";
+const daemonRuntime = desktopDaemonRuntime(app.isPackaged);
+const endpoint = daemonRuntime.endpoint;
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "workspace.view", "settings.get", "settings.save", "settings.reset",
@@ -241,16 +243,18 @@ class DaemonClient {
   }
 
   private async start(): Promise<void> {
-    if (await this.isReady()) return;
+    if (await this.isReady()) {
+      throw new Error(`Ait refuses to reuse an unverified daemon already listening on ${daemonRuntime.listen}. Stop that daemon and try again.`);
+    }
     const appRoot = resolve(here, "..");
     const workspaceRoot = resolve(appRoot, "../..");
     const executable = app.isPackaged
       ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ait-daemon.exe" : "ait-daemon")
       : "cargo";
-    const database = join(app.getPath("userData"), "ait.sqlite3");
+    const database = join(app.getPath("userData"), daemonRuntime.databaseFilename);
     const args = app.isPackaged
-      ? ["--database", database, "--listen", "127.0.0.1:7314"]
-      : ["run", "--quiet", "-p", "ait-daemon", "--", "--database", database, "--listen", "127.0.0.1:7314"];
+      ? ["--database", database, "--listen", daemonRuntime.listen]
+      : ["run", "--quiet", "-p", "ait-daemon", "--features", "dev-mock-provider", "--", "--database", database, "--listen", daemonRuntime.listen];
     this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
     this.ownedProcess.stderr?.on("data", (chunk: Buffer) => {
       const message = chunk.toString("utf8").trim();
@@ -441,6 +445,11 @@ class DaemonClient {
       ])
       : [[], []];
     const workspace: WorkspaceView = { projects, agents, providers, sessions, messages, runs };
+    const catalog = desktopProviderCatalog(
+      workspace.providers,
+      workspace.agents,
+      daemonRuntime.allowDevelopmentMock,
+    );
     const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
     const activeRunIds = new Set(workspace.sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
     const runProgress = progressValues
@@ -455,8 +464,8 @@ class DaemonClient {
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map((agent) => projectAgent(agent, workspace.providers)),
-      providers: workspace.providers,
+      agents: catalog.agents.map((agent) => projectAgent(agent, catalog.providers)),
+      providers: catalog.providers,
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, name: session.name ?? "",
         title: sessionDisplayTitle(session), description: session.description ?? "",

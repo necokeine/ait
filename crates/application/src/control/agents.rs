@@ -9,22 +9,39 @@ use super::{
 use ait_contracts::ProviderSecret;
 
 pub(super) fn builtin_providers() -> Vec<AgentProviderView> {
-    vec![AgentProviderView {
-        provider: AgentProvider {
-            id: "builtin-codex".into(),
-            name: "Codex".into(),
-            kind: AgentMode::Codex,
-            url: None,
-            models: vec![ProviderModel {
-                id: "gpt-5.6-sol".into(),
-                name: "gpt-5.6-sol".into(),
-                reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
-                    .map(str::to_owned)
-                    .to_vec(),
-            }],
+    vec![
+        AgentProviderView {
+            provider: AgentProvider {
+                id: "builtin-codex".into(),
+                name: "Codex".into(),
+                kind: AgentMode::Codex,
+                url: None,
+                models: vec![ProviderModel {
+                    id: "gpt-5.6-sol".into(),
+                    name: "gpt-5.6-sol".into(),
+                    reasoning_efforts: ["low", "medium", "high", "xhigh", "max", "ultra"]
+                        .map(str::to_owned)
+                        .to_vec(),
+                }],
+            },
+            has_secret: false,
         },
-        has_secret: false,
-    }]
+        #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+        AgentProviderView {
+            provider: AgentProvider {
+                id: "builtin-mock".into(),
+                name: "Mock (Development)".into(),
+                kind: AgentMode::Mock,
+                url: None,
+                models: vec![ProviderModel {
+                    id: "mock-local".into(),
+                    name: "Mock Local".into(),
+                    reasoning_efforts: Vec::new(),
+                }],
+            },
+            has_secret: false,
+        },
+    ]
 }
 
 fn invalid(message: &str) -> ApiError {
@@ -346,6 +363,10 @@ impl LocalControlService {
         secret: Option<ProviderSecret>,
     ) -> Result<CommandResult, ApiError> {
         validate_provider(&provider)?;
+        #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+        if provider.kind == AgentMode::Mock {
+            return Err(invalid("the development Mock provider is built in"));
+        }
         let credential = if let Some(secret) = secret {
             if secret.0.trim().is_empty() {
                 return Err(invalid("provider secret cannot be empty"));
@@ -438,6 +459,12 @@ impl LocalControlService {
         secret: Option<ProviderSecret>,
     ) -> Result<CommandResult, ApiError> {
         validate_provider(&provider)?;
+        #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+        if provider.kind == AgentMode::Mock {
+            return Err(invalid(
+                "the development Mock provider has a fixed local model",
+            ));
+        }
         if provider.kind == AgentMode::Codex {
             if secret.is_some() {
                 return Err(invalid("Codex uses host authentication"));
@@ -506,6 +533,12 @@ impl LocalControlService {
             .iter()
             .find(|p| p.provider.id == provider_id)
             .ok_or_else(|| invalid("provider not found"))?;
+        #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+        if provider.provider.kind == AgentMode::Mock {
+            return Err(invalid(
+                "the development Mock provider has a fixed local model",
+            ));
+        }
         let reference = state
             .provider_credentials
             .get(provider_id)
@@ -600,6 +633,16 @@ impl LocalControlService {
             operations: Vec::new(),
             output_items: Vec::new(),
         })
+    }
+
+    #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+    pub(super) fn invoke_mock() -> WorkspaceAgentResponse {
+        WorkspaceAgentResponse {
+            assistant_text: "Mock assistant response.".into(),
+            commit_id: None,
+            operations: Vec::new(),
+            output_items: Vec::new(),
+        }
     }
 }
 
