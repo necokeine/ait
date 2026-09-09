@@ -85,6 +85,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/event/list", get(events))
         .route("/v1/event/stream", get(event_stream))
         .route("/v1/run/progress", get(progress_checkpoints))
+        .route("/v1/health", get(health))
         .route("/v1/metric/list", get(metrics))
         .with_state(ApiState { service, telemetry })
 }
@@ -571,18 +572,13 @@ async fn list_agent_providers(State(state): State<ApiState>) -> Json<Response> {
 }
 
 #[derive(Deserialize)]
-struct OptionalProjectQuery {
-    project_id: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct ProjectQuery {
     project_id: String,
 }
 
 async fn list_sessions(
     State(state): State<ApiState>,
-    Query(query): Query<OptionalProjectQuery>,
+    Query(query): Query<ProjectQuery>,
 ) -> Json<Response> {
     execute_command(
         state,
@@ -794,13 +790,18 @@ async fn event_stream(
 
 async fn progress_checkpoints(
     State(state): State<ApiState>,
+    Query(query): Query<ProjectQuery>,
 ) -> Result<Json<Vec<Value>>, StatusCode> {
     state
         .service
-        .progress_checkpoints()
+        .progress_checkpoints(&query.project_id)
         .await
         .map(Json)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn health() -> Json<Value> {
+    Json(json!({ "api_version": 1, "status": "ok" }))
 }
 
 fn sse_event(event: &ControlEvent) -> Event {
@@ -866,17 +867,15 @@ fn correlation_for_command(command: &Command) -> Correlation {
         }
         Command::SetProjectDefaultAgent { project_id, .. }
         | Command::CreateCron { project_id, .. }
-        | Command::ExportProject { project_id } => {
+        | Command::ExportProject { project_id }
+        | Command::ListMessages { project_id }
+        | Command::ListRuns { project_id }
+        | Command::ListSessions { project_id } => {
             correlation.project_id = Some(project_id.clone());
         }
         Command::ImportProject { archive, .. } => {
             correlation.project_id = Some(archive.project.id.clone());
         }
-        Command::ListMessages { project_id }
-        | Command::ListRuns { project_id }
-        | Command::ListSessions {
-            project_id: Some(project_id),
-        } => correlation.project_id = Some(project_id.clone()),
         Command::UpdateAgent { .. }
         | Command::SaveAgentProvider { .. }
         | Command::DiscoverProviderModels { .. }
@@ -890,7 +889,6 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::ListProjects
         | Command::ListAgents
         | Command::ListAgentProviders
-        | Command::ListSessions { project_id: None }
         | Command::ListCrons => {}
     }
     correlation

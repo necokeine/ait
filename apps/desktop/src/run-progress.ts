@@ -1,7 +1,7 @@
 import type {
   ControlEvent,
   DesktopRun,
-  DesktopView,
+  DesktopState,
   MessagePart,
   RunProgress,
   RunProgressItem,
@@ -16,7 +16,7 @@ export function isTerminalRunEvent(event: ControlEvent): boolean {
 }
 
 export function terminalRunForSession(
-  view: Pick<DesktopView, "sessions" | "runs">,
+  view: Pick<DesktopState, "sessions" | "runs">,
   sessionId: string,
 ): DesktopRun | undefined {
   const session = view.sessions.find((candidate) => candidate.id === sessionId);

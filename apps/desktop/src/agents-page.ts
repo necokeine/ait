@@ -1,14 +1,16 @@
 import { catalogOption as option, escapeCatalog as escape } from "./agent-settings.js";
-import type { DesktopView } from "./types.js";
+import type { AgentCatalog, DesktopState } from "./types.js";
+
+type AgentsPageView = Pick<DesktopState, "agents" | "providers" | "projects" | "sessions">;
 
 interface AgentsPageActions {
-  update(view: DesktopView): void;
+  update(view: AgentCatalog): void;
   notify(message: string, failure?: boolean): void;
   configureProvider(id: string): void;
 }
 
 export function createAgentsPage(container: Element, actions: AgentsPageActions) {
-  let view: DesktopView | undefined;
+  let view: AgentsPageView | undefined;
   container.innerHTML = `<header class="agents-page-header"><div><span class="eyebrow">Workspace</span><h1 id="agents-page-title" tabindex="-1">Agents</h1><p>Connections and reusable configurations for your Projects and Sessions.</p></div><button id="agent-create" class="primary-button" type="button">New Agent</button></header>
     <div class="agents-page-scroll">
       <section class="agents-catalog-section" aria-labelledby="providers-title"><header class="catalog-heading"><div><h2 id="providers-title">Agent providers</h2><p>Shared connections and the models you have enabled.</p></div><button id="agents-add-provider" class="secondary-button" type="button">Add provider</button></header><div id="agents-provider-list" class="provider-cards"></div></section>
@@ -95,7 +97,7 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   get("#agent-create").addEventListener("click", () => edit());
   get("#agents-add-provider").addEventListener("click", () => actions.configureProvider(""));
 
-  const render = (updated: DesktopView): void => {
+  const render = (updated: AgentsPageView): void => {
     view = updated;
     get("#agents-provider-list").innerHTML = view.providers.map((provider) => {
       const remote = ["openai", "deepseek"].includes(provider.kind);

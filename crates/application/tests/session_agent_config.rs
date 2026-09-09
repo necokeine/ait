@@ -505,8 +505,11 @@ impl ControlStore for TerminalFailingStore {
         self.inner.save_progress(checkpoint, events).await
     }
 
-    async fn load_progress(&self) -> Result<Vec<ait_ports::ProgressCheckpoint>, ControlStoreError> {
-        self.inner.load_progress().await
+    async fn load_progress(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ait_ports::ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress(project_id).await
     }
 
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
@@ -1978,7 +1981,7 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-a","turn"
         );
     }
 
-    // A desktop reconnect obtains a fresh workspace.view from the same durable daemon state.
+    // A desktop reconnect obtains fresh Project-scoped slices from the same durable daemon state.
     let reconnected_service =
         LocalControlService::with_workspace_agent(store.clone(), agent.clone());
     let reconnected = view(&reconnected_service).await;
@@ -3249,8 +3252,9 @@ impl ControlStore for PausingStore {
     }
     async fn load_progress(
         &self,
+        project_id: &str,
     ) -> Result<Vec<ait_ports::ProgressCheckpoint>, ait_ports::ControlStoreError> {
-        self.inner.load_progress().await
+        self.inner.load_progress(project_id).await
     }
     async fn clear_progress(&self, run_id: &str) -> Result<(), ait_ports::ControlStoreError> {
         self.inner.clear_progress(run_id).await

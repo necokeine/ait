@@ -2,6 +2,10 @@
 
 ## 当前基线
 
+- `decisions/NEC-233/adr-001-project-scoped-desktop-data.md`：Desktop 读取拆分为 Project catalog、
+  全局 Agent/Provider catalog 与显式 `project_id` 的单 Project 投影；删除 Electron `workspace.view`，
+  并让 Session/Message/Run/progress 与恢复提示全链路保持 Project 范围。
+
 - `decisions/NEC-227/adr-001-development-mock-provider.md`：以非默认编译 feature 隔离开发专用 Mock Provider，并复用真实 Run/Message 持久化状态机。
 
 - `decisions/NEC-208/adr-001-codex-run-permissions-and-native-approvals.md`：桌面权限设置到

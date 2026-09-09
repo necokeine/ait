@@ -16,7 +16,6 @@ export type PendingBranchResolution =
 
 export interface RecoveryNotice {
   projectId: string;
-  projectName: string;
   sessionId?: string;
   sessionTitle?: string;
   runId: string;
@@ -24,8 +23,7 @@ export interface RecoveryNotice {
   message: string;
 }
 
-interface StartupWorkspaceView {
-  projects: Array<{ id: string; name: string }>;
+interface StartupProjectView {
   sessions: Array<{ id: string; project_id: string; name?: string; title?: string | null }>;
   runs: Array<{
     id: string; project_id: string; session_id?: string | null; status?: string;
@@ -34,17 +32,15 @@ interface StartupWorkspaceView {
 }
 
 /** Projects startup-recovered Runs into persistent, location-aware UI notices. */
-export function startupRecoveryNotices(workspace: StartupWorkspaceView): RecoveryNotice[] {
-  return workspace.runs.flatMap((run) => {
+export function startupRecoveryNotices(project: StartupProjectView): RecoveryNotice[] {
+  return project.runs.flatMap((run) => {
     if (run.status !== "interrupted") return [];
-    const project = workspace.projects.find((candidate) => candidate.id === run.project_id);
     const session = run.session_id
-      ? workspace.sessions.find((candidate) => candidate.id === run.session_id)
+      ? project.sessions.find((candidate) => candidate.id === run.session_id)
       : undefined;
     const code = typeof run.error?.code === "string" ? run.error.code : undefined;
     return [{
       projectId: run.project_id,
-      projectName: project?.name ?? `Project ${run.project_id.slice(0, 8)}`,
       ...(session ? {
         sessionId: session.id,
         sessionTitle: session.name?.trim() || session.title?.trim() || `Session ${session.id.slice(0, 8)}`,

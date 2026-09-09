@@ -282,13 +282,23 @@ impl Workflow {
         let agents = self
             .cli(&format!("{name}-agents"), &["agent", "list"], 20)
             .await;
-        let sessions = self
-            .cli(&format!("{name}-sessions"), &["session", "list"], 20)
-            .await;
+        let mut sessions = Vec::new();
         let mut messages = Vec::new();
         let mut runs = Vec::new();
         for project in projects.as_array().unwrap() {
             let project_id = project["id"].as_str().unwrap();
+            sessions.extend(
+                self.cli(
+                    &format!("{name}-sessions"),
+                    &["session", "list", "--project-id", project_id],
+                    20,
+                )
+                .await
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
             messages.extend(
                 self.cli(
                     &format!("{name}-messages"),

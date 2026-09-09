@@ -1,4 +1,4 @@
-import type { AgentSummary, DesktopProject, DesktopSession, DesktopView } from "./types.js";
+import type { AgentSummary, DesktopProject, DesktopSession, DesktopState } from "./types.js";
 
 export interface ProjectGroup {
   project: DesktopProject;
@@ -27,7 +27,7 @@ export function availableProjectDefaultAgentId(
   return agent?.enabled && !agent.ownerSessionId ? agent.id : undefined;
 }
 
-export function groupProjects(view: DesktopView): ProjectGroup[] {
+export function groupProjects(view: DesktopState): ProjectGroup[] {
   return view.projects.map((project) => ({
     project,
     sessions: view.sessions

@@ -155,12 +155,23 @@ impl Workspace {
         let projects = success(&self.cli(&["project", "list"]).await);
         let agents = success(&self.cli(&["agent", "list"]).await);
         let providers = success(&self.cli(&["agent-provider", "list"]).await);
-        let sessions = success(&self.cli(&["session", "list"]).await);
         let crons = success(&self.cli(&["cron", "list"]).await);
+        let mut sessions = Vec::new();
         let mut messages = Vec::new();
         let mut runs = Vec::new();
         for project in projects.as_array().unwrap() {
             let project_id = project["id"].as_str().unwrap();
+            sessions.extend(
+                success(
+                    &self
+                        .cli(&["session", "list", "--project-id", project_id])
+                        .await,
+                )
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
             messages.extend(
                 success(
                     &self

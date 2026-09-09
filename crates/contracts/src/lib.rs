@@ -143,8 +143,7 @@ pub enum Command {
     ListAgents,
     ListAgentProviders,
     ListSessions {
-        #[serde(default)]
-        project_id: Option<String>,
+        project_id: String,
     },
     ListMessages {
         project_id: String,
@@ -524,7 +523,7 @@ pub mod desktop;
 
 pub use desktop::{
     AgentSummary, DESKTOP_PROTOCOL_VERSION, DesktopMessage, DesktopMessagePart, DesktopProject,
-    DesktopSession, DesktopView, ForkFromMessageRequest, SaveSettingsRequest, SettingCategory,
+    DesktopSession, ForkFromMessageRequest, SaveSettingsRequest, SettingCategory,
     SettingDefinition, SettingKind, SettingsDocument, SettingsSchema, SettingsView,
     default_settings, settings_schema,
 };

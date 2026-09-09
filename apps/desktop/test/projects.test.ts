@@ -8,7 +8,7 @@ import {
   groupProjects,
   projectNameFromWorkdir,
 } from "../src/projects.js";
-import type { AgentSummary, DesktopProject, DesktopSession, DesktopView } from "../src/types.js";
+import type { AgentSummary, DesktopProject, DesktopSession, DesktopState } from "../src/types.js";
 
 const codex: AgentSummary = {
   id: "codex-local",
@@ -45,9 +45,7 @@ const session = (id: string, projectId: string, updatedAt: number): DesktopSessi
 });
 
 test("keeps every Project visible and groups Sessions beneath their owner", () => {
-  const view: DesktopView = {
-    protocolVersion: 1,
-    revision: 1,
+  const view: DesktopState = {
     projects: [project("project-a"), project("project-b")],
     agents: [],
     providers: [],
