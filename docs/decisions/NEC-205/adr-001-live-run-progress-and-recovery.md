@@ -8,7 +8,7 @@
 ## 决策
 
 1. 保留现有 `/v1/session/send-message` 和 `/v1/session/fork` 的同步完成契约；桌面端改用新增的
-   `submit-message` / `submit-fork`。异步接口只在 user Message 与 queued Run 原子持久化后返回，
+   `submit-message` / `submit-fork` / `submit-derive`。异步接口只在 user Message 与 queued Run 原子持久化后返回，
    后续执行由 daemon 持有的任务继续，HTTP 请求或事件订阅结束不传播取消。
 2. `WorkspaceAgent` 可接收 application 提供的 `WorkspaceProgressReporter`。Codex Adapter 在该边界
    归一化 message started/delta/completed、operation started/completed、可见 warning/retry 和 turn

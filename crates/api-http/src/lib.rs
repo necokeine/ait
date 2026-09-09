@@ -13,9 +13,9 @@ use std::{
 use ait_application::LocalControlService;
 use ait_contracts::{
     AgentConfiguration, AgentProvider, ApiError, Command, CommandResult, Event as ControlEvent,
-    ProjectExport, ProviderSecret, Response, SettingsDocument,
+    NativeApprovalAction, ProjectExport, ProviderSecret, Response, SettingsDocument,
 };
-use ait_domain::ErrorCode;
+use ait_domain::{ApprovalGrantScope, ErrorCode};
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
 use axum::{
     Json, Router,
@@ -68,9 +68,12 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/session/submit-message", post(submit_message))
         .route("/v1/session/fork", post(fork_session))
         .route("/v1/session/submit-fork", post(submit_fork_session))
+        .route("/v1/session/derive", post(derive_session))
+        .route("/v1/session/submit-derive", post(submit_derive_session))
         .route("/v1/run/get", post(get_run))
         .route("/v1/run/list", get(list_runs))
         .route("/v1/run/cancel", post(cancel_run))
+        .route("/v1/run/approval/resolve", post(resolve_native_approval))
         .route("/v1/cron/create", post(create_cron))
         .route("/v1/cron/list", get(list_crons))
         .route("/v1/cron/set-enabled", post(set_cron_enabled))
@@ -391,6 +394,44 @@ async fn submit_fork_session(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct DeriveSessionRequest {
+    id: String,
+    project_id: String,
+    source_session_id: String,
+    agent_id: String,
+    at_message_id: String,
+    text: String,
+}
+
+impl DeriveSessionRequest {
+    fn into_command(self) -> Command {
+        Command::DeriveSession {
+            id: self.id,
+            project_id: self.project_id,
+            source_session_id: self.source_session_id,
+            agent_id: self.agent_id,
+            at_message_id: self.at_message_id,
+            text: self.text,
+        }
+    }
+}
+
+async fn derive_session(
+    State(state): State<ApiState>,
+    Json(request): Json<DeriveSessionRequest>,
+) -> Json<Response> {
+    execute_command(state, request.into_command()).await
+}
+
+async fn submit_derive_session(
+    State(state): State<ApiState>,
+    Json(request): Json<DeriveSessionRequest>,
+) -> Json<Response> {
+    submit_command(state, request.into_command()).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RunRequest {
     run_id: String,
 }
@@ -413,6 +454,32 @@ async fn cancel_run(
         state,
         Command::CancelRun {
             run_id: request.run_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveNativeApprovalRequest {
+    run_id: String,
+    approval_id: String,
+    action: NativeApprovalAction,
+    #[serde(default)]
+    scope: Option<ApprovalGrantScope>,
+}
+
+async fn resolve_native_approval(
+    State(state): State<ApiState>,
+    Json(request): Json<ResolveNativeApprovalRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ResolveNativeApproval {
+            run_id: request.run_id,
+            approval_id: request.approval_id,
+            action: request.action,
+            scope: request.scope,
         },
     )
     .await
@@ -777,6 +844,14 @@ fn correlation_for_command(command: &Command) -> Correlation {
             correlation.project_id = Some(project_id.clone());
             correlation.session_id = Some(id.clone());
         }
+        Command::DeriveSession {
+            project_id,
+            source_session_id,
+            ..
+        } => {
+            correlation.project_id = Some(project_id.clone());
+            correlation.session_id = Some(source_session_id.clone());
+        }
         Command::SetSessionConfig { session_id, .. }
         | Command::SetSessionAgent { session_id, .. }
         | Command::RenameSession { session_id, .. }
@@ -784,7 +859,9 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::SendMessage { session_id, .. } => {
             correlation.session_id = Some(session_id.clone());
         }
-        Command::GetRun { run_id } | Command::CancelRun { run_id } => {
+        Command::GetRun { run_id }
+        | Command::CancelRun { run_id }
+        | Command::ResolveNativeApproval { run_id, .. } => {
             correlation.run_id = Some(run_id.clone());
         }
         Command::SetProjectDefaultAgent { project_id, .. }
@@ -884,8 +961,10 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::SetSessionTitle { .. } => "set_session_title",
         Command::SendMessage { .. } => "send_message",
         Command::ForkSession { .. } => "fork_session",
+        Command::DeriveSession { .. } => "derive_session",
         Command::GetRun { .. } => "get_run",
         Command::CancelRun { .. } => "cancel_run",
+        Command::ResolveNativeApproval { .. } => "resolve_native_approval",
         Command::CreateCron { .. } => "create_cron",
         Command::SetCronEnabled { .. } => "set_cron_enabled",
         Command::TriggerCron { .. } => "trigger_cron",

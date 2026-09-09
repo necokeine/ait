@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentView, ControlEvent, RunProgress, RunStreamUpdate } from "./types.js";
+import type { AgentProvider, AgentView, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -16,15 +16,19 @@ import { startupRecoveryNotices } from "./runs.js";
 import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messages.js";
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
+import { approvalAction, approvalScope } from "./approval-ui.js";
+import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const endpoint = "http://127.0.0.1:7314";
+const daemonRuntime = desktopDaemonRuntime(app.isPackaged);
+const endpoint = daemonRuntime.endpoint;
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "workspace.view", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
+  "run.resolve-approval",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -48,6 +52,14 @@ interface WorkspaceView {
   runs: Array<{
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
+    permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
+    native_approvals?: Array<{
+      id: string; run_id: string; protocol_request_id: string | number; method: string; kind: string;
+      thread_id: string; turn_id: string; item_id: string;
+      target: NativeApproval["target"];
+      requested_permissions?: Record<string, unknown>; status: string; granted_scope?: string;
+      granted_permissions?: Record<string, unknown>; created_at: number; decided_at?: number;
+    }>;
     error?: { code?: string; message?: string } | null;
   }>;
 }
@@ -187,13 +199,37 @@ class DaemonClient {
       }) as { id: string };
       return { view: await this.view(), runId: run.id };
     }
+    if (method === "run.resolve-approval") {
+      const runId = boundedId(params.runId, "Run");
+      const approvalId = boundedId(params.approvalId, "approval");
+      const action = approvalAction(params.action);
+      const scope = approvalScope(params.scope, action);
+      await this.post("/v1/run/approval/resolve", "run", {
+        run_id: runId,
+        approval_id: approvalId,
+        action,
+        ...(scope ? { scope } : {}),
+      });
+      return this.view();
+    }
 
     const id = randomUUID();
-    const run = await this.post("/v1/session/submit-fork", "run", {
-      id, project_id: params.projectId, agent_id: params.agentId,
-      at_message_id: params.sourceMessageId, text: params.content,
-    }) as { id: string };
-    return { view: await this.view(String(params.projectId)), selectedSessionId: id, runId: run.id };
+    const currentSessionId = String(params.currentSessionId);
+    const run = await this.post("/v1/session/submit-derive", "run", {
+      id, project_id: params.projectId, source_session_id: currentSessionId,
+      agent_id: params.agentId, at_message_id: params.sourceMessageId,
+      text: params.content,
+    }) as { id: string; session_id: string | null };
+    const selectedSessionId = run.session_id;
+    if (selectedSessionId !== currentSessionId && selectedSessionId !== id) {
+      throw new Error("Daemon returned an unexpected derived Session");
+    }
+    return {
+      view: await this.view(String(params.projectId)),
+      selectedSessionId,
+      runId: run.id,
+      reusedCurrentSession: selectedSessionId === currentSessionId,
+    };
   }
 
   stop(): void {
@@ -207,16 +243,18 @@ class DaemonClient {
   }
 
   private async start(): Promise<void> {
-    if (await this.isReady()) return;
+    if (await this.isReady()) {
+      throw new Error(`Ait refuses to reuse an unverified daemon already listening on ${daemonRuntime.listen}. Stop that daemon and try again.`);
+    }
     const appRoot = resolve(here, "..");
     const workspaceRoot = resolve(appRoot, "../..");
     const executable = app.isPackaged
       ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ait-daemon.exe" : "ait-daemon")
       : "cargo";
-    const database = join(app.getPath("userData"), "ait.sqlite3");
+    const database = join(app.getPath("userData"), daemonRuntime.databaseFilename);
     const args = app.isPackaged
-      ? ["--database", database, "--listen", "127.0.0.1:7314"]
-      : ["run", "--quiet", "-p", "ait-daemon", "--", "--database", database, "--listen", "127.0.0.1:7314"];
+      ? ["--database", database, "--listen", daemonRuntime.listen]
+      : ["run", "--quiet", "-p", "ait-daemon", "--features", "dev-mock-provider", "--", "--database", database, "--listen", daemonRuntime.listen];
     this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
     this.ownedProcess.stderr?.on("data", (chunk: Buffer) => {
       const message = chunk.toString("utf8").trim();
@@ -407,6 +445,11 @@ class DaemonClient {
       ])
       : [[], []];
     const workspace: WorkspaceView = { projects, agents, providers, sessions, messages, runs };
+    const catalog = desktopProviderCatalog(
+      workspace.providers,
+      workspace.agents,
+      daemonRuntime.allowDevelopmentMock,
+    );
     const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
     const activeRunIds = new Set(workspace.sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
     const runProgress = progressValues
@@ -421,8 +464,8 @@ class DaemonClient {
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
         defaultAgentId: project.default_agent_id ?? null,
       })),
-      agents: workspace.agents.map((agent) => projectAgent(agent, workspace.providers)),
-      providers: workspace.providers,
+      agents: catalog.agents.map((agent) => projectAgent(agent, catalog.providers)),
+      providers: catalog.providers,
       sessions: workspace.sessions.map((session) => ({
         id: session.id, projectId: session.project_id, name: session.name ?? "",
         title: sessionDisplayTitle(session), description: session.description ?? "",
@@ -438,6 +481,24 @@ class DaemonClient {
         baseMessageId: run.base_message_id,
         lastMessageId: run.last_message_id,
         status: run.status,
+        permissionProfile: run.permission_profile,
+        nativeApprovals: (run.native_approvals ?? []).map((approval) => ({
+          id: approval.id,
+          runId: approval.run_id,
+          protocolRequestId: approval.protocol_request_id,
+          method: approval.method,
+          kind: approval.kind,
+          threadId: approval.thread_id,
+          turnId: approval.turn_id,
+          itemId: approval.item_id,
+          target: approval.target,
+          ...(approval.requested_permissions ? { requestedPermissions: approval.requested_permissions } : {}),
+          status: approval.status,
+          ...(approval.granted_scope ? { grantedScope: approval.granted_scope } : {}),
+          ...(approval.granted_permissions ? { grantedPermissions: approval.granted_permissions } : {}),
+          createdAt: approval.created_at,
+          ...(approval.decided_at !== undefined ? { decidedAt: approval.decided_at } : {}),
+        })),
         ...(run.error?.message ? {
           error: { message: run.error.message, ...(run.error.code ? { code: run.error.code } : {}) },
         } : {}),
@@ -456,6 +517,14 @@ function objectParams(value: unknown): Record<string, unknown> {
 function positiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
+
+function boundedId(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) {
+    throw new Error(`${label} identifier is invalid.`);
+  }
+  return value;
+}
+
 
 const daemon = new DaemonClient();
 

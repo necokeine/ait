@@ -38,11 +38,15 @@ async fn client(provider: &AgentProvider, reference: &str) -> Result<LLMClient, 
     client_with_secret(provider, secret)
 }
 
+#[allow(
+    clippy::match_wildcard_for_single_variants,
+    reason = "non-API development Provider variants must fail closed here"
+)]
 fn client_with_secret(provider: &AgentProvider, secret: String) -> Result<LLMClient, DomainError> {
     let kind = match provider.kind {
         ProviderKind::OpenAI => LLMProvider::OpenAI,
         ProviderKind::DeepSeek => LLMProvider::DeepSeek,
-        ProviderKind::Codex => {
+        _ => {
             return Err(DomainError::invariant(
                 ErrorCode::InvalidConfiguration,
                 "provider does not expose an LLM API",

@@ -19,7 +19,7 @@ use ait_agent_adapters::{
     AgentStream, codex::CodexWorkspaceAgent,
 };
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult, RunView};
+use ait_contracts::{Command, CommandResult, RunView, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     ControlStore, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
@@ -332,6 +332,18 @@ async fn workspace(service: &LocalControlService) -> WorkspaceView {
 }
 
 async fn register_agent(service: &LocalControlService) {
+    let mut settings = default_settings();
+    settings
+        .0
+        .insert("permissions.sandbox".into(), json!("workspace_write"));
+    ok(
+        service,
+        Command::SaveSettings {
+            expected_revision: 1,
+            values: settings,
+        },
+    )
+    .await;
     ok(
         service,
         Command::RegisterAgent {

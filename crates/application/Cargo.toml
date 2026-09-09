@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+dev-mock-provider = [
+    "ait-contracts/dev-mock-provider",
+    "ait-domain/dev-mock-provider",
+]
+
 [dependencies]
 ait-contracts = { path = "../contracts" }
 ait-domain = { path = "../domain" }

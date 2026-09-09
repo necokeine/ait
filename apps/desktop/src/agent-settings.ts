@@ -6,7 +6,7 @@ export const catalogOption = (id: string, name: string, selected = ""): string =
 const field = (label: string, control: string): string => `<label class="catalog-field"><span>${label}</span>${control}</label>`;
 
 export function providerChoices(providers: AgentProvider[]): AgentProvider[] {
-  return providers.filter((provider) => ["codex", "openai", "deepseek"].includes(provider.kind));
+  return providers.filter((provider) => ["codex", "openai", "deepseek", "mock"].includes(provider.kind));
 }
 
 export function renderProviderSettings(

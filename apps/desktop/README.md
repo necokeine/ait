@@ -11,7 +11,18 @@ npm test
 npm run dev
 ```
 
-Main first reuses a daemon already listening on `127.0.0.1:7314`. Otherwise it starts `cargo run -p ait-daemon` with a SQLite database under Electron's per-user `userData` directory. Only a daemon started by this Electron process is stopped on application exit.
+Main owns the daemon it starts and refuses to reuse an unverified process already listening on its
+configured loopback port. Stop the process occupying that port before reopening Ait. Only the daemon
+started by this Electron process is stopped on application exit.
+
+The desktop development launcher adds the non-default `dev-mock-provider` daemon feature. Together
+with Rust debug assertions this exposes the local deterministic Mock provider for UI development;
+packaged/release daemons do not contain that provider even if the feature is passed accidentally.
+Development uses `127.0.0.1:7315` and `<Electron userData>/ait-development.sqlite3`; packaged builds
+use `127.0.0.1:7314` and `<Electron userData>/ait.sqlite3`. These defaults keep development Mock data
+out of the production store. To reset only the development profile, quit Ait and remove
+`ait-development.sqlite3` plus its optional `-wal` and `-shm` companions from the `userData`
+directory. Never rename or copy that database to `ait.sqlite3`.
 
 The sidebar keeps every Project and its isolated Session list visible at once. Use the `+` beside Projects to register a local directory, choose that Project's default Agent backend, and use the `+` on a Project row to create a Session. Starting the desktop with an empty workspace leaves this list empty until the user explicitly creates a Project. The built-in Codex profile uses the locally installed and authenticated `codex app-server`; deterministic adapters remain available to the Rust test suite without network access.
 
@@ -43,7 +54,7 @@ transient projection after Ait has finished saving it.
 
 ## Packaging
 
-A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
+A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
 
 ## Providers and Agent presets
 

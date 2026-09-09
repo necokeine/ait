@@ -2,6 +2,14 @@
 
 ## 当前基线
 
+- `decisions/NEC-227/adr-001-development-mock-provider.md`：以非默认编译 feature 隔离开发专用 Mock Provider，并复用真实 Run/Message 持久化状态机。
+
+- `decisions/NEC-208/adr-001-codex-run-permissions-and-native-approvals.md`：桌面权限设置到
+  Codex Run 参数的不可变快照、fail-closed 管理员上限，以及可重连的原生审批端口与 UI。
+
+- `decisions/NEC-226/adr-001-atomic-session-derivation.md`：桌面派生意图由 daemon 在 Session
+  租约与同一 CAS 快照内决定复用或分叉，消除 renderer 叶子快照与接纳之间的竞态。
+
 - `decisions/NEC-218/adr-001-deepseek-reasoning-efforts.md`：DeepSeek adapter-owned
   `off / low / high / max` 能力目录、发现合并优先级与桌面对话框选择器。
 

@@ -101,12 +101,12 @@
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>
             </form>
-            <p id="composer-hint" class="composer-hint">Send to the current Session · Right-click a Message with replies to start a new Session · ⌘ Enter to send</p>
+            <p id="composer-hint" class="composer-hint">Send to the current Session · Right-click any Message to derive from it · ⌘ Enter to send</p>
           </footer>
         </section>
 
         <aside id="tree-panel" class="tree-panel">
-          <div class="tree-legend"><span><i class="legend-current"></i>Current path</span><small>Right-click a Message with replies to start a new Session</small></div>
+          <div class="tree-legend"><span><i class="legend-current"></i>Current path</span><small>Right-click any Message to derive from it</small></div>
           <div id="tree-scroll" class="tree-scroll" tabindex="0" role="tree" aria-label="Message timeline">
             <div id="tree-list" class="tree-list"></div>
           </div>
@@ -186,7 +186,7 @@
       </div>
 
       <div id="message-context-menu" class="context-menu is-hidden" role="menu" aria-label="Message actions">
-        <button id="message-start-session-action" type="button" role="menuitem">Start new Session here</button>
+        <button id="message-start-session-action" type="button" role="menuitem">Derive from here</button>
       </div>
 
       <div id="rename-session-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="rename-session-title">

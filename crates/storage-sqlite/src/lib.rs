@@ -401,6 +401,11 @@ fn read_filter(
                 .into(),
             Some(head_id.as_str()),
         ),
+        ControlFilter::MessageChildren { parent_id } => (
+            ControlRecordKind::Message,
+            "SELECT id, project_id, body_json FROM messages WHERE parent_message_id = ?1".into(),
+            Some(parent_id.as_str()),
+        ),
         ControlFilter::RunsForSession { session_id } => (
             ControlRecordKind::Run,
             "SELECT id, project_id, body_json FROM runs
@@ -868,6 +873,12 @@ mod tests {
                         Some("p2"),
                         serde_json::json!({"id":"m2","project_id":"p2","parent_message_id":null}),
                     )),
+                    ControlChange::Put(record(
+                        ControlRecordKind::Message,
+                        "m1-child",
+                        Some("p1"),
+                        serde_json::json!({"id":"m1-child","project_id":"p1","parent_message_id":"m1"}),
+                    )),
                 ],
                 Vec::new(),
             )
@@ -878,8 +889,21 @@ mod tests {
             .read(&[ControlFilter::project(ControlRecordKind::Message, "p1")])
             .await
             .unwrap();
-        assert_eq!(read.records.len(), 1);
-        assert_eq!(read.records[0].id, "m1");
+        assert_eq!(read.records.len(), 2);
+        assert_eq!(
+            read.records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1", "m1-child"]
+        );
+
+        let children = store
+            .read(&[ControlFilter::message_children("m1")])
+            .await
+            .unwrap();
+        assert_eq!(children.records.len(), 1);
+        assert_eq!(children.records[0].id, "m1-child");
     }
 
     #[tokio::test]

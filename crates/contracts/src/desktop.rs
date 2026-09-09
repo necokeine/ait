@@ -367,7 +367,7 @@ pub fn settings_schema() -> SettingsSchema {
     definitions.extend(environment_settings());
     definitions.extend(interface_settings());
     SettingsSchema {
-        revision: 2,
+        revision: 3,
         definitions,
     }
 }
@@ -419,7 +419,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.approval",
             SettingCategory::Permissions,
             "Approval mode",
-            "Controls when tools require explicit approval.",
+            "on_request follows Codex escalation requests; untrusted_only asks for commands Codex classifies as untrusted. Legacy always cannot be represented by the current protocol and makes Codex Run admission fail closed.",
             SettingKind::Select {
                 options: vec![
                     "on_request".into(),
@@ -434,15 +434,16 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.sandbox",
             SettingCategory::Permissions,
             "Sandbox profile",
-            "Default operating-system isolation profile for tools.",
+            "read_only forbids Agent writes; workspace_write allows only the isolated Project; full_access removes the filesystem sandbox only when explicitly selected. Legacy strict is a read_only alias.",
             SettingKind::Select {
                 options: vec![
                     "workspace_write".into(),
                     "read_only".into(),
+                    "full_access".into(),
                     "strict".into(),
                 ],
             },
-            json!("workspace_write"),
+            json!("read_only"),
             false,
         ),
     ]

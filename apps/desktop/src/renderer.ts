@@ -14,6 +14,7 @@ import {
 } from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import { ProjectViewLoader } from "./project-view-loader.js";
+import { isApprovalEvent, renderPendingApprovals } from "./approval-ui.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -64,6 +65,7 @@ let configuringProjectId: string | undefined;
 let renamingSessionId: string | undefined;
 let creatingSessionProjectId: string | undefined;
 let viewedTreeHeadId: string | undefined;
+let branchPickerNodeId: string | undefined;
 let configuringSessionId: string | undefined;
 let timeline: TimelineNode[] = [];
 const pendingSessions = new Set<string>();
@@ -150,6 +152,19 @@ function bindInteractions(): void {
     const project = currentProject();
     if (!project) throw new Error("No Project is selected.");
     return window.ait.openProjectFile({ projectId: project.id, ...reference });
+  });
+  conversation.addEventListener("click", (event) => {
+    const button = (event.target as Element).closest<HTMLButtonElement>("[data-approval-action]");
+    const card = button?.closest<HTMLElement>("[data-approval-id][data-run-id]");
+    if (!button || !card) return;
+    const action = button.dataset.approvalAction;
+    const scope = button.dataset.approvalScope;
+    if (action !== "approve" && action !== "deny" && action !== "cancel") return;
+    if (scope !== undefined && scope !== "one_shot" && scope !== "turn" && scope !== "session") return;
+    button.closest("footer")?.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => {
+      candidate.disabled = true;
+    });
+    void resolveApproval(card.dataset.runId!, card.dataset.approvalId!, action, scope);
   });
   $("#sidebar-toggle").addEventListener("click", () => appShell.classList.toggle("sidebar-collapsed"));
   $("#tree-toggle").addEventListener("click", toggleTree);
@@ -300,6 +315,7 @@ function resetTreeView(): void {
   branchSourceNodeId = undefined;
   messageContextNodeId = undefined;
   viewedTreeHeadId = undefined;
+  branchPickerNodeId = undefined;
   closeMessageContextMenu();
 }
 
@@ -422,7 +438,11 @@ function renderConversation(): void {
       agent ? agentDisplayName(agent) : "Assistant",
     )
     : "";
-  conversation.innerHTML = messages.map((message) => renderMessage(message, view!.agents, message.id === inspectedNodeId)).join("") + live + terminal;
+  const activeRun = session.activeRunId
+    ? view.runs.find((run) => run.id === session.activeRunId)
+    : undefined;
+  const approvals = renderPendingApprovals(activeRun);
+  conversation.innerHTML = messages.map((message) => renderMessage(message, view!.agents, message.id === inspectedNodeId)).join("") + approvals + live + terminal;
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
@@ -487,6 +507,10 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       renderCurrent ||= currentSession()?.activeRunId === runId;
       continue;
     }
+    if (isApprovalEvent(event.kind)) {
+      refresh = true;
+      continue;
+    }
     if (event.kind === "run.updated" || event.kind === "run.cancelled") {
       const run = event.body as Record<string, unknown>;
       const runId = typeof run.id === "string" ? run.id : undefined;
@@ -505,6 +529,27 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
   }
   if (refresh) scheduleViewRefresh();
   else if (renderCurrent) renderConversation();
+}
+
+async function resolveApproval(
+  runId: string,
+  approvalId: string,
+  action: "approve" | "deny" | "cancel",
+  scope: "one_shot" | "turn" | "session" | undefined,
+): Promise<void> {
+  try {
+    const updated = await window.ait.resolveApproval({
+      runId,
+      approvalId,
+      action,
+      ...(scope ? { scope } : {}),
+    });
+    replaceProjectView(selectedProjectId, updated);
+    renderAll();
+  } catch (error) {
+    showToast(errorMessage(error), true);
+    scheduleViewRefresh();
+  }
 }
 
 function queuePendingStreamUpdates(updates: RunStreamUpdate[]): void {
@@ -576,12 +621,24 @@ function renderTree(): void {
   const visible = timeline.slice(0, 2_000);
   treeList.innerHTML = visible.map((node) => {
     const preview = messageText(node.message).replace(/\s+/g, " ").trim() || "Empty message";
+    const hasBranches = node.children.length > 1;
+    const pickerOpen = hasBranches && branchPickerNodeId === node.message.id;
+    const branchPicker = pickerOpen
+      ? `<div class="tree-branches" role="group" aria-label="Child paths after ${escapeAttribute(preview)}">
+          ${node.children.map((branch, index) => {
+            const branchPreview = messageText(branch.message).replace(/\s+/g, " ").trim() || "Empty message";
+            return `<button class="tree-branch${branch.active ? " is-active" : ""}" type="button" data-tree-child-root-id="${escapeAttribute(branch.message.id)}" aria-pressed="${branch.active}" title="${escapeAttribute(branchPreview)}"><span>${index + 1}</span>${escapeHtml(branchPreview)}</button>`;
+          }).join("")}
+        </div>`
+      : "";
     return `<div class="tree-timeline-item" role="none">
-      <div class="tree-node${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" tabindex="${node.message.id === inspectedNodeId ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}"${node.children.length > 0 ? ` title="Right-click to start a new Session from this Message"` : ""}>
+      <div class="tree-node${node.onCurrentBranch ? " on-current" : ""}" role="treeitem" tabindex="${node.message.id === inspectedNodeId ? "0" : "-1"}" data-message-id="${escapeAttribute(node.message.id)}" title="Right-click to derive from this Message">
         <span class="tree-marker" aria-hidden="true"></span>
         <span class="tree-role">${roleLetter(node.message.role)}</span>
         <span class="tree-copy"><strong>${escapeHtml(preview)}</strong><small>${node.message.role} · ${renderMessageTime(node.message.createdAt)}</small></span>
+        ${hasBranches ? `<button class="tree-branch-trigger" type="button" aria-label="Choose among ${node.children.length} child paths" aria-expanded="${pickerOpen}">⑂ ${node.children.length}</button>` : ""}
       </div>
+      ${branchPicker}
     </div>`;
   }).join("");
   if (timeline.length > visible.length) {
@@ -589,19 +646,28 @@ function renderTree(): void {
   }
   treeList.querySelectorAll<HTMLElement>(".tree-node").forEach((row) => {
     row.addEventListener("click", () => inspectTreeNode(row.dataset.messageId));
+    row.querySelector(".tree-branch-trigger")?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      branchPickerNodeId = branchPickerNodeId === row.dataset.messageId ? undefined : row.dataset.messageId;
+      renderTree();
+      treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(row.dataset.messageId ?? "")}"] .tree-branch-trigger`)?.focus();
+    });
     row.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       const node = timeline.find((candidate) => candidate.message.id === row.dataset.messageId);
-      if (node?.children.length) openMessageContextMenu(event.clientX, event.clientY, node.message.id);
+      if (node) openMessageContextMenu(event.clientX, event.clientY, node.message.id);
     });
     row.addEventListener("keydown", (event) => {
       if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
       event.preventDefault();
       const node = timeline.find((candidate) => candidate.message.id === row.dataset.messageId);
-      if (!node?.children.length) return;
+      if (!node) return;
       const bounds = row.getBoundingClientRect();
       openMessageContextMenu(bounds.left + 16, bounds.top + bounds.height, node.message.id);
     });
+  });
+  treeList.querySelectorAll<HTMLElement>("[data-tree-child-root-id]").forEach((button) => {
+    button.addEventListener("click", () => switchTreeBranch(button.dataset.treeChildRootId));
   });
   renderNodeDetails();
 }
@@ -624,6 +690,7 @@ function switchTreeBranch(branchRootId: string | undefined): void {
   viewedTreeHeadId = session ? undefined : headId;
   inspectedNodeId = branchRootId;
   branchSourceNodeId = undefined;
+  branchPickerNodeId = undefined;
   renderAll();
   treeList.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(branchRootId)}"]`)?.focus();
 }
@@ -671,7 +738,7 @@ function renderBranchContext(): void {
   const preview = messageText(source).replace(/\s+/g, " ").trim() || "Empty message";
   $("#branch-state-label").textContent = pendingBranch
     ? "Creating new Session from"
-    : "Branching new Session from";
+    : "Deriving from";
   $("#branch-node-label").textContent = `${messageSourceLabel(source)} · ${shortId(source.id)} · ${preview}`;
   const clear = $<HTMLButtonElement>("#clear-branch");
   clear.disabled = Boolean(pendingBranch);
@@ -692,10 +759,10 @@ async function submitMessage(): Promise<void> {
   const source = branchSourceNodeId
     ? view.messages.find((message) => message.id === branchSourceNodeId)
     : undefined;
-  if (branchSourceNodeId && (!source || directMessageChildren(view.messages, branchSourceNodeId).length === 0)) {
+  if (branchSourceNodeId && !source) {
     branchSourceNodeId = undefined;
     renderAll();
-    showToast("A new Session can only start from a Message that has replies.", true);
+    showToast("The selected Message is no longer available.", true);
     return;
   }
   pendingSessions.add(session.id);
@@ -706,20 +773,27 @@ async function submitMessage(): Promise<void> {
     if (source) {
       const result = await window.ait.fork({
         projectId: session.projectId,
+        currentSessionId: session.id,
         sourceMessageId: source.id,
         agentId: composerAgent.value,
         content,
       });
       view = result.view;
-      pendingBranch = {
-        sourceMessageId: source.id,
-        sessionId: result.selectedSessionId,
-        runId: result.runId,
-      };
       branchSourceNodeId = undefined;
       pendingTitles.register(result.runId, result.selectedSessionId, content);
-      reconcilePendingBranch();
-      if (pendingBranch) showToast("Creating the new Session. The current path will stay in place until it is ready.");
+      if (result.reusedCurrentSession) {
+        selectedSessionId = result.selectedSessionId;
+        showToast("Message accepted in the current Session.");
+        resetTreeView();
+      } else {
+        pendingBranch = {
+          sourceMessageId: source.id,
+          sessionId: result.selectedSessionId,
+          runId: result.runId,
+        };
+        reconcilePendingBranch();
+        if (pendingBranch) showToast("Creating the new Session. The current path will stay in place until it is ready.");
+      }
     } else {
       const result = await window.ait.sendMessage({
         sessionId: session.id,
@@ -776,7 +850,7 @@ function closeSessionContextMenu(): void {
 }
 
 function openMessageContextMenu(left: number, top: number, messageId: string): void {
-  if (currentSession()?.active || pendingBranch) return;
+  if (pendingBranch) return;
   closeSessionContextMenu();
   messageContextNodeId = messageId;
   messageContextMenu.classList.remove("is-hidden");
@@ -795,9 +869,8 @@ function closeMessageContextMenu(): void {
 function startBranchFromContextMenu(): void {
   const sourceId = messageContextNodeId;
   const source = view?.messages.find((message) => message.id === sourceId);
-  const canBranch = source && directMessageChildren(view?.messages ?? [], source.id).length > 0;
   closeMessageContextMenu();
-  if (!source || !canBranch || currentSession()?.active || pendingBranch) return;
+  if (!source || pendingBranch) return;
   inspectedNodeId = source.id;
   branchSourceNodeId = source.id;
   renderTree();
@@ -877,31 +950,35 @@ async function changeSessionAgent(): Promise<void> {
 
 function updateComposerState(): void {
   const session = currentSession();
-  const busy = !!session && (session.active || pendingSessions.has(session.id) || Boolean(pendingBranch));
+  const deriving = Boolean(branchSourceNodeId);
+  const submissionBusy = !!session
+    && (pendingSessions.has(session.id) || Boolean(pendingBranch) || session.active && !deriving);
+  const configBusy = !!session
+    && (session.active || pendingSessions.has(session.id) || Boolean(pendingBranch));
   if (!session || session.active || (configuringSessionId && configuringSessionId !== session.id)) {
     composerConfigPanel.hidePopover();
   }
-  sendButton.disabled = !session || messageInput.value.trim().length === 0 || busy;
-  messageInput.disabled = !session || busy;
-  composerConfigTrigger.disabled = !session || busy;
-  composerAgent.disabled = !session || busy;
-  composerModel.disabled = !session || busy;
-  composerProvider.disabled = !session || busy;
-  composerReasoning.disabled = composerReasoning.options.length <= 1 || !session || busy;
+  sendButton.disabled = !session || messageInput.value.trim().length === 0 || submissionBusy;
+  messageInput.disabled = !session || submissionBusy;
+  composerConfigTrigger.disabled = !session || configBusy;
+  composerAgent.disabled = !session || configBusy;
+  composerModel.disabled = !session || configBusy;
+  composerProvider.disabled = !session || configBusy;
+  composerReasoning.disabled = composerReasoning.options.length <= 1 || !session || configBusy;
   messageInput.placeholder = !session
     ? "Create a Session to start…"
     : pendingBranch
       ? "Creating the new Session…"
       : branchSourceNodeId
-        ? "Write the first message for the new Session…"
-        : busy
+        ? "Write a message derived from this point…"
+        : submissionBusy
           ? "This Session is running…"
           : "Send a message to this Session…";
   $("#composer-hint").textContent = pendingBranch
     ? "The current Session path stays visible until the new Session is fully generated"
     : branchSourceNodeId
-      ? "Sending creates a new immutable branch and Session · ⌘ Enter to send"
-      : "Send to the current Session · Right-click a Message with replies to start a new Session · ⌘ Enter to send";
+      ? "A current leaf continues this Session when idle; otherwise sending creates a new Session · ⌘ Enter to send"
+      : "Send to the current Session · Right-click any Message to derive from it · ⌘ Enter to send";
 }
 
 async function changeSessionConfig(modelChanged: boolean, providerChanged = false): Promise<void> {

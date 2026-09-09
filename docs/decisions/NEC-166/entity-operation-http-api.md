@@ -26,6 +26,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/session/create` | `CreateSession` |
 | `POST` | `/v1/session/send-message` | `SendMessage` |
 | `POST` | `/v1/session/fork` | `ForkSession` |
+| `POST` | `/v1/session/derive` | `DeriveSession` |
 | `POST` | `/v1/run/get` | `GetRun` |
 | `POST` | `/v1/run/cancel` | `CancelRun` |
 | `POST` | `/v1/cron/create` | `CreateCron` |

@@ -5,10 +5,28 @@ use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, sync::Arc};
 use ait_agent_adapters::codex::{
     CodexAppServerAdapter, CodexAppServerConfig, CodexSessionTitleGenerator, CodexWorkspaceAgent,
 };
-use ait_application::LocalControlService;
+use ait_application::{LocalControlService, PermissionPolicyLimits};
+use ait_domain::SandboxAccess;
 use ait_ports::{HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent};
 use ait_storage_sqlite::SqliteControlStore;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Clone, Copy, ValueEnum)]
+enum MaximumSandbox {
+    ReadOnly,
+    WorkspaceWrite,
+    FullAccess,
+}
+
+impl From<MaximumSandbox> for SandboxAccess {
+    fn from(value: MaximumSandbox) -> Self {
+        match value {
+            MaximumSandbox::ReadOnly => Self::ReadOnly,
+            MaximumSandbox::WorkspaceWrite => Self::WorkspaceWrite,
+            MaximumSandbox::FullAccess => Self::FullAccess,
+        }
+    }
+}
 
 #[derive(Parser)]
 struct Arguments {
@@ -18,6 +36,12 @@ struct Arguments {
     /// Loopback address exposed to local clients.
     #[arg(long, default_value = "127.0.0.1:7314")]
     listen: SocketAddr,
+    /// Maximum Codex filesystem sandbox access the administrator permits.
+    #[arg(long, value_enum, default_value = "full-access")]
+    max_sandbox: MaximumSandbox,
+    /// Disable session-scoped native approval grants.
+    #[arg(long)]
+    deny_session_approvals: bool,
 }
 
 #[tokio::main]
@@ -33,6 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
     let service = Arc::new(
         LocalControlService::with_workspace_agent(store, codex)
+            .with_permission_limits(PermissionPolicyLimits {
+                max_sandbox: arguments.max_sandbox.into(),
+                allow_session_approvals: !arguments.deny_session_approvals,
+            })
             .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
             .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
