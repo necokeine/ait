@@ -1,19 +1,26 @@
 {
   "name": "@ait/desktop",
-  "version": "0.1.0",
+  "version": "0.0.1",
+  "description": "Local-first multi-agent desktop workspace",
+  "author": "Ait contributors",
   "private": true,
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
     "dev": "npm run build && electron dist/main.js",
+    "package:linux": "npm run build && electron-builder --linux --x64",
+    "package:mac": "npm run build && electron-builder --mac --arm64",
+    "stage:daemon": "node scripts/stage-daemon.mjs",
     "start": "npm run dev",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:release": "node scripts/verify-release-version.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
     "electron": "44.1.1",
+    "electron-builder": "26.15.3",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2"
   }

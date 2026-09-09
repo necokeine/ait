@@ -33,6 +33,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - run: npm ci --ignore-scripts
+      - run: npm run verify:release
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

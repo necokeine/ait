@@ -1,0 +1,138 @@
+name: Release Ait desktop
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semantic version tag to release (for example v0.0.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86_64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            package_script: package:linux
+            artifact: ait-desktop-linux-x86_64
+          - label: Apple Silicon
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            package_script: package:mac
+            artifact: ait-desktop-macos-arm64
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      CARGO_TERM_COLOR: always
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Verify release version
+        run: node apps/desktop/scripts/verify-release-version.mjs "$RELEASE_TAG"
+
+      - name: Build release daemon
+        run: cargo build --locked --release -p ait-daemon --target "${{ matrix.rust_target }}"
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Stage release daemon
+        working-directory: apps/desktop
+        run: npm run stage:daemon -- "../../target/${{ matrix.rust_target }}/release/ait-daemon"
+
+      - name: Package Ait desktop
+        working-directory: apps/desktop
+        run: npm run "${{ matrix.package_script }}"
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          if [[ "${{ matrix.artifact }}" == "ait-desktop-linux-x86_64" ]]; then
+            cp apps/desktop/release/Ait-desktop-*-linux-x86_64.AppImage release-assets/
+            cp apps/desktop/release/Ait-desktop-*-linux-x86_64.tar.gz release-assets/
+          else
+            cp apps/desktop/release/Ait-desktop-*-macos-arm64.dmg release-assets/
+            cp apps/desktop/release/Ait-desktop-*-macos-arm64.zip release-assets/
+          fi
+          test "$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify assets and write checksums
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          expected=(
+            "Ait-desktop-${version}-linux-x86_64.AppImage"
+            "Ait-desktop-${version}-linux-x86_64.tar.gz"
+            "Ait-desktop-${version}-macos-arm64.dmg"
+            "Ait-desktop-${version}-macos-arm64.zip"
+          )
+          for asset in "${expected[@]}"; do
+            test -f "release-assets/${asset}"
+          done
+          test "$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')" -eq 4
+          (cd release-assets && sha256sum "${expected[@]}" > SHA256SUMS)
+
+      - name: Create or repair GitHub Release
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --generate-notes \
+              --title "Ait desktop ${RELEASE_TAG}" \
+              --verify-tag \
+              --repo "$GITHUB_REPOSITORY"
+          fi
