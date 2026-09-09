@@ -1,0 +1,30 @@
+appId: dev.ait.desktop
+productName: Ait desktop
+asar: true
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - package.json
+
+extraResources:
+  - from: release-resources/bin/ait-daemon
+    to: bin/ait-daemon
+
+mac:
+  category: public.app-category.developer-tools
+  artifactName: Ait-desktop-${version}-macos-arm64.${ext}
+  target:
+    - dmg
+    - zip
+
+linux:
+  category: Development
+  executableName: ait-desktop
+  synopsis: Local-first multi-agent desktop workspace
+  artifactName: Ait-desktop-${version}-linux-x86_64.${ext}
+  target:
+    - AppImage
+    - tar.gz
