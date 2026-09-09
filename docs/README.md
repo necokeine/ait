@@ -2,6 +2,10 @@
 
 ## 当前基线
 
+- `decisions/NEC-234/adr-001-api-provider-run-permissions.md`：OpenAI、DeepSeek 等普通 API
+  Provider 与 Codex 共用三级 sandbox Run 快照及管理员上限；纯文本网关不把权限上限伪装成
+  尚未实现的工具能力。
+
 - `decisions/NEC-227/adr-001-development-mock-provider.md`：以非默认编译 feature 隔离开发专用 Mock Provider，并复用真实 Run/Message 持久化状态机。
 
 - `decisions/NEC-208/adr-001-codex-run-permissions-and-native-approvals.md`：桌面权限设置到

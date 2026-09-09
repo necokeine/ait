@@ -2198,9 +2198,10 @@ impl LocalControlService {
         if let Command::RefreshProviderModels { provider_id } = command {
             return self.refresh_provider(&provider_id).await;
         }
-        // Workspace-writing Codex requests for the same canonical Git root are
-        // serialized before the user Message captures HEAD. Unrelated Projects
-        // and read-only operations do not share this lease.
+        // Codex workspace requests for the same canonical Git root are serialized
+        // before the user Message captures HEAD. API-only providers still validate
+        // the same Run permission profile but cannot require this lease until a
+        // host-owned tool bridge gives them workspace side effects.
         let workspace_lease = self.acquire_workspace_write(&command).await?;
         let has_workspace_lease = workspace_lease.is_some();
         // Commit retries may reapply state changes, but never repeat an external
@@ -2775,9 +2776,6 @@ fn effective_permission_profile(
     provider: &AgentProvider,
     limits: PermissionPolicyLimits,
 ) -> Result<RunPermissionProfile, ApiError> {
-    if provider.kind != AgentMode::Codex {
-        return Ok(RunPermissionProfile::default());
-    }
     let sandbox = match settings
         .0
         .get("permissions.sandbox")
@@ -2789,14 +2787,14 @@ fn effective_permission_profile(
         Some(value) => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                format!("unsupported Codex sandbox policy {value:?}"),
+                format!("unsupported Agent sandbox policy {value:?}"),
                 false,
             ));
         }
         None => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                "Codex sandbox policy is missing",
+                "Agent sandbox policy is missing",
                 false,
             ));
         }
@@ -2805,11 +2803,17 @@ fn effective_permission_profile(
         return Err(error(
             ErrorCode::InvalidConfiguration,
             format!(
-                "Codex sandbox policy {sandbox:?} exceeds the administrator limit {:?}",
+                "Agent sandbox policy {sandbox:?} exceeds the administrator limit {:?}",
                 limits.max_sandbox
             ),
             false,
         ));
+    }
+    if provider.kind != AgentMode::Codex {
+        return Ok(RunPermissionProfile {
+            sandbox,
+            approval: ApprovalMode::OnRequest,
+        });
     }
     let approval = match settings
         .0
@@ -3205,16 +3209,19 @@ fn workspace_write_path(
     let Some((project_id, _)) = targets.first().copied() else {
         return Ok(None);
     };
-    let writes_workspace = targets.iter().try_fold(false, |writes, (_, agent_id)| {
-        let agent = require_agent(state, agent_id)?;
-        let provider = validate_config(state, &agent.config)?;
-        if provider.kind != AgentMode::Codex {
-            return Ok::<_, ApiError>(writes);
-        }
-        let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
-        Ok(true)
-    })?;
-    if !writes_workspace {
+    let requires_workspace_lease =
+        targets
+            .iter()
+            .try_fold(false, |requires_lease, (_, agent_id)| {
+                let agent = require_agent(state, agent_id)?;
+                let provider = validate_config(state, &agent.config)?;
+                let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
+                if provider.kind != AgentMode::Codex {
+                    return Ok::<_, ApiError>(requires_lease);
+                }
+                Ok(true)
+            })?;
+    if !requires_workspace_lease {
         return Ok(None);
     }
     let project = state

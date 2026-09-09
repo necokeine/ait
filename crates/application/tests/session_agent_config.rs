@@ -1582,6 +1582,158 @@ async fn save_permission_settings(service: &LocalControlService, sandbox: &str, 
     .await;
 }
 
+fn api_provider(kind: AgentMode) -> AgentProvider {
+    let id = match kind {
+        AgentMode::OpenAI => "api-openai",
+        AgentMode::DeepSeek => "api-deepseek",
+        _ => panic!("expected API provider"),
+    };
+    AgentProvider {
+        id: id.into(),
+        name: id.into(),
+        kind,
+        url: None,
+        models: vec![ProviderModel {
+            id: "chat".into(),
+            name: "Chat".into(),
+            reasoning_efforts: Vec::new(),
+        }],
+    }
+}
+
+async fn setup_api_provider(service: &LocalControlService, kind: AgentMode) -> tempfile::TempDir {
+    let provider = api_provider(kind);
+    let provider_id = provider.id.clone();
+    ok(
+        service,
+        Command::SaveAgentProvider {
+            provider,
+            secret: Some(ProviderSecret("fixture-secret".into())),
+        },
+    )
+    .await;
+    setup(
+        service,
+        AgentConfiguration {
+            provider_id,
+            model: "chat".into(),
+            reasoning_effort: None,
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn api_provider_permission_settings_are_snapshotted_into_each_run() {
+    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+        for (setting, expected) in [
+            ("read_only", SandboxAccess::ReadOnly),
+            ("strict", SandboxAccess::ReadOnly),
+            ("workspace_write", SandboxAccess::WorkspaceWrite),
+            ("full_access", SandboxAccess::FullAccess),
+        ] {
+            let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+            let gateway = Arc::new(Gateway::default());
+            let service = LocalControlService::new(store).with_provider_gateway(gateway.clone());
+            let _directory = setup_api_provider(&service, kind).await;
+            save_permission_settings(&service, setting, "untrusted_only").await;
+
+            let CommandResult::Run(run) = ok(&service, send("one")).await else {
+                panic!("expected Run")
+            };
+            assert_eq!(run.permission_profile.sandbox, expected);
+            assert_eq!(run.permission_profile.approval, ApprovalMode::OnRequest);
+            assert_eq!(gateway.calls.lock().unwrap().len(), 1);
+
+            let mut changed = default_settings();
+            changed
+                .0
+                .insert("permissions.sandbox".into(), serde_json::json!("read_only"));
+            let _ = ok(
+                &service,
+                Command::SaveSettings {
+                    expected_revision: 2,
+                    values: changed,
+                },
+            )
+            .await;
+            let persisted = view(&service)
+                .await
+                .runs
+                .into_iter()
+                .find(|candidate| candidate.id == run.id)
+                .unwrap();
+            assert_eq!(persisted.permission_profile.sandbox, expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_provider_permission_ceiling_fails_before_message_or_remote_call() {
+    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let gateway = Arc::new(Gateway::default());
+        let service = LocalControlService::new(store)
+            .with_provider_gateway(gateway.clone())
+            .with_permission_limits(PermissionPolicyLimits {
+                max_sandbox: SandboxAccess::ReadOnly,
+                allow_session_approvals: true,
+            });
+        let _directory = setup_api_provider(&service, kind).await;
+        save_permission_settings(&service, "workspace_write", "on_request").await;
+
+        let rejected = service.execute(send("one")).await;
+        assert_eq!(
+            rejected.error.unwrap().code,
+            ErrorCode::InvalidConfiguration
+        );
+        assert_eq!(view(&service).await.messages.len(), 1);
+        assert!(gateway.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn api_provider_invalid_permission_setting_fails_before_message_or_remote_call() {
+    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let gateway = Arc::new(Gateway::default());
+        let service =
+            LocalControlService::new(store.clone()).with_provider_gateway(gateway.clone());
+        let _directory = setup_api_provider(&service, kind).await;
+
+        let snapshot = store.load().await.unwrap();
+        let mut corrupted = snapshot.value;
+        corrupted["settings"]["permissions.sandbox"] = serde_json::json!("unknown-policy");
+        store
+            .replace_state(snapshot.revision, corrupted, Vec::new())
+            .await
+            .unwrap();
+        let rejected = service.execute(send("one")).await;
+        assert_eq!(
+            rejected.error.unwrap().code,
+            ErrorCode::InvalidConfiguration
+        );
+
+        let snapshot = store.load().await.unwrap();
+        let mut corrupted = snapshot.value;
+        corrupted["settings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("permissions.sandbox");
+        store
+            .replace_state(snapshot.revision, corrupted, Vec::new())
+            .await
+            .unwrap();
+        let rejected = service.execute(send("one")).await;
+        assert_eq!(
+            rejected.error.unwrap().code,
+            ErrorCode::InvalidConfiguration
+        );
+        assert_eq!(view(&service).await.messages.len(), 1);
+        assert!(gateway.calls.lock().unwrap().is_empty());
+    }
+}
+
 #[tokio::test]
 async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invocation() {
     for (setting, expected) in [
