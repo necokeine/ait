@@ -12,6 +12,9 @@ pub enum ProviderKind {
     OpenAI,
     #[serde(rename = "deepseek")]
     DeepSeek,
+    /// Deterministic local provider compiled only into development builds.
+    #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+    Mock,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,4 +45,23 @@ pub struct AgentConfiguration {
     pub model: String,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderKind;
+
+    #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
+    #[test]
+    fn production_contract_cannot_deserialize_mock_provider_kind() {
+        assert!(serde_json::from_str::<ProviderKind>(r#""mock""#).is_err());
+    }
+
+    #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
+    #[test]
+    fn development_contract_round_trips_mock_provider_kind() {
+        let kind: ProviderKind = serde_json::from_str(r#""mock""#).unwrap();
+        assert_eq!(kind, ProviderKind::Mock);
+        assert_eq!(serde_json::to_string(&kind).unwrap(), r#""mock""#);
+    }
 }
