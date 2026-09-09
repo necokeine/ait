@@ -11,6 +11,8 @@ pub mod cron;
 pub mod error;
 /// Immutable Message protocol and projections.
 pub mod message;
+/// Run permission snapshots and native approval audit vocabulary.
+pub mod permission;
 /// Project instruction snapshots and movable Session references.
 pub mod project;
 /// Run lifecycle, attempts, queue items, budgets, and usage.
@@ -29,6 +31,11 @@ pub use error::{DomainError, ErrorCode};
 pub use message::{
     Message, MessageKind, MessageOrigin, MessageRole, MessageValidationError, ProjectedMessage,
     RunId, StoredMessage, SubMessage, ToolResult, ToolResultStatus, ToolUse,
+};
+pub use permission::{
+    ApprovalGrantScope, ApprovalMode, NativeApprovalFileChange, NativeApprovalFileChangeKind,
+    NativeApprovalKind, NativeApprovalStatus, NativeApprovalTarget, NativeNetworkProtocol,
+    RunPermissionProfile, SandboxAccess,
 };
 pub use project::{
     GitCommit, InstructionSnapshot, InstructionSourceSnapshot, InstructionSourceSummary, MessageId,

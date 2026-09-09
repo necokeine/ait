@@ -139,6 +139,21 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .run-terminal-card p { margin: 6px 0 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
 .run-terminal.status-cancelled .run-terminal-card { border-color: var(--line); background: var(--surface); }
 .run-terminal.status-cancelled .run-terminal-card strong { color: var(--text-soft); }
+.native-approval { margin: 0 0 24px 41px; border: 1px solid color-mix(in srgb, #d5ad56 55%, var(--line)); border-radius: 10px; background: color-mix(in srgb, #d5ad56 7%, var(--surface)); padding: 13px; }
+.native-approval header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.native-approval header strong { color: #e0bd70; font-size: 11.5px; }
+.native-approval header span { color: var(--text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.native-approval p { margin: 9px 0; color: var(--text-soft); font-size: 11px; line-height: 1.5; }
+.native-approval pre { max-height: 180px; overflow: auto; margin: 9px 0; border: 1px solid var(--line-soft); border-radius: 7px; padding: 9px; color: var(--text-muted); font: 9.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.native-approval dl { display: grid; gap: 4px; margin: 10px 0; }
+.native-approval dl div { display: grid; grid-template-columns: 52px minmax(0,1fr); gap: 8px; }
+.native-approval dt, .native-approval dd { margin: 0; color: var(--text-muted); font-size: 9px; }
+.native-approval dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.native-approval footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+.native-approval button { min-height: 29px; border: 1px solid var(--line); border-radius: 6px; background: var(--control-bg); color: var(--text-soft); padding: 0 9px; font-size: 9.5px; cursor: pointer; }
+.native-approval button:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text); }
+.native-approval button.primary { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); color: var(--accent-strong); }
+.native-approval button:disabled { opacity: .5; cursor: default; }
 @keyframes pulse-progress { 50% { opacity: .45; } }
 .message-content { color: var(--text); font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-content.markdown { white-space: normal; }

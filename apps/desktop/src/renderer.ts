@@ -14,6 +14,7 @@ import {
 } from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import { ProjectViewLoader } from "./project-view-loader.js";
+import { isApprovalEvent, renderPendingApprovals } from "./approval-ui.js";
 import type {
   DesktopMessage,
   DesktopSession,
@@ -150,6 +151,19 @@ function bindInteractions(): void {
     const project = currentProject();
     if (!project) throw new Error("No Project is selected.");
     return window.ait.openProjectFile({ projectId: project.id, ...reference });
+  });
+  conversation.addEventListener("click", (event) => {
+    const button = (event.target as Element).closest<HTMLButtonElement>("[data-approval-action]");
+    const card = button?.closest<HTMLElement>("[data-approval-id][data-run-id]");
+    if (!button || !card) return;
+    const action = button.dataset.approvalAction;
+    const scope = button.dataset.approvalScope;
+    if (action !== "approve" && action !== "deny" && action !== "cancel") return;
+    if (scope !== undefined && scope !== "one_shot" && scope !== "turn" && scope !== "session") return;
+    button.closest("footer")?.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => {
+      candidate.disabled = true;
+    });
+    void resolveApproval(card.dataset.runId!, card.dataset.approvalId!, action, scope);
   });
   $("#sidebar-toggle").addEventListener("click", () => appShell.classList.toggle("sidebar-collapsed"));
   $("#tree-toggle").addEventListener("click", toggleTree);
@@ -422,7 +436,11 @@ function renderConversation(): void {
       agent ? agentDisplayName(agent) : "Assistant",
     )
     : "";
-  conversation.innerHTML = messages.map((message) => renderMessage(message, view!.agents, message.id === inspectedNodeId)).join("") + live + terminal;
+  const activeRun = session.activeRunId
+    ? view.runs.find((run) => run.id === session.activeRunId)
+    : undefined;
+  const approvals = renderPendingApprovals(activeRun);
+  conversation.innerHTML = messages.map((message) => renderMessage(message, view!.agents, message.id === inspectedNodeId)).join("") + approvals + live + terminal;
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
@@ -487,6 +505,10 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       renderCurrent ||= currentSession()?.activeRunId === runId;
       continue;
     }
+    if (isApprovalEvent(event.kind)) {
+      refresh = true;
+      continue;
+    }
     if (event.kind === "run.updated" || event.kind === "run.cancelled") {
       const run = event.body as Record<string, unknown>;
       const runId = typeof run.id === "string" ? run.id : undefined;
@@ -505,6 +527,27 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
   }
   if (refresh) scheduleViewRefresh();
   else if (renderCurrent) renderConversation();
+}
+
+async function resolveApproval(
+  runId: string,
+  approvalId: string,
+  action: "approve" | "deny" | "cancel",
+  scope: "one_shot" | "turn" | "session" | undefined,
+): Promise<void> {
+  try {
+    const updated = await window.ait.resolveApproval({
+      runId,
+      approvalId,
+      action,
+      ...(scope ? { scope } : {}),
+    });
+    replaceProjectView(selectedProjectId, updated);
+    renderAll();
+  } catch (error) {
+    showToast(errorMessage(error), true);
+    scheduleViewRefresh();
+  }
 }
 
 function queuePendingStreamUpdates(updates: RunStreamUpdate[]): void {

@@ -98,6 +98,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/session/submit-fork",
         "/v1/run/get",
         "/v1/run/cancel",
+        "/v1/run/approval/resolve",
         "/v1/cron/create",
         "/v1/cron/set-enabled",
         "/v1/cron/trigger",

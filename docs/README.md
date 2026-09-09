@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/NEC-208/adr-001-codex-run-permissions-and-native-approvals.md`：桌面权限设置到
+  Codex Run 参数的不可变快照、fail-closed 管理员上限，以及可重连的原生审批端口与 UI。
+
 - `decisions/NEC-224/adr-001-record-oriented-control-storage.md`：控制面按实体记录和 Project 范围读取，
   SQLite 具名表迁移，以及公开 Workspace Snapshot 命令/API/IPC 的移除；物理双层数据库继续遵循 NEC-146。
 

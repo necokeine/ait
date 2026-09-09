@@ -11,12 +11,17 @@ use std::{
     time::Duration,
 };
 
-use ait_domain::{AgentProvider, DomainError, ErrorCode, ProviderKind, ProviderModel};
+use ait_domain::{
+    AgentProvider, ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalFileChange,
+    NativeApprovalFileChangeKind, NativeApprovalKind, NativeApprovalTarget, NativeNetworkProtocol,
+    ProviderKind, ProviderModel, SandboxAccess,
+};
 use ait_ports::{
     GeneratedSessionTitle, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
-    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
+    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
+    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationCheckpoint,
+    WorkspaceIntegrationGate, WorkspaceOperation, WorkspaceOutputItem, WorkspaceProgressEvent,
+    WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use ait_tools::codex::CodexToolSet;
 use async_trait::async_trait;
@@ -233,6 +238,170 @@ impl CodexWorkspaceAgent {
     }
 }
 
+#[derive(Clone)]
+struct WorkspaceApprovalBridge {
+    run_id: String,
+    isolated_cwd: PathBuf,
+    project_cwd: PathBuf,
+    approvals: Arc<dyn WorkspaceApproval>,
+}
+
+#[async_trait]
+impl ApprovalHandler for WorkspaceApprovalBridge {
+    async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        let Some(kind) = native_approval_kind(request.kind) else {
+            return ApprovalDecision::Cancel;
+        };
+        let decision = self
+            .approvals
+            .decide(WorkspaceApprovalRequest {
+                run_id: self.run_id.clone(),
+                protocol_request_id: request.request_id.clone(),
+                method: request.method.clone(),
+                kind,
+                thread_id: request.thread_id.clone(),
+                turn_id: request.turn_id.clone(),
+                item_id: request.item_id.clone(),
+                target: rewrite_approval_target_paths(
+                    request.target.clone(),
+                    &self.isolated_cwd,
+                    &self.project_cwd,
+                ),
+                requested_permissions: request.params.get("permissions").cloned().map(
+                    |mut value| {
+                        rewrite_json_workspace_paths(
+                            &mut value,
+                            &self.isolated_cwd,
+                            &self.project_cwd,
+                        );
+                        value
+                    },
+                ),
+            })
+            .await;
+        match decision {
+            Ok(WorkspaceApprovalDecision::Denied) => ApprovalDecision::Decline,
+            Ok(WorkspaceApprovalDecision::Cancelled) | Err(_) => ApprovalDecision::Cancel,
+            Ok(WorkspaceApprovalDecision::Approved { scope, permissions }) => {
+                if request.kind == ApprovalKind::Permissions {
+                    let Some(permissions) = permissions else {
+                        return ApprovalDecision::Cancel;
+                    };
+                    ApprovalDecision::Raw(json!({
+                        "permissions": permissions,
+                        "scope": match scope {
+                            ApprovalGrantScope::Turn => "turn",
+                            ApprovalGrantScope::Session => "session",
+                            ApprovalGrantScope::OneShot => return ApprovalDecision::Cancel,
+                        }
+                    }))
+                } else {
+                    match scope {
+                        ApprovalGrantScope::OneShot => ApprovalDecision::Accept,
+                        ApprovalGrantScope::Session => ApprovalDecision::AcceptForSession,
+                        ApprovalGrantScope::Turn => ApprovalDecision::Cancel,
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resolved(&self, request: &ApprovalRequest) {
+        let Some(kind) = native_approval_kind(request.kind) else {
+            return;
+        };
+        let _ = self
+            .approvals
+            .expire(&WorkspaceApprovalRequest {
+                run_id: self.run_id.clone(),
+                protocol_request_id: request.request_id.clone(),
+                method: request.method.clone(),
+                kind,
+                thread_id: request.thread_id.clone(),
+                turn_id: request.turn_id.clone(),
+                item_id: request.item_id.clone(),
+                target: rewrite_approval_target_paths(
+                    request.target.clone(),
+                    &self.isolated_cwd,
+                    &self.project_cwd,
+                ),
+                requested_permissions: None,
+            })
+            .await;
+    }
+}
+
+const fn native_approval_kind(kind: ApprovalKind) -> Option<NativeApprovalKind> {
+    match kind {
+        ApprovalKind::CommandExecution => Some(NativeApprovalKind::CommandExecution),
+        ApprovalKind::FileChange => Some(NativeApprovalKind::FileChange),
+        ApprovalKind::Permissions => Some(NativeApprovalKind::Permissions),
+        ApprovalKind::LegacyCommand => Some(NativeApprovalKind::LegacyCommand),
+        ApprovalKind::LegacyPatch => Some(NativeApprovalKind::LegacyPatch),
+        ApprovalKind::Unsupported => None,
+    }
+}
+
+fn rewrite_approval_target_paths(
+    target: NativeApprovalTarget,
+    isolated_cwd: &Path,
+    project_cwd: &Path,
+) -> NativeApprovalTarget {
+    let rewrite = |value: String| rewrite_workspace_path(value, isolated_cwd, project_cwd);
+    match target {
+        NativeApprovalTarget::Command { command, cwd } => NativeApprovalTarget::Command {
+            command,
+            cwd: rewrite(cwd),
+        },
+        NativeApprovalTarget::Network { host, protocol } => {
+            NativeApprovalTarget::Network { host, protocol }
+        }
+        NativeApprovalTarget::FileChange {
+            grant_root,
+            changes,
+        } => NativeApprovalTarget::FileChange {
+            grant_root: grant_root.map(&rewrite),
+            changes: changes
+                .into_iter()
+                .map(|change| NativeApprovalFileChange {
+                    path: rewrite(change.path),
+                    kind: change.kind,
+                })
+                .collect(),
+        },
+        NativeApprovalTarget::Permissions { cwd } => {
+            NativeApprovalTarget::Permissions { cwd: rewrite(cwd) }
+        }
+    }
+}
+
+fn rewrite_json_workspace_paths(value: &mut Value, isolated_cwd: &Path, project_cwd: &Path) {
+    match value {
+        Value::String(path) => {
+            *path = rewrite_workspace_path(path.clone(), isolated_cwd, project_cwd);
+        }
+        Value::Array(values) => {
+            for value in values {
+                rewrite_json_workspace_paths(value, isolated_cwd, project_cwd);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                rewrite_json_workspace_paths(value, isolated_cwd, project_cwd);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+fn rewrite_workspace_path(value: String, isolated_cwd: &Path, project_cwd: &Path) -> String {
+    let path = Path::new(&value);
+    let Ok(relative) = path.strip_prefix(isolated_cwd) else {
+        return value;
+    };
+    project_cwd.join(relative).to_string_lossy().into_owned()
+}
+
 async fn invoke_isolated_workspace(
     adapter: Arc<dyn AgentAdapter>,
     request: WorkspaceAgentInvocation,
@@ -254,22 +423,9 @@ async fn invoke_isolated_workspace(
     )?;
     let integration_gate = request.integration_gate.clone();
     let cancellation = request.cancellation.clone();
+    let agent_request = codex_run_request(&request, workspace.path());
     let commit_subject = request.commit_subject;
-    let stream = adapter
-        .run(AgentRunRequest {
-            request_id: request.request_id,
-            model: Some(request.model),
-            reasoning_effort: request.reasoning_effort,
-            project_instructions: request.project_instructions,
-            prompt: request.prompt,
-            cwd: workspace.path().to_path_buf(),
-            resume_thread_id: None,
-            sandbox: crate::SandboxMode::WorkspaceWrite,
-            approval_policy: crate::ApprovalPolicy::Never,
-            output_schema: None,
-            cancellation: cancellation.clone(),
-        })
-        .await;
+    let stream = adapter.run(agent_request).await;
     let stream = match stream {
         Ok(stream) => stream,
         Err(failure) => {
@@ -277,7 +433,7 @@ async fn invoke_isolated_workspace(
         }
     };
     let (assistant_text, mut operations, output_items) =
-        collect_workspace_output(stream, &mut workspace, progress.as_ref()).await?;
+        collect_workspace_output(stream, &mut workspace, progress.as_ref(), &cancellation).await?;
     rewrite_isolated_operation_paths(&mut operations, workspace.path());
     if cancellation.is_cancelled() {
         return Err(workspace.settle_failure(domain_error(
@@ -285,6 +441,11 @@ async fn invoke_isolated_workspace(
             "run was cancelled before isolated changes were committed",
             false,
         )));
+    }
+    if request.permission_profile.sandbox == SandboxAccess::ReadOnly
+        && let Err(failure) = workspace.enforce_read_only()
+    {
+        return Err(failure);
     }
     let commit_id = match commit_workspace_changes(
         workspace.path(),
@@ -328,6 +489,35 @@ async fn invoke_isolated_workspace(
         .integrate_or_reconcile(result.commit_id.as_deref(), integration_gate.as_deref())
         .await?;
     Ok(result)
+}
+
+fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: &Path) -> AgentRunRequest {
+    AgentRunRequest {
+        request_id: request.request_id.clone(),
+        model: Some(request.model.clone()),
+        reasoning_effort: request.reasoning_effort.clone(),
+        project_instructions: request.project_instructions.clone(),
+        prompt: request.prompt.clone(),
+        cwd: cwd.to_path_buf(),
+        resume_thread_id: None,
+        sandbox: match request.permission_profile.sandbox {
+            SandboxAccess::ReadOnly => crate::SandboxMode::ReadOnly,
+            SandboxAccess::WorkspaceWrite => crate::SandboxMode::WorkspaceWrite,
+            SandboxAccess::FullAccess => crate::SandboxMode::DangerFullAccess,
+        },
+        approval_policy: match request.permission_profile.approval {
+            ait_domain::ApprovalMode::OnRequest => crate::ApprovalPolicy::OnRequest,
+            ait_domain::ApprovalMode::UntrustedOnly => crate::ApprovalPolicy::Untrusted,
+        },
+        approval_handler: Some(Arc::new(WorkspaceApprovalBridge {
+            run_id: request.request_id.clone(),
+            isolated_cwd: cwd.to_path_buf(),
+            project_cwd: request.cwd.clone(),
+            approvals: Arc::clone(&request.approvals),
+        })),
+        output_schema: None,
+        cancellation: request.cancellation.clone(),
+    }
 }
 
 #[allow(
@@ -493,6 +683,7 @@ async fn collect_workspace_output(
     mut stream: AgentStream,
     workspace: &mut IsolatedWorkspace,
     progress: Option<&Arc<dyn WorkspaceProgressReporter>>,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(String, Vec<WorkspaceOperation>, Vec<WorkspaceOutputItem>), DomainError> {
     let mut completed = false;
     let mut output = CodexOutputCollector::default();
@@ -551,11 +742,21 @@ async fn collect_workspace_output(
                         .await;
                 }
                 if status != AgentRunStatus::Completed {
-                    let failure = domain_error(
-                        ErrorCode::ProviderFailed,
-                        error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
-                        status == AgentRunStatus::Unknown,
-                    );
+                    let cancelled =
+                        status == AgentRunStatus::Interrupted && cancellation.is_cancelled();
+                    let failure = if cancelled {
+                        domain_error(
+                            ErrorCode::RunCancelled,
+                            error.unwrap_or_else(|| "Codex turn was cancelled".into()),
+                            false,
+                        )
+                    } else {
+                        domain_error(
+                            ErrorCode::ProviderFailed,
+                            error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
+                            status == AgentRunStatus::Unknown,
+                        )
+                    };
                     while stream.next().await.is_some() {}
                     return Err(workspace.settle_failure(failure));
                 }
@@ -676,6 +877,49 @@ impl IsolatedWorkspace {
             Some(&self.primary_head_ref),
         )
         .map(|_| ())
+    }
+
+    fn enforce_read_only(&mut self) -> Result<(), DomainError> {
+        let changed = git_head(&self.worktree).as_deref() != Some(self.baseline.as_str())
+            || git(
+                &self.worktree,
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                    "--ignored=matching",
+                ],
+            )
+            .map_or(true, |status| !status.stdout.is_empty());
+        if !changed {
+            return Ok(());
+        }
+        let failure = domain_error(
+            ErrorCode::ProjectGitDirty,
+            "read-only Codex Run attempted to modify its isolated Project workspace",
+            false,
+        );
+        if let Err(cleanup_failure) = cleanup_partial_worktree(&self.primary, &self.worktree) {
+            return Err(self.retain(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "{}; failed to discard unauthorized changes: {}",
+                    failure.message, cleanup_failure.message
+                ),
+                false,
+            )));
+        }
+        if let Err(cleanup_failure) = delete_git_ref(&self.primary, &self.run_ref) {
+            return Err(domain_error(
+                ErrorCode::RunRecoveryFailed,
+                format!(
+                    "{}; unauthorized workspace was removed but its Run ref could not be deleted: {}",
+                    failure.message, cleanup_failure.message
+                ),
+                false,
+            ));
+        }
+        Err(failure)
     }
 
     async fn integrate(
@@ -1445,6 +1689,7 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
                 approval_policy: crate::ApprovalPolicy::Never,
                 reasoning_effort: Some("low".into()),
                 output_schema: Some(output_schema),
+                approval_handler: None,
                 cancellation: request.cancellation,
             })
             .await
@@ -3881,7 +4126,10 @@ impl AgentAdapter for CodexAppServerAdapter {
             title: self.config.client_title.clone(),
             version: self.config.client_version.clone(),
         };
-        let approvals = Arc::clone(&self.config.approval_handler);
+        let approvals = request
+            .approval_handler
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&self.config.approval_handler));
         let cancellation = request.cancellation.clone();
         tokio::spawn(async move {
             let stderr_task = stderr.map(|stderr| {
@@ -4125,9 +4373,10 @@ where
 
     let mut deferred = VecDeque::from(deferred);
     let mut approval_tasks = JoinSet::<ApprovalResolution>::new();
-    let mut pending_approvals = HashMap::<String, AbortHandle>::new();
+    let mut pending_approvals = HashMap::<String, PendingApprovalTask>::new();
     let mut seen_server_requests = HashSet::new();
     let mut answered_server_requests = HashSet::new();
+    let mut approval_items = HashMap::<String, Value>::new();
     loop {
         let message = if let Some(message) = deferred.pop_front() {
             Some(message)
@@ -4140,6 +4389,8 @@ where
                         &mut writer,
                         &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
                     ).await?;
+                    approval_tasks.abort_all();
+                    expire_protocol_approvals(&approvals, &mut pending_approvals).await;
                     return Err(AdapterError::cancelled());
                 }
                 message = read_message(&mut lines) => Some(message?),
@@ -4149,8 +4400,19 @@ where
                     };
                     match resolution {
                         Ok(resolution) => {
-                            if pending_approvals.remove(&resolution.request_key).is_none() {
+                            let Some(pending) = pending_approvals.remove(&resolution.request_key) else {
                                 continue;
+                            };
+                            if resolution.decision == ApprovalDecision::Cancel {
+                                write_message(
+                                    &mut writer,
+                                    &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
+                                )
+                                .await?;
+                                approvals.resolved(&pending.request).await;
+                                approval_tasks.abort_all();
+                                expire_protocol_approvals(&approvals, &mut pending_approvals).await;
+                                return Err(AdapterError::cancelled());
                             }
                             match approval_response(&resolution.method, resolution.decision) {
                                 Ok(result) => {
@@ -4201,12 +4463,19 @@ where
             continue;
         };
         let method = message.get("method").and_then(Value::as_str);
+        if method == Some("item/started")
+            && let Some(item) = message.pointer("/params/item")
+            && let Some(item_id) = item.get("id").and_then(Value::as_str)
+        {
+            approval_items.insert(item_id.to_owned(), item.clone());
+        }
         if method == Some("serverRequest/resolved")
             && let Some(request_id) = message.pointer("/params/requestId")
             && let Some(request_key) = server_request_key(request_id)
-            && let Some(task) = pending_approvals.remove(&request_key)
+            && let Some(pending) = pending_approvals.remove(&request_key)
         {
-            task.abort();
+            pending.task.abort();
+            approvals.resolved(&pending.request).await;
         }
         if let (Some(method), Some(request_id)) = (method, message.get("id")) {
             let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
@@ -4214,6 +4483,8 @@ where
                 request_id,
                 method,
                 params,
+                &thread_id,
+                &turn_id,
                 &mut writer,
                 Arc::clone(&approvals),
                 sender,
@@ -4221,12 +4492,18 @@ where
                 &mut pending_approvals,
                 &mut seen_server_requests,
                 &mut answered_server_requests,
+                &approval_items,
             )
             .await?;
             continue;
         }
         if handle_message(&message, &turn_id, sender).await? {
             return Ok(());
+        }
+        if method == Some("item/completed")
+            && let Some(item_id) = message.pointer("/params/item/id").and_then(Value::as_str)
+        {
+            approval_items.remove(item_id);
         }
     }
 }
@@ -4424,6 +4701,21 @@ struct ApprovalResolution {
     decision: ApprovalDecision,
 }
 
+struct PendingApprovalTask {
+    task: AbortHandle,
+    request: ApprovalRequest,
+}
+
+async fn expire_protocol_approvals(
+    approvals: &Arc<dyn ApprovalHandler>,
+    pending_approvals: &mut HashMap<String, PendingApprovalTask>,
+) {
+    for (_, pending) in pending_approvals.drain() {
+        pending.task.abort();
+        approvals.resolved(&pending.request).await;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerRequestKind {
     Approval(ApprovalKind),
@@ -4440,13 +4732,16 @@ async fn handle_server_request<W>(
     request_id: &Value,
     method: &str,
     params: Value,
+    thread_id: &str,
+    turn_id: &str,
     writer: &mut W,
     approvals: Arc<dyn ApprovalHandler>,
     sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
     approval_tasks: &mut JoinSet<ApprovalResolution>,
-    pending_approvals: &mut HashMap<String, AbortHandle>,
+    pending_approvals: &mut HashMap<String, PendingApprovalTask>,
     seen_server_requests: &mut HashSet<String>,
     answered_server_requests: &mut HashSet<String>,
+    approval_items: &HashMap<String, Value>,
 ) -> Result<(), AdapterError>
 where
     W: AsyncWrite + Unpin,
@@ -4470,9 +4765,10 @@ where
         )
         .await?;
         if !answered_server_requests.contains(&request_key)
-            && let Some(task) = pending_approvals.remove(&request_key)
+            && let Some(pending) = pending_approvals.remove(&request_key)
         {
-            task.abort();
+            pending.task.abort();
+            approvals.resolved(&pending.request).await;
             write_rpc_error(
                 writer,
                 request_id,
@@ -4488,10 +4784,47 @@ where
     let request_kind = server_request_kind(method);
     match request_kind {
         ServerRequestKind::Approval(kind) => {
+            if let Err(reason) = validate_approval_correlation(method, &params, thread_id, turn_id)
+            {
+                send_server_request_warning(
+                    sender,
+                    method,
+                    &reason,
+                    "CODEX_APPROVAL_CORRELATION_INVALID",
+                )
+                .await?;
+                write_rpc_error(writer, request_id, -32602, reason).await?;
+                answered_server_requests.insert(request_key);
+                return Ok(());
+            }
+            let target = match approval_target(kind, &params, approval_items) {
+                Ok(target) => target,
+                Err(reason) => {
+                    send_server_request_warning(
+                        sender,
+                        method,
+                        &reason,
+                        "CODEX_APPROVAL_TARGET_INVALID",
+                    )
+                    .await?;
+                    write_rpc_error(writer, request_id, -32602, reason).await?;
+                    answered_server_requests.insert(request_key);
+                    return Ok(());
+                }
+            };
             let request = ApprovalRequest {
                 request_id: request_id.clone(),
                 method: method.to_owned(),
                 kind,
+                thread_id: thread_id.to_owned(),
+                turn_id: turn_id.to_owned(),
+                item_id: params
+                    .get("itemId")
+                    .or_else(|| params.get("callId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or(&request_key)
+                    .to_owned(),
+                target,
                 params,
             };
             send_event(
@@ -4503,16 +4836,17 @@ where
             .await?;
             let task_request_key = request_key.clone();
             let task_method = method.to_owned();
+            let task_request = request.clone();
             let task = approval_tasks.spawn(async move {
-                let decision = approvals.decide(&request).await;
+                let decision = approvals.decide(&task_request).await;
                 ApprovalResolution {
-                    request_id: request.request_id,
+                    request_id: task_request.request_id,
                     request_key: task_request_key,
                     method: task_method,
                     decision,
                 }
             });
-            pending_approvals.insert(request_key.clone(), task);
+            pending_approvals.insert(request_key.clone(), PendingApprovalTask { task, request });
         }
         ServerRequestKind::McpElicitation => {
             write_message(
@@ -4574,6 +4908,489 @@ where
     }
     if !matches!(request_kind, ServerRequestKind::Approval(_)) {
         answered_server_requests.insert(request_key);
+    }
+    Ok(())
+}
+
+fn approval_target(
+    kind: ApprovalKind,
+    params: &Value,
+    approval_items: &HashMap<String, Value>,
+) -> Result<NativeApprovalTarget, String> {
+    let item = params
+        .get("itemId")
+        .and_then(Value::as_str)
+        .and_then(|item_id| approval_items.get(item_id));
+    match kind {
+        ApprovalKind::CommandExecution => {
+            if let Some(context) = params.get("networkApprovalContext") {
+                let host = bounded_target_string(context.get("host"), "network host")?;
+                let protocol = match context.get("protocol").and_then(Value::as_str) {
+                    Some("http") => NativeNetworkProtocol::Http,
+                    Some("https") => NativeNetworkProtocol::Https,
+                    Some("socks5Tcp") => NativeNetworkProtocol::Socks5Tcp,
+                    Some("socks5Udp") => NativeNetworkProtocol::Socks5Udp,
+                    _ => return Err("network approval has an unsupported protocol".into()),
+                };
+                return Ok(NativeApprovalTarget::Network { host, protocol });
+            }
+            let command = approval_command(
+                params
+                    .get("command")
+                    .or_else(|| item.and_then(|item| item.get("command"))),
+            )?;
+            let cwd = bounded_target_string(
+                params
+                    .get("cwd")
+                    .or_else(|| item.and_then(|item| item.get("cwd"))),
+                "command working directory",
+            )?;
+            Ok(NativeApprovalTarget::Command { command, cwd })
+        }
+        ApprovalKind::FileChange => {
+            let grant_root = optional_bounded_target_string(params.get("grantRoot"), "grant root")?;
+            let changes = item
+                .and_then(|item| item.get("changes"))
+                .and_then(Value::as_array)
+                .map(|changes| project_file_changes(changes))
+                .transpose()?
+                .unwrap_or_default();
+            if grant_root.is_none() && changes.is_empty() {
+                return Err("file approval has no grant root or proposed file paths".into());
+            }
+            Ok(NativeApprovalTarget::FileChange {
+                grant_root,
+                changes,
+            })
+        }
+        ApprovalKind::Permissions => Ok(NativeApprovalTarget::Permissions {
+            cwd: bounded_target_string(params.get("cwd"), "permission working directory")?,
+        }),
+        ApprovalKind::LegacyCommand => {
+            let command = approval_command(params.get("command"))?;
+            let cwd = bounded_target_string(params.get("cwd"), "command working directory")?;
+            Ok(NativeApprovalTarget::Command { command, cwd })
+        }
+        ApprovalKind::LegacyPatch => {
+            let grant_root = optional_bounded_target_string(params.get("grantRoot"), "grant root")?;
+            let changes = params
+                .get("fileChanges")
+                .and_then(Value::as_object)
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .take(129)
+                        .map(|(path, change)| {
+                            let path = validate_bounded_string(path, "file path")?;
+                            let kind = match change.get("type").and_then(Value::as_str) {
+                                Some("add" | "create") => NativeApprovalFileChangeKind::Add,
+                                Some("delete") => NativeApprovalFileChangeKind::Delete,
+                                Some("update") | None => NativeApprovalFileChangeKind::Update,
+                                Some(_) => {
+                                    return Err(
+                                        "file approval has an unsupported change kind".into()
+                                    );
+                                }
+                            };
+                            Ok(NativeApprovalFileChange { path, kind })
+                        })
+                        .collect::<Result<Vec<_>, String>>()
+                })
+                .transpose()?
+                .unwrap_or_default();
+            if changes.len() > 128 {
+                return Err("file approval contains too many paths".into());
+            }
+            if grant_root.is_none() && changes.is_empty() {
+                return Err("file approval has no grant root or proposed file paths".into());
+            }
+            Ok(NativeApprovalTarget::FileChange {
+                grant_root,
+                changes,
+            })
+        }
+        ApprovalKind::Unsupported => Err("unsupported approval kind".into()),
+    }
+}
+
+fn project_file_changes(changes: &[Value]) -> Result<Vec<NativeApprovalFileChange>, String> {
+    if changes.is_empty() || changes.len() > 128 {
+        return Err("file approval has no paths or contains too many paths".into());
+    }
+    changes
+        .iter()
+        .map(|change| {
+            let path = bounded_target_string(change.get("path"), "file path")?;
+            let kind = match change.get("kind").and_then(Value::as_str) {
+                Some("add") => NativeApprovalFileChangeKind::Add,
+                Some("delete") => NativeApprovalFileChangeKind::Delete,
+                Some("update") => NativeApprovalFileChangeKind::Update,
+                _ => return Err("file approval has an unsupported change kind".into()),
+            };
+            Ok(NativeApprovalFileChange { path, kind })
+        })
+        .collect()
+}
+
+fn approval_command(value: Option<&Value>) -> Result<String, String> {
+    let arguments = match value {
+        Some(Value::String(command)) => {
+            let command = validate_bounded_string(command, "command")?;
+            parse_approval_command(&command)?
+        }
+        Some(Value::Array(arguments)) if !arguments.is_empty() => arguments
+            .iter()
+            .map(|argument| {
+                argument
+                    .as_str()
+                    .ok_or_else(|| "command approval contains a non-string argument".to_owned())
+                    .and_then(|argument| validate_bounded_string(argument, "command argument"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Err("command approval has no concrete command".into()),
+    };
+    redact_approval_arguments(&arguments)
+}
+
+fn parse_approval_command(command: &str) -> Result<Vec<String>, String> {
+    #[derive(Clone, Copy)]
+    enum Quote {
+        Single,
+        Double,
+    }
+
+    let mut arguments = Vec::new();
+    let mut argument = String::new();
+    let mut argument_started = false;
+    let mut quote = None;
+    let mut escaped = false;
+    for character in command.chars() {
+        match quote {
+            Some(Quote::Single) => {
+                if character == '\'' {
+                    quote = None;
+                } else {
+                    argument.push(character);
+                }
+            }
+            Some(Quote::Double) => {
+                if escaped {
+                    argument.push(character);
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    quote = None;
+                } else {
+                    argument.push(character);
+                }
+            }
+            None => {
+                if escaped {
+                    argument.push(character);
+                    escaped = false;
+                } else if character == '\\' {
+                    argument_started = true;
+                    escaped = true;
+                } else if character == '\'' {
+                    argument_started = true;
+                    quote = Some(Quote::Single);
+                } else if character == '"' {
+                    argument_started = true;
+                    quote = Some(Quote::Double);
+                } else if character.is_whitespace() {
+                    if argument_started {
+                        arguments.push(std::mem::take(&mut argument));
+                        argument_started = false;
+                    }
+                } else {
+                    argument_started = true;
+                    argument.push(character);
+                }
+            }
+        }
+    }
+    if quote.is_some() || escaped {
+        return Err("command approval has unsupported quoting or escaping".into());
+    }
+    if argument_started {
+        arguments.push(argument);
+    }
+    if arguments.is_empty() {
+        return Err("command approval has no concrete command".into());
+    }
+    Ok(arguments)
+}
+
+fn redact_approval_arguments(arguments: &[String]) -> Result<String, String> {
+    let mut redacted = Vec::with_capacity(arguments.len());
+    let mut curl_headers = arguments.first().is_some_and(|argument| {
+        argument.rsplit(['/', '\\']).next().is_some_and(|name| {
+            name.eq_ignore_ascii_case("curl") || name.eq_ignore_ascii_case("curl.exe")
+        })
+    });
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        if curl_headers && argument == "--" {
+            curl_headers = false;
+            redacted.push(argument.clone());
+            index += 1;
+            continue;
+        }
+        if curl_headers && (argument == "-H" || argument.eq_ignore_ascii_case("--header")) {
+            let Some(header) = arguments.get(index + 1) else {
+                return Err("command approval has a header option without an argument".into());
+            };
+            redacted.push(argument.clone());
+            redacted.push(redact_proven_header(header)?);
+            index += 2;
+            continue;
+        }
+        if curl_headers && let Some(header) = strip_ascii_case_prefix(argument, "--header=") {
+            if header.is_empty() {
+                return Err("command approval has an empty header argument".into());
+            }
+            redacted.push(format!("--header={}", redact_proven_header(header)?));
+            index += 1;
+            continue;
+        }
+        if curl_headers
+            && let Some(header) = argument.strip_prefix("-H")
+            && !header.is_empty()
+        {
+            redacted.push(format!("-H{}", redact_proven_header(header)?));
+            index += 1;
+            continue;
+        }
+
+        let token = redact_url_credentials(argument);
+        let lower = token.to_ascii_lowercase();
+
+        if sensitive_header_parts(&token).is_some() {
+            return Err(
+                "command approval has a sensitive header outside a proven header argument".into(),
+            );
+        }
+
+        if let Some((key, value)) = token.split_once('=')
+            && is_sensitive_key(key.to_ascii_lowercase().trim_start_matches('-'))
+        {
+            if value.trim().is_empty()
+                || (key.to_ascii_lowercase().contains("authorization")
+                    && is_authorization_scheme(value))
+            {
+                return Err(
+                    "command approval has a sensitive value outside its argument boundary".into(),
+                );
+            }
+            redacted.push(format!("{key}=[REDACTED]"));
+            index += 1;
+            continue;
+        }
+
+        if lower == "bearer" && index + 1 < arguments.len() {
+            return Err("command approval has a bearer value outside its argument boundary".into());
+        }
+
+        if redact_inline_bearer(&token).is_some() {
+            return Err(
+                "command approval has a bearer credential outside a proven header argument".into(),
+            );
+        }
+
+        if token.starts_with('-') && is_sensitive_key(lower.trim_start_matches('-')) {
+            return Err(
+                "command approval has a sensitive option outside its argument boundary".into(),
+            );
+        }
+
+        redacted.push(token);
+        index += 1;
+    }
+    let rendered = redacted
+        .iter()
+        .map(|argument| render_approval_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ");
+    validate_bounded_string(&rendered, "redacted command")
+}
+
+fn redact_proven_header(header: &str) -> Result<String, String> {
+    let header = redact_url_credentials(header);
+    if let Some((name, value)) = sensitive_header_parts(&header) {
+        let value = value.trim();
+        if value.is_empty()
+            || (name.trim().to_ascii_lowercase().contains("authorization")
+                && is_authorization_scheme(value))
+        {
+            return Err(
+                "command approval has a sensitive header value outside its argument boundary"
+                    .into(),
+            );
+        }
+        return Ok(format!("{}:[REDACTED]", name.trim()));
+    }
+    if let Some(projected) = redact_inline_bearer(&header) {
+        return Ok(projected);
+    }
+    if is_sensitive_key(&header.trim().to_ascii_lowercase()) {
+        return Err("command approval has a sensitive header without a value".into());
+    }
+    Ok(header)
+}
+
+fn render_approval_argument(argument: &str) -> String {
+    if !argument.is_empty()
+        && argument.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(
+                    character,
+                    '-' | '_' | '.' | '/' | ':' | '@' | '%' | '+' | ',' | '=' | '[' | ']'
+                )
+        })
+    {
+        argument.to_owned()
+    } else {
+        serde_json::to_string(argument).expect("validated display strings are JSON serializable")
+    }
+}
+
+fn sensitive_header_parts(header: &str) -> Option<(&str, &str)> {
+    let (name, value) = header.split_once(':')?;
+    let normalized = name.trim().to_ascii_lowercase();
+    if !is_sensitive_key(&normalized) {
+        return None;
+    }
+    Some((name, value))
+}
+
+fn is_authorization_scheme(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "bearer" | "basic" | "digest" | "negotiate" | "aws4-hmac-sha256"
+    )
+}
+
+fn redact_inline_bearer(value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    let mut search_start = 0;
+    while let Some(relative) = lower[search_start..].find("bearer") {
+        let start = search_start + relative;
+        let end = start + "bearer".len();
+        let left_boundary = start == 0 || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let right_boundary = end == lower.len()
+            || lower.as_bytes()[end].is_ascii_whitespace()
+            || matches!(lower.as_bytes()[end], b':' | b'=');
+        if left_boundary && right_boundary && !value[end..].trim().is_empty() {
+            return Some(format!("{} [REDACTED]", value[..end].trim_end()));
+        }
+        search_start = end;
+    }
+    None
+}
+
+fn strip_ascii_case_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "api-key",
+        "api_key",
+        "apikey",
+        "credential",
+        "authorization",
+        "cookie",
+    ]
+    .iter()
+    .any(|sensitive| key.contains(sensitive))
+}
+
+fn redact_url_credentials(token: &str) -> String {
+    let mut redacted = token.to_owned();
+    let mut search_start = 0;
+    while let Some(relative_scheme_end) = redacted[search_start..].find("://") {
+        let authority_start = search_start + relative_scheme_end + 3;
+        let authority_end = redacted[authority_start..]
+            .find(['/', '?', '#', ' ', '\t'])
+            .map_or(redacted.len(), |relative| authority_start + relative);
+        let authority = &redacted[authority_start..authority_end];
+        let Some(relative_at) = authority.rfind('@') else {
+            search_start = authority_end;
+            continue;
+        };
+        redacted.replace_range(authority_start..authority_start + relative_at, "[REDACTED]");
+        search_start = authority_start + "[REDACTED]@".len();
+    }
+    redacted
+}
+
+fn optional_bounded_target_string(
+    value: Option<&Value>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    value
+        .map(|value| bounded_target_string(Some(value), field))
+        .transpose()
+}
+
+fn bounded_target_string(value: Option<&Value>, field: &str) -> Result<String, String> {
+    let value = value
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("approval has no concrete {field}"))?;
+    validate_bounded_string(value, field)
+}
+
+fn validate_bounded_string(value: &str, field: &str) -> Result<String, String> {
+    if value.trim().is_empty() || value.len() > 4_096 || value.chars().any(char::is_control) {
+        Err(format!(
+            "approval {field} is empty or outside display limits"
+        ))
+    } else {
+        Ok(value.to_owned())
+    }
+}
+
+fn validate_approval_correlation(
+    method: &str,
+    params: &Value,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<(), String> {
+    if let Some(value) = params.get("threadId")
+        && value.as_str() != Some(thread_id)
+    {
+        return Err(format!(
+            "Codex approval {method} does not belong to the active thread"
+        ));
+    }
+    if let Some(value) = params.get("turnId")
+        && value.as_str() != Some(turn_id)
+    {
+        return Err(format!(
+            "Codex approval {method} does not belong to the active turn"
+        ));
+    }
+    if matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) && (params.get("threadId").and_then(Value::as_str).is_none()
+        || params.get("turnId").and_then(Value::as_str).is_none()
+        || params.get("itemId").and_then(Value::as_str).is_none())
+    {
+        return Err(format!(
+            "Codex approval {method} is missing threadId, turnId, or itemId"
+        ));
     }
     Ok(())
 }
@@ -4666,13 +5483,16 @@ fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, 
     if let ApprovalDecision::Raw(value) = decision {
         return Ok(value);
     }
+    if decision == ApprovalDecision::Cancel {
+        return Err(AdapterError::cancelled());
+    }
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
             let decision = match decision {
                 ApprovalDecision::Accept => "accept",
                 ApprovalDecision::AcceptForSession => "acceptForSession",
                 ApprovalDecision::Decline => "decline",
-                ApprovalDecision::Cancel => "cancel",
+                ApprovalDecision::Cancel => unreachable!("cancel interrupts the turn"),
                 ApprovalDecision::Raw(_) => unreachable!(),
             };
             Ok(json!({"decision": decision}))
@@ -4681,7 +5501,8 @@ fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, 
             let decision = match decision {
                 ApprovalDecision::Accept => "approved",
                 ApprovalDecision::AcceptForSession => "approved_for_session",
-                ApprovalDecision::Decline | ApprovalDecision::Cancel => "abort",
+                ApprovalDecision::Decline => "abort",
+                ApprovalDecision::Cancel => unreachable!("cancel interrupts the turn"),
                 ApprovalDecision::Raw(_) => unreachable!(),
             };
             Ok(json!({"decision": decision}))
@@ -4694,9 +5515,8 @@ fn approval_response(method: &str, decision: ApprovalDecision) -> Result<Value, 
                     false,
                 ))
             }
-            ApprovalDecision::Decline | ApprovalDecision::Cancel => {
-                Ok(json!({"permissions": {}, "scope": "turn"}))
-            }
+            ApprovalDecision::Decline => Ok(json!({"permissions": {}, "scope": "turn"})),
+            ApprovalDecision::Cancel => unreachable!("cancel interrupts the turn"),
             ApprovalDecision::Raw(_) => unreachable!(),
         },
         _ => Err(AdapterError::new(
@@ -4771,6 +5591,189 @@ async fn send_event(
 #[cfg(test)]
 mod workspace_cleanup_tests {
     use super::*;
+
+    #[test]
+    fn network_approval_projection_is_network_specific_and_bounded() {
+        assert_eq!(
+            approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({
+                    "networkApprovalContext": {"host": "api.example.test", "protocol": "https"}
+                }),
+                &HashMap::new(),
+            )
+            .unwrap(),
+            NativeApprovalTarget::Network {
+                host: "api.example.test".into(),
+                protocol: NativeNetworkProtocol::Https,
+            }
+        );
+        assert!(
+            approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({
+                    "networkApprovalContext": {"host": "api.example.test", "protocol": "ftp"}
+                }),
+                &HashMap::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn command_approval_projection_redacts_credentials() {
+        for (command, secrets) in [
+            (
+                "curl --api-key=very-secret https://url-user:password@example.test/v1",
+                &["very-secret", "url-user", "password"][..],
+            ),
+            (
+                "curl -H X-Api-Key:header-secret https://example.test/v1",
+                &["header-secret"][..],
+            ),
+            (
+                "curl -H \"Authorization: Bearer auth-secret\" https://example.test/v1",
+                &["auth-secret"][..],
+            ),
+            (
+                "curl --header='Cookie: session=cookie-secret' https://example.test/v1",
+                &["cookie-secret"][..],
+            ),
+            (
+                "curl --header=\"Authorization:Bearer opaque-value\" https://example.test/v1",
+                &["opaque-value"][..],
+            ),
+        ] {
+            let target = approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({"command": command, "cwd": "/workspace"}),
+                &HashMap::new(),
+            )
+            .unwrap();
+            let NativeApprovalTarget::Command { command, cwd } = target else {
+                panic!("expected a command target");
+            };
+            for secret in secrets {
+                assert!(!command.contains(secret), "secret leaked from {command:?}");
+            }
+            assert!(command.contains("curl"));
+            assert!(command.contains("example.test"));
+            assert!(command.contains("[REDACTED]"));
+            assert_eq!(cwd, "/workspace");
+        }
+
+        let array_target = approval_target(
+            ApprovalKind::CommandExecution,
+            &json!({
+                "command": [
+                    "curl",
+                    "--header",
+                    "Authorization: Bearer array-secret",
+                    "https://array-user:array-password@example.test/v1"
+                ],
+                "cwd": "/workspace"
+            }),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let NativeApprovalTarget::Command { command, .. } = array_target else {
+            panic!("expected a command target");
+        };
+        assert_eq!(
+            command,
+            "curl --header Authorization:[REDACTED] https://[REDACTED]@example.test/v1"
+        );
+        for secret in ["array-secret", "array-user", "array-password"] {
+            assert!(!command.contains(secret));
+        }
+    }
+
+    #[test]
+    fn command_approval_projection_fails_closed_on_ambiguous_syntax() {
+        for command in [
+            "curl -H \"Authorization: Bearer unfinished",
+            "curl --api-key",
+            "curl --header=Authorization:Bearer opaque-value https://example.test/v1",
+            "curl Authorization: Bearer opaque-value https://example.test/v1",
+            "curl -H Cookie: first=opaque-cookie https://example.test/v1",
+            "curl -- -H Authorization: /etc/passwd",
+        ] {
+            assert!(
+                approval_target(
+                    ApprovalKind::CommandExecution,
+                    &json!({"command": command, "cwd": "/workspace"}),
+                    &HashMap::new(),
+                )
+                .is_err(),
+                "unsafe command projection was accepted: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_approval_projection_never_invents_header_argument_boundaries() {
+        for command in [
+            json!("grep -H Authorization: /etc/passwd"),
+            json!(["grep", "-H", "Authorization:", "/etc/passwd"]),
+        ] {
+            assert!(
+                approval_target(
+                    ApprovalKind::CommandExecution,
+                    &json!({"command": command, "cwd": "/workspace"}),
+                    &HashMap::new(),
+                )
+                .is_err(),
+                "an ambiguous argument was silently omitted"
+            );
+        }
+
+        for command in [
+            json!("curl -H Authorization:value /etc/passwd"),
+            json!(["curl", "-H", "Authorization:value", "/etc/passwd"]),
+        ] {
+            let target = approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({"command": command, "cwd": "/workspace"}),
+                &HashMap::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                target,
+                NativeApprovalTarget::Command {
+                    command: "curl -H Authorization:[REDACTED] /etc/passwd".into(),
+                    cwd: "/workspace".into(),
+                }
+            );
+        }
+
+        assert_eq!(
+            approval_target(
+                ApprovalKind::CommandExecution,
+                &json!({
+                    "command": ["grep", "-H", "needle", "/etc/file with spaces"],
+                    "cwd": "/workspace"
+                }),
+                &HashMap::new(),
+            )
+            .unwrap(),
+            NativeApprovalTarget::Command {
+                command: "grep -H needle \"/etc/file with spaces\"".into(),
+                cwd: "/workspace".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn cancel_is_never_encoded_as_an_approval_or_empty_permission_grant() {
+        for method in [
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+        ] {
+            let failure = approval_response(method, ApprovalDecision::Cancel).unwrap_err();
+            assert_eq!(failure.kind, AdapterErrorKind::Cancelled, "{method}");
+        }
+    }
 
     #[cfg(windows)]
     #[test]

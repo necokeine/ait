@@ -1,10 +1,12 @@
-use std::{path::PathBuf, pin::Pin};
+use std::{path::PathBuf, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+
+use ait_domain::NativeApprovalTarget;
 
 use crate::AdapterError;
 
@@ -47,7 +49,7 @@ impl ApprovalPolicy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentRunRequest {
     pub request_id: String,
     pub model: Option<String>,
@@ -59,8 +61,33 @@ pub struct AgentRunRequest {
     pub resume_thread_id: Option<String>,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
+    /// Optional Run-scoped approval handler. Production workspace Runs always supply one.
+    pub approval_handler: Option<Arc<dyn ApprovalHandler>>,
     pub output_schema: Option<Value>,
     pub cancellation: CancellationToken,
+}
+
+impl std::fmt::Debug for AgentRunRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentRunRequest")
+            .field("request_id", &self.request_id)
+            .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("project_instructions", &self.project_instructions)
+            .field("prompt", &self.prompt)
+            .field("cwd", &self.cwd)
+            .field("resume_thread_id", &self.resume_thread_id)
+            .field("sandbox", &self.sandbox)
+            .field("approval_policy", &self.approval_policy)
+            .field(
+                "approval_handler",
+                &self.approval_handler.as_ref().map(|_| "<handler>"),
+            )
+            .field("output_schema", &self.output_schema)
+            .field("cancellation", &self.cancellation)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +137,10 @@ pub struct ApprovalRequest {
     pub request_id: Value,
     pub method: String,
     pub kind: ApprovalKind,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub target: NativeApprovalTarget,
     pub params: Value,
 }
 
@@ -127,6 +158,9 @@ pub enum ApprovalDecision {
 #[async_trait]
 pub trait ApprovalHandler: Send + Sync {
     async fn decide(&self, request: &ApprovalRequest) -> ApprovalDecision;
+
+    /// Notifies the host that Codex withdrew a request before its answer was used.
+    async fn resolved(&self, _request: &ApprovalRequest) {}
 }
 
 #[derive(Debug, Default)]

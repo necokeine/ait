@@ -29,6 +29,7 @@ async fn turn(
         sandbox: SandboxMode::WorkspaceWrite,
         approval_policy: ApprovalPolicy::Never,
         output_schema: None,
+        approval_handler: None,
         cancellation: cancellation.clone(),
     }).await.unwrap();
     let result = tokio::time::timeout(Duration::from_mins(4), async {
