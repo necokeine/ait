@@ -234,8 +234,25 @@ fn command_session(command: &Command) -> Option<&str> {
         Command::SendMessage { session_id, .. }
         | Command::SetSessionAgent { session_id, .. }
         | Command::SetSessionConfig { session_id, .. } => Some(session_id),
-        Command::ForkSession { id, .. } | Command::CreateSession { id, .. } => Some(id),
+        Command::ForkSession { id, .. }
+        | Command::DeriveSession { id, .. }
+        | Command::CreateSession { id, .. } => Some(id),
         _ => None,
+    }
+}
+
+pub(super) struct SessionAdmission {
+    leases: Vec<(String, Arc<()>)>,
+    derive_source_locked: bool,
+}
+
+impl SessionAdmission {
+    pub(super) const fn derive_source_locked(&self) -> bool {
+        self.derive_source_locked
+    }
+
+    pub(super) fn retain_for_session(&mut self, session_id: &str) {
+        self.leases.retain(|(id, _)| id == session_id);
     }
 }
 
@@ -266,9 +283,12 @@ pub(super) fn check_session_admission(
 }
 
 impl LocalControlService {
-    pub(super) fn acquire_session(&self, command: &Command) -> Result<Option<Arc<()>>, ApiError> {
+    pub(super) fn acquire_session(&self, command: &Command) -> Result<SessionAdmission, ApiError> {
         let Some(id) = command_session(command) else {
-            return Ok(None);
+            return Ok(SessionAdmission {
+                leases: Vec::new(),
+                derive_source_locked: false,
+            });
         };
         let mut leases = self.session_leases.lock().map_err(|_| busy())?;
         leases.retain(|_, lease| lease.strong_count() > 0);
@@ -277,7 +297,31 @@ impl LocalControlService {
         }
         let lease = Arc::new(());
         leases.insert(id.into(), Arc::downgrade(&lease));
-        Ok(Some(lease))
+        let mut owned = vec![(id.to_owned(), lease)];
+        let derive_source_locked = if let Command::DeriveSession {
+            source_session_id, ..
+        } = command
+        {
+            if source_session_id == id
+                || leases
+                    .get(source_session_id)
+                    .and_then(Weak::upgrade)
+                    .is_some()
+            {
+                false
+            } else {
+                let source_lease = Arc::new(());
+                leases.insert(source_session_id.clone(), Arc::downgrade(&source_lease));
+                owned.push((source_session_id.clone(), source_lease));
+                true
+            }
+        } else {
+            false
+        };
+        Ok(SessionAdmission {
+            leases: owned,
+            derive_source_locked,
+        })
     }
 
     fn gateway(&self) -> Result<&dyn AgentProviderGateway, ApiError> {

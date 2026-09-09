@@ -88,6 +88,14 @@ pub enum Command {
         at_message_id: String,
         text: String,
     },
+    DeriveSession {
+        id: String,
+        project_id: String,
+        source_session_id: String,
+        agent_id: String,
+        at_message_id: String,
+        text: String,
+    },
     GetRun {
         run_id: String,
     },

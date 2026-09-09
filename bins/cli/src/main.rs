@@ -305,6 +305,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::SetSessionTitle { .. } => "/v1/session/set-title",
         Command::SendMessage { .. } => "/v1/session/send-message",
         Command::ForkSession { .. } => "/v1/session/fork",
+        Command::DeriveSession { .. } => "/v1/session/derive",
         Command::GetRun { .. } => "/v1/run/get",
         Command::CancelRun { .. } => "/v1/run/cancel",
         Command::ResolveNativeApproval { .. } => "/v1/run/approval/resolve",
