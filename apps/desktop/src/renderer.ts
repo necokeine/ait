@@ -1378,7 +1378,7 @@ function renderCommandResults(): void {
 
 function renderFatal(error: unknown): void {
   $("#core-status").textContent = " Core unavailable";
-  conversation.innerHTML = `<div class="empty-state"><h2>Could not start Ait daemon</h2><p>${escapeHtml(errorMessage(error))}</p><p>Run <code>cargo build -p ait-daemon</code> and reopen the app.</p></div>`;
+  conversation.innerHTML = `<div class="empty-state"><h2>Could not start Ait daemon</h2><p>${escapeHtml(errorMessage(error))}</p><p>Fix the startup problem above, then reopen Ait.</p></div>`;
   showToast(errorMessage(error), true);
 }
 

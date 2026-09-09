@@ -5,6 +5,7 @@ export interface DesktopDaemonRuntime {
   databaseFilename: string;
   endpoint: string;
   listen: string;
+  startupTimeoutMs: number;
 }
 
 export function desktopDaemonRuntime(isPackaged: boolean): DesktopDaemonRuntime {
@@ -14,6 +15,7 @@ export function desktopDaemonRuntime(isPackaged: boolean): DesktopDaemonRuntime 
     databaseFilename: isPackaged ? "ait.sqlite3" : "ait-development.sqlite3",
     endpoint: `http://127.0.0.1:${port}`,
     listen: `127.0.0.1:${port}`,
+    startupTimeoutMs: isPackaged ? 15_000 : 120_000,
   };
 }
 

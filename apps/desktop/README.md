@@ -18,6 +18,11 @@ started by this Electron process is stopped on application exit.
 The desktop development launcher adds the non-default `dev-mock-provider` daemon feature. Together
 with Rust debug assertions this exposes the local deterministic Mock provider for UI development;
 packaged/release daemons do not contain that provider even if the feature is passed accidentally.
+The launcher resolves Cargo to an explicit executable path, checking `CARGO`, `CARGO_HOME`, the
+standard `$HOME/.cargo/bin` installation, and then `PATH`; this keeps GUI launches from depending on
+the reduced shell path inherited by Electron. If Cargo is unavailable, the window reports how to
+install Rust or configure `CARGO` instead of raising an uncaught `spawn ... ENOENT`. Development
+allows up to two minutes for a cold Rust build before reporting a readiness timeout.
 Development uses `127.0.0.1:7315` and `<Electron userData>/ait-development.sqlite3`; packaged builds
 use `127.0.0.1:7314` and `<Electron userData>/ait.sqlite3`. These defaults keep development Mock data
 out of the production store. To reset only the development profile, quit Ait and remove
@@ -54,7 +59,7 @@ transient projection after Ait has finished saving it.
 
 ## Packaging
 
-A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
+A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows), verifies that sidecar before spawning it, and never falls back to Cargo. It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
 
 ## Providers and Agent presets
 

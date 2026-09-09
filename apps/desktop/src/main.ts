@@ -1,6 +1,6 @@
 import type { AgentProvider, AgentView, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
 import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
+import { launchDesktopDaemon } from "./daemon-launch.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const daemonRuntime = desktopDaemonRuntime(app.isPackaged);
@@ -247,23 +248,27 @@ class DaemonClient {
       throw new Error(`Ait refuses to reuse an unverified daemon already listening on ${daemonRuntime.listen}. Stop that daemon and try again.`);
     }
     const appRoot = resolve(here, "..");
-    const workspaceRoot = resolve(appRoot, "../..");
-    const executable = app.isPackaged
-      ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ait-daemon.exe" : "ait-daemon")
-      : "cargo";
-    const database = join(app.getPath("userData"), daemonRuntime.databaseFilename);
-    const args = app.isPackaged
-      ? ["--database", database, "--listen", daemonRuntime.listen]
-      : ["run", "--quiet", "-p", "ait-daemon", "--features", "dev-mock-provider", "--", "--database", database, "--listen", daemonRuntime.listen];
-    this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
+    this.ownedProcess = await launchDesktopDaemon({
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      resourcesPath: process.resourcesPath,
+      appRoot,
+      userData: app.getPath("userData"),
+      databaseFilename: daemonRuntime.databaseFilename,
+      listen: daemonRuntime.listen,
+    });
     this.ownedProcess.stderr?.on("data", (chunk: Buffer) => {
       const message = chunk.toString("utf8").trim();
       if (message) console.error(`[ait-daemon] ${message}`);
     });
     this.ownedProcess.once("exit", () => { this.ownedProcess = undefined; });
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+    const startupDeadline = Date.now() + daemonRuntime.startupTimeoutMs;
+    while (Date.now() < startupDeadline) {
       if (await this.isReady()) return;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+      const remaining = startupDeadline - Date.now();
+      if (remaining > 0) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, Math.min(250, remaining)));
+      }
     }
     this.stop();
     throw new Error("Ait daemon did not become ready in time.");
@@ -547,7 +552,10 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  void daemon.ensureStarted();
+  void daemon.ensureStarted().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[ait-daemon] startup failed: ${message}`);
+  });
   ipcMain.handle("ait:request", (_event, method: unknown, params: unknown) => {
     if (typeof method !== "string") throw new Error("Unsupported desktop operation.");
     return daemon.request(method, params ?? {});

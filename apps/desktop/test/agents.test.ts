@@ -38,6 +38,10 @@ test("development and packaged desktop daemons use isolated ports and databases"
   assert.notEqual(development.endpoint, production.endpoint);
   assert.notEqual(development.databaseFilename, production.databaseFilename);
 });
+test("development startup allows a cold Rust build while packaged startup fails promptly", () => {
+  assert.equal(desktopDaemonRuntime(false).startupTimeoutMs, 120_000);
+  assert.equal(desktopDaemonRuntime(true).startupTimeoutMs, 15_000);
+});
 test("unknown models do not receive invented reasoning capabilities", () => {
   const summary = projectAgent({ ...agent, config: { ...agent.config, model: "unknown" } }, [provider]);
   assert.equal(summary.model, "unknown");
