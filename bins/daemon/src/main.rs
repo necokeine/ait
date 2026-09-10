@@ -57,6 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
     let service = Arc::new(
         LocalControlService::with_workspace_agent(store, codex)
+            .with_project_directory_creator(Arc::new(
+                ait_project_local::DocumentsProjectDirectory::default(),
+            ))
             .with_permission_limits(PermissionPolicyLimits {
                 max_sandbox: arguments.max_sandbox.into(),
                 allow_session_approvals: !arguments.deny_session_approvals,

@@ -303,3 +303,54 @@ async fn production_http_contract_rejects_mock_provider_payloads() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn name_only_http_request_accepts_null_and_returns_stable_conflict() {
+    let temporary = TempDir::new().unwrap();
+    let documents = temporary.path().to_path_buf();
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()))
+        .with_project_directory_creator(Arc::new(
+            ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
+                Some(documents.clone())
+            }),
+        ));
+    let app = ait_api_http::router(Arc::new(service));
+    for (id, expected) in [
+        ("first", None),
+        ("second", Some("PROJECT_PATH_ALREADY_EXISTS")),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/project/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"id":id, "name":"API project", "workdir":null})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if let Some(code) = expected {
+            assert_eq!(body["ok"], false);
+            assert_eq!(body["error"]["code"], code);
+            assert_eq!(body["error"]["retryable"], false);
+        } else {
+            assert_eq!(body["ok"], true);
+            assert_eq!(
+                body["result"]["value"]["workdir"],
+                temporary
+                    .path()
+                    .join("API project")
+                    .canonicalize()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            );
+        }
+    }
+}

@@ -372,7 +372,7 @@ async fn seed_queued_run(database: &Path, project: &Path) -> String {
         ControlCommand::RegisterProject {
             id: "recovery-project".into(),
             name: "Recovery Project".into(),
-            workdir: project.display().to_string(),
+            workdir: Some(project.display().to_string()),
             repo_url: None,
         },
         ControlCommand::RegisterAgent {

@@ -24,6 +24,7 @@ tokio-stream = "0.1"
 tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
+ait-project-local = { path = "../project-local" }
 ait-storage-sqlite = { path = "../storage-sqlite" }
 http-body-util = "0.1"
 tempfile = "3"

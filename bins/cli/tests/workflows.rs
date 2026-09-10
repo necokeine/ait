@@ -591,3 +591,54 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     assert_eq!(unavailable.status.code(), Some(1), "{unavailable:?}");
     assert!(unavailable.stdout.is_empty() && !unavailable.stderr.is_empty());
 }
+
+// NEC-195: omitted directory travels through the real CLI and production HTTP route.
+#[tokio::test]
+async fn wf01_name_only_project_uses_documents_and_fails_closed() {
+    let mut workspace = Workspace::new().await;
+    let project = workspace
+        .command(json!({"type":"register_project", "id":"named", "name":"中文 project"}))
+        .await;
+    let path = workspace.path("Documents/中文 project");
+    assert_eq!(
+        project["workdir"],
+        path.canonicalize().unwrap().to_str().unwrap()
+    );
+    let head = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .await
+        .unwrap();
+    assert!(head.status.success());
+    assert_eq!(
+        project["base_commit"],
+        String::from_utf8(head.stdout).unwrap().trim()
+    );
+    let existing = workspace.path("Documents/existing");
+    std::fs::create_dir(&existing).unwrap();
+    std::fs::write(existing.join("keep"), "untouched").unwrap();
+    let before = workspace.view().await;
+    workspace
+        .reject(
+            json!({"type":"register_project", "id":"conflict", "name":"existing"}),
+            "PROJECT_PATH_ALREADY_EXISTS",
+        )
+        .await;
+    workspace
+        .reject(
+            json!({"type":"register_project", "id":"bad", "name":"../escape"}),
+            "INVALID_PROJECT",
+        )
+        .await;
+    assert_eq!(workspace.view().await, before);
+    assert_eq!(
+        std::fs::read_to_string(existing.join("keep")).unwrap(),
+        "untouched"
+    );
+    assert!(!existing.join(".git").exists());
+    workspace.restart().await;
+    assert_eq!(workspace.view().await, before);
+    workspace.stop().await;
+}

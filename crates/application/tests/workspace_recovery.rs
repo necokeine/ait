@@ -367,7 +367,7 @@ async fn register_project(service: &LocalControlService, root: &Path, id: &str) 
         Command::RegisterProject {
             id: id.into(),
             name: id.into(),
-            workdir: path.display().to_string(),
+            workdir: Some(path.display().to_string()),
             repo_url: None,
         },
     )

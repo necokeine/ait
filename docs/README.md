@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/NEC-195/adr-001-name-only-project-creation.md`：省略工作目录时在当前用户 Documents
+  独占创建同名目录；沿用 Git/原子注册流程，明确冲突拒绝、CAS 重试与失败目录保留语义。
+
 - `decisions/NEC-234/adr-001-api-provider-run-permissions.md`：OpenAI、DeepSeek 等普通 API
   Provider 与 Codex 共用三级 sandbox Run 快照及管理员上限；纯文本网关不把权限上限伪装成
   尚未实现的工具能力。

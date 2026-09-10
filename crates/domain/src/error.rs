@@ -12,6 +12,12 @@ pub enum ErrorCode {
     ProjectPathNotDirectory,
     /// Canonical path is already registered.
     ProjectPathAlreadyRegistered,
+    /// A requested new Project directory already exists.
+    ProjectPathAlreadyExists,
+    /// The host's default parent directory cannot be resolved or accessed.
+    ProjectDefaultDirectoryUnavailable,
+    /// A new Project directory could not be created.
+    ProjectDirectoryCreationFailed,
     /// Git initialization failed.
     ProjectGitInitFailed,
     /// Project Git worktree or index contains changes.
@@ -128,6 +134,9 @@ impl ErrorCode {
             Self::ProjectPathNotFound => "PROJECT_PATH_NOT_FOUND",
             Self::ProjectPathNotDirectory => "PROJECT_PATH_NOT_DIRECTORY",
             Self::ProjectPathAlreadyRegistered => "PROJECT_PATH_ALREADY_REGISTERED",
+            Self::ProjectPathAlreadyExists => "PROJECT_PATH_ALREADY_EXISTS",
+            Self::ProjectDefaultDirectoryUnavailable => "PROJECT_DEFAULT_DIRECTORY_UNAVAILABLE",
+            Self::ProjectDirectoryCreationFailed => "PROJECT_DIRECTORY_CREATION_FAILED",
             Self::ProjectGitInitFailed => "PROJECT_GIT_INIT_FAILED",
             Self::ProjectGitDirty => "PROJECT_GIT_DIRTY",
             Self::ProjectGitHeadUnavailable => "PROJECT_GIT_HEAD_UNAVAILABLE",

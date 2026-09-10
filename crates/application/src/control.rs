@@ -29,9 +29,10 @@ use ait_domain::{
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
     ControlRecordKind, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
-    ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceApprovalDecision,
-    WorkspaceApprovalRequest, WorkspaceIntegrationGate, WorkspaceOutputItem, WorkspaceResultSink,
+    ProjectDirectoryCreator, ProviderMessage, SessionTitleGenerator, SessionTitleRequest,
+    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
+    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationGate,
+    WorkspaceOutputItem, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -332,6 +333,7 @@ struct LoadedWorkingSet {
 #[derive(Clone)]
 pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
+    project_directory_creator: Option<Arc<dyn ProjectDirectoryCreator>>,
     session_leases: Arc<Mutex<HashMap<String, Weak<()>>>>,
     workspace_leases: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
     cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
@@ -366,6 +368,7 @@ impl LocalControlService {
     pub fn new(store: Arc<dyn ControlStore>) -> Self {
         Self {
             store,
+            project_directory_creator: None,
             session_leases: Arc::new(Mutex::new(HashMap::new())),
             workspace_leases: Arc::new(Mutex::new(HashMap::new())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -387,6 +390,7 @@ impl LocalControlService {
     ) -> Self {
         Self {
             store,
+            project_directory_creator: None,
             session_leases: Arc::new(Mutex::new(HashMap::new())),
             workspace_leases: Arc::new(Mutex::new(HashMap::new())),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
@@ -398,6 +402,16 @@ impl LocalControlService {
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
         }
+    }
+
+    /// Adds the host capability used only when Project registration omits a workdir.
+    #[must_use]
+    pub fn with_project_directory_creator(
+        mut self,
+        creator: Arc<dyn ProjectDirectoryCreator>,
+    ) -> Self {
+        self.project_directory_creator = Some(creator);
+        self
     }
 
     #[must_use]
@@ -2321,9 +2335,62 @@ impl LocalControlService {
         has_workspace_lease: bool,
         derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
+        let mut created_workdir = None;
+        self.commit_command_inner(command, has_workspace_lease, derive_source_locked, &mut created_workdir)
+            .await
+            .map_err(|mut failure| {
+                if let Some(path) = created_workdir {
+                    // Filesystem and SQLite are separate commit domains. Preserve
+                    // the new directory, including anything written concurrently.
+                    failure.message = format!("{} Directory retained at {}. Inspect it before explicitly registering it or choosing another name.", failure.message, path.display());
+                    failure.retryable = false;
+                }
+                failure
+            })
+    }
+
+    async fn commit_command_inner(
+        &self,
+        mut command: Command,
+        has_workspace_lease: bool,
+        derive_source_locked: bool,
+        created_workdir: &mut Option<PathBuf>,
+    ) -> Result<CommandOutcome, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_command_records(&command).await?;
             let mut state = loaded.original.clone();
+            if let Command::RegisterProject {
+                id,
+                name,
+                workdir,
+                repo_url,
+            } = &mut command
+            {
+                validate_project_registration(&state, id, name, repo_url)?;
+                if workdir.is_none() {
+                    let creator = self.project_directory_creator.as_ref().ok_or_else(|| error(
+                        ErrorCode::ProjectDefaultDirectoryUnavailable,
+                        "The host has no default Project directory configured; specify a workdir.", false,
+                    ))?;
+                    let path = creator.create_workdir(name).map_err(|failure| {
+                        error(failure.code, failure.message, failure.retryable)
+                    })?;
+                    *created_workdir = Some(path.clone());
+                    *workdir = Some(
+                        path.to_str()
+                            .ok_or_else(|| {
+                                error(
+                                    ErrorCode::InvalidProject,
+                                    "Project directory must have a UTF-8 path",
+                                    false,
+                                )
+                            })?
+                            .to_owned(),
+                    );
+                    // Keep this allocated path across CAS retries. Another request
+                    // still has to allocate independently and will fail at mkdir.
+                }
+            }
             check_session_admission(&state, &command)?;
             if !has_workspace_lease
                 && workspace_write_path(&state, &command, self.permission_limits)?.is_some()
@@ -3345,7 +3412,15 @@ fn apply_command(
             name,
             workdir,
             repo_url,
-        } => register_project(state, id, name, &workdir, repo_url),
+        } => register_project(
+            state,
+            id,
+            name,
+            workdir
+                .as_deref()
+                .expect("workdir prepared before dispatch"),
+            repo_url,
+        ),
         Command::SetProjectDefaultAgent {
             project_id,
             agent_id,
@@ -3712,13 +3787,12 @@ fn validate_settings(values: &SettingsDocument) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn register_project(
-    state: &mut WorkingSet,
-    id: String,
-    name: String,
-    workdir: &str,
-    mut repo_url: Option<String>,
-) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+fn validate_project_registration(
+    state: &WorkingSet,
+    id: &str,
+    name: &str,
+    repo_url: &mut Option<String>,
+) -> Result<(), ApiError> {
     if id.trim().is_empty() || name.trim().is_empty() {
         return Err(error(
             ErrorCode::InvalidProject,
@@ -3733,7 +3807,7 @@ fn register_project(
             false,
         ));
     }
-    if let Some(url) = &mut repo_url {
+    if let Some(url) = repo_url {
         *url = url.trim().to_owned();
         if url.is_empty() {
             return Err(error(
@@ -3743,6 +3817,17 @@ fn register_project(
             ));
         }
     }
+    Ok(())
+}
+
+fn register_project(
+    state: &mut WorkingSet,
+    id: String,
+    name: String,
+    workdir: &str,
+    mut repo_url: Option<String>,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    validate_project_registration(state, &id, &name, &mut repo_url)?;
     let canonical = prepare_git_root(Path::new(&workdir))?;
     let base_commit = ensure_git_head(&canonical)?;
     let canonical_text = canonical.to_string_lossy().into_owned();

@@ -64,10 +64,16 @@ impl Workspace {
 
     async fn start(&mut self) {
         let store = SqliteControlStore::open(self.directory.path().join("ait.sqlite3")).unwrap();
-        let service = Arc::new(LocalControlService::with_workspace_agent(
-            Arc::new(store),
-            Arc::new(FixtureCodex),
-        ));
+        let documents = self.directory.path().join("Documents");
+        std::fs::create_dir_all(&documents).unwrap();
+        let service = Arc::new(
+            LocalControlService::with_workspace_agent(Arc::new(store), Arc::new(FixtureCodex))
+                .with_project_directory_creator(Arc::new(
+                    ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
+                        Some(documents.clone())
+                    }),
+                )),
+        );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         self.endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (shutdown, stopped) = oneshot::channel();

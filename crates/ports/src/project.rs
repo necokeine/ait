@@ -1,9 +1,25 @@
 use std::path::{Path, PathBuf};
 
 use ait_domain::{
-    AgentId, GitCommit, InstructionSourceSnapshot, MessageId, Project, ProjectId, SessionId,
-    SessionRoot,
+    AgentId, DomainError, GitCommit, InstructionSourceSnapshot, MessageId, Project, ProjectId,
+    SessionId, SessionRoot,
 };
+
+/// Allocates a new workdir for a Project whose caller supplied only a name.
+/// Platform default-directory resolution and filename rules belong to the adapter.
+pub trait ProjectDirectoryCreator: Send + Sync {
+    /// Creates exactly one new directory and returns its absolute path.
+    ///
+    /// Existing entries (including files and symlinks) must fail without mutation.
+    /// No parent directories may be implicitly created. Once returned, the path
+    /// is retained even if Git preparation or registration subsequently fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable Project failure for invalid names, unavailable default
+    /// directories, existing targets, or failed directory creation.
+    fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError>;
+}
 
 /// Captured Project-instruction component before a store assigns its revision.
 #[derive(Clone, Debug, Eq, PartialEq)]

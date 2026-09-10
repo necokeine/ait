@@ -75,7 +75,7 @@ async fn project_list_operations_never_return_another_projects_runtime_records()
             Command::RegisterProject {
                 id: project_id.into(),
                 name: project_id.into(),
-                workdir: workdir.display().to_string(),
+                workdir: Some(workdir.display().to_string()),
                 repo_url: None,
             },
         )
@@ -158,7 +158,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         Command::RegisterProject {
             id: "git-project".into(),
             name: "Git Project".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: Some("git@github.com:member/fork.git".into()),
         },
     )
@@ -314,7 +314,7 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
         Command::RegisterProject {
             id: "named-project".into(),
             name: "Named Project".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -407,7 +407,7 @@ async fn failed_title_generation_keeps_temporary_title_without_conversation_or_g
         Command::RegisterProject {
             id: "failed-title-project".into(),
             name: "Failed Title Project".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -501,7 +501,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         Command::RegisterProject {
             id: "codex-project".into(),
             name: "Codex Project".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -596,7 +596,7 @@ async fn idle_session_can_rebind_between_named_agents() {
         Command::RegisterProject {
             id: "rebind-project".into(),
             name: "Rebind Project".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -674,7 +674,7 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
         Command::RegisterProject {
             id: "project-1".into(),
             name: "Demo".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -885,7 +885,7 @@ async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persiste
         Command::RegisterProject {
             id: "p".into(),
             name: "P".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -947,7 +947,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         Command::RegisterProject {
             id: "portable-project".into(),
             name: "Portable".into(),
-            workdir: source_dir.display().to_string(),
+            workdir: Some(source_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -1060,7 +1060,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
         Command::RegisterProject {
             id: "desktop-project".into(),
             name: "Desktop".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -1164,7 +1164,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             Command::RegisterProject {
                 id: id.into(),
                 name: name.into(),
-                workdir: directory.display().to_string(),
+                workdir: Some(directory.display().to_string()),
                 repo_url: None,
             },
         )

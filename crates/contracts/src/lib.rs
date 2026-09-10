@@ -23,7 +23,9 @@ pub enum Command {
     RegisterProject {
         id: String,
         name: String,
-        workdir: String,
+        /// Omitted/null creates a new directory under the host user's Documents.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workdir: Option<String>,
         #[serde(default)]
         repo_url: Option<String>,
     },
