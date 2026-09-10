@@ -18,6 +18,7 @@ import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
 import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
+import { daemonSearchPath, daemonWorkingDirectory, loginShellPath } from "./daemon-process.js";
 import { projectReadPaths } from "./desktop-slices.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -73,6 +74,7 @@ class DaemonClient {
   private eventLoop: Promise<void> | undefined;
   private eventCursor = 0;
   private streamConnected: boolean | undefined;
+  private daemonPath: string | undefined;
   private readonly deliveries = new Map<number, ReadyRunEventDelivery>();
 
   ensureStarted(): Promise<void> {
@@ -269,7 +271,7 @@ class DaemonClient {
       throw new Error(`Ait refuses to reuse an unverified daemon already listening on ${daemonRuntime.listen}. Stop that daemon and try again.`);
     }
     const appRoot = resolve(here, "..");
-    const workspaceRoot = resolve(appRoot, "../..");
+    const workingDirectory = daemonWorkingDirectory(appRoot, app.getPath("home"), app.isPackaged);
     const executable = app.isPackaged
       ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ait-daemon.exe" : "ait-daemon")
       : "cargo";
@@ -277,7 +279,11 @@ class DaemonClient {
     const args = app.isPackaged
       ? ["--database", database, "--listen", daemonRuntime.listen]
       : ["run", "--quiet", "-p", "ait-daemon", "--features", "dev-mock-provider", "--", "--database", database, "--listen", daemonRuntime.listen];
-    this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
+    this.ownedProcess = spawn(executable, args, {
+      cwd: workingDirectory,
+      env: { ...process.env, PATH: this.searchPath() },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     this.ownedProcess.stderr?.on("data", (chunk: Buffer) => {
       const message = chunk.toString("utf8").trim();
       if (message) console.error(`[ait-daemon] ${message}`);
@@ -289,6 +295,19 @@ class DaemonClient {
     }
     this.stop();
     throw new Error("Ait daemon did not become ready in time.");
+  }
+
+  // Interrogating the login shell costs one synchronous spawn, so the answer is
+  // resolved once and reused across daemon restarts.
+  private searchPath(): string {
+    this.daemonPath ??= daemonSearchPath({
+      platform: process.platform,
+      currentPath: process.env.PATH,
+      loginPath: loginShellPath(process.platform, process.env.SHELL),
+      home: app.getPath("home"),
+      user: process.env.USER,
+    });
+    return this.daemonPath;
   }
 
   private async ensureBuiltInAgents(): Promise<void> {

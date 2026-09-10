@@ -15,6 +15,13 @@ Main owns the daemon it starts and refuses to reuse an unverified process alread
 configured loopback port. Stop the process occupying that port before reopening Ait. Only the daemon
 started by this Electron process is stopped on application exit.
 
+Main also builds the daemon's process environment. A bundle launched from Finder or a desktop
+launcher inherits a minimal PATH that resolves neither `codex` nor the interpreter behind it, so main
+asks the login shell for its PATH, merges it with the inherited PATH and well-known tool directories,
+and hands the result to the daemon. The daemon's working directory is the Cargo workspace during
+development, because `cargo run` builds it there, and the user's home directory in a packaged build,
+because Codex inherits that directory and must not run inside the read-only application bundle.
+
 The desktop development launcher adds the non-default `dev-mock-provider` daemon feature. Together
 with Rust debug assertions this exposes the local deterministic Mock provider for UI development;
 packaged/release daemons do not contain that provider even if the feature is passed accidentally.
