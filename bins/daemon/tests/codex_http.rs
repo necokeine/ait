@@ -286,6 +286,7 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     )
     .await;
     daemon.assert_running();
+    let mut last_run = Value::Null;
     let completed = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
             let runs: Value = client
@@ -304,6 +305,7 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
                 .iter()
                 .find(|run| run["id"] == run_id)
                 .unwrap();
+            last_run = run.clone();
             if run["status"] == "completed" {
                 break runs;
             }
@@ -311,7 +313,14 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
         }
     })
     .await
-    .expect("recovered Run should complete after the blocked Agent is released");
+    .unwrap_or_else(|error| {
+        panic!(
+            "recovered Run should complete after the blocked Agent is released: {error}; \
+             last Run: {last_run}; daemon log: {}; Codex requests: {}",
+            fs::read_to_string(&daemon.log_path).unwrap_or_default(),
+            fs::read_to_string(&codex_log).unwrap_or_default(),
+        )
+    });
     assert_ok(&completed);
     daemon.assert_running();
     let protocol = fs::read_to_string(codex_log).unwrap();
