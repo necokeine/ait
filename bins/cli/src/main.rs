@@ -6,12 +6,21 @@ mod input;
 use ait_contracts::{Command, CommandResult, Response};
 use args::{Action, Arguments};
 use clap::Parser;
-use std::{fs, io};
+use std::{
+    fs,
+    io::{self, IsTerminal},
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
-    let action = arguments.command.into_action(&mut io::stdin().lock())?;
+    let stdin = io::stdin();
+    let source = if stdin.is_terminal() {
+        input::StdinSource::Terminal
+    } else {
+        input::StdinSource::Redirected
+    };
+    let action = arguments.command.into_action(&mut stdin.lock(), source)?;
     let endpoint = arguments.endpoint.as_str().trim_end_matches('/');
     let client = reqwest::Client::new();
     match action {

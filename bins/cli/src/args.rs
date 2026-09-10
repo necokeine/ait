@@ -11,7 +11,7 @@ use ait_contracts::{
 use ait_domain::ApprovalGrantScope;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::input;
+use crate::input::{self, StdinSource};
 
 #[derive(Parser)]
 #[command(
@@ -438,10 +438,16 @@ impl ProviderArgs {
     fn read(
         self,
         stdin: &mut dyn Read,
+        source: StdinSource,
     ) -> Result<(AgentProvider, Option<ProviderSecret>), io::Error> {
         if self.secret_stdin && self.input.as_deref() == Some(std::path::Path::new("-")) {
             return Err(input::invalid(
                 "agent-provider: --input - and --secret-stdin cannot share stdin",
+            ));
+        }
+        if self.secret_stdin && matches!(source, StdinSource::Terminal) {
+            return Err(input::invalid(
+                "agent-provider: --secret-stdin requires redirected stdin (terminal echo is unsafe)",
             ));
         }
         let models = self
@@ -450,12 +456,6 @@ impl ProviderArgs {
             .transpose()?
             .unwrap_or_default();
         let secret = if self.secret_stdin {
-            use std::io::IsTerminal;
-            if io::stdin().is_terminal() {
-                return Err(input::invalid(
-                    "agent-provider: --secret-stdin requires redirected stdin (terminal echo is unsafe)",
-                ));
-            }
             let mut text = input::read(std::path::Path::new("-"), stdin)?;
             if text.ends_with('\n') {
                 text.pop();
@@ -549,11 +549,15 @@ pub(crate) enum Action {
 }
 
 impl CliCommand {
-    pub(crate) fn into_action(self, stdin: &mut dyn Read) -> Result<Action, io::Error> {
+    pub(crate) fn into_action(
+        self,
+        stdin: &mut dyn Read,
+        source: StdinSource,
+    ) -> Result<Action, io::Error> {
         let command = match self {
             Self::Project { command } => return command.into_action(stdin),
             Self::Agent { command } => command.into(),
-            Self::AgentProvider { command } => command.into_command(stdin)?,
+            Self::AgentProvider { command } => command.into_command(stdin, source)?,
             Self::Session { command } => command.into_command(stdin)?,
             Self::Message { command } => command.into(),
             Self::Run { command } => command.into(),
@@ -638,18 +642,18 @@ impl From<AgentCommand> for Command {
 }
 
 impl AgentProviderCommand {
-    fn into_command(self, stdin: &mut dyn Read) -> Result<Command, io::Error> {
+    fn into_command(self, stdin: &mut dyn Read, source: StdinSource) -> Result<Command, io::Error> {
         let command = match self {
             AgentProviderCommand::List => Command::ListAgentProviders,
             AgentProviderCommand::RefreshModels { provider_id } => {
                 Command::RefreshProviderModels { provider_id }
             }
             AgentProviderCommand::Save(args) => {
-                let (provider, secret) = args.read(stdin)?;
+                let (provider, secret) = args.read(stdin, source)?;
                 Command::SaveAgentProvider { provider, secret }
             }
             AgentProviderCommand::DiscoverModels(args) => {
-                let (provider, secret) = args.read(stdin)?;
+                let (provider, secret) = args.read(stdin, source)?;
                 Command::DiscoverProviderModels { provider, secret }
             }
         };

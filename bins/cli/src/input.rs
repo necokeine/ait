@@ -8,6 +8,13 @@ use std::{
 
 use serde::de::DeserializeOwned;
 
+/// Source metadata supplied alongside the reader by the real CLI boundary.
+#[derive(Clone, Copy)]
+pub(crate) enum StdinSource {
+    Terminal,
+    Redirected,
+}
+
 pub(crate) fn id(value: &str) -> Result<String, String> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
         Err("expected a non-empty ID without control characters".into())

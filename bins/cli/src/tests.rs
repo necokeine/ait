@@ -7,13 +7,16 @@ use ait_contracts::{
 use ait_domain::ApprovalGrantScope;
 use clap::{CommandFactory, Parser};
 
-use crate::args::{Action, Arguments};
+use crate::{
+    args::{Action, Arguments},
+    input::StdinSource,
+};
 
 fn action(args: &[&str], stdin: &str) -> Action {
     Arguments::try_parse_from(std::iter::once("ait").chain(args.iter().copied()))
         .unwrap_or_else(|error| panic!("{error}"))
         .command
-        .into_action(&mut Cursor::new(stdin))
+        .into_action(&mut Cursor::new(stdin), StdinSource::Redirected)
         .unwrap()
 }
 
@@ -106,6 +109,7 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     case!(&["run", "approval", "deny", "--run-id", "r", "--approval-id", "a"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Deny, scope: None });
     case!(&["run", "approval", "cancel", "--run-id", "r", "--approval-id", "a"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Cancel, scope: None });
 
+    let documented = documented_routes();
     let mut covered = BTreeSet::new();
     for (variant, args, expected) in cases {
         covered.insert(variant.to_owned());
@@ -118,6 +122,12 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
             Action::Events { .. } => panic!("unexpected SSE action"),
         };
         assert_eq!(actual, expected, "mapping for {variant}");
+        assert!(
+            documented
+                .iter()
+                .any(|(_, path)| path == crate::operation_path(&actual)),
+            "undocumented CLI route for {variant}"
+        );
     }
     // Read the actual enum syntax, rather than a second manually maintained count.
     // A new application variant must add a real invocation and expected DTO above.
@@ -361,7 +371,153 @@ fn approval_requires_a_scope_and_provider_stdin_is_not_shared() {
     .unwrap()
     .command;
     let secret = "sk-fixture-private";
-    let error = command.into_action(&mut Cursor::new(secret)).err().unwrap();
+    let error = command
+        .into_action(&mut Cursor::new(secret), StdinSource::Redirected)
+        .err()
+        .unwrap();
     assert!(!error.to_string().contains(secret));
     assert!(error.to_string().contains("cannot share stdin"));
+}
+
+#[test]
+fn secret_stdin_rejects_terminal_before_reading() {
+    for operation in ["save", "discover-models"] {
+        let command = Arguments::try_parse_from([
+            "ait",
+            "agent-provider",
+            operation,
+            "--id",
+            "p",
+            "--name",
+            "P",
+            "--kind",
+            "deepseek",
+            "--secret-stdin",
+        ])
+        .unwrap()
+        .command;
+        let mut stdin = Cursor::new("fixture-secret\n");
+        let error = command
+            .into_action(&mut stdin, StdinSource::Terminal)
+            .err()
+            .unwrap();
+        assert_eq!(stdin.position(), 0, "a terminal secret must never be read");
+        assert!(error.to_string().contains("requires redirected stdin"));
+        assert!(!error.to_string().contains("fixture-secret"));
+    }
+}
+
+#[test]
+fn secret_stdin_accepts_injected_redirected_reader() {
+    for operation in ["save", "discover-models"] {
+        let result = action(
+            &[
+                "agent-provider",
+                operation,
+                "--id",
+                "p",
+                "--name",
+                "P",
+                "--kind",
+                "deepseek",
+                "--secret-stdin",
+            ],
+            "fixture-secret\r\n",
+        );
+        let Action::Execute(
+            Command::SaveAgentProvider { secret, .. }
+            | Command::DiscoverProviderModels { secret, .. },
+        ) = result
+        else {
+            panic!("expected Provider operation");
+        };
+        assert_eq!(secret, Some(ProviderSecret("fixture-secret".into())));
+    }
+}
+
+fn documented_routes() -> BTreeSet<(String, String)> {
+    let mut routes = BTreeSet::new();
+    for line in include_str!("../../../docs/decisions/NEC-166/entity-operation-http-api.md").lines()
+    {
+        let cells: Vec<_> = line.split('|').map(str::trim).collect();
+        if cells.len() < 4 || !matches!(cells[1], "`GET`" | "`POST`") {
+            continue;
+        }
+        let method = cells[1].trim_matches('`').to_owned();
+        let path = cells[2]
+            .trim_matches('`')
+            .split('?')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(
+            routes.insert((method, path)),
+            "duplicate documented route: {line}"
+        );
+    }
+    assert!(!routes.is_empty());
+    routes
+}
+
+#[test]
+fn documented_http_methods_and_paths_match_the_router() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct Routes(BTreeSet<(String, String)>);
+    impl<'ast> Visit<'ast> for Routes {
+        fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+            if node.method == "route" {
+                assert_eq!(node.args.len(), 2);
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(path),
+                    ..
+                }) = &node.args[0]
+                else {
+                    panic!(
+                        "route collector requires a literal path; update it for the new router shape"
+                    );
+                };
+                let syn::Expr::Call(call) = &node.args[1] else {
+                    panic!("update route collector for chained method routers");
+                };
+                let syn::Expr::Path(function) = &*call.func else {
+                    panic!("expected a routing function");
+                };
+                let method = function
+                    .path
+                    .get_ident()
+                    .unwrap()
+                    .to_string()
+                    .to_uppercase();
+                assert!(
+                    matches!(method.as_str(), "GET" | "POST"),
+                    "extend method collection: {method}"
+                );
+                assert!(
+                    self.0.insert((method, path.value())),
+                    "duplicate router path"
+                );
+            }
+            syn::visit::visit_expr_method_call(self, node);
+        }
+    }
+    let syntax = syn::parse_file(include_str!("../../../crates/api-http/src/lib.rs")).unwrap();
+    let router = syntax
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == "router_with_telemetry" => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("the authoritative router function must exist");
+    let mut collected = Routes::default();
+    collected.visit_item_fn(router);
+    assert_eq!(
+        documented_routes(),
+        collected.0,
+        "update NEC-166 when HTTP routes change"
+    );
 }

@@ -70,6 +70,7 @@ durable SSE 使用 `event list --after <u64 cursor>`。原有 `events`、`export
 - Provider secret 仅用 `--secret-stdin`，不提供 secret 值参数或环境变量入口。要求 stdin 重定向，
   拒绝会回显的终端输入；去掉一个末尾 LF/CRLF，拒绝空值。省略时沿用现有保存语义。
   模型数组不能同时占用同一个 stdin，模型文件可与 secret stdin 一起使用。
+  终端属性由真实 CLI 入口检测并和 reader 一起传入，解析层不读取进程全局 stdin；测试可明确注入终端或重定向来源。
 - 读取/解析错误不打印输入内容；JSON 错误只给行列。携带 secret 的请求若传输、HTTP 或响应解码失败，只输出通用诊断，
   不显示可能引用远端字段值的底层错误。HTTP 请求不记录 body，ProviderSecret 的
   Debug 已有脱敏。CLI 额外对响应中的已知 secret 做字符串级脱敏并重新序列化，保护上游意外回显，
@@ -101,7 +102,8 @@ turn/session；session grant 受管理员策略限制。CLI 固定枚举对应�
   将 variant 集合与覆盖集合比较，新增 variant 必须增加实际 CLI 调用案例。
 - 递归验证每一级帮助，覆盖缺参、非法 enum/时间戳/游标/revision、全局 endpoint、stdin、中文多行、
   含空格路径、模型 JSON 诊断及 secret 不出现在响应、事件、数据库文件中。
+- NEC-166 路由表与真实 router 的 Method/Path 集合自动比对，全部 CLI 映射必须引用表内 endpoint。
 - WF-01～WF-11 的文档和 CLI 进程调用全部迁移。WF-10 显式配置 workspace_write；WF-11 只通过
-  secret stdin 传凭据。真实 Provider 测试继续 opt-in，普通 workspace 测试不代表真实模型验收。
+  secret stdin 传凭据，并实际创建、读取含空格路径的多行 prompt 文件。真实 Provider 测试继续 opt-in，普通 workspace 测试不代表真实模型验收。
 - 不修改 domain/application/HTTP 的领域不变量与持久化行为；domain 依赖保持纯净，依赖继续向内。
 - 旧通用 CLI 脚本必须迁移；复杂输入仍是实体文档，需要随对应契约演进。现有终端 alias 函数可继续使用。

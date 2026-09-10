@@ -116,8 +116,9 @@ ait session rename --session-id hello-world --name 'DeepSeek Hello World'
 
 ### 4. 让 DeepSeek 生成一个 Python 文件
 
-使用 `ait session send --session-id hello-world --text-file "$WF_ROOT/prompt.txt"`
-读取已准备好的多行 UTF-8 指令；也可以选择 `--text-stdin`。
+真实工作流测试先在 Project 目录外创建 `prompt with spaces.txt`，写入多行 UTF-8 指令，
+随后实际执行 `ait session send --session-id hello-world --text-file "$WF_ROOT/prompt with spaces.txt"`。
+手工执行时也应先准备该文件；或者选择 `--text-stdin`。
 指令要求返回 `hello.py` 的完整原始代码，不加 Markdown 围栏或说明：无参数 `main()` 只打印字面值 `Hello, world!`，
 仅在 `if __name__ == "__main__"` 中调用；无依赖、导入或其他行为。
 测试在获取成功的 assistant 响应后原样写入 `hello.py`，不去掉围栏、修补代码或替换为固定样例。

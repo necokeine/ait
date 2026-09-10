@@ -17,7 +17,7 @@ use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 const MODEL: &str = "deepseek-v4-flash";
 const VERIFY_LOGIC: &str = include_str!("fixtures/verify_hello.py");
 const PROMPT: &str = "Generate the complete source of one Python file named hello.py. \
-    Return only raw Python code, without Markdown fences or explanations. \
+    Return only raw Python code, without Markdown fences or explanations.\n\
     Define a zero-argument main() that only calls print with the literal Hello, world! \
     and implicitly returns None. Call main() only under if __name__ == \"__main__\". \
     No imports, dependencies, or extra behavior. Running python3 -I -B hello.py \
@@ -498,6 +498,8 @@ async fn wf11_real_deepseek_python_hello_world() {
         .await;
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["current_message_id"], project["root_message_id"]);
+    let prompt_path = workflow.root.join("prompt with spaces.txt");
+    fs::write(&prompt_path, PROMPT).unwrap();
     eprintln!("WF-11: asking the native DeepSeek Provider ({model}); deadline 600s");
     let run = workflow
         .cli(
@@ -507,8 +509,8 @@ async fn wf11_real_deepseek_python_hello_world() {
                 "send",
                 "--session-id",
                 session["id"].as_str().unwrap(),
-                "--text",
-                PROMPT,
+                "--text-file",
+                prompt_path.to_str().unwrap(),
             ],
             600,
         )
