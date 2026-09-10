@@ -741,6 +741,7 @@ impl LocalControlService {
                 ControlFilter::id(Kind::Provider, &provider_id),
                 ControlFilter::id(Kind::Session, session_id),
                 ControlFilter::id(Kind::Message, message_id),
+                ControlFilter::all(Kind::Settings),
             ];
             if include_credential {
                 filters.push(ControlFilter::id(Kind::ProviderCredential, provider_id));
@@ -821,6 +822,7 @@ impl LocalControlService {
                 ControlFilter::message_children(at_message_id),
                 ControlFilter::id(Kind::Agent, agent_id),
                 ControlFilter::id(Kind::Agent, source_agent_id),
+                ControlFilter::all(Kind::Settings),
             ];
             for provider_id in provider_ids {
                 filters.push(ControlFilter::id(Kind::Provider, &provider_id));

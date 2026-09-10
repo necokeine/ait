@@ -22,7 +22,9 @@ function catalog，不执行 shell、文件或其他宿主工具。因此权限�
    正在运行的 Run。
 2. daemon 的 `PermissionPolicyLimits.max_sandbox` 对普通 API Provider 同样生效。缺失值、未知值
    或超过管理员上限的值，必须在追加 user Message、创建 Run 或发起远程 Provider 请求前以
-   `INVALID_CONFIGURATION` fail closed。
+   `INVALID_CONFIGURATION` fail closed。`SendMessage`、`ForkSession` 与 `DeriveSession` 的
+   预准入读取及事务重读都必须包含同一 revision 的真实 Settings；派生的复用和分叉遵守同一规则，
+   被拒绝时也不得新增 Session 或修改源 Session。
 3. sandbox 等级是宿主可授予能力的上限，不是 API 模型自身的权限声明。当前纯文本 Rig 网关在
    三档下都不暴露工具，因此没有本地文件副作用；`workspace_write` 和 `full_access` 只会让 Run
    保存对应上限，不会凭空给远程模型提供主机访问。
@@ -43,6 +45,8 @@ function catalog，不执行 shell、文件或其他宿主工具。因此权限�
 ## 验证
 
 - application 集成测试分别覆盖 OpenAI、DeepSeek 的 `read_only`、`strict`、`workspace_write`
-  和 `full_access` 快照，以及设置变化不回写已有 Run。
-- 管理员限制测试证明普通 Provider 请求在 user Message 和远程网关调用之前被拒绝。
+  和 `full_access` 快照，以及设置变化不回写已有 Run；包括发送、显式 Fork、Derive 复用及实际分叉。
+- Fork/Derive 的同步执行及异步提交测试验证管理员上限、未知/缺失值被拒绝后，Session、Message、Run
+  保持原状且不调用远程网关。
+- 确定性并发测试在准入后、CAS 提交前修改 Settings，验证冲突重试读取新权限并以零副作用拒绝请求。
 - workspace 格式、lint 与全量测试继续验证现有 Codex 权限、审批和隔离行为不回归。
