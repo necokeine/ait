@@ -142,13 +142,13 @@ test("a Session creation response cannot restore its Project after a later selec
   assert.equal(await switching, false, "the catalog refresh supersedes the earlier B read");
   assert.equal(views.selectedProjectId, "project-b");
 
-  catalogRefreshResponse.resolve(projectView("project-b", sessions));
+  catalogRefreshResponse.resolve(projectView("project-b"));
   assert.equal(await creating, "refreshed");
 
   assert.deepEqual(requestedProjects, ["project-b", "project-b"]);
   assert.equal(views.selectedProjectId, "project-b");
   assert.equal(views.projectId, "project-b");
-  assert.deepEqual(views.view?.sessions, sessions, "the current view refreshes the global Session catalog");
+  assert.deepEqual(views.view?.sessions, [], "the current view excludes the previous Project's Sessions");
   assert.deepEqual(views.view?.messages.map(({ projectId }) => projectId), ["project-b"]);
   assert.deepEqual(views.view?.runs.map(({ projectId }) => projectId), ["project-b"]);
   assert.equal(rememberedProject, "project-b");

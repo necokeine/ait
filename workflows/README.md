@@ -76,7 +76,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 ## 公共输入输出约定
 
-实体读取入口为 `project list`、`agent list`、`agent-provider list`、`session list [--project-id <id>]`、
+实体读取入口为 `project list`、`agent list`、`agent-provider list`、`session list --project-id <id>`、
 `message list --project-id <id>`、`run list --project-id <id>` 和 `cron list`。尚未包装的写操作使用
 `command '<JSON>'`（或 `command -` 从 stdin 读取）；其余入口包括 `events --after <cursor>`、
 `export --project-id <id> --output <file>` 和 `import --input <file> --workdir <dir>`。

@@ -127,14 +127,15 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/project/list",
         "/v1/agent/list",
         "/v1/agent-provider/list",
-        "/v1/session/list",
+        "/v1/session/list?project_id=p",
         "/v1/message/list?project_id=p",
         "/v1/run/list?project_id=p",
         "/v1/cron/list",
         "/v1/settings",
         "/v1/event/list",
         "/v1/event/stream",
-        "/v1/run/progress",
+        "/v1/run/progress?project_id=p",
+        "/v1/health",
         "/v1/metric/list",
     ] {
         let response = app
@@ -156,6 +157,26 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn project_runtime_reads_require_an_explicit_project_id() {
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
+        SqliteControlStore::in_memory().unwrap(),
+    ))));
+    for route in [
+        "/v1/session/list",
+        "/v1/message/list",
+        "/v1/run/list",
+        "/v1/run/progress",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::get(route).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{route}");
+    }
 }
 
 #[tokio::test]

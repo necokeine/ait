@@ -60,17 +60,24 @@ pub async fn workspace(service: &LocalControlService) -> WorkspaceView {
     else {
         panic!("expected providers")
     };
-    let CommandResult::Sessions(sessions) =
-        execute(service, Command::ListSessions { project_id: None }).await
-    else {
-        panic!("expected sessions")
-    };
     let CommandResult::Crons(crons) = execute(service, Command::ListCrons).await else {
         panic!("expected crons")
     };
+    let mut sessions = Vec::new();
     let mut messages = Vec::new();
     let mut runs = Vec::new();
     for project in &projects {
+        let CommandResult::Sessions(mut project_sessions) = execute(
+            service,
+            Command::ListSessions {
+                project_id: project.id.clone(),
+            },
+        )
+        .await
+        else {
+            panic!("expected sessions")
+        };
+        sessions.append(&mut project_sessions);
         let CommandResult::Messages(mut project_messages) = execute(
             service,
             Command::ListMessages {

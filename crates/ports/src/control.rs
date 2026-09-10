@@ -223,7 +223,10 @@ pub trait ControlStore: Send + Sync {
         events: Vec<PendingEvent>,
     ) -> Result<(), ControlStoreError>;
 
-    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError>;
+    async fn load_progress(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProgressCheckpoint>, ControlStoreError>;
 
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError>;
 }

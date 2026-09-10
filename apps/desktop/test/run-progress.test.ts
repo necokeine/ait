@@ -8,7 +8,7 @@ import {
   progressFromCheckpoint,
   terminalRunForSession,
 } from "../src/run-progress.js";
-import type { DesktopView } from "../src/types.js";
+import type { DesktopState } from "../src/types.js";
 
 const base = {
   version: 1,
@@ -107,7 +107,7 @@ test("a cancellation event refreshes an active view into its cancelled terminal 
     titleGenerationStarted: false, currentMessageId: "message-a", agentId: "agent-a", version: 1,
     active: true, activeRunId: "run-a", updatedAt: 0,
   };
-  const active: Pick<DesktopView, "sessions" | "runs"> = {
+  const active: Pick<DesktopState, "sessions" | "runs"> = {
     sessions: [session],
     runs: [{
       id: "run-a", sessionId: "session-a", baseMessageId: "message-a",
@@ -122,7 +122,7 @@ test("a cancellation event refreshes an active view into its cancelled terminal 
   assert.equal(terminalRunForSession(active, "session-a"), undefined);
   assert.equal(isTerminalRunEvent(cancelledEvent), true);
 
-  const authoritative: Pick<DesktopView, "sessions" | "runs"> = {
+  const authoritative: Pick<DesktopState, "sessions" | "runs"> = {
     sessions: [{ ...session, active: false, activeRunId: null, version: 2 }],
     runs: [{
       id: "run-a", sessionId: "session-a", baseMessageId: "message-a",

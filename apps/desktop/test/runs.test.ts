@@ -52,7 +52,6 @@ test("projects startup-interrupted Runs with Project and Session locations", () 
   };
   assert.deepEqual(startupRecoveryNotices(view), [{
     projectId: "project-1",
-    projectName: "Ait",
     sessionId: "session-1",
     sessionTitle: "Recovery work",
     runId: "run-interrupted",

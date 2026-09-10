@@ -71,7 +71,7 @@ cd '演练目录'
 ```bash
 ait project list
 ait agent list
-ait session list
+ait session list --project-id example-project
 ```
 
 ### 3. 创建 example-project 和第一个空提交

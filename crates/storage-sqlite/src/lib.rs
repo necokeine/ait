@@ -116,7 +116,9 @@ const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
                    run_id TEXT PRIMARY KEY,
                    body_json TEXT NOT NULL CHECK (json_valid(body_json)),
                    updated_at INTEGER NOT NULL
-                 ) STRICT;";
+                 ) STRICT;
+                 CREATE INDEX IF NOT EXISTS run_progress_project
+                   ON run_progress(json_extract(body_json, '$.project_id'));";
 
 /// SQLite-backed normalized application records and transactional event outbox.
 pub struct SqliteControlStore {
@@ -297,15 +299,20 @@ impl ControlStore for SqliteControlStore {
         transaction.commit().map_err(sql_error)
     }
 
-    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+    async fn load_progress(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
         let connection = self.connection.lock().map_err(lock_error)?;
         let mut statement = connection
             .prepare(
-                "SELECT run_id, body_json, updated_at FROM run_progress ORDER BY updated_at, run_id",
+                "SELECT run_id, body_json, updated_at FROM run_progress
+                 WHERE json_extract(body_json, '$.project_id') = ?1
+                 ORDER BY updated_at, run_id",
             )
             .map_err(sql_error)?;
         let rows = statement
-            .query_map([], |row| {
+            .query_map([project_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -1080,6 +1087,34 @@ mod tests {
         assert_eq!(recovered.revision, 1);
         assert_eq!(recovered.records.len(), 1);
         assert_eq!(store.replay(0, 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn progress_reads_are_scoped_to_one_project() {
+        let store = SqliteControlStore::in_memory().unwrap();
+        for (run_id, project_id) in [("run-a", "project-a"), ("run-b", "project-b")] {
+            store
+                .save_progress(
+                    ProgressCheckpoint {
+                        run_id: run_id.into(),
+                        body: serde_json::json!({
+                            "run_id": run_id,
+                            "project_id": project_id,
+                            "seq": 1
+                        }),
+                        updated_at: 1,
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let project_a = store.load_progress("project-a").await.unwrap();
+        assert_eq!(project_a.len(), 1);
+        assert_eq!(project_a[0].run_id, "run-a");
+        assert_eq!(project_a[0].body["project_id"], "project-a");
+        assert!(store.load_progress("missing").await.unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

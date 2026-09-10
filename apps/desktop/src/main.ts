@@ -18,13 +18,14 @@ import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
 import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
+import { projectReadPaths } from "./desktop-slices.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const daemonRuntime = desktopDaemonRuntime(app.isPackaged);
 const endpoint = daemonRuntime.endpoint;
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
-  "workspace.view", "settings.get", "settings.save", "settings.reset",
+  "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
@@ -36,7 +37,7 @@ interface DaemonResponse {
   error?: { code: string; message: string };
 }
 
-interface WorkspaceView {
+interface DaemonData {
   projects: Array<{
     id: string; name: string; workdir: string; repo_url?: string | null;
     base_commit: string; default_agent_id?: string | null;
@@ -68,8 +69,6 @@ class DaemonClient {
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
   private viewRevision = 0;
-  private viewQueue: Promise<void> = Promise.resolve();
-  private viewedProjectId: string | undefined;
   private eventAbort: AbortController | undefined;
   private eventLoop: Promise<void> | undefined;
   private eventCursor = 0;
@@ -87,9 +86,9 @@ class DaemonClient {
     if (!allowedMethods.has(method)) throw new Error("Unsupported desktop operation.");
     await this.ensureStarted();
     const params = objectParams(rawParams);
-    if (method === "workspace.view") {
-      return this.view(typeof params.projectId === "string" ? params.projectId : undefined);
-    }
+    if (method === "project.list") return this.projectCatalog();
+    if (method === "agent.catalog") return this.agentCatalog();
+    if (method === "project.view") return this.projectView(boundedId(params.projectId, "Project"));
     if (method === "settings.get") return this.get("/v1/settings", "settings");
     if (method === "settings.save") return this.post("/v1/settings/save", "settings", {
       expected_revision: params.expectedRevision, values: params.values,
@@ -97,7 +96,7 @@ class DaemonClient {
     if (method === "settings.reset") return this.post("/v1/settings/reset", "settings", {});
     if (method === "provider.save") {
       await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
-      return this.view();
+      return this.agentCatalog();
     }
     if (method === "provider.discover-models") {
       return this.post("/v1/agent-provider/discover-models", "provider_models", {
@@ -106,17 +105,22 @@ class DaemonClient {
     }
     if (method === "provider.refresh-models") {
       await this.post("/v1/agent-provider/refresh-models", "agent_provider", { provider_id: params.providerId });
-      return this.view();
+      return this.agentCatalog();
     }
     if (method === "agent.save") {
       await this.post(params.id ? "/v1/agent/update" : "/v1/agent/register", "agent", {
         id: params.id || randomUUID(), name: params.name, config: params.config,
       });
-      return this.view();
+      return this.agentCatalog();
     }
     if (method === "session.set-config") {
-      await this.post("/v1/session/set-config", "session", { session_id: params.sessionId, config: params.config });
-      return this.view();
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/session/set-config", "session", {
+        session_id: params.sessionId, config: params.config,
+      });
+      assertProject(session, projectId);
+      const [project, agents] = await Promise.all([this.projectView(projectId), this.agentCatalog()]);
+      return { project, agents };
     }
     if (method === "project.choose-directory") {
       const result = await dialog.showOpenDialog({
@@ -128,7 +132,7 @@ class DaemonClient {
     if (method === "project.open-file") {
       const projectId = typeof params.projectId === "string" ? params.projectId : "";
       const reference = typeof params.path === "string" ? params.path : "";
-      const projects = await this.get("/v1/project/list", "projects") as WorkspaceView["projects"];
+      const projects = await this.get("/v1/project/list", "projects") as DaemonData["projects"];
       const project = projects.find((candidate) => candidate.id === projectId);
       if (!project) throw new Error("Project not found.");
       const path = await resolveProjectPath(project.workdir, reference);
@@ -154,78 +158,96 @@ class DaemonClient {
       await this.post("/v1/project/set-default-agent", "project", {
         project_id: id, agent_id: params.agentId,
       });
-      return { view: await this.view(id), selectedProjectId: id };
+      const [catalog, project] = await Promise.all([this.projectCatalog(), this.projectView(id)]);
+      return { catalog, project, selectedProjectId: id };
     }
     if (method === "project.set-default-agent") {
+      const projectId = boundedId(params.projectId, "Project");
       await this.post("/v1/project/set-default-agent", "project", {
-        project_id: params.projectId, agent_id: params.agentId,
+        project_id: projectId, agent_id: params.agentId,
       });
-      return this.view(String(params.projectId));
+      return this.projectCatalog();
     }
     if (method === "session.create") {
+      const projectId = boundedId(params.projectId, "Project");
       const id = randomUUID();
-      await this.post("/v1/session/create", "session", {
-        id, project_id: params.projectId, agent_id: params.agentId,
+      const session = await this.post("/v1/session/create", "session", {
+        id, project_id: projectId, agent_id: params.agentId,
       });
-      return { view: await this.view(String(params.projectId)), selectedSessionId: id };
+      assertProject(session, projectId);
+      return { project: await this.projectView(projectId), selectedSessionId: id };
     }
     if (method === "session.set-agent") {
-      await this.post("/v1/session/set-agent", "session", {
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/session/set-agent", "session", {
         session_id: params.sessionId, agent_id: params.agentId,
       });
-      return this.view();
+      assertProject(session, projectId);
+      return this.projectView(projectId);
     }
     if (method === "session.rename") {
-      await this.post("/v1/session/rename", "session", {
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/session/rename", "session", {
         session_id: params.sessionId, name: params.name,
       });
-      return this.view();
+      assertProject(session, projectId);
+      return this.projectView(projectId);
     }
     if (method === "session.set-title") {
-      await this.post("/v1/session/set-title", "session", {
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/session/set-title", "session", {
         session_id: params.sessionId, title: params.title,
       });
-      return this.view();
+      assertProject(session, projectId);
+      return this.projectView(projectId);
     }
     if (method === "session.generate-title") {
-      await this.post("/v1/session/generate-title", "session", {
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/session/generate-title", "session", {
         session_id: params.sessionId, prompt: params.prompt,
       });
-      return this.view();
+      assertProject(session, projectId);
+      return this.projectView(projectId);
     }
     if (method === "session.send-message") {
+      const projectId = boundedId(params.projectId, "Project");
       const run = await this.post("/v1/session/submit-message", "run", {
         session_id: params.sessionId, text: params.content,
-      }) as { id: string };
-      return { view: await this.view(), runId: run.id };
+      }) as { id: string; project_id: string };
+      assertProject(run, projectId);
+      return { project: await this.projectView(projectId), runId: run.id };
     }
     if (method === "run.resolve-approval") {
+      const projectId = boundedId(params.projectId, "Project");
       const runId = boundedId(params.runId, "Run");
       const approvalId = boundedId(params.approvalId, "approval");
       const action = approvalAction(params.action);
       const scope = approvalScope(params.scope, action);
-      await this.post("/v1/run/approval/resolve", "run", {
+      const run = await this.post("/v1/run/approval/resolve", "run", {
         run_id: runId,
         approval_id: approvalId,
         action,
         ...(scope ? { scope } : {}),
       });
-      return this.view();
+      assertProject(run, projectId);
+      return this.projectView(projectId);
     }
 
     const id = randomUUID();
     const currentSessionId = String(params.currentSessionId);
+    const projectId = boundedId(params.projectId, "Project");
     const run = await this.post("/v1/session/submit-derive", "run", {
-      id, project_id: params.projectId, source_session_id: currentSessionId,
+      id, project_id: projectId, source_session_id: currentSessionId,
       agent_id: params.agentId, at_message_id: params.sourceMessageId,
       text: params.content,
-    }) as { id: string; session_id: string | null };
+    }) as { id: string; project_id: string; session_id: string | null };
+    assertProject(run, projectId);
     const selectedSessionId = run.session_id;
     if (selectedSessionId !== currentSessionId && selectedSessionId !== id) {
       throw new Error("Daemon returned an unexpected derived Session");
     }
     return {
-      view: await this.view(String(params.projectId)),
+      project: await this.projectView(projectId),
       selectedSessionId,
       runId: run.id,
       reusedCurrentSession: selectedSessionId === currentSessionId,
@@ -271,8 +293,8 @@ class DaemonClient {
 
   private async ensureBuiltInAgents(): Promise<void> {
     const [projects, agents] = await Promise.all([
-      this.get("/v1/project/list", "projects") as Promise<WorkspaceView["projects"]>,
-      this.get("/v1/agent/list", "agents") as Promise<WorkspaceView["agents"]>,
+      this.get("/v1/project/list", "projects") as Promise<DaemonData["projects"]>,
+      this.get("/v1/agent/list", "agents") as Promise<DaemonData["agents"]>,
     ]);
     if (!agents.some((agent) => agent.id === builtInCodexAgentId)) {
       await this.post("/v1/agent/register", "agent", {
@@ -290,7 +312,7 @@ class DaemonClient {
 
   private async isReady(): Promise<boolean> {
     try {
-      const response = await fetch(`${endpoint}/v1/project/list`, { signal: AbortSignal.timeout(500) });
+      const response = await fetch(`${endpoint}/v1/health`, { signal: AbortSignal.timeout(500) });
       return response.ok;
     } catch { return false; }
   }
@@ -416,57 +438,59 @@ class DaemonClient {
     }
   }
 
-  private view(projectId?: string): Promise<unknown> {
-    const result = this.viewQueue.then(() => this.readView(projectId));
-    this.viewQueue = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
-  private async readView(projectId?: string): Promise<unknown> {
-    const [projects, agents, providers, sessions, progressValues] = await Promise.all([
-      this.get("/v1/project/list", "projects") as Promise<WorkspaceView["projects"]>,
-      this.get("/v1/agent/list", "agents") as Promise<WorkspaceView["agents"]>,
-      this.get("/v1/agent-provider/list", "agent_providers") as Promise<WorkspaceView["providers"]>,
-      this.get("/v1/session/list", "sessions") as Promise<WorkspaceView["sessions"]>,
-      fetch(`${endpoint}/v1/run/progress`).then(async (response) => {
-        if (!response.ok) throw new Error(`Ait daemon returned HTTP ${response.status}.`);
-        return response.json() as Promise<unknown[]>;
-      }),
-    ]);
-    const candidate = projectId ?? this.viewedProjectId;
-    const selectedProjectId = projects.some((project) => project.id === candidate)
-      ? candidate
-      : sessions.at(-1)?.project_id ?? projects[0]?.id;
-    this.viewedProjectId = selectedProjectId;
-    const [messages, runs] = selectedProjectId
-      ? await Promise.all([
-        this.get(`/v1/message/list?project_id=${encodeURIComponent(selectedProjectId)}`, "messages") as Promise<WorkspaceView["messages"]>,
-        this.get(`/v1/run/list?project_id=${encodeURIComponent(selectedProjectId)}`, "runs") as Promise<WorkspaceView["runs"]>,
-      ])
-      : [[], []];
-    const workspace: WorkspaceView = { projects, agents, providers, sessions, messages, runs };
-    const catalog = desktopProviderCatalog(
-      workspace.providers,
-      workspace.agents,
-      daemonRuntime.allowDevelopmentMock,
-    );
-    const messageAgents = messageAgentIds(workspace.messages, workspace.runs);
-    const activeRunIds = new Set(workspace.sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
-    const runProgress = progressValues
-      .map(progressFromCheckpoint)
-      .filter((progress): progress is RunProgress => progress !== undefined && activeRunIds.has(progress.runId));
+  private async projectCatalog(): Promise<unknown> {
+    const projects = await this.get("/v1/project/list", "projects") as DaemonData["projects"];
     this.viewRevision += 1;
     return {
       protocolVersion: 1,
       revision: this.viewRevision,
-      projects: workspace.projects.map((project) => ({
+      projects: projects.map((project) => ({
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
         defaultAgentId: project.default_agent_id ?? null,
       })),
+    };
+  }
+
+  private async agentCatalog(): Promise<unknown> {
+    const [agents, providers] = await Promise.all([
+      this.get("/v1/agent/list", "agents") as Promise<DaemonData["agents"]>,
+      this.get("/v1/agent-provider/list", "agent_providers") as Promise<DaemonData["providers"]>,
+    ]);
+    const catalog = desktopProviderCatalog(providers, agents, daemonRuntime.allowDevelopmentMock);
+    this.viewRevision += 1;
+    return {
+      protocolVersion: 1,
+      revision: this.viewRevision,
       agents: catalog.agents.map((agent) => projectAgent(agent, catalog.providers)),
       providers: catalog.providers,
-      sessions: workspace.sessions.map((session) => ({
+    };
+  }
+
+  private async projectView(projectId: string): Promise<unknown> {
+    const [sessionsPath, messagesPath, runsPath, progressPath] = projectReadPaths(projectId);
+    const [sessions, messages, runs, progressValues] = await Promise.all([
+      this.get(sessionsPath, "sessions") as Promise<DaemonData["sessions"]>,
+      this.get(messagesPath, "messages") as Promise<DaemonData["messages"]>,
+      this.get(runsPath, "runs") as Promise<DaemonData["runs"]>,
+      fetch(`${endpoint}${progressPath}`).then(async (response) => {
+        if (!response.ok) throw new Error(`Ait daemon returned HTTP ${response.status}.`);
+        return response.json() as Promise<unknown[]>;
+      }),
+    ]);
+    for (const record of [...sessions, ...messages, ...runs]) assertProject(record, projectId);
+    const messageAgents = messageAgentIds(messages, runs);
+    const activeRunIds = new Set(sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
+    const runProgress = progressValues
+      .map(progressFromCheckpoint)
+      .filter((progress): progress is RunProgress => progress !== undefined);
+    for (const progress of runProgress) assertProject(progress, projectId);
+    this.viewRevision += 1;
+    return {
+      protocolVersion: 1,
+      revision: this.viewRevision,
+      projectId,
+      sessions: sessions.map((session) => ({
         id: session.id, projectId: session.project_id, name: session.name ?? "",
         title: sessionDisplayTitle(session), description: session.description ?? "",
         titleGenerationStarted: session.title_generation_started ?? false,
@@ -474,8 +498,8 @@ class DaemonClient {
         version: session.version, active: session.active_run_id !== null,
         activeRunId: session.active_run_id, updatedAt: 0,
       })),
-      messages: workspace.messages.map((message) => projectMessage(message, messageAgents.get(message.id) ?? null)),
-      runs: workspace.runs.map((run) => ({
+      messages: messages.map((message) => projectMessage(message, messageAgents.get(message.id) ?? null)),
+      runs: runs.map((run) => ({
         id: run.id,
         sessionId: run.session_id,
         baseMessageId: run.base_message_id,
@@ -503,8 +527,8 @@ class DaemonClient {
           error: { message: run.error.message, ...(run.error.code ? { code: run.error.code } : {}) },
         } : {}),
       })),
-      runProgress,
-      recoveryNotices: startupRecoveryNotices(workspace),
+      runProgress: runProgress.filter((progress) => activeRunIds.has(progress.runId)),
+      recoveryNotices: startupRecoveryNotices({ sessions, runs }),
     };
   }
 }
@@ -512,6 +536,14 @@ class DaemonClient {
 function objectParams(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
+}
+
+function assertProject(value: unknown, expectedProjectId: string): void {
+  const record = objectParams(value);
+  const actual = typeof record.project_id === "string" ? record.project_id : record.projectId;
+  if (actual !== expectedProjectId) {
+    throw new Error("Ait daemon returned data for an unexpected Project.");
+  }
 }
 
 function positiveInteger(value: unknown): number | undefined {

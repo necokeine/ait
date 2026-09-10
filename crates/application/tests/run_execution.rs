@@ -89,8 +89,11 @@ impl ControlStore for ConflictingStore {
         self.inner.save_progress(checkpoint, events).await
     }
 
-    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
-        self.inner.load_progress().await
+    async fn load_progress(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress(project_id).await
     }
 
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
@@ -164,8 +167,11 @@ impl ControlStore for PausingProgressStore {
         self.inner.save_progress(checkpoint, events).await
     }
 
-    async fn load_progress(&self) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
-        self.inner.load_progress().await
+    async fn load_progress(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProgressCheckpoint>, ControlStoreError> {
+        self.inner.load_progress(project_id).await
     }
 
     async fn clear_progress(&self, run_id: &str) -> Result<(), ControlStoreError> {
@@ -824,7 +830,7 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         .forget();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let checkpoints = service.progress_checkpoints().await.unwrap();
+    let checkpoints = service.progress_checkpoints("live-project").await.unwrap();
     assert_eq!(checkpoints.len(), 1);
     assert_eq!(checkpoints[0]["run_id"], run.id);
     assert_eq!(checkpoints[0]["seq"], 302);
@@ -884,18 +890,15 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         .unwrap()
         .forget();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let concurrent = service.progress_checkpoints().await.unwrap();
-    assert_eq!(concurrent.len(), 2);
-    assert!(
-        concurrent
-            .iter()
-            .any(|value| { value["run_id"] == run.id && value["session_id"] == "live-session" })
-    );
-    assert!(
-        concurrent.iter().any(|value| {
-            value["run_id"] == second.id && value["session_id"] == "live-session-2"
-        })
-    );
+    let first_project = service.progress_checkpoints("live-project").await.unwrap();
+    assert_eq!(first_project.len(), 1);
+    assert_eq!(first_project[0]["run_id"], run.id);
+    let second_project = service
+        .progress_checkpoints("live-project-2")
+        .await
+        .unwrap();
+    assert_eq!(second_project.len(), 1);
+    assert_eq!(second_project[0]["run_id"], second.id);
 
     agent.release.add_permits(2);
     let completed = tokio::time::timeout(Duration::from_secs(2), async {
@@ -940,7 +943,20 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     .await
     .unwrap();
     assert!(second_completed.last_message_id.is_some());
-    assert!(service.progress_checkpoints().await.unwrap().is_empty());
+    assert!(
+        service
+            .progress_checkpoints("live-project")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        service
+            .progress_checkpoints("live-project-2")
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(!service.event_page(u64::MAX, 10).await.unwrap().cursor_valid);
 }
 
@@ -1093,7 +1109,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
     );
     assert!(
         store
-            .load_progress()
+            .load_progress("panic-project")
             .await
             .unwrap()
             .iter()
@@ -1158,5 +1174,11 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         panic!("expected Run")
     };
     assert_eq!(completed.status, "completed");
-    assert!(store.load_progress().await.unwrap().is_empty());
+    assert!(
+        store
+            .load_progress("panic-project")
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
