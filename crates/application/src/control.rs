@@ -1050,11 +1050,8 @@ impl LocalControlService {
                     .await
             }
             Command::ListSessions { project_id } => {
-                self.read_records(vec![project_id.as_ref().map_or_else(
-                    || ControlFilter::all(Kind::Session),
-                    |id| ControlFilter::project(Kind::Session, id),
-                )])
-                .await
+                self.read_records(vec![ControlFilter::project(Kind::Session, project_id)])
+                    .await
             }
             Command::ListCrons => {
                 self.read_records(vec![ControlFilter::all(Kind::Cron)])
@@ -1846,9 +1843,9 @@ impl LocalControlService {
     /// # Errors
     ///
     /// Returns a stable persistence error when checkpoints cannot be read.
-    pub async fn progress_checkpoints(&self) -> Result<Vec<Value>, ApiError> {
+    pub async fn progress_checkpoints(&self, project_id: &str) -> Result<Vec<Value>, ApiError> {
         self.store
-            .load_progress()
+            .load_progress(project_id)
             .await
             .map_err(store_error)
             .map(|values| values.into_iter().map(|value| value.body).collect())

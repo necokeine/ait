@@ -35,7 +35,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `GET` | `/v1/project/list` | `ListProjects` |
 | `GET` | `/v1/agent/list` | `ListAgents` |
 | `GET` | `/v1/agent-provider/list` | `ListAgentProviders` |
-| `GET` | `/v1/session/list` | `ListSessions` |
+| `GET` | `/v1/session/list?project_id=<id>` | `ListSessions` |
 | `GET` | `/v1/message/list?project_id=<id>` | `ListMessages` |
 | `GET` | `/v1/run/list?project_id=<id>` | `ListRuns` |
 | `GET` | `/v1/cron/list` | `ListCrons` |
@@ -43,6 +43,8 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/settings/save` | `SaveSettings` |
 | `POST` | `/v1/settings/reset` | `ResetSettings` |
 | `GET` | `/v1/event/list` | durable event SSE replay |
+| `GET` | `/v1/run/progress?project_id=<id>` | active Run progress checkpoints |
+| `GET` | `/v1/health` | daemon readiness and protocol version |
 | `GET` | `/v1/metric/list` | in-process metric snapshot |
 
 例如注册 Project：

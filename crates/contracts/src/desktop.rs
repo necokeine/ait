@@ -221,26 +221,6 @@ impl From<Message> for DesktopMessage {
     }
 }
 
-/// Complete, bounded desktop projection returned after every mutation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DesktopView {
-    /// Protocol version understood by the Rust backend.
-    pub protocol_version: u32,
-    /// Monotonic state revision.
-    pub revision: u64,
-    /// Projects available to this local profile.
-    pub projects: Vec<DesktopProject>,
-    /// Configured Agents safe to display.
-    pub agents: Vec<AgentSummary>,
-    /// Shared provider catalog without credential material.
-    pub providers: Vec<crate::AgentProviderView>,
-    /// Session references.
-    pub sessions: Vec<DesktopSession>,
-    /// Immutable Message forest.
-    pub messages: Vec<DesktopMessage>,
-}
-
 /// High-level settings section.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

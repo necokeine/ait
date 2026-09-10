@@ -94,10 +94,10 @@ enum AgentProviderCommand {
 
 #[derive(Subcommand)]
 enum SessionCommand {
-    /// List Sessions, optionally scoped to one Project.
+    /// List Sessions in one Project.
     List {
         #[arg(long)]
-        project_id: Option<String>,
+        project_id: String,
     },
 }
 
@@ -265,9 +265,7 @@ async fn send(
     ) {
         let request = client.get(format!("{endpoint}{}", operation_path(command)));
         let request = match command {
-            Command::ListSessions {
-                project_id: Some(project_id),
-            }
+            Command::ListSessions { project_id }
             | Command::ListMessages { project_id }
             | Command::ListRuns { project_id } => request.query(&[("project_id", project_id)]),
             _ => request,

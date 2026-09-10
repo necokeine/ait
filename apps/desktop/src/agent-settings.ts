@@ -1,5 +1,5 @@
 import { modelChoices, selectedModels, type ModelChoice } from "./provider-models.js";
-import type { AgentProvider, DesktopView, ProviderInput } from "./types.js";
+import type { AgentCatalog, AgentProvider, DesktopState, ProviderInput } from "./types.js";
 
 export const escapeCatalog = (value: string): string => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 export const catalogOption = (id: string, name: string, selected = ""): string => `<option value="${escapeCatalog(id)}"${id === selected ? " selected" : ""}>${escapeCatalog(name)}</option>`;
@@ -11,8 +11,8 @@ export function providerChoices(providers: AgentProvider[]): AgentProvider[] {
 
 export function renderProviderSettings(
   container: Element,
-  view: DesktopView,
-  update: (view: DesktopView, refreshSettings: boolean) => void,
+  view: Pick<DesktopState, "agents" | "providers">,
+  update: (view: AgentCatalog, refreshSettings: boolean) => void,
   notify: (message: string, failure?: boolean) => void,
   initialProviderId?: string,
 ): () => void {

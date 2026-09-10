@@ -146,13 +146,43 @@ export interface RunStreamFrame {
 }
 
 export interface RunSubmission {
-  view: DesktopView;
+  project: ProjectView;
   runId: string;
 }
 
-export interface DesktopView {
+export interface ProjectCatalog {
   protocolVersion: number;
   revision: number;
+  projects: DesktopProject[];
+}
+
+export interface AgentCatalog {
+  protocolVersion: number;
+  revision: number;
+  agents: AgentSummary[];
+  providers: AgentProvider[];
+}
+
+export interface ProjectView {
+  protocolVersion: number;
+  revision: number;
+  projectId: string;
+  sessions: DesktopSession[];
+  messages: DesktopMessage[];
+  runs: DesktopRun[];
+  runProgress: RunProgress[];
+  recoveryNotices?: Array<{
+    projectId: string;
+    sessionId?: string;
+    sessionTitle?: string;
+    runId: string;
+    code?: string;
+    message: string;
+  }>;
+}
+
+/** Renderer-owned composition; never crosses the Electron bridge. */
+export interface DesktopState {
   projects: DesktopProject[];
   agents: AgentSummary[];
   providers: AgentProvider[];
@@ -160,15 +190,7 @@ export interface DesktopView {
   messages: DesktopMessage[];
   runs: DesktopRun[];
   runProgress: RunProgress[];
-  recoveryNotices?: Array<{
-    projectId: string;
-    projectName: string;
-    sessionId?: string;
-    sessionTitle?: string;
-    runId: string;
-    code?: string;
-    message: string;
-  }>;
+  recoveryNotices?: ProjectView["recoveryNotices"];
 }
 
 export type SettingCategory =
@@ -212,12 +234,18 @@ export interface BridgeErrorShape {
 }
 
 export interface AitDesktopApi {
-  view(projectId?: string): Promise<DesktopView>;
-  saveProvider(input: ProviderInput): Promise<DesktopView>;
+  projects(): Promise<ProjectCatalog>;
+  agents(): Promise<AgentCatalog>;
+  project(projectId: string): Promise<ProjectView>;
+  saveProvider(input: ProviderInput): Promise<AgentCatalog>;
   discoverProviderModels(input: ProviderInput): Promise<ProviderModel[]>;
-  refreshProviderModels(providerId: string): Promise<DesktopView>;
-  saveAgent(input: { id?: string; name: string; config: AgentConfiguration }): Promise<DesktopView>;
-  setSessionConfig(input: { sessionId: string; config: AgentConfiguration }): Promise<DesktopView>;
+  refreshProviderModels(providerId: string): Promise<AgentCatalog>;
+  saveAgent(input: { id?: string; name: string; config: AgentConfiguration }): Promise<AgentCatalog>;
+  setSessionConfig(input: {
+    projectId: string;
+    sessionId: string;
+    config: AgentConfiguration;
+  }): Promise<{ project: ProjectView; agents: AgentCatalog }>;
   settings(): Promise<SettingsResponse>;
   saveSettings(expectedRevision: number, values: Record<string, unknown>): Promise<SettingsResponse>;
   resetSettings(): Promise<SettingsResponse>;
@@ -233,32 +261,35 @@ export interface AitDesktopApi {
     workdir: string;
     agentId: string;
     repoUrl?: string;
-  }): Promise<{ view: DesktopView; selectedProjectId: string }>;
+  }): Promise<{ catalog: ProjectCatalog; project: ProjectView; selectedProjectId: string }>;
   setProjectDefaultAgent(input: {
     projectId: string;
     agentId: string;
-  }): Promise<DesktopView>;
+  }): Promise<ProjectCatalog>;
   createSession(input: {
     projectId: string;
     agentId: string;
-  }): Promise<{ view: DesktopView; selectedSessionId: string }>;
+  }): Promise<{ project: ProjectView; selectedSessionId: string }>;
   setSessionAgent(input: {
+    projectId: string;
     sessionId: string;
     agentId: string;
-  }): Promise<DesktopView>;
-  renameSession(input: { sessionId: string; name: string }): Promise<DesktopView>;
-  setSessionTitle(input: { sessionId: string; title: string }): Promise<DesktopView>;
-  generateSessionTitle(input: { sessionId: string; prompt: string }): Promise<DesktopView>;
+  }): Promise<ProjectView>;
+  renameSession(input: { projectId: string; sessionId: string; name: string }): Promise<ProjectView>;
+  setSessionTitle(input: { projectId: string; sessionId: string; title: string }): Promise<ProjectView>;
+  generateSessionTitle(input: { projectId: string; sessionId: string; prompt: string }): Promise<ProjectView>;
   sendMessage(input: {
+    projectId: string;
     sessionId: string;
     content: string;
   }): Promise<RunSubmission>;
   resolveApproval(input: {
     runId: string;
+    projectId: string;
     approvalId: string;
     action: "approve" | "deny" | "cancel";
     scope?: "one_shot" | "turn" | "session";
-  }): Promise<DesktopView>;
+  }): Promise<ProjectView>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {
     projectId: string;

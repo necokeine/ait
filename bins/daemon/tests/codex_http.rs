@@ -154,7 +154,9 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     let progress_deadline = Instant::now() + Duration::from_secs(2);
     let progress = loop {
         let progress: Value = client
-            .get(format!("{base_url}/v1/run/progress"))
+            .get(format!(
+                "{base_url}/v1/run/progress?project_id=daemon-codex-project"
+            ))
             .send()
             .await
             .unwrap()

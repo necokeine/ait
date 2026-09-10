@@ -14,11 +14,21 @@ import {
 } from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import { ProjectViewLoader } from "./project-view-loader.js";
+import {
+  composeDesktopState,
+  emptyProjectView,
+  eventBelongsToProject,
+  refreshVisibleSlices,
+  resolveInitialProjectId,
+} from "./desktop-slices.js";
 import { isApprovalEvent, renderPendingApprovals } from "./approval-ui.js";
 import type {
+  AgentCatalog,
   DesktopMessage,
   DesktopSession,
-  DesktopView,
+  DesktopState,
+  ProjectCatalog,
+  ProjectView,
   RunStreamUpdate,
   SettingCategory,
   SettingDefinition,
@@ -54,7 +64,9 @@ const renameSessionDialog = $("#rename-session-dialog");
 const sessionContextMenu = $<HTMLElement>("#session-context-menu");
 const messageContextMenu = $<HTMLElement>("#message-context-menu");
 
-let view: DesktopView | undefined;
+let view: DesktopState | undefined;
+let projectCatalog: ProjectCatalog | undefined;
+let agentCatalog: AgentCatalog | undefined;
 let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
 let inspectedNodeId: string | undefined;
@@ -79,11 +91,14 @@ let toastTimer: number | undefined;
 let streamConnected = true;
 let renderedSessionId: string | undefined;
 let viewRefreshPending = false;
-const projectViews = new ProjectViewLoader<DesktopView>((projectId) => window.ait.view(projectId));
+let catalogRefreshPending = false;
+const projectViews = new ProjectViewLoader<ProjectView>((projectId) => projectId
+  ? window.ait.project(projectId)
+  : Promise.resolve(emptyProjectView()));
 const pendingTitles = new PendingSessionTitles();
 const pendingStream = new BoundedRunStreamBacklog();
 const agentsPage = createAgentsPage($("#agents-page"), {
-  update: (updated) => { view = updated; renderAll(); },
+  update: (updated) => { replaceAgentCatalog(updated); renderAll(); },
   notify: showToast,
   configureProvider: openProviderSettings,
 });
@@ -94,18 +109,22 @@ void initialize();
 async function initialize(): Promise<void> {
   bindInteractions();
   try {
-    const [loadedView, loadedSettings] = await Promise.all([
-      window.ait.view(),
+    const [loadedProjects, loadedAgents, loadedSettings] = await Promise.all([
+      window.ait.projects(),
+      window.ait.agents(),
       window.ait.settings(),
     ]);
+    projectCatalog = loadedProjects;
+    agentCatalog = loadedAgents;
     settings = loadedSettings;
     settingsDraft = structuredClone(loadedSettings.values);
-    const initialProjectId = loadedView.messages[0]?.projectId
-      ?? loadedView.sessions.at(-1)?.projectId
-      ?? loadedView.projects[0]?.id;
-    replaceProjectView(initialProjectId, loadedView);
-    const newestSession = loadedView.sessions
-      .filter((session) => session.projectId === selectedProjectId)
+    const rememberedProjectId = window.localStorage.getItem("ait:selected-project") ?? undefined;
+    const initialProjectId = resolveInitialProjectId(loadedProjects.projects, rememberedProjectId);
+    const loadedProject = initialProjectId
+      ? await window.ait.project(initialProjectId)
+      : emptyProjectView();
+    replaceProjectView(initialProjectId, loadedProject);
+    const newestSession = loadedProject.sessions
       .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
     selectedSessionId = newestSession;
     applyPreferences();
@@ -120,18 +139,40 @@ async function initialize(): Promise<void> {
   }
 }
 
-function replaceProjectView(projectId: string | undefined, updated: DesktopView): void {
+function replaceProjectView(projectId: string | undefined, updated: ProjectView): void {
   projectViews.replace(projectId, updated);
   selectedProjectId = projectId;
-  view = updated;
+  rememberProject(projectId);
+  rebuildState();
 }
 
 function acceptLoadedProjectView(): boolean {
   const projectId = projectViews.projectId;
   if (!projectViews.view || projectId !== projectViews.selectedProjectId) return false;
+  if (projectViews.view.projectId !== (projectId ?? "")) return false;
   selectedProjectId = projectId;
-  view = projectViews.view;
+  rememberProject(projectId);
+  rebuildState();
   return true;
+}
+
+function replaceAgentCatalog(updated: AgentCatalog): void {
+  agentCatalog = updated;
+  rebuildState();
+}
+
+function replaceProjectCatalog(updated: ProjectCatalog): void {
+  projectCatalog = updated;
+  rebuildState();
+}
+
+function rebuildState(): void {
+  view = composeDesktopState(projectCatalog, agentCatalog, projectViews.view);
+}
+
+function rememberProject(projectId: string | undefined): void {
+  if (projectId) window.localStorage.setItem("ait:selected-project", projectId);
+  else window.localStorage.removeItem("ait:selected-project");
 }
 
 async function selectProjectView(projectId: string): Promise<boolean> {
@@ -264,10 +305,11 @@ function renderRecoveryNotices(): void {
   if (!view) return;
   const container = $<HTMLElement>("#recovery-notices");
   const notices = view.recoveryNotices ?? [];
+  const projectName = currentProject()?.name ?? (selectedProjectId ? `Project ${selectedProjectId.slice(0, 8)}` : "Project");
   container.classList.toggle("is-hidden", notices.length === 0);
   container.innerHTML = notices.map((notice) => `<button type="button" class="recovery-notice" data-recovery-project="${escapeAttribute(notice.projectId)}"${notice.sessionId ? ` data-recovery-session="${escapeAttribute(notice.sessionId)}"` : ""}>
     <strong>Workspace recovery needs review</strong>
-    <span>${escapeHtml(notice.projectName)}${notice.sessionTitle ? ` / ${escapeHtml(notice.sessionTitle)}` : ""} · Run ${escapeHtml(notice.runId.slice(0, 8))}</span>
+    <span>${escapeHtml(projectName)}${notice.sessionTitle ? ` / ${escapeHtml(notice.sessionTitle)}` : ""} · Run ${escapeHtml(notice.runId.slice(0, 8))}</span>
     <small>${escapeHtml(notice.message)}</small>
   </button>`).join("");
   container.querySelectorAll<HTMLElement>("[data-recovery-project]").forEach((notice) => {
@@ -336,7 +378,7 @@ function renderProjects(): void {
         <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${branchGenerating ? "Generating new Session…" : `${escapeHtml(agent ? agentDisplayName(agent) : "Agent")} · ${relativeTime(session.updatedAt)}`}</small></span>
         ${session.active ? '<i class="running-dot" title="Run active"></i>' : ""}
       </button>`;
-    }).join("") || '<p class="project-sessions-empty">No sessions</p>';
+    }).join("") || `<p class="project-sessions-empty">${projectSelected ? "No sessions" : "Select Project to load Sessions"}</p>`;
     return `<section class="project-group${projectSelected ? " is-current" : ""}" data-project-group="${escapeAttribute(project.id)}">
       <div class="project-row">
         <button class="project-select" type="button" data-project-id="${escapeAttribute(project.id)}" title="${escapeAttribute(project.workdir)}">
@@ -474,6 +516,7 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
     return;
   }
   let refresh = false;
+  let refreshCatalogs = false;
   let renderCurrent = false;
   const gappedRuns = new Set<string>();
   for (const update of updates) {
@@ -484,9 +527,11 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
     }
     if (update.type === "resync") {
       refresh = true;
+      refreshCatalogs = true;
       continue;
     }
     const event = update.event;
+    if (!eventBelongsToProject(event.body, selectedProjectId)) continue;
     if (event.kind === "run.progress") {
       const body = event.body as Record<string, unknown>;
       const runId = typeof body.run_id === "string" ? body.run_id : undefined;
@@ -525,9 +570,12 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       }
       continue;
     }
-    if (event.kind === "stream.reset_required") refresh = true;
+    if (event.kind === "stream.reset_required") {
+      refresh = true;
+      refreshCatalogs = true;
+    }
   }
-  if (refresh) scheduleViewRefresh();
+  if (refresh) scheduleViewRefresh(refreshCatalogs);
   else if (renderCurrent) renderConversation();
 }
 
@@ -537,16 +585,21 @@ async function resolveApproval(
   action: "approve" | "deny" | "cancel",
   scope: "one_shot" | "turn" | "session" | undefined,
 ): Promise<void> {
+  const projectId = selectedProjectId;
+  if (!projectId) return;
+  const mutation = projectViews.beginMutation(projectId);
   try {
     const updated = await window.ait.resolveApproval({
       runId,
+      projectId,
       approvalId,
       action,
       ...(scope ? { scope } : {}),
     });
-    replaceProjectView(selectedProjectId, updated);
+    if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
     renderAll();
   } catch (error) {
+    projectViews.discardMutation(mutation);
     showToast(errorMessage(error), true);
     scheduleViewRefresh();
   }
@@ -559,20 +612,30 @@ function queuePendingStreamUpdates(updates: RunStreamUpdate[]): void {
 function drainPendingStreamUpdates(): void {
   const pending = pendingStream.drain();
   if (pending.resync) {
-    scheduleViewRefresh();
+    scheduleViewRefresh(true);
     return;
   }
   if (pending.updates.length > 0) handleRunStreamFrame(pending.updates);
 }
 
-function scheduleViewRefresh(): void {
+function scheduleViewRefresh(includeCatalogs = false): void {
+  catalogRefreshPending ||= includeCatalogs;
   if (viewRefreshPending) return;
   viewRefreshPending = true;
   queueMicrotask(async () => {
     let refreshed = false;
     let settled = false;
     try {
-      refreshed = await projectViews.refresh();
+      const refreshCatalogs = catalogRefreshPending;
+      catalogRefreshPending = false;
+      const slices = await refreshVisibleSlices(
+        () => projectViews.refresh(),
+        window.ait,
+        refreshCatalogs,
+      );
+      if (slices.projects) replaceProjectCatalog(slices.projects);
+      if (slices.agents) replaceAgentCatalog(slices.agents);
+      refreshed = slices.projectAccepted;
       settled = true;
       if (refreshed && acceptLoadedProjectView()) {
         reconcilePendingBranch();
@@ -586,6 +649,7 @@ function scheduleViewRefresh(): void {
       viewRefreshPending = false;
     }
     if (settled) drainPendingStreamUpdates();
+    if (catalogRefreshPending && !viewRefreshPending) scheduleViewRefresh(true);
   });
 }
 
@@ -769,6 +833,7 @@ async function submitMessage(): Promise<void> {
   updateComposerState();
   sendButton.disabled = true;
   sendButton.textContent = "…";
+  const mutation = projectViews.beginMutation(session.projectId);
   try {
     if (source) {
       const result = await window.ait.fork({
@@ -778,7 +843,7 @@ async function submitMessage(): Promise<void> {
         agentId: composerAgent.value,
         content,
       });
-      view = result.view;
+      if (!projectViews.commitMutation(mutation, result.project) || !acceptLoadedProjectView()) return;
       branchSourceNodeId = undefined;
       pendingTitles.register(result.runId, result.selectedSessionId, content);
       if (result.reusedCurrentSession) {
@@ -796,10 +861,11 @@ async function submitMessage(): Promise<void> {
       }
     } else {
       const result = await window.ait.sendMessage({
+        projectId: session.projectId,
         sessionId: session.id,
         content,
       });
-      view = result.view;
+      if (!projectViews.commitMutation(mutation, result.project) || !acceptLoadedProjectView()) return;
       pendingTitles.register(result.runId, session.id, content);
       showToast("Message accepted.");
       resetTreeView();
@@ -809,6 +875,7 @@ async function submitMessage(): Promise<void> {
     messageInput.value = "";
     renderAll();
   } catch (error) {
+    projectViews.discardMutation(mutation);
     try {
       if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
     } catch { /* Keep the last visible view if disconnected. */ }
@@ -823,11 +890,16 @@ async function submitMessage(): Promise<void> {
 async function generateFirstSessionTitle(sessionId: string, prompt: string): Promise<void> {
   const title = temporarySessionTitle(prompt);
   const modelPrompt = sanitizeSessionPrompt(prompt);
-  if (!view || !title || !modelPrompt) return;
+  const session = view?.sessions.find((candidate) => candidate.id === sessionId);
+  if (!session || !title || !modelPrompt) return;
   try {
-    view = await window.ait.setSessionTitle({ sessionId, title });
+    let mutation = projectViews.beginMutation(session.projectId);
+    const titled = await window.ait.setSessionTitle({ projectId: session.projectId, sessionId, title });
+    if (!projectViews.commitMutation(mutation, titled) || !acceptLoadedProjectView()) return;
     renderAll();
-    view = await window.ait.generateSessionTitle({ sessionId, prompt: modelPrompt });
+    mutation = projectViews.beginMutation(session.projectId);
+    const generated = await window.ait.generateSessionTitle({ projectId: session.projectId, sessionId, prompt: modelPrompt });
+    if (!projectViews.commitMutation(mutation, generated) || !acceptLoadedProjectView()) return;
     renderAll();
   } catch (error) {
     console.warn("Session title generation failed; keeping the temporary title.", error);
@@ -894,17 +966,23 @@ function closeRenameSessionDialog(): void {
 
 async function renameSession(): Promise<void> {
   if (!renamingSessionId) return;
+  const session = view?.sessions.find((candidate) => candidate.id === renamingSessionId);
+  if (!session) return;
+  const mutation = projectViews.beginMutation(session.projectId);
   const button = $<HTMLButtonElement>("#rename-session-submit");
   button.disabled = true;
   try {
-    view = await window.ait.renameSession({
+    const updated = await window.ait.renameSession({
+      projectId: session.projectId,
       sessionId: renamingSessionId,
       name: $<HTMLInputElement>("#rename-session-name").value,
     });
+    if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
     closeRenameSessionDialog();
     renderAll();
     showToast("Session renamed.");
   } catch (error) {
+    projectViews.discardMutation(mutation);
     showToast(errorMessage(error), true);
   } finally {
     button.disabled = false;
@@ -934,15 +1012,19 @@ async function changeSessionAgent(): Promise<void> {
   updateComposerState();
   composerAgent.disabled = true;
   sendButton.disabled = true;
+  const mutation = projectViews.beginMutation(session.projectId);
   try {
-    view = await window.ait.setSessionAgent({
+    const updated = await window.ait.setSessionAgent({
+      projectId: session.projectId,
       sessionId: session.id,
       agentId,
     });
+    if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
     renderAll();
-    const agent = view.agents.find((candidate) => candidate.id === agentId);
+    const agent = view?.agents.find((candidate) => candidate.id === agentId);
     showToast(`Session Agent changed to ${agent ? agentDisplayName(agent) : "Agent"}.`);
   } catch (error) {
+    projectViews.discardMutation(mutation);
     renderAll();
     showToast(errorMessage(error), true);
   } finally { pendingSessions.delete(session.id); updateComposerState(); }
@@ -992,9 +1074,12 @@ async function changeSessionConfig(modelChanged: boolean, providerChanged = fals
   const config = { provider_id: provider.id, model: model.id, reasoning_effort: effort && model?.reasoning_efforts.includes(effort) ? effort : null };
   pendingSessions.add(session.id);
   updateComposerState();
+  const mutation = projectViews.beginMutation(session.projectId);
   try {
-    view = await window.ait.setSessionConfig({ sessionId: session.id, config });
-  } catch (error) { showToast(errorMessage(error), true); }
+    const updated = await window.ait.setSessionConfig({ projectId: session.projectId, sessionId: session.id, config });
+    replaceAgentCatalog(updated.agents);
+    if (!projectViews.commitMutation(mutation, updated.project) || !acceptLoadedProjectView()) return;
+  } catch (error) { projectViews.discardMutation(mutation); showToast(errorMessage(error), true); }
   finally { pendingSessions.delete(session.id); renderAll(); }
 }
 
@@ -1075,13 +1160,12 @@ function closeProjectSettingsDialog(): void {
 
 async function selectProject(projectId: string | undefined): Promise<void> {
   if (!view || pendingBranch || !projectId || !view.projects.some((project) => project.id === projectId)) return;
-  selectedSessionId = view.sessions
-    .filter((session) => session.projectId === projectId)
-    .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
+  selectedSessionId = undefined;
   resetTreeView();
   const loading = selectProjectView(projectId);
   showPage("sessions");
   if (!await loading) return;
+  selectedSessionId = view?.sessions.toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
   renderAll();
 }
 
@@ -1106,8 +1190,8 @@ async function createProject(): Promise<void> {
     const result = await window.ait.createProject({ name, workdir, agentId });
     selectedSessionId = undefined;
     resetTreeView();
-    replaceProjectView(result.selectedProjectId, result.view);
-    await selectProjectView(result.selectedProjectId);
+    replaceProjectCatalog(result.catalog);
+    replaceProjectView(result.selectedProjectId, result.project);
     $<HTMLInputElement>("#project-create-name").value = "";
     $<HTMLInputElement>("#project-create-path").value = "";
     closeProjectDialog();
@@ -1128,11 +1212,7 @@ async function saveProjectBackend(): Promise<void> {
   if (!project || !agentId) return;
   try {
     const updated = await window.ait.setProjectDefaultAgent({ projectId: project.id, agentId });
-    if (selectedProjectId && selectedProjectId !== project.id) {
-      if (!await projectViews.refresh() || !acceptLoadedProjectView()) return;
-    } else {
-      view = updated;
-    }
+    replaceProjectCatalog(updated);
     renderAll();
     closeProjectSettingsDialog();
     showToast(`${project.name} backend updated.`);
@@ -1158,16 +1238,14 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
   renderProjects();
   try {
     const result = await window.ait.createSession({ projectId: project.id, agentId });
-    if (!projectViews.commitMutation(mutation, result.view)) {
+    if (!projectViews.commitMutation(mutation, result.project)) {
       if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
       return;
     }
     if (!acceptLoadedProjectView()) return;
     selectedSessionId = result.selectedSessionId;
     resetTreeView();
-    const loading = selectProjectView(project.id);
     showPage("sessions");
-    if (!await loading) return;
     renderAll();
     messageInput.focus();
     showToast("Session created.");
@@ -1241,7 +1319,7 @@ function renderSettings(): void {
   });
   if (view && settingsCategory === "models") {
     disposeProviderSettings = renderProviderSettings($("#settings-fields"), view, (updated, refreshSettings) => {
-      view = updated;
+      replaceAgentCatalog(updated);
       renderAll();
       if (refreshSettings && !settingsDialog.classList.contains("is-hidden")) renderSettings();
     }, showToast, initialProviderId);

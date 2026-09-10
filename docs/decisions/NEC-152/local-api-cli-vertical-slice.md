@@ -28,7 +28,7 @@ cargo run -p ait-cli -- command \
 - `send_message`、`get_run`、`cancel_run`：交互与 Run 生命周期；
 - `create_cron`、`set_cron_enabled`、`trigger_cron`：持久化 Cron、启停与幂等 occurrence 触发；
 - `export_project`、`import_project`：版本化导出/原子导入无凭证 Project archive；
-- `project list`、`agent list`、`agent-provider list`、`session list`、`message list`、
+- `project list`、`agent list`、`agent-provider list`、`session list --project-id <id>`、`message list`、
   `run list`、`cron list`：按实体或 Project 范围读取最终投影（NEC-224 修订）；底层仍复用相同 Command/API。
 
 生产命令不再通过 Provider kind 构造工具、排队、失败或审批状态。ToolUse/ToolResult 与审批恢复由

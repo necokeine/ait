@@ -55,6 +55,99 @@ fn fixture_service(store: Arc<SqliteControlStore>) -> LocalControlService {
 }
 
 #[tokio::test]
+async fn project_list_operations_never_return_another_projects_runtime_records() {
+    let temporary = TempDir::new().unwrap();
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "scoped-agent".into(),
+            name: "Scoped agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+    for project_id in ["project-a", "project-b"] {
+        let workdir = temporary.path().join(project_id);
+        std::fs::create_dir(&workdir).unwrap();
+        run(
+            &service,
+            Command::RegisterProject {
+                id: project_id.into(),
+                name: project_id.into(),
+                workdir: workdir.display().to_string(),
+                repo_url: None,
+            },
+        )
+        .await;
+        run(
+            &service,
+            Command::CreateSession {
+                id: format!("session-{project_id}"),
+                project_id: project_id.into(),
+                agent_id: "scoped-agent".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+        run(
+            &service,
+            Command::SendMessage {
+                session_id: format!("session-{project_id}"),
+                text: format!("message for {project_id}"),
+            },
+        )
+        .await;
+    }
+
+    for project_id in ["project-a", "project-b"] {
+        let CommandResult::Sessions(sessions) = run(
+            &service,
+            Command::ListSessions {
+                project_id: project_id.into(),
+            },
+        )
+        .await
+        else {
+            panic!("expected Sessions")
+        };
+        let CommandResult::Messages(messages) = run(
+            &service,
+            Command::ListMessages {
+                project_id: project_id.into(),
+            },
+        )
+        .await
+        else {
+            panic!("expected Messages")
+        };
+        let CommandResult::Runs(runs) = run(
+            &service,
+            Command::ListRuns {
+                project_id: project_id.into(),
+            },
+        )
+        .await
+        else {
+            panic!("expected Runs")
+        };
+        assert_eq!(sessions.len(), 1);
+        assert!(
+            sessions
+                .iter()
+                .all(|session| session.project_id == project_id)
+        );
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.project_id == project_id)
+        );
+        assert_eq!(runs.len(), 1);
+        assert!(runs.iter().all(|run| run.project_id == project_id));
+    }
+}
+
+#[tokio::test]
 async fn user_message_requires_clean_git_and_records_head_commit() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");

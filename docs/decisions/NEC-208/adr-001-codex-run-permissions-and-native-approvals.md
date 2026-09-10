@@ -41,7 +41,7 @@ Codex 当前协议的通用 approval policy 只有 `untrusted`、`on-request`、
 5. Adapter 在独立 task 等待审批，协议事件循环继续分发其他 notification。原 request ID 原样用于
    回答；重复 pending/answered ID 至多得到一次失败响应；`serverRequest/resolved`、turn 终止、
    Run cancel 与 adapter cancellation 会中止 waiter，并把 durable 状态更新为 expired 或
-   cancelled。桌面根据 cursor 事件刷新，同时每次 `workspace.view` 从 durable Run 重新构建审批卡，
+   cancelled。桌面根据 cursor 事件刷新，同时每次 Project-scoped view 从 durable Run 重新构建审批卡，
    所以 SSE 重连不依赖丢失的瞬时事件。
 6. command/file/legacy 的一次性批准映射 `accept`，会话批准映射 `acceptForSession`；拒绝映射
    `decline`。permissions 批准只返回原请求中已验证的权限集合及 `turn|session` scope，不能由
