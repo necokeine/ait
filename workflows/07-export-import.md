@@ -8,7 +8,7 @@
 在终端 A 导出：
 
 ```bash
-ait export --project-id p1 --output "$WF_ROOT/project-archive.json"
+ait project export --project-id p1 --output "$WF_ROOT/project-archive.json"
 jq '{format_version,project,sessions,messages}' "$WF_ROOT/project-archive.json"
 mkdir -p "$WF_ROOT/imported-project"
 ```
@@ -23,7 +23,7 @@ target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.
 
 ```bash
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
-  import --input "$WF_ROOT/project-archive.json" --workdir "$WF_ROOT/imported-project"
+  project import --input "$WF_ROOT/project-archive.json" --workdir "$WF_ROOT/imported-project"
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
   session list --project-id p1
 "$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \

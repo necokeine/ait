@@ -5,48 +5,9 @@ mod support;
 use serde_json::{Value, json};
 use support::{Workspace, entity, events, failure, success};
 
-#[tokio::test]
-async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
-    let mut workspace = Workspace::new().await;
-    let input = json!({"type": "register_agent", "id": "stdin-agent", "name": "中文\nAgent",
-        "config": {"provider_id": "builtin-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"}});
-    let agent = success(
-        &workspace
-            .cli_stdin(&serde_json::to_string_pretty(&input).unwrap())
-            .await,
-    );
-    assert_eq!(agent["name"], "中文\nAgent");
-    let before = workspace.view().await;
-    for input in [
-        "",
-        "{",
-        "{\"type\":\"sk-must-stay-private\"}",
-        "{\"type\":\"get_run\",\"run_id\":\"unused\",\"sk-must-stay-private\":true}",
-    ] {
-        let output = workspace.cli_stdin(input).await;
-        assert_eq!(output.status.code(), Some(1));
-        assert!(output.stdout.is_empty());
-        let diagnostic = String::from_utf8(output.stderr).unwrap();
-        assert!(diagnostic.contains("invalid command JSON"));
-        assert!(!diagnostic.contains("sk-must-stay-private"));
-    }
-    let request = json!({"type": "save_agent_provider", "secret": "sk-must-stay-private",
-        "provider": {"id": "deepseek", "name": "DeepSeek", "kind": "deepseek",
-            "url": "https://api.deepseek.com", "models": [{"id": "deepseek-v4-flash", "name": "Flash"}]}});
-    let output = workspace.cli_stdin(&request.to_string()).await;
-    // This service has no credential gateway; failure must not echo the write-only secret.
-    failure(&output, "INVALID_AGENT_CONFIGURATION");
-    assert!(
-        !String::from_utf8(output.stdout)
-            .unwrap()
-            .contains("sk-must-stay-private")
-    );
-    assert_eq!(workspace.view().await, before);
-    workspace.stop().await;
-}
-
 // WF-01: Register a real directory and choose an Agent before opening a Session.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
 async fn wf01_register_project_and_agent() {
     let mut workspace = Workspace::new().await;
     assert_eq!(workspace.view().await["projects"], json!([]));
@@ -75,27 +36,48 @@ async fn wf01_register_project_and_agent() {
     let before = workspace.view().await;
     workspace
         .reject(
-            json!({
-                "type": "register_project", "id": "duplicate", "name": "Duplicate",
-                "workdir": workspace.path("project with spaces/.")
-            }),
+            &[
+                "project",
+                "register",
+                "--id",
+                "duplicate",
+                "--name",
+                "Duplicate",
+                "--workdir",
+                workspace.path("project with spaces/.").to_str().unwrap(),
+            ],
             "PROJECT_PATH_ALREADY_REGISTERED",
         )
         .await;
     workspace
         .reject(
-            json!({
-                "type": "register_project", "id": "missing", "name": "Missing",
-                "workdir": workspace.path("missing")
-            }),
+            &[
+                "project",
+                "register",
+                "--id",
+                "missing",
+                "--name",
+                "Missing",
+                "--workdir",
+                workspace.path("missing").to_str().unwrap(),
+            ],
             "PROJECT_PATH_NOT_FOUND",
         )
         .await;
     workspace
         .reject(
-            json!({
-                "type": "register_agent", "id": "bad", "name": "", "config": { "provider_id": "builtin-codex", "model": "gpt-5.6-sol" }
-            }),
+            &[
+                "agent",
+                "create",
+                "--id",
+                "bad",
+                "--name",
+                "",
+                "--provider-id",
+                "builtin-codex",
+                "--model",
+                "gpt-5.6-sol",
+            ],
             "INVALID_AGENT_CONFIGURATION",
         )
         .await;
@@ -103,9 +85,14 @@ async fn wf01_register_project_and_agent() {
 
     let agent = workspace.agent("primary").await;
     let default = workspace
-        .command(json!({
-            "type": "set_project_default_agent", "project_id": project["id"], "agent_id": "primary"
-        }))
+        .call(&[
+            "project",
+            "set-default-agent",
+            "--project-id",
+            project["id"].as_str().unwrap(),
+            "--agent-id",
+            "primary",
+        ])
         .await;
     assert_eq!(default["default_agent_id"], "primary");
     assert_eq!(
@@ -148,18 +135,36 @@ async fn wf02_send_message_and_inspect_agent_reply() {
     let agent = workspace.agent("codex").await;
     workspace.session("main", "project", "codex").await;
     let before = workspace.view().await;
-    workspace.reject(json!({
-        "type": "set_session_config", "session_id": "main",
-        "config": {"provider_id": "builtin-codex", "model": "gpt-5.6-sol", "reasoning_effort": "unsupported"}
-    }), "INVALID_AGENT_CONFIGURATION").await;
+    workspace
+        .reject(
+            &[
+                "session",
+                "set-config",
+                "--session-id",
+                "main",
+                "--provider-id",
+                "builtin-codex",
+                "--model",
+                "gpt-5.6-sol",
+                "--reasoning-effort",
+                "unsupported",
+            ],
+            "INVALID_AGENT_CONFIGURATION",
+        )
+        .await;
     assert_eq!(workspace.view().await, before);
     let dirty = workspace.path("project/untracked.txt");
     std::fs::write(&dirty, "unsaved work").unwrap();
     workspace
         .reject(
-            json!({
-                "type": "send_message", "session_id": "main", "text": "must not append",
-            }),
+            &[
+                "session",
+                "send",
+                "--session-id",
+                "main",
+                "--text",
+                "must not append",
+            ],
             "PROJECT_GIT_DIRTY",
         )
         .await;
@@ -174,7 +179,7 @@ async fn wf02_send_message_and_inspect_agent_reply() {
     assert!(run["error"].is_null());
     assert_eq!(
         workspace
-            .command(json!({"type": "get_run", "run_id": run["id"]}))
+            .call(&["run", "get", "--run-id", run["id"].as_str().unwrap()])
             .await,
         run
     );
@@ -198,6 +203,7 @@ async fn wf02_send_message_and_inspect_agent_reply() {
 
 // WF-03: Branches share immutable history; names and Agent bindings have distinct effects.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
 async fn wf03_branch_rename_and_rebind_session() {
     let mut workspace = Workspace::new().await;
     let project = workspace.project("project").await;
@@ -208,28 +214,53 @@ async fn wf03_branch_rename_and_rebind_session() {
     let before = workspace.view().await;
     let original = entity(&before, "sessions", &json!("main")).clone();
     let branch = workspace
-        .command(json!({
-            "type": "create_session", "id": "branch", "project_id": "project",
-            "agent_id": "primary", "at_message_id": run["last_message_id"]
-        }))
+        .call(&[
+            "session",
+            "create",
+            "--id",
+            "branch",
+            "--project-id",
+            "project",
+            "--agent-id",
+            "primary",
+            "--at-message-id",
+            run["last_message_id"].as_str().unwrap(),
+        ])
         .await;
     assert_eq!(branch["current_message_id"], run["last_message_id"]);
     assert_eq!(workspace.view().await["messages"], before["messages"]);
     let titled = workspace
-        .command(json!({"type": "set_session_title", "session_id": "branch", "title": "临时标题"}))
+        .call(&[
+            "session",
+            "set-title",
+            "--session-id",
+            "branch",
+            "--title",
+            "临时标题",
+        ])
         .await;
     let renamed = workspace
-        .command(
-            json!({"type": "rename_session", "session_id": "branch", "name": "  我的   分支  "}),
-        )
+        .call(&[
+            "session",
+            "rename",
+            "--session-id",
+            "branch",
+            "--name",
+            "  我的   分支  ",
+        ])
         .await;
     assert_eq!(renamed["name"], "我的 分支");
     assert_eq!(renamed["title"], titled["title"]);
     assert_eq!(renamed["version"], branch["version"]);
     let rebound = workspace
-        .command(json!({
-            "type": "set_session_agent", "session_id": "branch", "agent_id": "alternate",
-        }))
+        .call(&[
+            "session",
+            "set-agent",
+            "--session-id",
+            "branch",
+            "--agent-id",
+            "alternate",
+        ])
         .await;
     assert_eq!(rebound["version"], 2);
     assert_eq!(rebound["current_message_id"], branch["current_message_id"]);
@@ -237,10 +268,20 @@ async fn wf03_branch_rename_and_rebind_session() {
     assert_eq!(continued["agent_id"], "alternate");
 
     let fork = workspace
-        .command(json!({
-            "type": "fork_session", "id": "fork", "project_id": "project", "agent_id": "primary",
-            "at_message_id": project["root_message_id"], "text": "new direction"
-        }))
+        .call(&[
+            "session",
+            "fork",
+            "--id",
+            "fork",
+            "--project-id",
+            "project",
+            "--agent-id",
+            "primary",
+            "--at-message-id",
+            project["root_message_id"].as_str().unwrap(),
+            "--text",
+            "new direction",
+        ])
         .await;
     assert_eq!(fork["status"], "completed");
     let after = workspace.view().await;
@@ -254,10 +295,25 @@ async fn wf03_branch_rename_and_rebind_session() {
     }
     let other = workspace.project("other").await;
     let before_rejection = workspace.view().await;
-    workspace.reject(json!({
-        "type": "fork_session", "id": "invalid-fork", "project_id": "project", "agent_id": "primary",
-        "at_message_id": other["root_message_id"], "text": "cross-project input"
-    }), "SESSION_MESSAGE_PROJECT_MISMATCH").await;
+    workspace
+        .reject(
+            &[
+                "session",
+                "fork",
+                "--id",
+                "invalid-fork",
+                "--project-id",
+                "project",
+                "--agent-id",
+                "primary",
+                "--at-message-id",
+                other["root_message_id"].as_str().unwrap(),
+                "--text",
+                "cross-project input",
+            ],
+            "SESSION_MESSAGE_PROJECT_MISMATCH",
+        )
+        .await;
     assert_eq!(workspace.view().await, before_rejection);
     workspace.stop().await;
 }
@@ -277,7 +333,7 @@ async fn wf04_observe_injected_provider_failure_and_continue() {
     assert!(entity(&snapshot, "sessions", &json!("main"))["active_run_id"].is_null());
     assert_eq!(
         workspace
-            .command(json!({"type": "get_run", "run_id": failed["id"]}))
+            .call(&["run", "get", "--run-id", failed["id"].as_str().unwrap()])
             .await,
         failed
     );
@@ -295,37 +351,64 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     workspace.session("main", "project", "primary").await;
     let sessions = workspace.view().await["sessions"].clone();
     workspace
-        .command(json!({
-            "type": "create_cron", "id": "daily", "name": "Daily summary", "project_id": "project",
-            "base_message_id": project["root_message_id"], "agent_id": "primary",
-            "schedule": "0 9 * * *", "timezone": "Asia/Shanghai"
-        }))
+        .call(&[
+            "cron",
+            "create",
+            "--id",
+            "daily",
+            "--name",
+            "Daily summary",
+            "--project-id",
+            "project",
+            "--base-message-id",
+            project["root_message_id"].as_str().unwrap(),
+            "--agent-id",
+            "primary",
+            "--schedule",
+            "0 9 * * *",
+            "--timezone",
+            "Asia/Shanghai",
+        ])
         .await;
     workspace
-        .command(json!({"type": "set_cron_enabled", "cron_id": "daily", "enabled": false}))
+        .call(&["cron", "disable", "--cron-id", "daily"])
         .await;
-    let trigger =
-        json!({"type": "trigger_cron", "cron_id": "daily", "scheduled_at": 1_788_480_000_000_i64});
+    let trigger = &[
+        "cron",
+        "trigger",
+        "--cron-id",
+        "daily",
+        "--scheduled-at",
+        "1788480000000",
+    ];
     let disabled = workspace.view().await;
-    workspace.reject(trigger.clone(), "INVALID_CRON").await;
+    workspace.reject(trigger, "INVALID_CRON").await;
     assert_eq!(workspace.view().await, disabled);
     workspace
-        .command(json!({"type": "set_cron_enabled", "cron_id": "daily", "enabled": true}))
+        .call(&["cron", "enable", "--cron-id", "daily"])
         .await;
-    let run = workspace.command(trigger.clone()).await;
+    let run = workspace.call(trigger).await;
     assert_eq!(run["base_message_id"], project["root_message_id"]);
     assert_eq!(run["trigger"], "cron");
     assert_eq!(run["status"], "completed");
     assert!(run["session_id"].is_null());
     let once = workspace.view().await;
-    let event_count = events(&workspace.cli(&["events"]).await).len();
-    assert_eq!(workspace.command(trigger).await, run);
+    let event_count = events(&workspace.cli(&["event", "list"]).await).len();
+    assert_eq!(workspace.call(trigger).await, run);
     assert_eq!(workspace.view().await, once);
-    assert_eq!(events(&workspace.cli(&["events"]).await).len(), event_count);
+    assert_eq!(
+        events(&workspace.cli(&["event", "list"]).await).len(),
+        event_count
+    );
     let second = workspace
-        .command(json!({
-            "type": "trigger_cron", "cron_id": "daily", "scheduled_at": 1_788_566_400_000_i64
-        }))
+        .call(&[
+            "cron",
+            "trigger",
+            "--cron-id",
+            "daily",
+            "--scheduled-at",
+            "1788566400000",
+        ])
         .await;
     assert_ne!(second["id"], run["id"]);
     let after = workspace.view().await;
@@ -339,10 +422,10 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
 #[tokio::test]
 async fn wf06_replay_events_and_reopen_workspace() {
     let mut workspace = Workspace::new().await;
-    assert!(events(&workspace.cli(&["events"]).await).is_empty());
+    assert!(events(&workspace.cli(&["event", "list"]).await).is_empty());
     workspace.project("project").await;
     workspace.agent("primary").await;
-    let first = events(&workspace.cli(&["events"]).await);
+    let first = events(&workspace.cli(&["event", "list"]).await);
     assert!(
         first
             .iter()
@@ -351,11 +434,11 @@ async fn wf06_replay_events_and_reopen_workspace() {
     let cursor = first.last().unwrap().0;
     workspace.session("main", "project", "primary").await;
     let run = workspace.send("main", 1, "persist this").await;
-    let all = events(&workspace.cli(&["events", "--after", "0"]).await);
+    let all = events(&workspace.cli(&["event", "list", "--after", "0"]).await);
     assert!(all.windows(2).all(|pair| pair[0].0 < pair[1].0));
     let rest = events(
         &workspace
-            .cli(&["events", "--after", &cursor.to_string()])
+            .cli(&["event", "list", "--after", &cursor.to_string()])
             .await,
     );
     assert!(!rest.is_empty());
@@ -366,14 +449,14 @@ async fn wf06_replay_events_and_reopen_workspace() {
     assert_eq!(workspace.view().await, snapshot);
     assert_eq!(
         workspace
-            .command(json!({"type": "get_run", "run_id": run["id"]}))
+            .call(&["run", "get", "--run-id", run["id"].as_str().unwrap()])
             .await,
         run
     );
     assert_eq!(
         events(
             &workspace
-                .cli(&["events", "--after", &cursor.to_string()])
+                .cli(&["event", "list", "--after", &cursor.to_string()])
                 .await
         ),
         rest
@@ -381,7 +464,12 @@ async fn wf06_replay_events_and_reopen_workspace() {
     assert!(
         events(
             &workspace
-                .cli(&["events", "--after", &all.last().unwrap().0.to_string()])
+                .cli(&[
+                    "event",
+                    "list",
+                    "--after",
+                    &all.last().unwrap().0.to_string()
+                ])
                 .await
         )
         .is_empty()
@@ -391,21 +479,40 @@ async fn wf06_replay_events_and_reopen_workspace() {
 
 // WF-07: Export a branch forest, import to a fresh workspace, and reject conflicts.
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
 async fn wf07_export_and_import_project_archive() {
     let mut source = Workspace::new().await;
     let project = source.project("project").await;
     source.agent("portable").await;
-    source.command(json!({"type": "set_project_default_agent", "project_id": "project", "agent_id": "portable"})).await;
+    source
+        .call(&[
+            "project",
+            "set-default-agent",
+            "--project-id",
+            "project",
+            "--agent-id",
+            "portable",
+        ])
+        .await;
     source.session("main", "project", "portable").await;
     source.send("main", 1, "keep portable history").await;
     source
-        .command(json!({
-            "type": "create_session", "id": "branch", "project_id": "project", "agent_id": "portable",
-            "at_message_id": project["root_message_id"]
-        }))
+        .call(&[
+            "session",
+            "create",
+            "--id",
+            "branch",
+            "--project-id",
+            "project",
+            "--agent-id",
+            "portable",
+            "--at-message-id",
+            project["root_message_id"].as_str().unwrap(),
+        ])
         .await;
     let output = source
         .cli(&[
+            "project",
             "export",
             "--project-id",
             "project",
@@ -429,16 +536,11 @@ async fn wf07_export_and_import_project_archive() {
     assert!(archive.get("runs").is_none() && archive.get("crons").is_none());
     let before = source.view().await;
     assert!(entity(&before, "sessions", &json!("main"))["active_run_id"].is_null());
-    assert_eq!(
-        source
-            .command(json!({"type": "export_project", "project_id": "project"}))
-            .await,
-        archive
-    );
     let contents = std::fs::read(&path).unwrap();
     failure(
         &source
             .cli(&[
+                "project",
                 "export",
                 "--project-id",
                 "missing",
@@ -454,6 +556,7 @@ async fn wf07_export_and_import_project_archive() {
     let imported_dir = target.path("imported project");
     std::fs::create_dir(&imported_dir).unwrap();
     let arguments = [
+        "project",
         "import",
         "--input",
         path.to_str().unwrap(),
@@ -481,6 +584,7 @@ async fn wf07_export_and_import_project_archive() {
     failure(
         &target
             .cli(&[
+                "project",
                 "import",
                 "--input",
                 "invalid.json",
@@ -500,32 +604,59 @@ async fn wf07_export_and_import_project_archive() {
 #[tokio::test]
 async fn wf08_save_reset_and_recover_settings() {
     let mut workspace = Workspace::new().await;
-    let get = json!({"type": "get_settings"});
-    let initial = workspace.command(get.clone()).await;
+    let initial = workspace.call(&["settings", "get"]).await;
+    assert_eq!(initial["values"]["permissions.sandbox"], "read_only");
+    assert_eq!(initial["values"]["permissions.approval"], "on_request");
     let mut values = initial["values"].clone();
     values["interface.theme"] = json!("dark");
-    let save = json!({"type": "save_settings", "expected_revision": initial["revision"], "values": values});
-    let saved = workspace.command(save.clone()).await;
+    values["permissions.sandbox"] = json!("workspace_write");
+    let revision = initial["revision"].to_string();
+    let args = [
+        "settings",
+        "set",
+        "--expected-revision",
+        &revision,
+        "--input",
+        "-",
+    ];
+    let saved = success(&workspace.cli_stdin(&args, &values.to_string()).await);
     assert_eq!(saved["values"]["interface.theme"], "dark");
+    assert_eq!(saved["values"]["permissions.sandbox"], "workspace_write");
     assert_eq!(saved["revision"], initial["revision"].as_u64().unwrap() + 1);
-    workspace.reject(save, "INVALID_CONFIGURATION").await;
+    failure(
+        &workspace.cli_stdin(&args, &values.to_string()).await,
+        "INVALID_CONFIGURATION",
+    );
     for invalid_values in [json!({"interface.theme": "light"}), {
         let mut invalid = values;
         invalid["interface.theme"] = json!("unknown-theme");
         invalid
     }] {
-        workspace.reject(json!({
-            "type": "save_settings", "expected_revision": saved["revision"], "values": invalid_values
-        }), "INVALID_CONFIGURATION").await;
+        failure(
+            &workspace
+                .cli_stdin(
+                    &[
+                        "settings",
+                        "set",
+                        "--expected-revision",
+                        &saved["revision"].to_string(),
+                        "--input",
+                        "-",
+                    ],
+                    &invalid_values.to_string(),
+                )
+                .await,
+            "INVALID_CONFIGURATION",
+        );
     }
-    assert_eq!(workspace.command(get.clone()).await, saved);
+    assert_eq!(workspace.call(&["settings", "get"]).await, saved);
     workspace.restart().await;
-    assert_eq!(workspace.command(get.clone()).await, saved);
-    let reset = workspace.command(json!({"type": "reset_settings"})).await;
+    assert_eq!(workspace.call(&["settings", "get"]).await, saved);
+    let reset = workspace.call(&["settings", "reset"]).await;
     assert_eq!(reset["values"], initial["values"]);
     assert_eq!(reset["revision"], saved["revision"].as_u64().unwrap() + 1);
     workspace.restart().await;
-    assert_eq!(workspace.command(get).await, reset);
+    assert_eq!(workspace.call(&["settings", "get"]).await, reset);
     workspace.stop().await;
 }
 
@@ -545,9 +676,10 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         "message",
         "run",
         "cron",
-        "command",
-        "events",
+        "settings",
+        "event",
         "export",
+        "project",
         "import",
         "--endpoint",
     ] {
@@ -561,8 +693,9 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         vec!["unknown"],
         vec!["project"],
         vec!["message", "list"],
-        vec!["events", "--after", "invalid"],
-        vec!["export"],
+        vec!["event", "list", "--after", "invalid"],
+        vec!["project", "export"],
+        vec!["command"],
     ] {
         let output = workspace.cli(&arguments).await;
         assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -570,24 +703,382 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     }
     std::fs::write(workspace.path("malformed.json"), "{").unwrap();
     for arguments in [
-        vec!["command", "{"],
-        vec!["command", "{\"type\":\"unknown\"}"],
-        vec!["import", "--input", "missing.json", "--workdir", "."],
-        vec!["import", "--input", "malformed.json", "--workdir", "."],
+        vec![
+            "settings",
+            "set",
+            "--expected-revision",
+            "1",
+            "--input",
+            "malformed.json",
+        ],
+        vec![
+            "project",
+            "import",
+            "--input",
+            "missing.json",
+            "--workdir",
+            ".",
+        ],
+        vec![
+            "project",
+            "import",
+            "--input",
+            "malformed.json",
+            "--workdir",
+            ".",
+        ],
     ] {
         let output = workspace.cli(&arguments).await;
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert!(output.stdout.is_empty() && !output.stderr.is_empty());
     }
     workspace
-        .reject(
-            json!({"type": "get_run", "run_id": "missing"}),
-            "INVALID_RUN",
-        )
+        .reject(&["run", "get", "--run-id", "missing"], "INVALID_RUN")
         .await;
     assert_eq!(workspace.view().await, initial);
     workspace.stop().await;
     let unavailable = workspace.cli(&["project", "list"]).await;
     assert_eq!(unavailable.status.code(), Some(1), "{unavailable:?}");
     assert!(unavailable.stdout.is_empty() && !unavailable.stderr.is_empty());
+}
+
+struct CredentialGateway {
+    stored: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+#[async_trait::async_trait]
+impl ait_ports::AgentProviderGateway for CredentialGateway {
+    async fn store_secret(
+        &self,
+        reference: &str,
+        secret: &str,
+    ) -> Result<(), ait_domain::DomainError> {
+        self.stored
+            .lock()
+            .unwrap()
+            .insert(reference.into(), secret.into());
+        Ok(())
+    }
+    async fn delete_secret(&self, reference: &str) -> Result<(), ait_domain::DomainError> {
+        self.stored.lock().unwrap().remove(reference);
+        Ok(())
+    }
+    async fn list_models(
+        &self,
+        _provider: &ait_domain::AgentProvider,
+        reference: &str,
+    ) -> Result<Vec<ait_domain::ProviderModel>, ait_domain::DomainError> {
+        assert_eq!(
+            self.stored.lock().unwrap()[reference],
+            "sk-must-stay-private"
+        );
+        Ok(vec![ait_domain::ProviderModel {
+            id: "m".into(),
+            name: "Model".into(),
+            reasoning_efforts: vec!["high".into()],
+        }])
+    }
+    async fn list_models_with_secret(
+        &self,
+        _provider: &ait_domain::AgentProvider,
+        secret: &str,
+    ) -> Result<Vec<ait_domain::ProviderModel>, ait_domain::DomainError> {
+        // Exercise defense in depth against an adapter error echoing the credential.
+        Err(ait_domain::DomainError::invariant(
+            ait_domain::ErrorCode::ProviderFailed,
+            format!("remote echoed: {secret}"),
+        ))
+    }
+    async fn complete(
+        &self,
+        _provider: &ait_domain::AgentProvider,
+        _reference: &str,
+        _config: &ait_domain::AgentConfiguration,
+        _messages: Vec<ait_ports::ProviderMessage>,
+    ) -> Result<String, ait_domain::DomainError> {
+        Ok("API fixture reply".into())
+    }
+}
+
+#[tokio::test]
+async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
+    let gateway = std::sync::Arc::new(CredentialGateway {
+        stored: std::sync::Mutex::new(std::collections::HashMap::new()),
+    });
+    let mut workspace = Workspace::with_gateway(Some(gateway.clone())).await;
+    let secret = "sk-must-stay-private";
+    let args = [
+        "agent-provider",
+        "save",
+        "--id",
+        "api",
+        "--name",
+        "API 中文\nProvider",
+        "--kind",
+        "deepseek",
+        "--url",
+        "https://api.deepseek.com",
+        "--input",
+        "models with spaces.json",
+        "--secret-stdin",
+    ];
+    std::fs::write(
+        workspace.path("models with spaces.json"),
+        r#"[{"id":"m","name":"Model","reasoning_efforts":["high"]}]"#,
+    )
+    .unwrap();
+    let output = workspace.cli_stdin(&args, &format!("{secret}\r\n")).await;
+    assert_eq!(success(&output)["has_secret"], true);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+    assert_eq!(
+        gateway.stored.lock().unwrap().values().next().unwrap(),
+        secret
+    );
+    let refreshed = workspace
+        .call(&["agent-provider", "refresh-models", "--provider-id", "api"])
+        .await;
+    assert_eq!(refreshed["models"][0]["id"], "m");
+    let mut discover = args;
+    discover[1] = "discover-models";
+    let output = workspace.cli_stdin(&discover, secret).await;
+    failure(&output, "PROVIDER_FAILED");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+
+    let before = workspace.view().await;
+    let input_args = [
+        "agent-provider",
+        "save",
+        "--id",
+        "p",
+        "--name",
+        "P",
+        "--kind",
+        "deepseek",
+        "--input",
+        "-",
+    ];
+    for input in [
+        "",
+        "{",
+        r#"[{"id":"m","name":"M","sk-must-stay-private":true}]"#,
+        r#"[{"id":"m","name":"M","reasoning_efforts":"sk-must-stay-private"}]"#,
+    ] {
+        let output = workspace.cli_stdin(&input_args, input).await;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8(output.stderr).unwrap();
+        assert!(diagnostic.contains("invalid entity JSON"));
+        assert!(!diagnostic.contains(secret));
+    }
+    let mut conflicting = input_args.to_vec();
+    conflicting.push("--secret-stdin");
+    let output = workspace.cli_stdin(&conflicting, secret).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+    let output = workspace.cli_stdin(&args, "").await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(workspace.view().await, before);
+    let listed = workspace.cli(&["agent-provider", "list"]).await;
+    assert!(!String::from_utf8_lossy(&listed.stdout).contains(secret));
+    let replay = workspace.cli(&["event", "list"]).await;
+    assert!(!String::from_utf8_lossy(&replay.stdout).contains(secret));
+    workspace.stop().await;
+    for entry in std::fs::read_dir(workspace.directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            assert!(
+                !std::fs::read(path)
+                    .unwrap()
+                    .windows(secret.len())
+                    .any(|bytes| bytes == secret.as_bytes())
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
+async fn typed_writes_stdin_and_files_reach_the_production_router() {
+    let mut workspace = Workspace::new().await;
+    workspace.project("project").await;
+    workspace.agent("agent").await;
+    workspace
+        .call(&[
+            "agent",
+            "update",
+            "--id",
+            "agent",
+            "--name",
+            "更新 Agent",
+            "--provider-id",
+            "builtin-codex",
+            "--model",
+            "gpt-5.6-sol",
+            "--reasoning-effort",
+            "medium",
+        ])
+        .await;
+    workspace.session("main", "project", "agent").await;
+    workspace
+        .call(&[
+            "session",
+            "set-config",
+            "--session-id",
+            "main",
+            "--provider-id",
+            "builtin-codex",
+            "--model",
+            "gpt-5.6-sol",
+            "--reasoning-effort",
+            "high",
+        ])
+        .await;
+    let text = "中文第一行\n第二行 C:\\path\n";
+    let run = success(
+        &workspace
+            .cli_stdin(
+                &["session", "send", "--session-id", "main", "--text-stdin"],
+                text,
+            )
+            .await,
+    );
+    let snapshot = workspace.view().await;
+    assert_eq!(
+        entity(&snapshot, "messages", &run["base_message_id"])["text"],
+        text
+    );
+    let text_file = workspace.path("中文 input with spaces.txt");
+    std::fs::write(&text_file, text).unwrap();
+    let derived = workspace
+        .call(&[
+            "session",
+            "derive",
+            "--id",
+            "derived",
+            "--project-id",
+            "project",
+            "--source-session-id",
+            "main",
+            "--agent-id",
+            "agent",
+            "--at-message-id",
+            run["base_message_id"].as_str().unwrap(),
+            "--text-file",
+            text_file.to_str().unwrap(),
+        ])
+        .await;
+    let snapshot = workspace.view().await;
+    // Derive preserves the Run response and appends the exact file contents.
+    assert_eq!(derived["status"], "completed");
+    assert!(derived["error"].is_null());
+    assert!(
+        snapshot["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["text"] == text)
+            .count()
+            >= 2
+    );
+    workspace
+        .reject(
+            &[
+                "run",
+                "approval",
+                "approve",
+                "--run-id",
+                "missing",
+                "--approval-id",
+                "missing",
+                "--scope",
+                "one-shot",
+            ],
+            "INVALID_RUN",
+        )
+        .await;
+    for verb in ["deny", "cancel"] {
+        workspace
+            .reject(
+                &[
+                    "run",
+                    "approval",
+                    verb,
+                    "--run-id",
+                    "missing",
+                    "--approval-id",
+                    "missing",
+                ],
+                "INVALID_RUN",
+            )
+            .await;
+    }
+    let before = workspace.view().await;
+    for args in [
+        vec![
+            "agent-provider",
+            "save",
+            "--id",
+            "p",
+            "--name",
+            "P",
+            "--kind",
+            "invalid",
+        ],
+        vec![
+            "cron",
+            "trigger",
+            "--cron-id",
+            "c",
+            "--scheduled-at",
+            "2026-99-99",
+        ],
+        vec!["session", "send", "--session-id", "main"],
+    ] {
+        assert_eq!(workspace.cli(&args).await.status.code(), Some(2));
+    }
+    assert_eq!(workspace.view().await, before);
+    workspace.stop().await;
+}
+
+#[tokio::test]
+async fn provider_secret_is_absent_from_malformed_response_diagnostics() {
+    use axum::{Json, Router, routing::post};
+    use tokio::net::TcpListener;
+    let mut workspace = Workspace::new().await;
+    // Put a reflected stdin secret into a field whose serde error would quote it.
+    let router = Router::new().route("/v1/agent-provider/save", post(|Json(body): Json<Value>| async move {
+        Json(json!({"api_version": 1, "ok": false, "error": {"code": body["secret"], "message": "bad response", "retryable": false}}))
+    }));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    workspace.endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let secret = "sk-malformed-response-private";
+    let output = workspace
+        .cli_stdin(
+            &[
+                "agent-provider",
+                "save",
+                "--id",
+                "p",
+                "--name",
+                "P",
+                "--kind",
+                "deepseek",
+                "--secret-stdin",
+            ],
+            secret,
+        )
+        .await;
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(!diagnostic.contains(secret));
+    assert!(diagnostic.contains("agent-provider request failed"));
+    workspace.stop().await;
 }

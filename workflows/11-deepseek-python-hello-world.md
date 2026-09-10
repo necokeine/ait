@@ -7,7 +7,8 @@ DeepSeek 默认 Agent，让它生成 `hello.py`，随后独立运行程序并校
 请求发送到 `https://api.deepseek.com`。模型和地址见
 [DeepSeek 官方文档](https://api-docs.deepseek.com/)。
 配置与执行遵循 [ADR-009](../docs/decisions/adr-009-session-exclusion-and-agent-providers.md)。
-当前远程 Provider 返回文本，不执行文件工具；测试把模型的完整原始响应保存为 `hello.py`，
+当前远程 Provider 返回文本，不执行文件工具；默认权限为 `read_only` / `on_request`。
+本流程在模型返回后由测试保存文件，不需要扩大 Run 权限；测试把模型的完整原始响应保存为 `hello.py`，
 再独立校验。这个文件保存步骤属于工作流，不代表 AIT 已支持远程模型的工作区工具循环。
 
 ## 前置条件与运行入口
@@ -54,47 +55,59 @@ cargo test -p ait-cli --test deepseek_workflow
 测试创建全新的 `ait-wf11-*` 临时目录，在随机 loopback 端口启动真实 daemon，
 确认数据库为空，再创建 `example-project` 子目录并执行：
 
-```json
-{"type":"register_project","id":"example-project","name":"example-project","workdir":"<本次临时目录>/example-project"}
+```bash
+ait project register --id example-project --name example-project --workdir "$WF_ROOT/example-project"
 ```
 
-所有 JSON 都经标准输入通过真实 `ait-cli --endpoint <本次地址> command -` 发送；
-尖括号代表运行时值，测试自动填入。注册按现有契约初始化 Git 并创建空初始提交。
+以下示例中的 `ait` 是连接本次 daemon 的 CLI 包装函数（见公共演练准备）；测试自动填入运行时路径和 ID。
+注册按现有契约初始化 Git 并创建空初始提交。
 测试只在示例仓库设置 Git 身份。数据库、日志和响应文件均位于项目之外。
 
 ### 2. 从 .env 输入凭据并创建 DeepSeek Agent
 
-Rust 测试从 `.env` 读入 key，在内存中组装下面的命令，通过 CLI stdin 发送。
-示意中的 `<从 .env 读取>` 由测试替换，不应在终端中手工输入真实 key：
+Rust 测试从 `.env` 读取 key，仅通过子进程 stdin 传给 `--secret-stdin`。
+普通 Provider 字段使用 flags，模型目录使用无凭据 JSON 文件：
 
-```json
-{"type":"save_agent_provider","provider":{"id":"deepseek","name":"DeepSeek","kind":"deepseek","url":"https://api.deepseek.com","models":[{"id":"deepseek-v4-flash","name":"deepseek-v4-flash","reasoning_efforts":[]}]},"secret":"<从 .env 读取>"}
+```bash
+cat > "$WF_ROOT/models.json" <<'JSON'
+[{"id":"deepseek-v4-flash","name":"deepseek-v4-flash","reasoning_efforts":[]}]
+JSON
+# 从安全来源重定向原始 key（文件内容仅为 key，可有末尾换行；不是整个 .env）
+ait agent-provider save --id deepseek --name DeepSeek --kind deepseek \
+  --url https://api.deepseek.com --input "$WF_ROOT/models.json" \
+  --secret-stdin < /path/to/protected-key-file
 ```
+
+现有 `.env` 应通过 `test_with_deepseek.sh` 的 Rust 加载器读取；不要 source 它，也不要把 key
+粘贴到命令行或使用 echo 字面量。`--secret-stdin` 不接受 key 参数，直接连终端会被拒绝以避免回显。
+`--input -` 可从 stdin 读取模型列表，但不能与 `--secret-stdin` 共用 stdin；此时请使用模型文件。
+`agent-provider discover-models` 接受同样的 flags，可以在保存前预览模型；
+`agent-provider refresh-models --provider-id deepseek` 使用已保存连接刷新目录。
 
 daemon 将 Secret 写入操作系统凭据库；SQLite 仅保留引用，响应只显示 `has_secret=true`。
 本次目录、数据库和对应凭据项会保留以便复核、重开该工作空间；删除临时目录不会自动删除
 系统凭据库中的条目（服务名 `ait.agent-provider`）。本流程不覆盖凭据回收。
 随后创建可复用的命名 Agent：
 
-```json
-{"type":"register_agent","id":"deepseek","name":"DeepSeek","config":{"provider_id":"deepseek","model":"deepseek-v4-flash","reasoning_effort":null}}
+```bash
+ait agent create --id deepseek --name DeepSeek --provider-id deepseek --model deepseek-v4-flash
 ```
 
 API key 不进入 Agent JSON、命令行参数、prompt 或项目文件；Provider 保存请求通过管道传输，
-不写入响应文件。CLI 的 JSON 解析错误仅报告行列位置，避免在未知字段/枚举错误中回显密钥。
+不写入响应文件。实体 JSON 解析错误仅报告行列位置；专用 secret stdin 的内容不会进入参数诊断或响应。
 本流程使用独立 daemon 和全新数据库，不修改已有 Provider 或 Agent。
 
 ### 3. 设置并使用项目默认 Agent
 
-```json
-{"type":"set_project_default_agent","project_id":"example-project","agent_id":"deepseek"}
+```bash
+ait project set-default-agent --project-id example-project --agent-id deepseek
 ```
 
 确认响应 `default_agent_id=deepseek`，用该响应中的值创建 Session：
 
-```json
-{"type":"create_session","id":"hello-world","project_id":"example-project","agent_id":"deepseek"}
-{"type":"rename_session","session_id":"hello-world","name":"DeepSeek Hello World"}
+```bash
+ait session create --id hello-world --project-id example-project --agent-id deepseek
+ait session rename --session-id hello-world --name 'DeepSeek Hello World'
 ```
 
 当前 `create_session` 必须显式传 `agent_id`，因此测试读取 Project 默认值后填入，
@@ -103,13 +116,14 @@ API key 不进入 Agent JSON、命令行参数、prompt 或项目文件；Provid
 
 ### 4. 让 DeepSeek 生成一个 Python 文件
 
-发送 `send_message` 时只包含 `session_id` 和 `text`，不使用已经移除的 `expected_version`。
+使用 `ait session send --session-id hello-world --text-file "$WF_ROOT/prompt.txt"`
+读取已准备好的多行 UTF-8 指令；也可以选择 `--text-stdin`。
 指令要求返回 `hello.py` 的完整原始代码，不加 Markdown 围栏或说明：无参数 `main()` 只打印字面值 `Hello, world!`，
 仅在 `if __name__ == "__main__"` 中调用；无依赖、导入或其他行为。
 测试在获取成功的 assistant 响应后原样写入 `hello.py`，不去掉围栏、修补代码或替换为固定样例。
 因此模型返回围栏、额外说明或错误代码时，后续 AST 校验会失败。本任务不要求额外 Git 提交。
 
-测试同步等待 `send_message`，最多 600 秒。必须同时满足 `ok=true`、
+测试同步等待 `session send`，最多 600 秒。必须同时满足 `ok=true`、
 `status=completed`、`error=null`；queued、failed、超时或只有文字回复均不算通过。
 失败的 Run 不得生成成功报告，不回退到模拟模式、Codex 或其他模型。
 

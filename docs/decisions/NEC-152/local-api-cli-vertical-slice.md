@@ -13,23 +13,18 @@ cargo run -p ait-daemon -- --database ./ait.sqlite3 --listen 127.0.0.1:7314
 cargo run -p ait-cli -- project list
 ```
 
-CLI 的 `command` 子命令接受版本一的 JSON command。例如注册 Agent：
+CLI 已由 NEC-241 修订为实体子命令，例如：
 
 ```bash
-cargo run -p ait-cli -- command \
-  '{"type":"register_agent","id":"agent-1","name":"Demo","config":{"provider_id":"builtin-codex","model":"gpt-5.6-sol","reasoning_effort":"high"}}'
+cargo run -p ait-cli -- agent create --id agent-1 --name Demo \
+  --provider-id builtin-codex --model gpt-5.6-sol --reasoning-effort high
+cargo run -p ait-cli -- session send --session-id main --text-stdin < prompt.txt
 ```
 
-完整命令集合由 `ait-contracts::Command` 定义，包括：
-
-- `register_project`：规范化目录，在目录不是独立 Git root 时执行并验证 `git init`；
-- `register_agent`：选择固定 revision 的 Agent；
-- `create_session`：在 Project root 或任意已有 Message 上创建分支 Session；
-- `send_message`、`get_run`、`cancel_run`：交互与 Run 生命周期；
-- `create_cron`、`set_cron_enabled`、`trigger_cron`：持久化 Cron、启停与幂等 occurrence 触发；
-- `export_project`、`import_project`：版本化导出/原子导入无凭证 Project archive；
-- `project list`、`agent list`、`agent-provider list`、`session list --project-id <id>`、`message list`、
-  `run list`、`cron list`：按实体或 Project 范围读取最终投影（NEC-224 修订）；底层仍复用相同 Command/API。
+完整命令面可通过各级 `--help` 发现，见 [CLI 流程](../../../workflows/README.md) 与
+[NEC-241 ADR](../NEC-241/adr-001-entity-cli.md)。CLI 内部仍构造 `ait_contracts::Command`，
+但外部用户不再输入 tagged transport DTO。Project 注册、Agent 配置、Session 分支、Run、
+Cron、settings、归档和 durable SSE 均使用相同的 application service 与实体 HTTP API。
 
 生产命令不再通过 Provider kind 构造工具、排队、失败或审批状态。ToolUse/ToolResult 与审批恢复由
 runtime 的 scripted ports 覆盖；Provider 失败、queued checkpoint 与取消由 application 测试向

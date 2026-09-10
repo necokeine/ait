@@ -62,8 +62,8 @@ curl -X POST http://127.0.0.1:7314/v1/project/register \
 
 `ait-contracts::Command` 和 `LocalControlService::execute` 仍是进程内、传输无关的应用层
 分派契约，不是公开 HTTP endpoint。HTTP adapter 负责把每个独立请求 DTO 转换成对应
-command，因此领域规则和事务逻辑不会在路由中复制。CLI 仍可接受 command JSON 作为通用
-输入格式，但会移除 `type` 并请求对应的实体操作路由。
+command，因此领域规则和事务逻辑不会在路由中复制。CLI 已由 NEC-241 改为实体子命令；不再接受通用 JSON
+输入。它在内部构造 Command，序列化时移除 `type` 并请求对应的实体操作路由。
 
 旧的 `/v1/commands`、`/v1/events` 和 `/v1/metrics` 不保留兼容别名。当前 API 尚未公开
 发布，保留旧入口会延续两套边界并使调用方继续依赖统一 command。客户端必须迁移到上表

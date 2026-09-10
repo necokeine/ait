@@ -223,9 +223,10 @@ impl Workflow {
         String::from_utf8(output.stdout).unwrap()
     }
 
-    async fn command(&self, name: &str, body: Value, seconds: u64) -> Value {
+    async fn cli_stdin(&self, name: &str, arguments: &[&str], input: &str, seconds: u64) -> Value {
         let mut child = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
-            .args(["--endpoint", &self.endpoint, "command", "-"])
+            .args(["--endpoint", &self.endpoint])
+            .args(arguments)
             .current_dir(&self.root)
             .env_remove("DEEPSEEK_API_KEY")
             .env("NO_PROXY", "*")
@@ -237,12 +238,9 @@ impl Workflow {
             .spawn()
             .expect("start CLI with piped stdin");
         let output = timeout(Duration::from_secs(seconds), async {
-            let mut input = child.stdin.take().unwrap();
-            input
-                .write_all(&serde_json::to_vec(&body).unwrap())
-                .await
-                .unwrap();
-            drop(input);
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(input.as_bytes()).await.unwrap();
+            drop(stdin);
             child.wait_with_output().await
         })
         .await
@@ -353,6 +351,7 @@ fn entity<'a>(snapshot: &'a Value, collection: &str, id: &Value) -> &'a Value {
 
 #[tokio::test]
 #[ignore = "uses real DeepSeek API credits, OS credential storage and Python; run ./test_with_deepseek.sh"]
+#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
 async fn wf11_real_deepseek_python_hello_world() {
     let env_path = env::var_os("AIT_DEEPSEEK_ENV_FILE").map_or_else(
         || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env"),
@@ -374,9 +373,22 @@ async fn wf11_real_deepseek_python_hello_world() {
     }
     let directory = workflow.root.join("example-project");
     fs::create_dir(&directory).unwrap();
-    let project = workflow.command("project", json!({
-        "type": "register_project", "id": "example-project", "name": "example-project", "workdir": directory,
-    }), 20).await;
+    let project = workflow
+        .cli(
+            "project",
+            &[
+                "project",
+                "register",
+                "--id",
+                "example-project",
+                "--name",
+                "example-project",
+                "--workdir",
+                directory.to_str().unwrap(),
+            ],
+            20,
+        )
+        .await;
     workflow.git(&["config", "user.name", "AIT Workflow"]).await;
     workflow
         .git(&["config", "user.email", "workflow@localhost"])
@@ -388,60 +400,116 @@ async fn wf11_real_deepseek_python_hello_world() {
             .await
             .is_empty()
     );
+    let models_path = workflow.root.join("models.json");
+    fs::write(
+        &models_path,
+        json!([{"id": model, "name": model, "reasoning_efforts": []}]).to_string(),
+    )
+    .unwrap();
     let provider = workflow
-        .command(
+        .cli_stdin(
             "provider",
-            json!({
-                "type": "save_agent_provider",
-                "provider": {"id": "deepseek", "name": "DeepSeek", "kind": "deepseek",
-                    "url": "https://api.deepseek.com",
-                    "models": [{"id": model, "name": model, "reasoning_efforts": []}]},
-                "secret": workflow.credential.0,
-            }),
+            &[
+                "agent-provider",
+                "save",
+                "--id",
+                "deepseek",
+                "--name",
+                "DeepSeek",
+                "--kind",
+                "deepseek",
+                "--url",
+                "https://api.deepseek.com",
+                "--input",
+                models_path.to_str().unwrap(),
+                "--secret-stdin",
+            ],
+            &workflow.credential.0,
             20,
         )
         .await;
     assert_eq!(provider["has_secret"], true);
     let agent = workflow
-        .command(
+        .cli(
             "agent",
-            json!({
-                "type": "register_agent", "id": "deepseek", "name": "DeepSeek",
-                "config": {"provider_id": "deepseek", "model": model, "reasoning_effort": null},
-            }),
+            &[
+                "agent",
+                "create",
+                "--id",
+                "deepseek",
+                "--name",
+                "DeepSeek",
+                "--provider-id",
+                "deepseek",
+                "--model",
+                &model,
+            ],
             20,
         )
         .await;
     assert_eq!(agent["config"]["model"], model);
     assert_eq!(agent["config"]["provider_id"], "deepseek");
-    let default = workflow.command("default-agent", json!({
-        "type": "set_project_default_agent", "project_id": project["id"], "agent_id": agent["id"],
-    }), 20).await;
+    let default = workflow
+        .cli(
+            "default-agent",
+            &[
+                "project",
+                "set-default-agent",
+                "--project-id",
+                project["id"].as_str().unwrap(),
+                "--agent-id",
+                agent["id"].as_str().unwrap(),
+            ],
+            20,
+        )
+        .await;
     assert_eq!(default["default_agent_id"], agent["id"]);
     // The current contract requires an explicit Session Agent; select the saved Project default.
     let session = workflow
-        .command(
+        .cli(
             "session",
-            json!({
-                "type": "create_session", "id": "hello-world", "project_id": project["id"],
-                "agent_id": default["default_agent_id"],
-            }),
+            &[
+                "session",
+                "create",
+                "--id",
+                "hello-world",
+                "--project-id",
+                project["id"].as_str().unwrap(),
+                "--agent-id",
+                default["default_agent_id"].as_str().unwrap(),
+            ],
             20,
         )
         .await;
     // Naming the Session suppresses the unrelated, hardcoded OpenAI title-model request.
-    let session = workflow.command("named-session", json!({
-        "type": "rename_session", "session_id": session["id"], "name": "DeepSeek Hello World",
-    }), 20).await;
+    let session = workflow
+        .cli(
+            "named-session",
+            &[
+                "session",
+                "rename",
+                "--session-id",
+                session["id"].as_str().unwrap(),
+                "--name",
+                "DeepSeek Hello World",
+            ],
+            20,
+        )
+        .await;
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["current_message_id"], project["root_message_id"]);
     eprintln!("WF-11: asking the native DeepSeek Provider ({model}); deadline 600s");
     let run = workflow
-        .command(
+        .cli(
             "run",
-            json!({
-                "type": "send_message", "session_id": session["id"], "text": PROMPT,
-            }),
+            &[
+                "session",
+                "send",
+                "--session-id",
+                session["id"].as_str().unwrap(),
+                "--text",
+                PROMPT,
+            ],
             600,
         )
         .await;
