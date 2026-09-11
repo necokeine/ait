@@ -101,7 +101,8 @@ struct ApiState {
 struct RegisterProjectRequest {
     id: String,
     name: String,
-    workdir: String,
+    #[serde(default)]
+    workdir: Option<String>,
     #[serde(default)]
     repo_url: Option<String>,
 }

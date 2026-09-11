@@ -7,6 +7,8 @@ import {
   availableProjectDefaultAgentId,
   groupProjects,
   projectNameFromWorkdir,
+  projectCreationInput,
+  registerDesktopProject,
 } from "../src/projects.js";
 import type { AgentSummary, DesktopProject, DesktopSession, DesktopState } from "../src/types.js";
 
@@ -90,4 +92,37 @@ test("uses only an enabled named Project default for a new Session", () => {
   assert.equal(availableProjectDefaultAgentId({ ...configured, defaultAgentId: null }, [codex]), undefined);
   assert.equal(availableProjectDefaultAgentId(configured, [{ ...codex, enabled: false }]), undefined);
   assert.equal(availableProjectDefaultAgentId(configured, [{ ...codex, ownerSessionId: "session-a" }]), undefined);
+});
+
+
+test("name-only Desktop creation omits workdir through the HTTP bridge", async () => {
+  const input = projectCreationInput("中文 project", "", "codex-local");
+  assert.equal(input.name, "中文 project");
+  assert.equal(Object.hasOwn(input, "workdir"), false);
+  const calls: unknown[] = [];
+  await registerDesktopProject(async (path, kind, body) => {
+    calls.push({ path, kind, body: JSON.parse(JSON.stringify(body)) });
+  }, "new-project", input);
+  assert.deepEqual(calls, [
+    { path: "/v1/project/register", kind: "project", body: { id: "new-project", name: "中文 project" } },
+    { path: "/v1/project/set-default-agent", kind: "project", body: { project_id: "new-project", agent_id: "codex-local" } },
+  ]);
+});
+
+test("explicit Desktop directories keep their path and default folder name", async () => {
+  const input = projectCreationInput("", "/tmp/existing project", "codex-local");
+  assert.deepEqual(input, { name: "existing project", workdir: "/tmp/existing project", agentId: "codex-local" });
+  const calls: unknown[] = [];
+  await registerDesktopProject(async (_path, _kind, body) => { calls.push(body); }, "p", input);
+  assert.equal((calls[0] as { workdir: string }).workdir, "/tmp/existing project");
+  assert.throws(() => projectCreationInput(" ", "", "codex-local"), /project name/);
+});
+
+test("Desktop surfaces directory conflicts and stops subsequent writes", async () => {
+  let calls = 0;
+  await assert.rejects(registerDesktopProject(async () => {
+    calls++;
+    throw new Error("PROJECT_PATH_ALREADY_EXISTS: Project directory already exists");
+  }, "p", projectCreationInput("existing", "", "codex-local")), /PROJECT_PATH_ALREADY_EXISTS/);
+  assert.equal(calls, 1);
 });

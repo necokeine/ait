@@ -18,7 +18,7 @@ CLI 只做参数校验、输入读取、DTO 构造和现有 HTTP 调用。所有
 
 | Application Command | CLI |
 | --- | --- |
-| `RegisterProject` | `project register --id --name --workdir [--repo-url]` |
+| `RegisterProject` | `project register --id --name [--workdir] [--repo-url]` |
 | `SetProjectDefaultAgent` | `project set-default-agent --project-id --agent-id` |
 | `RegisterAgent` | `agent create --id --name --provider-id --model [--reasoning-effort]` |
 | `UpdateAgent` | `agent update --id --name --provider-id --model [--reasoning-effort]` |
@@ -57,6 +57,8 @@ durable SSE 使用 `event list --after <u64 cursor>`。原有 `events`、`export
 
 ### 输入边界
 
+- 经 NEC-195 补充，`project register` 可省略 `--workdir`，由 daemon 在当前用户 Documents
+  下独占创建同名目录。显式路径仍用于注册已有目录；CLI 不解析 Documents 或执行文件系统操作。
 - clap 校验必填参数、互斥输入、Provider kind（Mock 仅在显式开发 feature 的 debug 构建可用）、approval scope、布尔开关、u64 revision/cursor、
   i64 Unix 毫秒时间戳，以及不含控制字符的非空 ID。ID 保持不透明字符串，允许空格，不强制 UUID。
   路径是 `PathBuf`，由 shell 引用为一个参数；目录存在性和 Project/Git 授权仍属于 application。

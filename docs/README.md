@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/NEC-195/adr-001-name-only-project-creation.md`：省略工作目录时在当前用户 Documents
+  独占创建同名目录；沿用 Git/原子注册流程，明确冲突拒绝、CAS 重试与失败目录保留语义。
+
 - `decisions/NEC-241/adr-001-entity-cli.md`：类型化实体 CLI、专用凭据 stdin、完整 Command 映射覆盖和权限设置迁移。
 
 - `decisions/NEC-234/adr-001-api-provider-run-permissions.md`：OpenAI、DeepSeek 等普通 API

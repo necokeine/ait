@@ -363,6 +363,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .action-form input, .action-form select { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 7px; background: var(--control-bg); color: var(--text); padding: 0 9px; font-size: 10.5px; }
 .path-control { display: flex; gap: 6px; }
 .path-control input { min-width: 0; }
+.project-directory-help { color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .path-control .secondary-button { flex: 0 0 auto; margin: 0; }
 .rename-session-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(150px, auto) 58px; }
 .rename-session-window .settings-footer { justify-content: flex-end; }

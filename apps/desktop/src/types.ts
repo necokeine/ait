@@ -258,7 +258,7 @@ export interface AitDesktopApi {
   }): Promise<{ positioned: boolean }>;
   createProject(input: {
     name: string;
-    workdir: string;
+    workdir?: string;
     agentId: string;
     repoUrl?: string;
   }): Promise<{ catalog: ProjectCatalog; project: ProjectView; selectedProjectId: string }>;

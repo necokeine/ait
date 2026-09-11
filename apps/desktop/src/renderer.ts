@@ -10,7 +10,7 @@ import {
   agentLabel,
   availableProjectDefaultAgentId,
   groupProjects,
-  projectNameFromWorkdir,
+  projectCreationInput,
 } from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
 import { ProjectViewLoader } from "./project-view-loader.js";
@@ -222,6 +222,9 @@ function bindInteractions(): void {
   $("#session-rename-action").addEventListener("click", openRenameSessionDialog);
   $("#message-start-session-action").addEventListener("click", startBranchFromContextMenu);
   $("#project-choose-path").addEventListener("click", () => void chooseProjectPath());
+  $("#project-clear-path").addEventListener("click", () => {
+    $<HTMLInputElement>("#project-create-path").value = "";
+  });
   composerConfigTrigger.addEventListener("click", (event) => {
     event.preventDefault();
     toggleComposerConfig();
@@ -1177,17 +1180,19 @@ async function chooseProjectPath(): Promise<void> {
 async function createProject(): Promise<void> {
   const workdir = $<HTMLInputElement>("#project-create-path").value;
   const enteredName = $<HTMLInputElement>("#project-create-name").value.trim();
-  const name = enteredName || projectNameFromWorkdir(workdir);
   const agentId = $<HTMLSelectElement>("#project-create-agent").value;
-  if (!name || !workdir || !agentId) {
-    showToast("Choose a directory and backend.", true);
+  let input;
+  try {
+    input = projectCreationInput(enteredName, workdir, agentId);
+  } catch (error) {
+    showToast(errorMessage(error), true);
     return;
   }
   const button = $<HTMLButtonElement>("#project-create-submit");
   button.disabled = true;
   button.textContent = "Creating…";
   try {
-    const result = await window.ait.createProject({ name, workdir, agentId });
+    const result = await window.ait.createProject(input);
     selectedSessionId = undefined;
     resetTreeView();
     replaceProjectCatalog(result.catalog);
@@ -1197,7 +1202,7 @@ async function createProject(): Promise<void> {
     closeProjectDialog();
     showPage("sessions");
     renderAll();
-    showToast(`${name} created with the selected backend.`);
+    showToast(`${input.name} created with the selected backend.`);
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {

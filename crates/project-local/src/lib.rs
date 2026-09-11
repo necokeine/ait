@@ -10,6 +10,9 @@ use std::{
 use ait_domain::GitCommit;
 use ait_ports::{EnvironmentError, ProjectEnvironment};
 
+mod directories;
+pub use directories::DocumentsProjectDirectory;
+
 /// Canonical project-root guard shared by instruction loading and future file tools.
 ///
 /// Project-relative access is the default. External access is deliberately a
@@ -302,3 +305,6 @@ fn map_io(path: &Path, error: &std::io::Error) -> EnvironmentError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod directories_tests;

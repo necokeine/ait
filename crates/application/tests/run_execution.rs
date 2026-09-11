@@ -288,7 +288,7 @@ impl Fixture {
             Command::RegisterProject {
                 id: "project".into(),
                 name: "Project".into(),
-                workdir: project_dir.display().to_string(),
+                workdir: Some(project_dir.display().to_string()),
                 repo_url: None,
             },
         )
@@ -782,7 +782,7 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         Command::RegisterProject {
             id: "live-project".into(),
             name: "Live".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -860,7 +860,7 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         Command::RegisterProject {
             id: "live-project-2".into(),
             name: "Live 2".into(),
-            workdir: second_project_dir.display().to_string(),
+            workdir: Some(second_project_dir.display().to_string()),
             repo_url: None,
         },
     )
@@ -990,7 +990,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         Command::RegisterProject {
             id: "panic-project".into(),
             name: "Panic project".into(),
-            workdir: project_dir.display().to_string(),
+            workdir: Some(project_dir.display().to_string()),
             repo_url: None,
         },
     )

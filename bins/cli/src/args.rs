@@ -105,14 +105,15 @@ pub(crate) struct ImportArgs {
 pub(crate) enum ProjectCommand {
     /// List Projects.
     List,
-    /// Register a workdir and establish its Git baseline.
+    /// Register a workdir, or create a named folder in Documents, with a Git baseline.
     Register {
         #[arg(long, value_parser = input::id)]
         id: String,
         #[arg(long)]
         name: String,
+        /// Existing directory; omit to create a new folder named --name in Documents.
         #[arg(long)]
-        workdir: PathBuf,
+        workdir: Option<PathBuf>,
         #[arg(long)]
         repo_url: Option<String>,
     },
@@ -606,7 +607,7 @@ impl ProjectCommand {
             } => Command::RegisterProject {
                 id,
                 name,
-                workdir: workdir.to_string_lossy().into_owned(),
+                workdir: workdir.map(|path| path.to_string_lossy().into_owned()),
                 repo_url,
             },
             ProjectCommand::SetDefaultAgent {

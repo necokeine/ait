@@ -60,7 +60,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         };
     }
     case!(&["project", "list"] => ListProjects);
-    case!(&["project", "register", "--id", "id", "--name", "name", "--workdir", "workdir", "--repo-url", "repo_url"] => RegisterProject { id: "id".into(), name: "name".into(), workdir: "workdir".into(), repo_url: Some("repo_url".into()) });
+    case!(&["project", "register", "--id", "id", "--name", "name", "--workdir", "workdir", "--repo-url", "repo_url"] => RegisterProject { id: "id".into(), name: "name".into(), workdir: Some("workdir".into()), repo_url: Some("repo_url".into()) });
+    case!(&["project", "register", "--id", "named", "--name", "中文 project"] => RegisterProject { id: "named".into(), name: "中文 project".into(), workdir: None, repo_url: None });
     case!(&["project", "set-default-agent", "--project-id", "project_id", "--agent-id", "agent_id"] => SetProjectDefaultAgent { project_id: "project_id".into(), agent_id: "agent_id".into() });
     case!(&["agent", "list"] => ListAgents);
     case!(&["agent", "create", "--id", "id", "--name", "name", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => RegisterAgent { id: "id".into(), name: "name".into(), config: config.clone() });
@@ -194,7 +195,7 @@ fn required_parameters_and_typed_values_fail_before_io() {
             "x",
             "--text-stdin",
         ],
-        vec!["project", "register", "--id", "p", "--name", "P"],
+        vec!["project", "register", "--id", "p"],
         vec!["run", "get", "--run-id", "  "],
         vec![
             "agent-provider",

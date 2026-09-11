@@ -18,6 +18,7 @@ import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
 import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
+import { registerDesktopProject, type ProjectCreationInput } from "./projects.js";
 import { projectReadPaths } from "./desktop-slices.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -152,12 +153,7 @@ class DaemonClient {
     }
     if (method === "project.create") {
       const id = randomUUID();
-      await this.post("/v1/project/register", "project", {
-        id, name: params.name, workdir: params.workdir, repo_url: params.repoUrl,
-      });
-      await this.post("/v1/project/set-default-agent", "project", {
-        project_id: id, agent_id: params.agentId,
-      });
+      await registerDesktopProject(this.post.bind(this), id, params as unknown as ProjectCreationInput);
       const [catalog, project] = await Promise.all([this.projectCatalog(), this.projectView(id)]);
       return { catalog, project, selectedProjectId: id };
     }

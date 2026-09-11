@@ -139,7 +139,7 @@ async fn setup(
         Command::RegisterProject {
             id: "p".into(),
             name: "Project".into(),
-            workdir: directory.path().display().to_string(),
+            workdir: Some(directory.path().display().to_string()),
             repo_url: None,
         },
     )
@@ -642,7 +642,7 @@ async fn codex_writers_for_unrelated_projects_enter_concurrently() {
             Command::RegisterProject {
                 id: project_id.into(),
                 name: project_id.into(),
-                workdir: directory.path().display().to_string(),
+                workdir: Some(directory.path().display().to_string()),
                 repo_url: None,
             },
         )
@@ -758,7 +758,7 @@ async fn canonical_path_aliases_share_the_same_process_wide_lease() {
             Command::RegisterProject {
                 id: "p".into(),
                 name: "Project".into(),
-                workdir: workdir.display().to_string(),
+                workdir: Some(workdir.display().to_string()),
                 repo_url: None,
             },
         )

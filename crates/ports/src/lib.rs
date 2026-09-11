@@ -15,8 +15,8 @@ pub use control::{
 };
 pub use message::{MessageStore, MessageStoreError};
 pub use project::{
-    CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectEnvironment, ProjectStore,
-    StoreError,
+    CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectDirectoryCreator,
+    ProjectEnvironment, ProjectStore, StoreError,
 };
 pub use provider::{AgentProviderGateway, HostProviderModelCatalog, ProviderMessage};
 pub use run::{

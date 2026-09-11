@@ -75,7 +75,7 @@ impl Fixture {
             Command::RegisterProject {
                 id: "project".into(),
                 name: "Project".into(),
-                workdir: workdir.display().to_string(),
+                workdir: Some(workdir.display().to_string()),
                 repo_url: None,
             },
         )

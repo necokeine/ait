@@ -7,8 +7,13 @@ publish.workspace = true
 [dependencies]
 ait-domain = { path = "../domain" }
 ait-ports = { path = "../ports" }
+dirs = "6"
 
 [dev-dependencies]
+ait-contracts = { path = "../contracts" }
+ait-storage-sqlite = { path = "../storage-sqlite" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ait-application = { path = "../application" }
 tempfile = "3"
 
