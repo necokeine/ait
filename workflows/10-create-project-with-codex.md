@@ -94,27 +94,31 @@ git -C "$WF_ROOT/example-project" ls-tree --name-only HEAD
 ### 4. 使用 ait-cli 接入项目
 
 ```bash
-ait command "$(jq -nc --arg workdir "$WF_ROOT/example-project" \
-  '{type:"register_project",id:"example-project",name:"example-project",workdir:$workdir}')" \
+ait project register --id example-project --name example-project --workdir "$WF_ROOT/example-project" \
   | tee "$WF_ROOT/project.json"
 jq -e --arg initial "$INITIAL_COMMIT" \
   '.ok == true and .result.value.base_commit == $initial' "$WF_ROOT/project.json"
 ```
 
 这里的“导入”是注册已有 Git 目录，使用 `register_project`。
-`ait-cli import` 专用于导入 AIT Project 归档，不适用于这个空 Git 仓库。
+`ait-cli project import` 专用于导入 AIT Project 归档，不适用于这个空 Git 仓库。
 注册应保留已有 HEAD，不再增加初始提交；响应包含规范化工作目录和根 Message ID。
 
 ### 5. 通过 ait-cli 调用 Codex，生成 Rust 程序并提交
 
 ```bash
-ait command "$(jq -nc --arg model "${AIT_WORKFLOW_MODEL:-gpt-5.6-sol}" \
-  '{type:"register_agent",id:"codex",name:"Codex",config:{provider_id:"builtin-codex",model:$model,reasoning_effort:"high"}}')"
-ait command '{"type":"create_session","id":"hello-world","project_id":"example-project","agent_id":"codex"}' \
+ait agent create --id codex --name Codex --provider-id builtin-codex \
+  --model "${AIT_WORKFLOW_MODEL:-gpt-5.6-sol}" --reasoning-effort high
+ait session create --id hello-world --project-id example-project --agent-id codex \
   | tee "$WF_ROOT/session.json"
-ait command "$(jq -nc \
-  '{type:"send_message",session_id:"hello-world",
-    text:"Create a minimal Rust binary package named example-project at the repository root, with Cargo.toml, Cargo.lock, src/main.rs and .gitignore ignoring /target/. Use no external dependencies. cargo run --offline --quiet must print exactly Hello, world! followed by a newline. Verify it. Do not create a Git commit; AIT will commit your changes."}')" \
+# 默认 read_only 不允许写代码；发送前用最新 revision 设置工作区写入权限
+ait settings get > "$WF_ROOT/settings.json"
+REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
+jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request"}' \
+  "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
+ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+ait session send --session-id hello-world --text \
+  'Create a minimal Rust binary package named example-project at the repository root, with Cargo.toml, Cargo.lock, src/main.rs and .gitignore ignoring /target/. Use no external dependencies. cargo run --offline --quiet must print exactly Hello, world! followed by a newline. Verify it. Do not create a Git commit; AIT will commit your changes.' \
   | tee "$WF_ROOT/run.json"
 jq -e '.ok == true and .result.value.status == "completed" and .result.value.error == null' "$WF_ROOT/run.json"
 ait session list --project-id example-project | tee "$WF_ROOT/final-sessions.json"
@@ -132,7 +136,8 @@ git -C "$WF_ROOT/example-project" status --porcelain=v1
 `status=completed` 和 `error=null`。真实生成后的提交由 AIT 宿主执行，遵循
 [Codex 执行与 Git 提交 ADR](../docs/decisions/NEC-174/adr-001-codex-session-execution.md)。
 AIT 通过 [Codex app-server](https://developers.openai.com/codex/app-server) 的 stdio 协议执行，
-使用项目目录和 `workspace-write`，沿用现有 adapter 的审批策略。
+使用 Run 准入时固定的权限快照。本流程显式设置 `workspace_write` / `on_request`；默认值是
+`read_only` / `on_request`，并且始终受 daemon 管理员上限限制。
 
 ## 验收
 

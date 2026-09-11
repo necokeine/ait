@@ -6,15 +6,30 @@
 ## 操作
 
 ```bash
-ait command '{"type":"create_session","id":"s-codex","project_id":"p1","agent_id":"agent-demo"}'
-ait command '{"type":"send_message","session_id":"s-codex","text":"检查并总结当前项目"}' \
+ait session create --id s-codex --project-id p1 --agent-id agent-demo
+ait session send --session-id s-codex --text '检查并总结当前项目' \
   | tee "$WF_ROOT/codex-run.json"
 RUN_ID="$(jq -r '.result.value.id' "$WF_ROOT/codex-run.json")"
-ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
+ait run get --run-id "$RUN_ID"
 ait session list --project-id p1 > "$WF_ROOT/sessions-after-run.json"
 ait message list --project-id p1 > "$WF_ROOT/messages-after-run.json"
 ait run list --project-id p1 > "$WF_ROOT/runs-after-run.json"
 ```
+
+多行文本可以从文件或 stdin 原样发送；带引号的 heredoc 不展开变量和反斜杠：
+
+```bash
+ait session send --session-id s-codex --text-stdin <<'TEXT'
+请检查中文路径和换行。
+保留这个字面路径：C:\work\project
+TEXT
+# 或读取准备好的 UTF-8 文件
+ait session send --session-id s-codex --text-file "$WF_ROOT/多行 input.txt"
+```
+
+`--text`、`--text-file`、`--text-stdin` 三选一；`--text-file -` 也表示 stdin。
+每次发送都会创建输入，以上是可选用法，不要把同一任务重复发送。
+返回 Run 后检查 `status` 和 `error`；`ok=true` 只表示操作成功返回。
 
 ## 验收
 

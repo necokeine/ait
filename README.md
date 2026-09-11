@@ -20,7 +20,12 @@ npm run dev
 
 ```bash
 cargo run -p ait-daemon -- --database ./ait.sqlite3
+cargo run -p ait-cli -- --help
 cargo run -p ait-cli -- project list
+cargo run -p ait-cli -- project register --id demo --name Demo --workdir /path/to/project
+cargo run -p ait-cli -- agent create --id codex --name Codex --provider-id builtin-codex --model gpt-5.6-sol
+cargo run -p ait-cli -- session create --id main --project-id demo --agent-id codex
+cargo run -p ait-cli -- session send --session-id main --text-stdin < /path/to/prompt.txt
 ```
 
 daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/register`、
@@ -31,10 +36,21 @@ daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/regist
 按用户目标组织的操作步骤、失败恢复和当前行为差距见 [CLI 用户流程](workflows/README.md)。
 对应验收测试运行 `cargo test -p ait-cli --test workflows`，覆盖真实 CLI 到 HTTP/SQLite 的完整路径。
 
+CLI 按 `project`、`agent-provider`、`agent`、`session`、`message`、`run`、`cron`、`settings`、`event`
+分组，每一级都提供 `--help`；标量通过 flags 输入，多行文本支持 `--text-file` / `--text-stdin`。
+Provider 凭据使用 `agent-provider save --secret-stdin`，不得粘贴到命令行。
+`session send` 返回后必须检查 Run 的 `status` 与 `error`，`ok=true` 不代表执行完成。
+
+权限默认是 `permissions.sandbox=read_only`、`permissions.approval=on_request`。Codex 写代码前应按
+[WF-08](workflows/08-settings.md#在代码写入前设置权限) 读取 settings 的最新 revision，用
+`settings set --expected-revision <revision> --input <完整values文件>` 保存 `workspace_write`，然后发送输入。
+新 Run 固定权限快照，仍受管理员上限约束；普通 API Provider 当前只返回文本，不执行文件工具。
+CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md)。
+
 GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait desktop** 的桌面产物；
 版本准备、打标签、产物校验和故障恢复见 [发布操作指南](docs/operations/releasing.md)。
 
-Project 的无凭证 JSON 归档使用 `ait-cli export` / `ait-cli import`；结构化指标位于
+Project 的无凭证 JSON 归档使用 `ait-cli project export` / `ait-cli project import`；结构化指标位于
 `GET /v1/metric/list`。备份恢复、数据保留、附件清理与性能基准见
 `docs/operations/reliability-security-observability.md`。
 

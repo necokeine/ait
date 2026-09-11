@@ -7,14 +7,13 @@
 
 ```bash
 ait project list
-ait command "$(jq -nc --arg workdir "$WF_ROOT/project" \
-  '{type:"register_project",id:"p1",name:"演练项目",workdir:$workdir}')" \
+ait project register --id p1 --name 演练项目 --workdir "$WF_ROOT/project" \
   | tee "$WF_ROOT/project.json"
 export ROOT_ID="$(jq -r '.result.value.root_message_id' "$WF_ROOT/project.json")"
 
-ait command '{"type":"register_agent","id":"agent-demo","name":"Codex","config":{"provider_id":"builtin-codex","model":"gpt-5.6-sol","reasoning_effort":"high"}}'
-ait command '{"type":"set_project_default_agent","project_id":"p1","agent_id":"agent-demo"}'
-ait command '{"type":"create_session","id":"s-main","project_id":"p1","agent_id":"agent-demo"}'
+ait agent create --id agent-demo --name Codex --provider-id builtin-codex --model gpt-5.6-sol --reasoning-effort high
+ait project set-default-agent --project-id p1 --agent-id agent-demo
+ait session create --id s-main --project-id p1 --agent-id agent-demo
 ait session list --project-id p1
 ait message list --project-id p1
 ```

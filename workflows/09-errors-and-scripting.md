@@ -7,13 +7,13 @@
 
 ```bash
 ait --help
-ait command --help
-ait command '{"type":"get_run","run_id":"missing"}' > "$WF_ROOT/error.json"
+ait session send --help
+ait run get --run-id missing > "$WF_ROOT/error.json"
 COMMAND_STATUS=$?
 printf 'exit=%s\n' "$COMMAND_STATUS"
 cat "$WF_ROOT/error.json"
 
-ait command '{' > "$WF_ROOT/invalid.out" 2> "$WF_ROOT/invalid.err"
+ait cron trigger --cron-id cron-daily --scheduled-at invalid > "$WF_ROOT/invalid.out" 2> "$WF_ROOT/invalid.err"
 COMMAND_STATUS=$?
 printf 'exit=%s\n' "$COMMAND_STATUS"
 cat "$WF_ROOT/invalid.err"
@@ -24,12 +24,12 @@ cat "$WF_ROOT/invalid.err"
 | 情况 | 退出码 | stdout | stderr / 下一步 |
 | --- | --- | --- | --- |
 | `--help` | 0 | 帮助文本 | 空；按当前帮助构造参数 |
-| 成功业务 command / import | 0 | `ok=true` JSON 信封 | 空；继续检查业务 payload |
+| 成功实体操作 / project import | 0 | `ok=true` JSON 信封 | 空；继续检查业务 payload |
 | 成功 export | 0 | 空 | 空；从指定文件读 archive |
-| 成功 events | 0 | SSE，可为空 | 空；按事件 cursor 续读 |
+| 成功 event list | 0 | SSE，可为空 | 空；按事件 cursor 续读 |
 | 业务拒绝 | 2 | `ok=false`、稳定 error code | 空；根据 code 修正输入或冲突 |
-| 未知/缺失子命令、缺少必填 flag、无效 `--after` | 2 | 空 | 参数诊断和用法 |
-| 无效 command JSON、未知 JSON `type` | 1 | 空 | 解析诊断；修正 JSON |
+| 未知/缺失子命令、缺少必填 flag、非法 enum/时间戳/游标 | 2 | 空 | 参数诊断和用法 |
+| 实体 `--input` JSON 损坏或形状错误 | 1 | 空 | 解析诊断；修正 JSON |
 | import 文件缺失/损坏、export 本地写入失败 | 1 | 空 | I/O 或解析诊断；修正路径或文件 |
 | endpoint 不可达或 HTTP 失败 | 1 | 空 | 传输诊断；检查本次服务和 endpoint |
 
@@ -46,5 +46,5 @@ cat "$WF_ROOT/invalid.err"
 当前 CLI 的网络请求没有显式用户可配置超时；自动化 fixture 的 20 秒上限只保护测试进程。
 
 自动化：[`wf09_cli_diagnostics_do_not_mutate_workspace`](../bins/cli/tests/workflows.rs)，
-覆盖帮助、未知/缺失命令、非法 JSON/类型、缺失/损坏 import、业务错误信封和停止服务后的连接失败。
+覆盖帮助、未知/缺失命令、非法实体 JSON、enum/时间戳、缺失/损坏 import、业务错误信封和停止服务后的连接失败。
 失败输入前后相关实体记录一致；export 文件保护由 WF-07 覆盖。
