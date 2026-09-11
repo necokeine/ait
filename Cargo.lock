@@ -118,7 +118,6 @@ dependencies = [
  "ait-application",
  "ait-contracts",
  "ait-domain",
- "ait-ipc",
  "ait-ports",
  "ait-project-local",
  "ait-storage-sqlite",
@@ -126,7 +125,9 @@ dependencies = [
  "axum",
  "clap",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
  "tokio",
 ]

@@ -6,17 +6,17 @@
 ## 操作
 
 ```bash
-ait command "$(jq -nc --arg base "$ROOT_ID" \
-  '{type:"create_cron",id:"cron-daily",name:"每日总结",project_id:"p1",base_message_id:$base,agent_id:"agent-demo",schedule:"0 9 * * *",timezone:"Asia/Shanghai"}')"
-ait command '{"type":"set_cron_enabled","cron_id":"cron-daily","enabled":false}'
+ait cron create --id cron-daily --name 每日总结 --project-id p1 \
+  --base-message-id "$ROOT_ID" --agent-id agent-demo --schedule '0 9 * * *' --timezone Asia/Shanghai
+ait cron disable --cron-id cron-daily
 # 预期拒绝：当前未启用
-ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788480000000}'
-ait command '{"type":"set_cron_enabled","cron_id":"cron-daily","enabled":true}'
-ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788480000000}'
+ait cron trigger --cron-id cron-daily --scheduled-at 1788480000000
+ait cron enable --cron-id cron-daily
+ait cron trigger --cron-id cron-daily --scheduled-at 1788480000000
 # 同一 occurrence 重试
-ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788480000000}'
+ait cron trigger --cron-id cron-daily --scheduled-at 1788480000000
 # 另一个 occurrence
-ait command '{"type":"trigger_cron","cron_id":"cron-daily","scheduled_at":1788566400000}'
+ait cron trigger --cron-id cron-daily --scheduled-at 1788566400000
 ait cron list
 ait message list --project-id p1
 ait run list --project-id p1

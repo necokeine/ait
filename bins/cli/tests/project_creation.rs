@@ -118,11 +118,6 @@ impl Workflow {
         response["result"]["value"].clone()
     }
 
-    async fn command(&self, name: &str, value: Value, seconds: u64) -> Value {
-        self.cli(name, &["command", &value.to_string()], seconds)
-            .await
-    }
-
     async fn view(&self, name: &str) -> Value {
         let projects = self
             .cli(&format!("{name}-projects"), &["project", "list"], 20)
@@ -249,6 +244,7 @@ async fn initialize_project(directory: &Path) -> String {
 
 #[tokio::test]
 #[ignore = "requires real Codex credentials/model access and a built ait-daemon; see WF-10"]
+#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
 async fn wf10_create_project_with_real_codex_and_commit() {
     let workflow = Workflow::start().await;
     let empty = workflow.view("initial-view").await;
@@ -260,12 +256,18 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     let directory = workflow.root.join("example-project");
     let initial_commit = initialize_project(&directory).await;
     let project = workflow
-        .command(
+        .cli(
             "project",
-            json!({
-                "type": "register_project", "id": "example-project", "name": "example-project",
-                "workdir": directory,
-            }),
+            &[
+                "project",
+                "register",
+                "--id",
+                "example-project",
+                "--name",
+                "example-project",
+                "--workdir",
+                directory.to_str().unwrap(),
+            ],
             20,
         )
         .await;
@@ -277,35 +279,77 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     );
     let model = env::var("AIT_WORKFLOW_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".into());
     let agent = workflow
-        .command(
+        .cli(
             "agent",
-            json!({
-                "type": "register_agent", "id": "codex", "name": "Codex",
-                "config": { "provider_id": "builtin-codex", "model": model, "reasoning_effort": "high" },
-            }),
+            &[
+                "agent",
+                "create",
+                "--id",
+                "codex",
+                "--name",
+                "Codex",
+                "--provider-id",
+                "builtin-codex",
+                "--model",
+                &model,
+                "--reasoning-effort",
+                "high",
+            ],
             20,
         )
         .await;
-    assert_eq!(agent["mode"], "codex");
+    assert_eq!(agent["config"]["provider_id"], "builtin-codex");
     let session = workflow
-        .command(
+        .cli(
             "session",
-            json!({
-                "type": "create_session", "id": "hello-world", "project_id": project["id"],
-                "agent_id": agent["id"],
-            }),
+            &[
+                "session",
+                "create",
+                "--id",
+                "hello-world",
+                "--project-id",
+                project["id"].as_str().unwrap(),
+                "--agent-id",
+                agent["id"].as_str().unwrap(),
+            ],
             20,
         )
         .await;
     assert_eq!(session["current_message_id"], project["root_message_id"]);
 
+    // Permissions are snapshotted at Run admission. Defaults prohibit code writes.
+    let settings = workflow.cli("settings", &["settings", "get"], 20).await;
+    let mut values = settings["values"].clone();
+    values["permissions.sandbox"] = json!("workspace_write");
+    let settings_path = workflow.root.join("settings-values.json");
+    fs::write(&settings_path, values.to_string()).unwrap();
+    workflow
+        .cli(
+            "permissions",
+            &[
+                "settings",
+                "set",
+                "--expected-revision",
+                &settings["revision"].to_string(),
+                "--input",
+                settings_path.to_str().unwrap(),
+            ],
+            20,
+        )
+        .await;
+
     eprintln!("WF-10: asking real Codex ({model}) to create Rust Hello World; deadline 600s");
     let run = workflow
-        .command(
+        .cli(
             "run",
-            json!({
-                "type": "send_message", "session_id": session["id"], "text": PROMPT,
-            }),
+            &[
+                "session",
+                "send",
+                "--session-id",
+                session["id"].as_str().unwrap(),
+                "--text",
+                PROMPT,
+            ],
             600,
         )
         .await;

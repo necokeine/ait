@@ -1,186 +1,38 @@
 //! AIT command-line client entry point.
 
-use std::{fs, io, path::PathBuf};
+mod args;
+mod input;
 
-use ait_contracts::{Command, CommandResult, ProjectExport, Response};
-use clap::{Parser, Subcommand};
-
-#[derive(Parser)]
-struct Arguments {
-    /// Local daemon HTTP endpoint.
-    #[arg(long, default_value = "http://127.0.0.1:7314")]
-    endpoint: String,
-    #[command(subcommand)]
-    command: CliCommand,
-}
-
-#[derive(Subcommand)]
-enum CliCommand {
-    /// Execute low-level JSON, or use `-` to read it from stdin.
-    Command { json: String },
-    /// Inspect Projects.
-    Project {
-        #[command(subcommand)]
-        command: ProjectCommand,
-    },
-    /// Inspect Agents.
-    Agent {
-        #[command(subcommand)]
-        command: AgentCommand,
-    },
-    /// Inspect Agent Providers.
-    AgentProvider {
-        #[command(subcommand)]
-        command: AgentProviderCommand,
-    },
-    /// Inspect Sessions.
-    Session {
-        #[command(subcommand)]
-        command: SessionCommand,
-    },
-    /// Inspect Messages.
-    Message {
-        #[command(subcommand)]
-        command: MessageCommand,
-    },
-    /// Inspect Runs.
-    Run {
-        #[command(subcommand)]
-        command: RunCommand,
-    },
-    /// Inspect Crons.
-    Cron {
-        #[command(subcommand)]
-        command: CronCommand,
-    },
-    /// Replay durable Server-Sent Events after a cursor.
-    Events {
-        #[arg(long, default_value_t = 0)]
-        after: u64,
-    },
-    /// Export one Project and all of its Message branches and Session refs.
-    Export {
-        #[arg(long)]
-        project_id: String,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    /// Import a portable Project archive into an explicit local workdir.
-    Import {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        workdir: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
-enum ProjectCommand {
-    /// List Projects.
-    List,
-}
-
-#[derive(Subcommand)]
-enum AgentCommand {
-    /// List Agents.
-    List,
-}
-
-#[derive(Subcommand)]
-enum AgentProviderCommand {
-    /// List Agent Providers.
-    List,
-}
-
-#[derive(Subcommand)]
-enum SessionCommand {
-    /// List Sessions in one Project.
-    List {
-        #[arg(long)]
-        project_id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum MessageCommand {
-    /// List Messages in one Project.
-    List {
-        #[arg(long)]
-        project_id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum RunCommand {
-    /// List Runs in one Project.
-    List {
-        #[arg(long)]
-        project_id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum CronCommand {
-    /// List Crons.
-    List,
-}
+use ait_contracts::{Command, CommandResult, Response};
+use args::{Action, Arguments};
+use clap::Parser;
+use std::{
+    fs,
+    io::{self, IsTerminal},
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
+    let stdin = io::stdin();
+    let source = if stdin.is_terminal() {
+        input::StdinSource::Terminal
+    } else {
+        input::StdinSource::Redirected
+    };
+    let action = arguments.command.into_action(&mut stdin.lock(), source)?;
+    let endpoint = arguments.endpoint.as_str().trim_end_matches('/');
     let client = reqwest::Client::new();
-    match arguments.command {
-        CliCommand::Command { json } => {
-            execute(&client, &arguments.endpoint, parse_command(json)?).await?;
+    match action {
+        Action::Execute(command) => {
+            let response = send(&client, endpoint, &command)
+                .await
+                .map_err(|error| request_error(error, &command))?;
+            print_response(&response, &command);
         }
-        CliCommand::Project {
-            command: ProjectCommand::List,
-        } => execute(&client, &arguments.endpoint, Command::ListProjects).await?,
-        CliCommand::Agent {
-            command: AgentCommand::List,
-        } => execute(&client, &arguments.endpoint, Command::ListAgents).await?,
-        CliCommand::AgentProvider {
-            command: AgentProviderCommand::List,
-        } => execute(&client, &arguments.endpoint, Command::ListAgentProviders).await?,
-        CliCommand::Session {
-            command: SessionCommand::List { project_id },
-        } => {
-            execute(
-                &client,
-                &arguments.endpoint,
-                Command::ListSessions { project_id },
-            )
-            .await?;
-        }
-        CliCommand::Message {
-            command: MessageCommand::List { project_id },
-        } => {
-            execute(
-                &client,
-                &arguments.endpoint,
-                Command::ListMessages { project_id },
-            )
-            .await?;
-        }
-        CliCommand::Run {
-            command: RunCommand::List { project_id },
-        } => {
-            execute(
-                &client,
-                &arguments.endpoint,
-                Command::ListRuns { project_id },
-            )
-            .await?;
-        }
-        CliCommand::Cron {
-            command: CronCommand::List,
-        } => execute(&client, &arguments.endpoint, Command::ListCrons).await?,
-        CliCommand::Events { after } => {
+        Action::Events { after } => {
             let body = client
-                .get(format!(
-                    "{}/v1/event/list?after={after}",
-                    arguments.endpoint
-                ))
+                .get(format!("{endpoint}/v1/event/list?after={after}"))
                 .send()
                 .await?
                 .error_for_status()?
@@ -188,63 +40,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
             print!("{body}");
         }
-        CliCommand::Export { project_id, output } => {
-            let response = send(
-                &client,
-                &arguments.endpoint,
-                &Command::ExportProject { project_id },
-            )
-            .await?;
+        Action::Export { command, output } => {
+            let response = send(&client, endpoint, &command).await?;
             match &response.result {
                 Some(CommandResult::ProjectExport(archive)) if response.ok => {
-                    fs::write(output, serde_json::to_vec_pretty(&archive)?)?;
+                    fs::write(output, serde_json::to_vec_pretty(archive)?)?;
                 }
-                _ => print_response(&response),
+                _ => print_response(&response, &command),
             }
-        }
-        CliCommand::Import { input, workdir } => {
-            let archive: ProjectExport = serde_json::from_slice(&fs::read(input)?)?;
-            let response = send(
-                &client,
-                &arguments.endpoint,
-                &Command::ImportProject {
-                    archive,
-                    workdir: workdir.to_string_lossy().into_owned(),
-                },
-            )
-            .await?;
-            print_response(&response);
         }
     }
     Ok(())
 }
 
-fn parse_command(json: String) -> Result<Command, io::Error> {
-    let input = if json == "-" {
-        io::read_to_string(io::stdin())?
+fn request_error(error: reqwest::Error, command: &Command) -> Box<dyn std::error::Error> {
+    if matches!(
+        command,
+        Command::SaveAgentProvider {
+            secret: Some(_),
+            ..
+        } | Command::DiscoverProviderModels {
+            secret: Some(_),
+            ..
+        }
+    ) {
+        // A malformed server response can make serde quote an unknown variant
+        // containing the secret. Never render the underlying error on this path.
+        input::invalid("agent-provider request failed (transport, HTTP status or response decoding); check the connection and saved Provider state").into()
     } else {
-        json
-    };
-    // Deserialization errors can quote unknown variants/fields, including a secret.
-    serde_json::from_str(&input).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "invalid command JSON at line {}, column {}",
-                error.line(),
-                error.column()
-            ),
-        )
-    })
-}
-
-async fn execute(
-    client: &reqwest::Client,
-    endpoint: &str,
-    command: Command,
-) -> Result<(), reqwest::Error> {
-    print_response(&send(client, endpoint, &command).await?);
-    Ok(())
+        error.into()
+    }
 }
 
 async fn send(
@@ -325,12 +150,52 @@ const fn operation_path(command: &Command) -> &'static str {
     }
 }
 
-fn print_response(response: &Response) {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&response).expect("response serializes")
-    );
+fn print_response(response: &Response, command: &Command) {
+    println!("{}", response_output(response, command));
     if !response.ok {
         std::process::exit(2);
     }
 }
+
+fn response_output(response: &Response, command: &Command) -> String {
+    // Defense in depth if a remote error ever echoes a credential. Redact decoded
+    // strings so escaping cannot evade it and JSON syntax is always preserved.
+    if let Command::SaveAgentProvider {
+        secret: Some(secret),
+        ..
+    }
+    | Command::DiscoverProviderModels {
+        secret: Some(secret),
+        ..
+    } = command
+    {
+        let mut output = serde_json::to_value(response).expect("response serializes");
+        redact(&mut output, &secret.0);
+        return serde_json::to_string_pretty(&output).expect("response serializes");
+    }
+    serde_json::to_string_pretty(response).expect("response serializes")
+}
+
+fn redact(value: &mut serde_json::Value, secret: &str) {
+    if secret.is_empty() {
+        return;
+    }
+    match value {
+        serde_json::Value::String(text) => *text = text.replace(secret, "[REDACTED]"),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact(value, secret);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            // The response's schema keys are public protocol, not secret data.
+            for value in values.values_mut() {
+                redact(value, secret);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests;

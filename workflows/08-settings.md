@@ -6,16 +6,17 @@
 ## 操作
 
 ```bash
-ait command '{"type":"get_settings"}' > "$WF_ROOT/settings.json"
-jq -c '{type:"save_settings",expected_revision:.result.value.revision,values:(.result.value.values + {"interface.theme":"dark"})}' \
-  "$WF_ROOT/settings.json" > "$WF_ROOT/save-settings.json"
-ait command "$(cat "$WF_ROOT/save-settings.json")"
-ait command '{"type":"get_settings"}'
+ait settings get > "$WF_ROOT/settings.json"
+REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
+jq '.result.value.values + {"interface.theme":"dark"}' \
+  "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
+ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+ait settings get
 # 预期拒绝：重复使用已过期的 revision
-ait command "$(cat "$WF_ROOT/save-settings.json")"
+ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
 # 重置全部设置
-ait command '{"type":"reset_settings"}'
-ait command '{"type":"get_settings"}'
+ait settings reset
+ait settings get
 ```
 
 ## 验收与失败恢复
@@ -33,3 +34,23 @@ schema 中的 `restartRequired` 表示相应配置是否需要重启生效，保
 
 自动化：[`wf08_save_reset_and_recover_settings`](../bins/cli/tests/workflows.rs)，
 覆盖完整保存、旧 revision、缺 key、非法 theme，以及保存和重置后分别重开数据库。
+
+## 在代码写入前设置权限
+
+默认 `permissions.sandbox=read_only`、`permissions.approval=on_request`。
+需要 Codex 写代码时，在发送第一条输入前读取最新 settings 并保存：
+
+```bash
+ait settings get > "$WF_ROOT/settings.json"
+REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
+jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request"}' \
+  "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
+ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+```
+
+`--input` 仅含完整 values 对象；`--expected-revision` 单独传入，不能传响应信封。
+也支持 `--input -` 从 stdin 读取完整对象。这里的 jq 仅编辑复杂设置文档。
+权限在新 Run 准入时固定，受 daemon 管理员上限约束，修改不会扩大已有 Run 的权限。
+`strict` 是 `read_only` 兼容值；`full_access` 只在明确选择且管理员允许时生效。
+旧值 `approval=always` 无法映射当前 Codex 协议，会拒绝 Codex Run 准入；使用 `on_request` 或 `untrusted_only`。
+普通 API Provider 当前只生成文本，即使选择 `workspace_write` 也不会获得尚未实现的宿主工具。

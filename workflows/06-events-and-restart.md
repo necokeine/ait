@@ -6,11 +6,11 @@
 ## 操作
 
 ```bash
-ait events --after 0 | tee "$WF_ROOT/events.sse"
+ait event list --after 0 | tee "$WF_ROOT/events.sse"
 CURSOR="$(awk '/^id:/ { cursor=$2 } END { print cursor+0 }' "$WF_ROOT/events.sse")"
-ait command '{"type":"create_session","id":"s-events","project_id":"p1","agent_id":"agent-demo"}'
-ait command '{"type":"send_message","session_id":"s-events","text":"保存重启前的状态"}'
-ait events --after "$CURSOR" | tee "$WF_ROOT/events-after.sse"
+ait session create --id s-events --project-id p1 --agent-id agent-demo
+ait session send --session-id s-events --text '保存重启前的状态'
+ait event list --after "$CURSOR" | tee "$WF_ROOT/events-after.sse"
 {
   ait project list
   ait agent list
@@ -32,7 +32,7 @@ ait events --after "$CURSOR" | tee "$WF_ROOT/events-after.sse"
   ait run list --project-id p1
 } > "$WF_ROOT/after-restart.jsonl"
 diff "$WF_ROOT/before-restart.jsonl" "$WF_ROOT/after-restart.jsonl"
-ait events --after "$CURSOR"
+ait event list --after "$CURSOR"
 ```
 
 ## 验收与失败恢复

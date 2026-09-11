@@ -9,7 +9,9 @@ use std::{
 
 use ait_application::LocalControlService;
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::{
+    AgentProviderGateway, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+};
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -22,6 +24,7 @@ use tokio::{
 pub struct Workspace {
     pub directory: TempDir,
     pub endpoint: String,
+    gateway: Option<Arc<dyn AgentProviderGateway>>,
     shutdown: Option<oneshot::Sender<()>>,
     server: Option<JoinHandle<()>>,
 }
@@ -52,9 +55,14 @@ impl WorkspaceAgent for FixtureCodex {
 
 impl Workspace {
     pub async fn new() -> Self {
+        Self::with_gateway(None).await
+    }
+
+    pub async fn with_gateway(gateway: Option<Arc<dyn AgentProviderGateway>>) -> Self {
         let mut workspace = Self {
             directory: TempDir::new().unwrap(),
             endpoint: String::new(),
+            gateway,
             shutdown: None,
             server: None,
         };
@@ -66,14 +74,17 @@ impl Workspace {
         let store = SqliteControlStore::open(self.directory.path().join("ait.sqlite3")).unwrap();
         let documents = self.directory.path().join("Documents");
         std::fs::create_dir_all(&documents).unwrap();
-        let service = Arc::new(
+        let mut service =
             LocalControlService::with_workspace_agent(Arc::new(store), Arc::new(FixtureCodex))
                 .with_project_directory_creator(Arc::new(
                     ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
                         Some(documents.clone())
                     }),
-                )),
-        );
+                ));
+        if let Some(gateway) = &self.gateway {
+            service = service.with_provider_gateway(gateway.clone());
+        }
+        let service = Arc::new(service);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         self.endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (shutdown, stopped) = oneshot::channel();
@@ -126,13 +137,14 @@ impl Workspace {
             .expect("CLI could not start")
     }
 
-    pub async fn command(&self, command: Value) -> Value {
-        success(&self.cli(&["command", &command.to_string()]).await)
+    pub async fn call(&self, arguments: &[&str]) -> Value {
+        success(&self.cli(arguments).await)
     }
 
-    pub async fn cli_stdin(&self, input: &str) -> Output {
+    pub async fn cli_stdin(&self, arguments: &[&str], input: &str) -> Output {
         let mut process = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
-            .args(["--endpoint", &self.endpoint, "command", "-"])
+            .args(["--endpoint", &self.endpoint])
+            .args(arguments)
             .current_dir(self.directory.path())
             .env("NO_PROXY", "*")
             .env("no_proxy", "*")
@@ -152,8 +164,8 @@ impl Workspace {
         .expect("CLI stdin exceeded 20s")
     }
 
-    pub async fn reject(&self, command: Value, code: &str) {
-        failure(&self.cli(&["command", &command.to_string()]).await, code);
+    pub async fn reject(&self, arguments: &[&str], code: &str) {
+        failure(&self.cli(arguments).await, code);
     }
 
     /// Test-only aggregate assembled through the public bounded list commands.
@@ -209,41 +221,56 @@ impl Workspace {
     }
 
     pub async fn agent(&self, id: &str) -> Value {
-        self.command(json!({
-            "type": "register_agent", "id": id, "name": id,
-            "config": {
-                "provider_id": "builtin-codex",
-                "model": "gpt-5.6-sol",
-                "reasoning_effort": "high"
-            },
-        }))
+        self.call(&[
+            "agent",
+            "create",
+            "--id",
+            id,
+            "--name",
+            id,
+            "--provider-id",
+            "builtin-codex",
+            "--model",
+            "gpt-5.6-sol",
+            "--reasoning-effort",
+            "high",
+        ])
         .await
     }
 
     pub async fn project(&self, id: &str) -> Value {
         let path = self.path(id);
         std::fs::create_dir(&path).unwrap();
-        self.command(json!({
-            "type": "register_project", "id": id, "name": "工作项目",
-            "workdir": path,
-        }))
+        self.call(&[
+            "project",
+            "register",
+            "--id",
+            id,
+            "--name",
+            "工作项目",
+            "--workdir",
+            path.to_str().unwrap(),
+        ])
         .await
     }
 
     pub async fn session(&self, id: &str, project: &str, agent: &str) -> Value {
-        self.command(json!({
-            "type": "create_session", "id": id,
-            "project_id": project, "agent_id": agent,
-        }))
+        self.call(&[
+            "session",
+            "create",
+            "--id",
+            id,
+            "--project-id",
+            project,
+            "--agent-id",
+            agent,
+        ])
         .await
     }
 
     pub async fn send(&self, session: &str, _version: u64, text: &str) -> Value {
-        self.command(json!({
-            "type": "send_message", "session_id": session,
-            "text": text,
-        }))
-        .await
+        self.call(&["session", "send", "--session-id", session, "--text", text])
+            .await
     }
 }
 

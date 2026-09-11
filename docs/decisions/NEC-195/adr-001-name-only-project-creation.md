@@ -13,8 +13,10 @@
 校验先于目录分配。目录命名约束仅作用于省略 workdir 的路径，不限制已有目录的展示名称。
 
 实际公开调用链为 Desktop renderer → preload IPC → Electron main → daemon HTTP →
-`LocalControlService` → `ControlStore::apply`。CLI 的 `command` 同样走 HTTP；Rust IPC
-共享 `Command` DTO。较早的 `ProjectService` / `ProjectRegistration` 是显式目录服务，
+`LocalControlService` → `ControlStore::apply`。CLI 使用 NEC-241 的实体入口
+`project register --id <id> --name <name> [--workdir <path>]`，同样走 HTTP；省略 `--workdir`
+构造 `None`，不恢复已退役的通用 `command` 入口。Rust IPC 共享 `Command` DTO。
+较早的 `ProjectService` / `ProjectRegistration` 是显式目录服务，
 此次不改变其 API，也不将它误认为公开控制入口。
 
 `ports::ProjectDirectoryCreator` 定义一次性、不可复用的目录分配能力。

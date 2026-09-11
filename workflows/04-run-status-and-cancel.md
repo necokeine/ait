@@ -8,7 +8,7 @@
 在终端 A 启动一个耗时任务；该命令会等待 Run 到达终态：
 
 ```bash
-ait command '{"type":"send_message","session_id":"s-main","text":"执行一项足够长、便于人工取消的检查"}'
+ait session send --session-id s-main --text '执行一项足够长、便于人工取消的检查'
 ```
 
 在终端 C 趁 Run 仍活动时读取 Session 的 `active_run_id`，查询并取消：
@@ -16,9 +16,9 @@ ait command '{"type":"send_message","session_id":"s-main","text":"执行一项�
 ```bash
 ait session list --project-id p1 > "$WF_ROOT/running-sessions.json"
 RUN_ID="$(jq -r '.result.value[] | select(.id=="s-main") | .active_run_id' "$WF_ROOT/running-sessions.json")"
-ait command "$(jq -nc --arg id "$RUN_ID" '{type:"get_run",run_id:$id}')"
-ait command "$(jq -nc --arg id "$RUN_ID" '{type:"cancel_run",run_id:$id}')"
-ait command '{"type":"send_message","session_id":"s-main","text":"取消后继续处理"}'
+ait run get --run-id "$RUN_ID"
+ait run cancel --run-id "$RUN_ID"
+ait session send --session-id s-main --text '取消后继续处理'
 ```
 
 ## 验收与恢复
@@ -38,7 +38,22 @@ ait command '{"type":"send_message","session_id":"s-main","text":"取消后继�
 
 当前活动 Session 收到再次输入或改绑请求时返回 `SESSION_BUSY`，相关记录不变。
 ADR 期望运行中的新输入进入同一 Run 队列；这是待实现差距。
-审批恢复和队列消费尚未接入这组 CLI 流程；runtime 已通过 scripted approval/tool ports 验证状态机。
+队列消费仍由 runtime 测试覆盖。原生审批可以通过以下实体入口回复。
+
+原生审批时，先用 `ait run get --run-id "$RUN_ID"` 读取 `native_approvals` 中 pending 审批的 ID、`kind` 和授权目标，
+再选择一个动作（从返回值设置 `APPROVAL_ID`）：
+
+```bash
+ait run approval approve --run-id "$RUN_ID" --approval-id "$APPROVAL_ID" --scope one-shot
+# 拒绝操作但继续该 turn
+ait run approval deny --run-id "$RUN_ID" --approval-id "$APPROVAL_ID"
+# 拒绝并取消原生 turn
+ait run approval cancel --run-id "$RUN_ID" --approval-id "$APPROVAL_ID"
+```
+
+以上为互斥选择，不应依次执行。approve 必须显式提供 scope。命令/文件审批支持 `one-shot` 或 `session`；权限档案审批支持
+`turn` 或 `session`。`session` scope 还受管理员策略限制，daemon 校验审批记录、Run 权限快照和授权上限。
+deny/cancel 不接受 scope；回复仍属于同一 Run，不产生伪造的 ToolUse/ToolResult。
 
 自动化：[`wf04_observe_injected_provider_failure_and_continue`](../bins/cli/tests/workflows.rs)
 通过 `WorkspaceAgent` test fake 覆盖持久化 Provider 失败、Session 释放和后续交互；

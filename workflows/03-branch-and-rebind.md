@@ -6,20 +6,28 @@
 ## 操作
 
 ```bash
-ait command "$(jq -nc --arg at "$ROOT_ID" \
-  '{type:"create_session",id:"s-open",project_id:"p1",agent_id:"agent-demo",at_message_id:$at}')"
-ait command '{"type":"set_session_title","session_id":"s-open","title":"临时分支标题"}'
-ait command '{"type":"rename_session","session_id":"s-open","name":"  我的   分支  "}'
-ait command '{"type":"register_agent","id":"agent-alternate","name":"另一个执行者","config":{"provider_id":"builtin-codex","model":"gpt-5.6-sol","reasoning_effort":"medium"}}'
-ait command '{"type":"set_session_agent","session_id":"s-open","agent_id":"agent-alternate"}'
-ait command '{"type":"send_message","session_id":"s-open","text":"沿这个方向继续"}'
+ait session create --id s-open --project-id p1 --agent-id agent-demo --at-message-id "$ROOT_ID"
+ait session set-title --session-id s-open --title '临时分支标题'
+ait session rename --session-id s-open --name '  我的   分支  '
+ait agent create --id agent-alternate --name '另一个执行者' --provider-id builtin-codex --model gpt-5.6-sol --reasoning-effort medium
+ait session set-agent --session-id s-open --agent-id agent-alternate
+ait session send --session-id s-open --text '沿这个方向继续'
 
-ait command "$(jq -nc --arg at "$ROOT_ID" \
-  '{type:"fork_session",id:"s-fork",project_id:"p1",agent_id:"agent-demo",at_message_id:$at,text:"从这里提出另一个方案"}')"
+ait session fork --id s-fork --project-id p1 --agent-id agent-demo \
+  --at-message-id "$ROOT_ID" --text '从这里提出另一个方案'
 ait session list --project-id p1
 ait message list --project-id p1
 ait run list --project-id p1
 ```
+
+需要由 daemon 原子决定复用当前叶子或从历史分叉时，使用：
+
+```bash
+ait session derive --id s-derived --project-id p1 --source-session-id s-main \
+  --agent-id agent-demo --at-message-id "$ROOT_ID" --text '从选定节点继续'
+```
+
+`derive` 返回 Run；从 `result.value` 检查 `status` 和 `error`。
 
 ## 验收与失败恢复
 

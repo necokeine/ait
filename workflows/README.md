@@ -47,7 +47,7 @@ WF-11 使用原生 DeepSeek Provider，由
 
 ## 手工演练准备
 
-需要 Rust stable、Git、Bash 或 Zsh；下面的手工示例使用 jq 构造 JSON 和提取动态 ID。
+需要 Rust stable、Git、Bash 或 Zsh；下面的手工示例使用 jq 提取响应 ID 和编辑完整 settings 文档；常规操作无需构造 JSON。
 在仓库根目录的终端 A 执行：
 
 ```bash
@@ -76,14 +76,30 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 ## 公共输入输出约定
 
-实体读取入口为 `project list`、`agent list`、`agent-provider list`、`session list --project-id <id>`、
-`message list --project-id <id>`、`run list --project-id <id>` 和 `cron list`。尚未包装的写操作使用
-`command '<JSON>'`（或 `command -` 从 stdin 读取）；其余入口包括 `events --after <cursor>`、
-`export --project-id <id> --output <file>` 和 `import --input <file> --workdir <dir>`。
-`--endpoint` 写在子命令前。业务 command 的完整字段定义见 [contracts](../crates/contracts/src/lib.rs)，HTTP 映射见
-[实体操作 API](../docs/decisions/NEC-166/entity-operation-http-api.md)。
+从 `ait --help`、`ait <实体> --help` 和 `ait <实体> <动作> --help` 发现全部参数。
+`--endpoint` 是全局 flag，可以放在任意子命令层级。常用标量使用 flags；ID 是非空、不含控制字符的
+不透明字符串（允许空格），路径按单个 shell 参数引用；固定枚举由 clap 校验。模型及 reasoning effort
+来自动态 Provider 目录，具体组合由 daemon 校验，CLI 不复制目录或业务规则。
 
-实体读取命令、`command` 和成功的 `import` 输出一个 JSON 信封：
+| 实体 | 动作 |
+| --- | --- |
+| `project` | `list`、`register`、`set-default-agent`、`export`、`import` |
+| `agent-provider` | `list`、`save`、`discover-models`、`refresh-models` |
+| `agent` | `list`、`create`、`update` |
+| `session` | `list`、`create`、`set-agent`、`set-config`、`rename`、`set-title`、`send`、`fork`、`derive` |
+| `message` | `list`（要求 `--project-id`） |
+| `run` | `list`、`get`、`cancel`、`approval approve/deny/cancel` |
+| `cron` | `list`、`create`、`enable`、`disable`、`trigger` |
+| `settings` | `get`、`set`、`reset` |
+| `event` | `list --after <cursor>`（durable SSE 回放） |
+
+保留 `events`、`export`、`import` 顶层快捷入口，行为分别等同于 `event list`、`project export`、`project import`。
+文本使用 `--text`、`--text-file <file|->`、`--text-stdin` 三选一，保留多行中文和反斜杠。
+Provider secret 仅由 `--secret-stdin` 接收，不放 argv、shell history、JSON 模型文件或响应；见 WF-11。
+实体 `--input <file|->` 只用于 Provider 模型数组、完整 settings values 或 Project archive，均不包含命令标签。
+HTTP 映射见 [实体操作 API](../docs/decisions/NEC-166/entity-operation-http-api.md)。
+
+实体操作和成功的 `project import` 输出一个 JSON 信封：
 
 ```json
 {"api_version":1,"ok":true,"result":{"kind":"session","value":{"id":"示意，实际还有其他字段"}}}
@@ -91,20 +107,21 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 上例只说明信封结构，不是完整 Session。业务拒绝的 `ok=false`，带有
 `error.code/message/retryable`，不带 `result`。成功的 `export` 只写文件，stdout 为空；
-`events` 输出 SSE 文本。退出码细节见 WF-09。
+`event list` 输出 SSE 文本。退出码细节见 WF-09。
 发送后检查 `result.value.status` 和 `result.value.error`，不能用 `ok=true` 代替 Run 完成判断。
 动态 Message/Run ID、Session version、settings revision 和 event cursor 都从返回值读取，不能手填猜测。
+
+默认权限是 `read_only` / `on_request`。让 Codex 写代码前，按 [WF-08](08-settings.md#在代码写入前设置权限)
+读取并保存完整 settings，将 sandbox 改为 `workspace_write`，再发送输入；[WF-10](10-create-project-with-codex.md) 已包含这一步。
 
 ## 后续校正清单
 
 | 当前限制 | 用户期望与后续验收方向 |
 | --- | --- |
-| 写操作仍多需 JSON、手工 ID 和 jq | 继续把写操作迁移为实体子命令，并保留同一领域结果、ID 回传和可发现帮助 |
 | `create_session` 仍要求 `agent_id` | Project 默认 Agent 当前是建议值；省略 Agent 的体验需单独设计和测试 |
 | 活动 Session 再次输入返回 `SESSION_BUSY` | ADR 要求进入现有 Run 队列；实现后需更新 WF-04 的当前行为断言并增加队列消费测试 |
-| `events` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |
+| `event list` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |
 | Cron 配置和手动 occurrence 可用，daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
-| 等待审批没有 CLI approve/resume 入口 | runtime 已验证同一 Run 的审批恢复；接入公共命令后补充 CLI 流程 |
 | 启用真实 Codex 和 AI 标题生成需要外部执行环境 | 手工流程使用 `builtin-codex`；WF-01～09 自动化通过 `WorkspaceAgent` port 注入 fake，WF-10 提供明确 opt-in 的真实执行测试 |
 | 原生远程 Provider 返回一轮文本，不执行工作区工具 | WF-11 原样保存模型返回的 Python 源码后独立验证；自动文件操作和工具循环需后续实现 |
 

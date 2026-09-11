@@ -4,9 +4,17 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+dev-mock-provider = [
+    "ait-contracts/dev-mock-provider",
+    "ait-domain/dev-mock-provider",
+    "ait-api-http/dev-mock-provider",
+]
+
 [dependencies]
 ait-contracts = { path = "../../crates/contracts" }
-ait-ipc = { path = "../../crates/ipc" }
+ait-domain = { path = "../../crates/domain" }
+serde = "1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
@@ -14,9 +22,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 ait-project-local = { path = "../../crates/project-local" }
+syn = { version = "2", features = ["full", "visit"] }
 ait-api-http = { path = "../../crates/api-http" }
 ait-application = { path = "../../crates/application" }
-ait-domain = { path = "../../crates/domain" }
 ait-ports = { path = "../../crates/ports" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
 async-trait = "0.1"

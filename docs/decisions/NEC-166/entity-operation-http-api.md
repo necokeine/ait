@@ -9,7 +9,7 @@
 
 HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每个用例都有独立的
 `/v1/<entity>/<operation>` 路由，请求体只包含该操作所需字段。实体名和操作名使用单数、
-小写 kebab-case。当前路由为：
+小写 kebab-case。下表列出当前 router 的全部路由（含 CLI 之外的 HTTP 操作）：
 
 | Method | Path | Application command |
 | --- | --- | --- |
@@ -20,15 +20,23 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/agent/register` | `RegisterAgent` |
 | `POST` | `/v1/agent/update` | `UpdateAgent` |
 | `POST` | `/v1/agent-provider/save` | `SaveAgentProvider` |
+| `POST` | `/v1/agent-provider/discover-models` | `DiscoverProviderModels` |
 | `POST` | `/v1/agent-provider/refresh-models` | `RefreshProviderModels` |
 | `POST` | `/v1/session/set-agent` | `SetSessionAgent` |
 | `POST` | `/v1/session/set-config` | `SetSessionConfig` |
 | `POST` | `/v1/session/create` | `CreateSession` |
+| `POST` | `/v1/session/rename` | `RenameSession` |
+| `POST` | `/v1/session/set-title` | `SetSessionTitle` |
+| `POST` | `/v1/session/generate-title` | `LocalControlService::generate_session_title` |
 | `POST` | `/v1/session/send-message` | `SendMessage` |
+| `POST` | `/v1/session/submit-message` | `SendMessage`（异步 submit） |
 | `POST` | `/v1/session/fork` | `ForkSession` |
+| `POST` | `/v1/session/submit-fork` | `ForkSession`（异步 submit） |
 | `POST` | `/v1/session/derive` | `DeriveSession` |
+| `POST` | `/v1/session/submit-derive` | `DeriveSession`（异步 submit） |
 | `POST` | `/v1/run/get` | `GetRun` |
 | `POST` | `/v1/run/cancel` | `CancelRun` |
+| `POST` | `/v1/run/approval/resolve` | `ResolveNativeApproval` |
 | `POST` | `/v1/cron/create` | `CreateCron` |
 | `POST` | `/v1/cron/set-enabled` | `SetCronEnabled` |
 | `POST` | `/v1/cron/trigger` | `TriggerCron` |
@@ -43,9 +51,17 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/settings/save` | `SaveSettings` |
 | `POST` | `/v1/settings/reset` | `ResetSettings` |
 | `GET` | `/v1/event/list` | durable event SSE replay |
+| `GET` | `/v1/event/stream` | durable event SSE replay + 持续订阅 |
 | `GET` | `/v1/run/progress?project_id=<id>` | active Run progress checkpoints |
 | `GET` | `/v1/health` | daemon readiness and protocol version |
 | `GET` | `/v1/metric/list` | in-process metric snapshot |
+
+表中查询参数是请求输入，不属于路由 path。`submit-*` 通过 application 的异步提交入口返回
+Run 准入结果；CLI 的 send/fork/derive 继续调用对应的同步路由。
+
+`bins/cli/src/tests.rs::documented_http_methods_and_paths_match_the_router` 从
+`router_with_telemetry` 的 Rust 语法提取 Method/Path，与此表做完整集合比较；每个 CLI variant
+映射案例也校验其 endpoint 位于表中。新增或删除路由时必须同步更新此表。
 
 例如注册 Project：
 
@@ -62,8 +78,8 @@ curl -X POST http://127.0.0.1:7314/v1/project/register \
 
 `ait-contracts::Command` 和 `LocalControlService::execute` 仍是进程内、传输无关的应用层
 分派契约，不是公开 HTTP endpoint。HTTP adapter 负责把每个独立请求 DTO 转换成对应
-command，因此领域规则和事务逻辑不会在路由中复制。CLI 仍可接受 command JSON 作为通用
-输入格式，但会移除 `type` 并请求对应的实体操作路由。
+command，因此领域规则和事务逻辑不会在路由中复制。CLI 已由 NEC-241 改为实体子命令；不再接受通用 JSON
+输入。它在内部构造 Command，序列化时移除 `type` 并请求对应的实体操作路由。
 
 旧的 `/v1/commands`、`/v1/events` 和 `/v1/metrics` 不保留兼容别名。当前 API 尚未公开
 发布，保留旧入口会延续两套边界并使调用方继续依赖统一 command。客户端必须迁移到上表
