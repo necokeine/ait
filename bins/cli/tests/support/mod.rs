@@ -156,7 +156,12 @@ impl Workspace {
             .unwrap();
         timeout(Duration::from_secs(20), async {
             let mut stdin = process.stdin.take().unwrap();
-            stdin.write_all(input.as_bytes()).await.unwrap();
+            if let Err(failure) = stdin.write_all(input.as_bytes()).await {
+                // Invalid flag combinations may be rejected before stdin is
+                // consumed. Still collect the child's exit code/diagnostics so
+                // the caller can verify the rejection and secret redaction.
+                assert_eq!(failure.kind(), std::io::ErrorKind::BrokenPipe);
+            }
             drop(stdin);
             process.wait_with_output().await.unwrap()
         })

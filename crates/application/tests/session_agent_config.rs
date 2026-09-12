@@ -27,6 +27,7 @@ use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use std::{
     collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -251,17 +252,6 @@ fn git_index_tree(path: &std::path::Path) -> String {
         .arg("-C")
         .arg(path)
         .arg("write-tree")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-fn git_commit_tree(path: &std::path::Path, commit: &str) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", &format!("{commit}^{{tree}}")])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -802,7 +792,7 @@ async fn canonical_path_aliases_share_the_same_process_wide_lease() {
 }
 
 #[tokio::test]
-async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() {
+async fn serialized_session_worktrees_keep_independent_baselines_and_commits() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(CommittingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
@@ -840,7 +830,7 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
     let commits = agent.commits.lock().unwrap().clone();
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].0, initial);
-    assert_eq!(commits[1].0, commits[0].1);
+    assert_eq!(commits[1].0, initial);
     assert_eq!(first_run.status, "completed");
     assert_eq!(second_run.status, "completed");
     assert_eq!(
@@ -853,11 +843,11 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
     );
     assert_eq!(
         second_run.workspace_base_commit.as_deref(),
-        Some(commits[0].1.as_str())
+        Some(initial.as_str())
     );
     assert_eq!(
         second_run.workspace_base_index_tree.as_deref(),
-        Some(git_commit_tree(directory.path(), &commits[0].1).as_str())
+        Some(initial_tree.as_str())
     );
     assert_ne!(first_run.id, second_run.id);
     for (baseline, commit, file) in &commits {
@@ -882,8 +872,37 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
             .unwrap()
     };
     assert_eq!(message_commit(&first_run.base_message_id), initial);
-    assert_eq!(message_commit(&second_run.base_message_id), commits[0].1);
-    assert_eq!(git_head(directory.path()), commits[1].1);
+    assert_eq!(message_commit(&second_run.base_message_id), initial);
+    assert_eq!(git_head(directory.path()), initial);
+    let session = |id: &str| {
+        workspace
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .unwrap()
+    };
+    assert_eq!(git_head(Path::new(&session("one").workdir)), commits[0].1);
+    assert_eq!(git_head(Path::new(&session("two").workdir)), commits[1].1);
+    assert!(
+        Path::new(&session("one").workdir)
+            .join("first.txt")
+            .exists()
+    );
+    assert!(
+        !Path::new(&session("one").workdir)
+            .join("second.txt")
+            .exists()
+    );
+    assert!(
+        Path::new(&session("two").workdir)
+            .join("second.txt")
+            .exists()
+    );
+    assert!(
+        !Path::new(&session("two").workdir)
+            .join("first.txt")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -2011,6 +2030,11 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
             native.0.lock().unwrap()[0].permission_profile,
             expected_profile
         );
+        let session_workdir = view(&service).await.sessions[0].workdir.clone();
+        assert_eq!(
+            native.0.lock().unwrap()[0].cwd,
+            PathBuf::from(session_workdir)
+        );
 
         let mut changed = default_settings();
         changed
@@ -2172,6 +2196,7 @@ async fn unsupported_or_administrator_conflicting_policies_fail_before_messages_
 struct ApprovalAgent {
     kind: NativeApprovalKind,
     permission_path: Option<String>,
+    target: Option<NativeApprovalTarget>,
     requested: Semaphore,
     decision: Mutex<Option<WorkspaceApprovalDecision>>,
 }
@@ -2181,6 +2206,7 @@ impl ApprovalAgent {
         Self {
             kind,
             permission_path: None,
+            target: None,
             requested: Semaphore::new(0),
             decision: Mutex::new(None),
         }
@@ -2190,6 +2216,7 @@ impl ApprovalAgent {
         Self {
             kind: NativeApprovalKind::Permissions,
             permission_path: Some(path.into()),
+            target: None,
             requested: Semaphore::new(0),
             decision: Mutex::new(None),
         }
@@ -2222,19 +2249,21 @@ impl WorkspaceAgent for ApprovalAgent {
                 thread_id: "thread-a".into(),
                 turn_id: "turn-a".into(),
                 item_id: "item-a".into(),
-                target: match self.kind {
+                target: self.target.clone().unwrap_or_else(|| match self.kind {
                     NativeApprovalKind::Permissions => NativeApprovalTarget::Permissions {
                         cwd: request.cwd.to_string_lossy().into_owned(),
                     },
-                    NativeApprovalKind::FileChange => NativeApprovalTarget::FileChange {
-                        grant_root: Some(request.cwd.to_string_lossy().into_owned()),
-                        changes: Vec::new(),
-                    },
+                    NativeApprovalKind::FileChange | NativeApprovalKind::LegacyPatch => {
+                        NativeApprovalTarget::FileChange {
+                            grant_root: Some(request.cwd.to_string_lossy().into_owned()),
+                            changes: Vec::new(),
+                        }
+                    }
                     _ => NativeApprovalTarget::Command {
                         command: "git status".into(),
                         cwd: request.cwd.to_string_lossy().into_owned(),
                     },
-                },
+                }),
                 requested_permissions: (self.kind == NativeApprovalKind::Permissions).then(|| {
                     serde_json::json!({
                         "fileSystem": {"write": [permission_path]}
@@ -2261,6 +2290,7 @@ async fn native_approval_wait_is_nonblocking_durable_and_duplicate_safe() {
         agent.clone(),
     ));
     let _directory = setup(&service, config("high")).await;
+    save_permission_settings(&service, "full_access", "on_request").await;
     let running = {
         let service = service.clone();
         tokio::spawn(async move { service.execute(send("one")).await })
@@ -2362,6 +2392,7 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-a","turn"
         agent.clone(),
     ));
     let _directory = setup(&service, config("high")).await;
+    save_permission_settings(&service, "full_access", "on_request").await;
     let running = {
         let service = service.clone();
         tokio::spawn(async move { service.execute(send("one")).await })
@@ -3702,4 +3733,232 @@ async fn pessimistic_admission_rejects_a_competing_send_before_the_first_run_is_
     store.release.add_permits(1);
     first.await.unwrap();
     assert_eq!(view(&service).await.runs.len(), 1);
+}
+
+// NEC-192: approvals must never upgrade the immutable Run sandbox.
+#[tokio::test]
+async fn file_and_command_approvals_respect_each_run_sandbox() {
+    for sandbox in ["read_only", "workspace_write", "full_access"] {
+        for kind in [
+            NativeApprovalKind::FileChange,
+            NativeApprovalKind::LegacyPatch,
+            NativeApprovalKind::CommandExecution,
+            NativeApprovalKind::LegacyCommand,
+        ] {
+            let agent = Arc::new(ApprovalAgent::new(kind));
+            let service = Arc::new(LocalControlService::with_workspace_agent(
+                Arc::new(SqliteControlStore::in_memory().unwrap()),
+                agent.clone(),
+            ));
+            let _directory = setup(&service, config("high")).await;
+            save_permission_settings(&service, sandbox, "on_request").await;
+            let allowed = sandbox == "full_access"
+                || (sandbox == "workspace_write"
+                    && matches!(
+                        kind,
+                        NativeApprovalKind::FileChange | NativeApprovalKind::LegacyPatch
+                    ));
+            check_approval_grant(&service, &agent, allowed).await;
+        }
+    }
+}
+
+async fn check_approval_grant(
+    service: &Arc<LocalControlService>,
+    agent: &Arc<ApprovalAgent>,
+    allowed: bool,
+) {
+    let running = {
+        let service = service.clone();
+        tokio::spawn(async move { service.execute(send("one")).await })
+    };
+    wait_for_signal(&agent.requested).await;
+    let (run_id, approval_id) = pending_approval(service).await;
+    let response = service
+        .execute(Command::ResolveNativeApproval {
+            run_id: run_id.clone(),
+            approval_id: approval_id.clone(),
+            action: NativeApprovalAction::Approve,
+            scope: Some(ApprovalGrantScope::OneShot),
+        })
+        .await;
+    // Always finish the provider task, including when the assertion will fail.
+    let approval = view(service)
+        .await
+        .runs
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .unwrap()
+        .native_approvals
+        .remove(0);
+    if !response.ok {
+        ok(
+            service,
+            Command::ResolveNativeApproval {
+                run_id,
+                approval_id,
+                action: NativeApprovalAction::Deny,
+                scope: None,
+            },
+        )
+        .await;
+    }
+    let result = tokio::time::timeout(Duration::from_secs(3), running)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.ok, "{:?}", result.error);
+    assert_eq!(response.ok, allowed, "{:?}: {response:?}", agent.kind);
+    if allowed {
+        assert_eq!(approval.status, ait_domain::NativeApprovalStatus::Approved);
+    } else {
+        assert_eq!(
+            response.error.unwrap().code,
+            ErrorCode::InvalidConfiguration
+        );
+        assert_eq!(approval.status, ait_domain::NativeApprovalStatus::Pending);
+        assert!(approval.granted_scope.is_none());
+        assert!(approval.granted_permissions.is_none());
+        assert_eq!(
+            *agent.decision.lock().unwrap(),
+            Some(WorkspaceApprovalDecision::Denied)
+        );
+    }
+}
+
+#[tokio::test]
+async fn workspace_file_grants_reject_outside_and_ambiguous_paths() {
+    for kind in [
+        NativeApprovalKind::FileChange,
+        NativeApprovalKind::LegacyPatch,
+    ] {
+        for path in [
+            "../escaped.txt",
+            "nested/../../escaped.txt",
+            "nested/../safe.txt",
+        ] {
+            let mut fixture = ApprovalAgent::new(kind);
+            fixture.target = Some(NativeApprovalTarget::FileChange {
+                grant_root: None,
+                changes: vec![ait_domain::NativeApprovalFileChange {
+                    path: path.into(),
+                    kind: ait_domain::NativeApprovalFileChangeKind::Add,
+                }],
+            });
+            let agent = Arc::new(fixture);
+            let service = Arc::new(LocalControlService::with_workspace_agent(
+                Arc::new(SqliteControlStore::in_memory().unwrap()),
+                agent.clone(),
+            ));
+            let _directory = setup(&service, config("high")).await;
+            save_permission_settings(&service, "workspace_write", "on_request").await;
+            check_approval_grant(&service, &agent, false).await;
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn workspace_file_grants_reject_symlinks_including_dangling_targets() {
+    for dangling in [false, true] {
+        let outside = tempfile::tempdir().unwrap();
+        let mut fixture = ApprovalAgent::new(NativeApprovalKind::FileChange);
+        fixture.target = Some(NativeApprovalTarget::FileChange {
+            grant_root: Some("link".into()),
+            changes: Vec::new(),
+        });
+        let agent = Arc::new(fixture);
+        let service = Arc::new(LocalControlService::with_workspace_agent(
+            Arc::new(SqliteControlStore::in_memory().unwrap()),
+            agent.clone(),
+        ));
+        let directory = setup(&service, config("high")).await;
+        let target = if dangling {
+            outside.path().join("missing")
+        } else {
+            outside.path().to_path_buf()
+        };
+        std::os::unix::fs::symlink(target, directory.path().join("link")).unwrap();
+        for args in [
+            &["add", "link"][..],
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "fixture link",
+            ][..],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(directory.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        save_permission_settings(&service, "workspace_write", "on_request").await;
+        check_approval_grant(&service, &agent, false).await;
+    }
+}
+
+#[tokio::test]
+async fn invalid_permission_profiles_never_echo_input_in_errors() {
+    use ait_ports::WorkspaceApproval as _;
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    for permissions in [
+        serde_json::json!({"network": {"enabled": "fixture-secret"}}),
+        serde_json::json!({"fixture-secret": true}),
+        serde_json::json!({"fileSystem": {"entries": [{"path": {"type": "path", "path": "/workspace"}, "access": "fixture-secret"}]}}),
+    ] {
+        let failure = service
+            .decide(WorkspaceApprovalRequest {
+                run_id: "run".into(),
+                protocol_request_id: serde_json::json!(73),
+                method: "item/permissions/requestApproval".into(),
+                kind: NativeApprovalKind::Permissions,
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                item_id: "item".into(),
+                target: NativeApprovalTarget::Permissions {
+                    cwd: "/workspace".into(),
+                },
+                requested_permissions: Some(permissions),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::ToolApprovalRequired);
+        assert!(!format!("{failure:?}").contains("fixture-secret"));
+    }
+}
+
+#[tokio::test]
+async fn corrupt_permission_settings_fail_closed_without_echoing_values() {
+    for key in ["permissions.sandbox", "permissions.approval"] {
+        let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+        let native = Arc::new(CapturingWorkspaceAgent::default());
+        let service = LocalControlService::with_workspace_agent(store.clone(), native.clone());
+        let _directory = setup(&service, config("high")).await;
+        let snapshot = store.load().await.unwrap();
+        let mut corrupted = snapshot.value;
+        corrupted["settings"][key] = serde_json::json!("fixture-secret");
+        store
+            .replace_state(snapshot.revision, corrupted, Vec::new())
+            .await
+            .unwrap();
+        let rejected = service.execute(send("one")).await;
+        assert_eq!(
+            rejected.error.as_ref().unwrap().code,
+            ErrorCode::InvalidConfiguration
+        );
+        assert!(!format!("{rejected:?}").contains("fixture-secret"));
+        assert_eq!(view(&service).await.messages.len(), 1);
+        assert!(view(&service).await.runs.is_empty());
+        assert!(native.0.lock().unwrap().is_empty());
+    }
 }

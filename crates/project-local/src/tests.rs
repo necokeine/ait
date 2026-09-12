@@ -129,6 +129,7 @@ impl ProjectStore for MemoryProjectStore {
         let session = Session::new(
             command.session_id,
             command.project_id,
+            PathBuf::from("/project/.ait/session-1"),
             session_name,
             root_message.id,
             command.agent_id,

@@ -3680,3 +3680,191 @@ async fn initialized_submodules_are_rejected_with_an_actionable_error() {
     assert!(submodule_status.contains(" module"));
     assert!(git_output(project.path(), &["status", "--porcelain=v1"]).is_empty());
 }
+
+#[derive(Debug)]
+struct PermissionRoundtripAdapter(Option<PathBuf>);
+
+#[async_trait]
+impl AgentAdapter for PermissionRoundtripAdapter {
+    fn driver(&self) -> &'static str {
+        "permission-roundtrip"
+    }
+    fn capabilities(&self) -> AgentCapabilities {
+        PolicyCapturingAdapter::default().capabilities()
+    }
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        let permissions = json!({"fileSystem": {"write": [self.0.as_ref().unwrap_or(&request.cwd).join("new.txt")]}});
+        let decision = request
+            .approval_handler
+            .as_ref()
+            .unwrap()
+            .decide(&ait_agent_adapters::ApprovalRequest {
+                request_id: json!(73),
+                method: "item/permissions/requestApproval".into(),
+                kind: ait_agent_adapters::ApprovalKind::Permissions,
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                item_id: "item".into(),
+                target: ait_domain::NativeApprovalTarget::Permissions {
+                    cwd: request.cwd.to_string_lossy().into_owned(),
+                },
+                params: json!({"permissions": permissions}),
+            })
+            .await;
+        assert_eq!(
+            decision,
+            ait_agent_adapters::ApprovalDecision::Raw(
+                json!({"permissions": permissions, "scope": "turn"})
+            )
+        );
+        PolicyCapturingAdapter::default().run(request).await
+    }
+}
+
+struct GrantProjectedPermissions {
+    project: PathBuf,
+}
+
+#[async_trait]
+impl ait_ports::WorkspaceApproval for GrantProjectedPermissions {
+    async fn expire(
+        &self,
+        _request: &ait_ports::WorkspaceApprovalRequest,
+    ) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+    async fn decide(
+        &self,
+        request: ait_ports::WorkspaceApprovalRequest,
+    ) -> Result<ait_ports::WorkspaceApprovalDecision, ait_domain::DomainError> {
+        assert_eq!(
+            request.requested_permissions.as_ref().unwrap()["fileSystem"]["write"][0],
+            self.project.join("new.txt").to_string_lossy().as_ref()
+        );
+        Ok(ait_ports::WorkspaceApprovalDecision::Approved {
+            scope: ait_domain::ApprovalGrantScope::Turn,
+            permissions: request.requested_permissions,
+        })
+    }
+}
+
+#[tokio::test]
+async fn permission_approval_restores_isolated_paths_before_answering_codex() {
+    let project = initialized_project();
+    let mut request = paused_request(project.path(), "permission-roundtrip");
+    request.approvals = Arc::new(GrantProjectedPermissions {
+        project: project.path().to_path_buf(),
+    });
+    CodexWorkspaceAgent::new(Arc::new(PermissionRoundtripAdapter(None)))
+        .invoke(request)
+        .await
+        .unwrap();
+}
+
+#[derive(Debug)]
+struct FileGrantAdapter {
+    primary: PathBuf,
+    outside: PathBuf,
+    case: &'static str,
+}
+
+#[async_trait]
+impl AgentAdapter for FileGrantAdapter {
+    fn driver(&self) -> &'static str {
+        "file-grant-boundary"
+    }
+    fn capabilities(&self) -> AgentCapabilities {
+        PolicyCapturingAdapter::default().capabilities()
+    }
+    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        let path = match self.case {
+            "primary" => self.primary.join("new.txt"),
+            "outside" => self.outside.join("new.txt"),
+            "parent" => request.cwd.join("nested/../new.txt"),
+            _ => request.cwd.join("new.txt"),
+        };
+        let decision = request
+            .approval_handler
+            .as_ref()
+            .unwrap()
+            .decide(&ait_agent_adapters::ApprovalRequest {
+                request_id: json!(74),
+                method: "item/fileChange/requestApproval".into(),
+                kind: ait_agent_adapters::ApprovalKind::FileChange,
+                thread_id: "thread".into(),
+                turn_id: "turn".into(),
+                item_id: "item".into(),
+                target: ait_domain::NativeApprovalTarget::FileChange {
+                    grant_root: None,
+                    changes: vec![ait_domain::NativeApprovalFileChange {
+                        path: path.to_string_lossy().into_owned(),
+                        kind: ait_domain::NativeApprovalFileChangeKind::Add,
+                    }],
+                },
+                params: json!({}),
+            })
+            .await;
+        let expected = if self.case == "inside" {
+            ait_agent_adapters::ApprovalDecision::Accept
+        } else {
+            ait_agent_adapters::ApprovalDecision::Decline
+        };
+        assert_eq!(decision, expected, "{}", self.case);
+        PolicyCapturingAdapter::default().run(request).await
+    }
+}
+
+struct GrantFile;
+#[async_trait]
+impl ait_ports::WorkspaceApproval for GrantFile {
+    async fn expire(
+        &self,
+        _request: &ait_ports::WorkspaceApprovalRequest,
+    ) -> Result<(), ait_domain::DomainError> {
+        Ok(())
+    }
+    async fn decide(
+        &self,
+        _request: ait_ports::WorkspaceApprovalRequest,
+    ) -> Result<ait_ports::WorkspaceApprovalDecision, ait_domain::DomainError> {
+        Ok(ait_ports::WorkspaceApprovalDecision::Approved {
+            scope: ait_domain::ApprovalGrantScope::OneShot,
+            permissions: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn workspace_approval_checks_execution_paths_before_project_projection() {
+    for case in ["primary", "outside", "parent", "inside"] {
+        let project = initialized_project();
+        let outside = TempDir::new().unwrap();
+        let mut request = paused_request(project.path(), "execution-boundary");
+        request.approvals = Arc::new(GrantFile);
+        let adapter = FileGrantAdapter {
+            primary: project.path().to_path_buf(),
+            outside: outside.path().to_path_buf(),
+            case,
+        };
+        CodexWorkspaceAgent::new(Arc::new(adapter))
+            .invoke(request)
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn full_access_permission_roundtrip_preserves_explicit_primary_paths() {
+    let project = initialized_project();
+    let mut request = paused_request(project.path(), "full-permission-roundtrip");
+    request.permission_profile.sandbox = SandboxAccess::FullAccess;
+    request.approvals = Arc::new(GrantProjectedPermissions {
+        project: project.path().to_path_buf(),
+    });
+    CodexWorkspaceAgent::new(Arc::new(PermissionRoundtripAdapter(Some(
+        project.path().to_path_buf(),
+    ))))
+    .invoke(request)
+    .await
+    .unwrap();
+}

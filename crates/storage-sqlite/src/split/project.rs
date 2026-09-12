@@ -20,7 +20,7 @@ pub(super) fn open_project(
             root.display()
         )));
     }
-    let directory = root.join(".metafab");
+    let directory = root.join(".ait");
     reject_symlink(&directory)?;
     let path = directory.join("project.sqlite3");
     for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -121,9 +121,9 @@ fn exclude_history(root: &Path) -> Result<(), ControlStoreError> {
     {
         return Err(other("Project workdir must be a Git root"));
     }
-    if !git(root, &["ls-files", "--", ".metafab"])?.is_empty() {
+    if !git(root, &["ls-files", "--", ".ait"])?.is_empty() {
         return Err(other(
-            "Project .metafab contains tracked files; refusing to store history in Git",
+            "Project .ait contains tracked files; refusing to store history in Git",
         ));
     }
     let exclude = git(
@@ -141,7 +141,7 @@ fn exclude_history(root: &Path) -> Result<(), ControlStoreError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(io_error(error)),
     };
-    if !existing.lines().any(|line| line.trim() == "/.metafab/") {
+    if !existing.lines().any(|line| line.trim() == "/.ait/") {
         fs::create_dir_all(
             exclude
                 .parent()
@@ -153,7 +153,7 @@ fn exclude_history(root: &Path) -> Result<(), ControlStoreError> {
             .append(true)
             .open(exclude)
             .map_err(io_error)?;
-        file.write_all(b"\n/.metafab/\n").map_err(io_error)?;
+        file.write_all(b"\n/.ait/\n").map_err(io_error)?;
         file.sync_all().map_err(io_error)?;
     }
     Ok(())

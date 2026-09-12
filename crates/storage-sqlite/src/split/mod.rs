@@ -26,7 +26,7 @@ const PROJECT_KINDS: [ControlRecordKind; 5] = [
     ControlRecordKind::WorkspaceRunJournal,
 ];
 
-/// File-backed catalog with each Project's history in `.metafab/project.sqlite3`.
+/// File-backed catalog with each Project's history in `.ait/project.sqlite3`.
 ///
 /// All cooperating processes serialize through a catalog lock. Project payloads
 /// (including prepared changes and event bodies) never enter the global journal.

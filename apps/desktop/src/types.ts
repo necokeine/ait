@@ -62,6 +62,7 @@ export interface AgentSummary {
 export interface DesktopSession {
   id: string;
   projectId: string;
+  workdir: string;
   name: string;
   title: string;
   description: string;
@@ -252,6 +253,7 @@ export interface AitDesktopApi {
   chooseProjectDirectory(): Promise<string | null>;
   openProjectFile(input: {
     projectId: string;
+    sessionId?: string;
     path: string;
     line?: number;
     column?: number;

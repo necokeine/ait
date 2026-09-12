@@ -88,7 +88,7 @@ async fn project_storage_symlinks_cannot_redirect_creation() {
     git_project(&root);
     let outside = temp.path().join("outside");
     std::fs::create_dir(&outside).unwrap();
-    std::os::unix::fs::symlink(&outside, root.join(".metafab")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join(".ait")).unwrap();
     let store = SplitSqliteControlStore::open(temp.path().join("global.sqlite3")).unwrap();
     assert!(
         store
@@ -282,7 +282,7 @@ async fn histories_events_progress_and_backups_are_physically_separate() {
     assert_eq!(count(&global, "SELECT count(*) FROM pending_commit"), 0);
     for id in ["a", "b"] {
         let root = temp.path().join(id);
-        let project = Connection::open(root.join(".metafab/project.sqlite3")).unwrap();
+        let project = Connection::open(root.join(".ait/project.sqlite3")).unwrap();
         assert_eq!(count(&project, "SELECT count(*) FROM messages"), 1);
         assert_eq!(
             count(
@@ -644,7 +644,7 @@ async fn foreign_identity_and_future_versions_are_rejected_without_mutation() {
         .apply(0, project_records(&root, "a"), Vec::new())
         .await
         .unwrap();
-    let project = Connection::open(root.join(".metafab/project.sqlite3")).unwrap();
+    let project = Connection::open(root.join(".ait/project.sqlite3")).unwrap();
     project.pragma_update(None, "foreign_keys", false).unwrap();
     project
         .execute("UPDATE project_identity SET project_id='other'", [])

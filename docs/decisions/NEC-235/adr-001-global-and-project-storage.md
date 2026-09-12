@@ -14,20 +14,24 @@ daemon 使用 `SplitSqliteControlStore`。`--database` 及 Desktop 现有全局�
 | 位置 | 持久化内容 |
 | --- | --- |
 | `--database` | Project registry、Agent、Provider、Provider credential reference、Cron、Settings、revision、实体路由索引和事件游标索引 |
-| `<project>/.metafab/project.sqlite3` | Message、Session、Run、Run credential reference、workspace journal、progress checkpoint、Project 事件正文和非秘密 Run 配置快照 |
+| `<project>/.ait/project.sqlite3` | Message、Session、Run、Run credential reference、workspace journal、progress checkpoint、Project 事件正文和非秘密 Run 配置快照 |
 
 全局路由索引只保存实体种类、ID 和 Project ID。Project 事件正文在项目库中，全局只保存
 cursor、kind、entity ID、时间和 Project ID；Project/Agent/Provider/Cron/Settings 目录事件仍在全局。
 公开 SSE cursor 连续且保持原有保留窗口；项目库的历史事件不自动 GC。
 凭据仍由现有凭据端口管理，SQLite 只保存 reference，不引入秘密值副本。
 
+项目存储目录统一为 Project 根目录下的 `.ait/`；`project.sqlite3` 与 ADR-013 规定的
+`<session-id>/` 工作树共用此目录。数据库名及其 `-wal`、`-shm`、`-journal` 文件名保留，
+不能用作 Session ID，以免工作树占用存储路径。本次目录更名不提供旧目录探测、搬迁或兼容回退。
+
 每个 Project 库包含唯一 `project_identity`、协调器 ID、独立 `application_id=AIP1` 和
 `user_version=1`；全局使用 `AIG1`。未知或更高格式拒绝写入。
 Project 表外键指向本库 identity，Message parent 和 workspace journal 的 Run 引用保留本库约束；
 Message 更新/删除仍由 trigger 拒绝。应用层领域校验保持不变。
 
-首次注册时验证 Git root，将 `/.metafab/` 追加到 Git 的 `info/exclude`，保留已有规则，
-拒绝已跟踪的 `.metafab` 文件及指向别处的存储符号链接。新目录在 Unix 上使用 `0700`。
+首次注册时验证 Git root，将 `/.ait/` 追加到 Git 的 `info/exclude`，保留已有规则，
+拒绝已跟踪的 `.ait` 文件及指向别处的存储符号链接。新目录在 Unix 上使用 `0700`。
 已注册 Project 的数据库缺失时不自动重建。不同 Project ID 或不同全局协调器不得接管现存库。
 
 ## 跨文件提交与恢复

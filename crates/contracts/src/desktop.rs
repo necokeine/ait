@@ -55,6 +55,8 @@ pub struct DesktopSession {
     pub id: String,
     /// Owning Project.
     pub project_id: String,
+    /// Absolute manager-owned linked worktree used by this Session.
+    pub workdir: String,
     /// Optional member-authored name, empty when unset.
     pub name: String,
     /// Display title.
@@ -78,6 +80,7 @@ impl From<&Session> for DesktopSession {
         Self {
             id: session.id.as_str().to_owned(),
             project_id: session.project_id.as_str().to_owned(),
+            workdir: session.workdir.to_string_lossy().into_owned(),
             name: session.name.clone(),
             title: if session.name.trim().is_empty() {
                 session.title.clone().unwrap_or_else(|| {
@@ -399,7 +402,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.approval",
             SettingCategory::Permissions,
             "Approval mode",
-            "on_request follows Codex escalation requests; untrusted_only asks for commands Codex classifies as untrusted. Legacy always cannot be represented by the current protocol and makes Codex Run admission fail closed.",
+            "Codex only: on_request follows escalation requests; untrusted_only asks for untrusted commands. Shell approvals require an explicit full_access Run because confinement cannot be proven; network approvals remain separate. Legacy always makes Codex Run admission fail closed. API providers use on_request without native approvals.",
             SettingKind::Select {
                 options: vec![
                     "on_request".into(),
@@ -414,11 +417,11 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.sandbox",
             SettingCategory::Permissions,
             "Sandbox profile",
-            "read_only forbids Agent writes; workspace_write allows only the isolated Project; full_access removes the filesystem sandbox only when explicitly selected. Legacy strict is a read_only alias.",
+            "Default read_only forbids Agent writes. Codex uses its native sandbox and isolated Project; full_access requires administrator permission. OpenAI/DeepSeek HostTools use the exact provider/model catalog intersected with executable capabilities: workspace_write and full_access both remain within the Project root, under the administrator ceiling. Legacy strict is a read_only alias.",
             SettingKind::Select {
                 options: vec![
-                    "workspace_write".into(),
                     "read_only".into(),
+                    "workspace_write".into(),
                     "full_access".into(),
                     "strict".into(),
                 ],

@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    path::PathBuf,
     sync::{Arc, Barrier, Mutex},
     thread,
 };
@@ -275,6 +276,7 @@ fn a_session_can_continue_a_message_created_by_another_session() {
         .open_session(
             SessionId::new("s1"),
             project("p1"),
+            PathBuf::from("/project/.ait/s1"),
             message_id("m0"),
             agent("a1"),
         )
@@ -292,6 +294,7 @@ fn a_session_can_continue_a_message_created_by_another_session() {
         .open_session(
             SessionId::new("s2"),
             project("p1"),
+            PathBuf::from("/project/.ait/s2"),
             message_id("m1"),
             agent("a1"),
         )
@@ -319,6 +322,7 @@ fn opening_a_head_in_another_project_is_rejected() {
     let result = service.open_session(
         SessionId::new("s1"),
         project("p2"),
+        PathBuf::from("/project/.ait/s1"),
         message_id("m0"),
         agent("a1"),
     );
@@ -350,6 +354,7 @@ fn concurrent_cas_keeps_the_losing_message_as_a_sibling_branch() {
         .open_session(
             SessionId::new("s1"),
             project("p1"),
+            PathBuf::from("/project/.ait/s1"),
             message_id("m0"),
             agent("a1"),
         )
@@ -396,6 +401,7 @@ fn session_update_failure_reports_the_message_that_was_already_preserved() {
         .open_session(
             SessionId::new("s1"),
             project("p1"),
+            PathBuf::from("/project/.ait/s1"),
             message_id("m0"),
             agent("a1"),
         )
@@ -471,6 +477,7 @@ fn redacted_nodes_keep_their_place_without_exposing_content() {
         .open_session(
             SessionId::new("s1"),
             project("p1"),
+            PathBuf::from("/project/.ait/s1"),
             message_id("m2"),
             agent("a1"),
         )

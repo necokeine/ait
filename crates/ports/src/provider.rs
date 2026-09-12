@@ -22,6 +22,50 @@ pub trait AgentProviderGateway: Send + Sync {
         provider: &AgentProvider,
         secret: &str,
     ) -> Result<Vec<ProviderModel>, DomainError>;
+    /// Generate one structured turn. The host owns persistence and tool execution.
+    async fn complete_turn(
+        &self,
+        provider: &AgentProvider,
+        credential_ref: &str,
+        config: &AgentConfiguration,
+        request: crate::AgentInvocation,
+        executable_tools: Vec<String>,
+    ) -> Result<crate::AgentResponse, DomainError> {
+        if !executable_tools.is_empty() {
+            return Err(DomainError::invariant(
+                ait_domain::ErrorCode::InvalidConfiguration,
+                "provider gateway does not support host tools",
+            ));
+        }
+        let messages = request
+            .message_path
+            .into_iter()
+            .filter_map(|entry| {
+                let ait_domain::ProjectedMessage::Visible(message) = entry else {
+                    return None;
+                };
+                Some(ProviderMessage {
+                    role: serde_json::to_value(message.role).ok()?.as_str()?.into(),
+                    text: message
+                        .sub_messages
+                        .into_iter()
+                        .filter_map(|part| match part {
+                            ait_domain::SubMessage::Text { text } => Some(text),
+                            _ => None,
+                        })
+                        .collect(),
+                })
+            })
+            .collect();
+        Ok(crate::AgentResponse {
+            sub_messages: vec![ait_domain::SubMessage::Text {
+                text: self
+                    .complete(provider, credential_ref, config, messages)
+                    .await?,
+            }],
+            usage: ait_domain::RunUsage::default(),
+        })
+    }
     /// Invoke one LLM turn against the fixed Agent configuration.
     async fn complete(
         &self,

@@ -61,7 +61,7 @@ adapter 前必须把该流程实现为可 dry-run 的维护命令。
 
 不要直接复制处于 WAL 模式的 `.sqlite3` 文件。在线备份使用
 `SplitSqliteControlStore::backup_global_to` 和 `backup_project_to`（SQLite Online Backup API）。
-全局库只包含目录、路由与事件索引；每个 `<project>/.metafab/project.sqlite3` 保存该项目的
+全局库只包含目录、路由与事件索引；每个 `<project>/.ait/project.sqlite3` 保存该项目的
 历史、事件正文和 checkpoint。必须分别备份，不包含外置 provider secret。每次备份后：
 
 1. 以只读/隔离连接打开备份。
@@ -74,7 +74,7 @@ adapter 前必须把该流程实现为可 dry-run 的维护命令。
 ```bash
 sqlite3 ait.sqlite3 ".backup 'backups/ait-2026-09-04.sqlite3'"
 sqlite3 backups/ait-2026-09-04.sqlite3 "PRAGMA quick_check;"
-sqlite3 /path/to/project/.metafab/project.sqlite3 ".backup 'backups/project-2026-09-04.sqlite3'"
+sqlite3 /path/to/project/.ait/project.sqlite3 ".backup 'backups/project-2026-09-04.sqlite3'"
 ```
 
 ## 恢复演练

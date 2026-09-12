@@ -210,6 +210,9 @@ pub struct AgentView {
 pub struct SessionView {
     pub id: String,
     pub project_id: String,
+    /// Absolute manager-owned linked worktree used by this Session.
+    #[serde(default)]
+    pub workdir: String,
     #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,6 +379,10 @@ pub struct NativeApprovalView {
 /// submission routes and queries can expose an intermediate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunView {
+    /// Canonical host runtime state for API Providers; absent for native harness Runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Box<ApiRunExecution>>,
+
     pub id: String,
     pub project_id: String,
     pub base_message_id: String,
@@ -423,6 +430,14 @@ pub struct CronView {
     pub schedule: String,
     pub timezone: String,
     pub enabled: bool,
+}
+
+/// Durable coordinator state stored atomically with the public Run projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApiRunExecution {
+    pub run: ait_domain::Run,
+    pub attempts: Vec<ait_domain::RunAttempt>,
+    pub tools: Vec<ait_domain::ToolExecution>,
 }
 
 /// Portable, credential-free Project and Session archive.

@@ -70,19 +70,35 @@ assert_eq!(profiles.resolve("deepseek", "my-model-id").tools().len(), 1);
 // Assign profiles to LLMClientConfig.tool_sets before constructing the client.
 ```
 
-This first stage implements **prompt, tool contracts and request assembly**.
-Definitions do not install executors, grant access, or turn a single completion
-into an agent loop. A host enabling calls must supply the named implementations,
-enforce workspace/approval/model capabilities, persist ToolUse and ToolResult,
-and continue the Run through its existing termination barrier. `read_image`
-specifically requires image support. Cross-field rules (such as `provider` plus
-`model`, or editor command-specific arguments) are executor responsibilities.
+The public OpenAI/DeepSeek Session path now uses the existing `RunCoordinator`
+with `HostToolFactory`. After exact provider/model selection, the adapter advertises
+only executable functions: `read`, `grep`, and Unix `bash`; writable Runs also get
+`write` and `edit`. Unsupported options are removed from schemas and rejected by
+the executor. The remaining catalog is available for future implementations.
 
-`LLMClient::prompt`, `text_request`, and the current text-only
-`RigProviderGateway` send the system prompt with **no function catalog**. The
-gateway cannot handle structured tool results yet. Rich API callers use
-`complete(completion_request(...))` and receive tool calls as data. Schema
-presence must never be described as proof of an implemented tool loop.
+Files are Project-relative, non-hidden, bounded to 64 KiB, and opened through
+capability directory handles without following symlinks. Writes atomically replace
+files. `read_only` cannot write; all modes retain the admitted Run ceiling and
+administrator limit. Wider permission requests receive a persisted denial.
+
+`bash` is a controlled command slice: only `echo`, `printf`, and `sleep` are admitted
+through fixed binaries, with no interpreter, environment inheritance, network,
+redirection or background jobs. Commands time out after at most 30 seconds; output
+is bounded. Windows does not advertise a shell executor yet.
+
+The host persists intent before execution and a unique user ToolResult afterward.
+Up to four safe calls can run concurrently; results append in proposal order.
+Filesystem calls run on tracked blocking workers with cancellation checks during
+traversal, chunked I/O and before atomic publication. Cancellation/deadline drains
+all workers before terminal state or Session release; an OS call already in flight
+may delay that acknowledgment, but cannot outlive it. Commands are killed and reaped.
+Successful tool rounds keep the same attempt. Unknown crash outcomes are never
+replayed. API changes remain uncommitted for member review. See
+[NEC-247](../../docs/decisions/NEC-247/adr-001-api-provider-host-tool-loop.md) and
+[WF-13](../../workflows/13-api-provider-tool-loop.md).
+
+`LLMClient::prompt` and `text_request` remain explicit text-only helpers.
+`complete` remains one SDK request; it does not own a Run or execute a tool.
 
 ## Verification
 

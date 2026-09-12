@@ -30,13 +30,14 @@ impl From<MaximumSandbox> for SandboxAccess {
 
 #[derive(Parser)]
 struct Arguments {
-    /// Global `SQLite` catalog; Project histories live in `<project>/.metafab/project.sqlite3`.
+    /// Global `SQLite` catalog; Project histories live in `<project>/.ait/project.sqlite3`.
     #[arg(long, default_value = "ait.sqlite3")]
     database: PathBuf,
     /// Loopback address exposed to local clients.
     #[arg(long, default_value = "127.0.0.1:7314")]
     listen: SocketAddr,
-    /// Maximum Codex filesystem sandbox access the administrator permits.
+    /// Maximum filesystem sandbox access permitted for every provider.
+    /// This ceiling does not change the `read_only` default for new Runs.
     #[arg(long, value_enum, default_value = "full-access")]
     max_sandbox: MaximumSandbox,
     /// Disable session-scoped native approval grants.
@@ -65,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 allow_session_approvals: !arguments.deny_session_approvals,
             })
             .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
+            .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
             .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
     );

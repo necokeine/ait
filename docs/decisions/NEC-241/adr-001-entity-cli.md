@@ -96,7 +96,7 @@ turn/session；session grant 受管理员策略限制。CLI 固定枚举对应�
 代码写入前先 `settings get`，保留完整 values 和最新 revision，将 sandbox 改为 `workspace_write`，
 再 `settings set --expected-revision <revision> --input <values文件>`，之后才能发起新的 Run。
 权限在 Run 准入时固定，受管理员上限约束；`strict` 是 read_only 别名，旧 approval=always
-会使 Codex 准入失败。普通 API Provider 当前只生成文本，权限上限不代表新增了文件/进程工具。
+会使 Codex 准入失败。NEC-247 为普通 API Provider 接入宿主工具循环：工具表取精确 provider+model 与执行器能力的交集；API 首版 full_access 仍受 Project 根与管理员上限约束。
 
 ## 验证与后果
 

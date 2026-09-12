@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write as _,
     fs::{File, OpenOptions},
+    io::Write as IoWrite,
     panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
@@ -29,10 +30,9 @@ use ait_domain::{
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
     ControlRecordKind, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
-    ProjectDirectoryCreator, ProviderMessage, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
-    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationGate,
-    WorkspaceOutputItem, WorkspaceResultSink,
+    ProjectDirectoryCreator, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceApprovalDecision,
+    WorkspaceApprovalRequest, WorkspaceIntegrationGate, WorkspaceOutputItem, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod agents;
+mod api_run;
 mod progress;
 use agents::{
     InvocationGuard, agent_for_session, builtin_providers, check_session_admission, migrate_state,
@@ -349,6 +350,7 @@ pub struct LocalControlService {
         Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<WorkspaceApprovalDecision>>>>>,
     permission_limits: PermissionPolicyLimits,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
+    api_tools: Option<Arc<dyn ait_ports::RunToolFactory>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
@@ -383,6 +385,7 @@ impl LocalControlService {
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
+            api_tools: None,
             host_provider_catalog: None,
             workspace_agent: None,
             session_title_generator: None,
@@ -405,10 +408,18 @@ impl LocalControlService {
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
+            api_tools: None,
             host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
         }
+    }
+
+    /// Installs the host tool executor factory used only by API Providers.
+    #[must_use]
+    pub fn with_api_tools(mut self, factory: Arc<dyn ait_ports::RunToolFactory>) -> Self {
+        self.api_tools = Some(factory);
+        self
     }
 
     /// Adds the host capability used only when Project registration omits a workdir.
@@ -421,6 +432,7 @@ impl LocalControlService {
         self
     }
 
+    /// Installs the credential and API completion gateway.
     #[must_use]
     pub fn with_provider_gateway(mut self, gateway: Arc<dyn AgentProviderGateway>) -> Self {
         self.provider_gateway = Some(gateway);
@@ -575,7 +587,11 @@ impl LocalControlService {
             let run = record_value(&run_read, Kind::Run, run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let project_id = required_string(run, "project_id")?;
-            let message_id = required_string(run, "base_message_id")?;
+            let message_id = run
+                .get("last_message_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or(required_string(run, "base_message_id")?);
             let mut filters = vec![
                 ControlFilter::id(Kind::Run, run_id),
                 ControlFilter::id(Kind::Project, project_id),
@@ -762,6 +778,7 @@ impl LocalControlService {
                 ControlFilter::id(Kind::Provider, &provider_id),
                 ControlFilter::id(Kind::Session, session_id),
                 ControlFilter::id(Kind::Message, message_id),
+                ControlFilter::project(Kind::Message, project_id),
                 ControlFilter::all(Kind::Settings),
             ];
             if include_credential {
@@ -840,6 +857,7 @@ impl LocalControlService {
                 ControlFilter::id(Kind::Session, source_session_id),
                 ControlFilter::id(Kind::Session, session_id),
                 ControlFilter::id(Kind::Message, at_message_id),
+                ControlFilter::project(Kind::Message, project_id),
                 ControlFilter::message_children(at_message_id),
                 ControlFilter::id(Kind::Agent, agent_id),
                 ControlFilter::id(Kind::Agent, source_agent_id),
@@ -1249,7 +1267,7 @@ impl LocalControlService {
                 .position(|session| session.id == session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
             let session = state.sessions[index].clone();
-            let project = state
+            let _project = state
                 .projects
                 .iter()
                 .find(|project| project.id == session.project_id)
@@ -1262,7 +1280,7 @@ impl LocalControlService {
             #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
             let local_only = false;
             if session.title_generation_started || !session.name.trim().is_empty() {
-                return Ok((session, project.workdir.clone(), false, local_only));
+                return Ok((session.clone(), session.workdir, false, local_only));
             }
             if !is_first_completed_interaction(&state, &session) {
                 return Err(error(
@@ -1280,7 +1298,7 @@ impl LocalControlService {
             );
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
-                    return Ok((session, project.workdir.clone(), true, local_only));
+                    return Ok((session.clone(), session.workdir, true, local_only));
                 }
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
@@ -1341,6 +1359,11 @@ impl LocalControlService {
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
+        if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+            return self
+                .execute_api_run(&run, control.cancellation.clone())
+                .await;
+        }
         let Some(lease) = self.set_run_running(&run.id).await? else {
             let state = self.read_run_records(&run.id).await?.original;
             return state
@@ -1359,8 +1382,15 @@ impl LocalControlService {
             checkpointed: AtomicBool::new(false),
         };
         let call = async {
+            // Queued Runs can outlive the daemon policy that admitted them.
+            // Keep their snapshot immutable, but recheck the current ceiling
+            // before invoking either provider after startup recovery.
+            validate_run_permission_ceiling(run.permission_profile, self.permission_limits)?;
             match run.provider.kind {
-                AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, &run).await,
+                AgentMode::OpenAI | AgentMode::DeepSeek => Err(DomainError::invariant(
+                    ErrorCode::InvalidRun,
+                    "API Run must use the host coordinator",
+                )),
                 AgentMode::Codex => {
                     self.invoke_codex_workspace_checkpointed(
                         &state,
@@ -1459,9 +1489,7 @@ impl LocalControlService {
         let worker_run_id = run_id.clone();
         let task_control = Arc::clone(&control);
         let task = tokio::spawn(async move {
-            worker
-                .execute_workspace_agent(&worker_run_id, task_control)
-                .await
+            Box::pin(worker.execute_workspace_agent(&worker_run_id, task_control)).await
         });
         let result = match task.await {
             Ok(Ok(run)) => Ok(run),
@@ -1509,12 +1537,7 @@ impl LocalControlService {
                 .map_or_else(|| format!("workspace-{run_id}"), str::to_owned);
             let lease_epoch = state.runs[index].lease_epoch.saturating_add(1);
             let baseline_ref = if state.runs[index].provider.kind == AgentMode::Codex {
-                let project = state
-                    .projects
-                    .iter()
-                    .find(|project| project.id == state.runs[index].project_id)
-                    .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-                git_symbolic_head(Path::new(&project.workdir))?
+                git_symbolic_head(&run_workdir(&state, &state.runs[index])?)?
             } else {
                 None
             };
@@ -1755,11 +1778,18 @@ impl LocalControlService {
                     ));
                 }
             }
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_workspace_status(&run.status) && !api_run::needs_terminal_repair(&run) {
                 let _ = self.store.clear_progress(&lease.run_id).await;
                 return Ok(run);
             }
-            if run.status == "settling" && result.is_err() {
+            if run.execution.is_some() && run.status == "cancelling" {
+                run.status = "cancelled".into();
+                run.error = Some(error(
+                    ErrorCode::RunCancelled,
+                    "API Run cancellation completed after worker settlement",
+                    false,
+                ));
+            } else if run.status == "settling" && result.is_err() {
                 let failure = result.as_ref().expect_err("checked error");
                 run.status = "interrupted".into();
                 run.error = Some(error(
@@ -1783,6 +1813,9 @@ impl LocalControlService {
             };
             expire_pending_native_approvals(&mut run, approval_status);
             run.phase = Some("terminal".into());
+            api_run::interrupt(&mut run);
+            api_run::append_terminal_results(&mut state, &mut run)
+                .map_err(|_| recovery_error("could not settle API child records"))?;
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.updated", Some(lease.run_id.clone()), &run);
@@ -1904,7 +1937,10 @@ impl LocalControlService {
                         .original
                         .runs
                         .into_iter()
-                        .filter(|run| !is_terminal_workspace_status(&run.status))
+                        .filter(|run| {
+                            !is_terminal_workspace_status(&run.status)
+                                || api_run::needs_terminal_repair(run)
+                        })
                         .map(|run| run.id),
                 ),
                 Err(failure) => plan
@@ -1997,11 +2033,49 @@ impl LocalControlService {
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             if is_terminal_workspace_status(&state.runs[index].status) {
-                return Ok(WorkspaceRecoveryClaim::Skip);
+                if !api_run::needs_terminal_repair(&state.runs[index]) {
+                    return Ok(WorkspaceRecoveryClaim::Skip);
+                }
+                let terminal = if state.runs[index].status == "cancelled" {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                settle_recovered_run(
+                    &mut state,
+                    index,
+                    terminal,
+                    "repaired inconsistent API terminal state; unknown effects will not replay",
+                )?;
+                let run = state.runs[index].clone();
+                match self
+                    .persist_records(
+                        &loaded,
+                        &state,
+                        vec![pending("run.updated", Some(run_id.into()), &run)],
+                    )
+                    .await
+                {
+                    Ok(()) => return Ok(WorkspaceRecoveryClaim::Recovered(Box::new(run))),
+                    Err(ControlStoreError::Conflict) => continue,
+                    Err(e) => return Err(store_error(e)),
+                }
             }
             let policy = recovery_policy(&state);
             let status = state.runs[index].status.clone();
             let claim = match policy {
+                _ if status == "cancelling" => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "cancelled",
+                        "run cancellation was completed during daemon recovery",
+                    )?;
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
+                RecoveryPolicy::ResumeSafe if state.runs[index].execution.is_some() => {
+                    return Ok(WorkspaceRecoveryClaim::Execute);
+                }
                 RecoveryPolicy::ResumeSafe if status == "queued" => {
                     return Ok(WorkspaceRecoveryClaim::Execute);
                 }
@@ -2041,18 +2115,9 @@ impl LocalControlService {
                             index,
                             "interrupted",
                             "checkpointed workspace result is incomplete; recovery material was preserved for review",
-                        );
+                        )?;
                         WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                     }
-                }
-                RecoveryPolicy::ResumeSafe if status == "cancelling" => {
-                    settle_recovered_run(
-                        &mut state,
-                        index,
-                        "cancelled",
-                        "run cancellation was completed during daemon recovery",
-                    );
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::ResumeSafe => {
                     settle_recovered_run(
@@ -2060,7 +2125,7 @@ impl LocalControlService {
                         index,
                         "interrupted",
                         "run effects are not proven replay-safe; isolated workspace recovery material was preserved for review",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Ask => {
@@ -2069,7 +2134,7 @@ impl LocalControlService {
                         index,
                         "interrupted",
                         "recovery policy requires user review; workspace changes were preserved",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Fail => {
@@ -2078,7 +2143,7 @@ impl LocalControlService {
                         index,
                         "failed",
                         "run failed because the daemon restarted",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
             };
@@ -2127,6 +2192,12 @@ impl LocalControlService {
             .find(|run| run.id == lease.run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         ensure_current_lease(run, lease)?;
+        if let Err(failure) =
+            validate_run_permission_ceiling(run.permission_profile, self.permission_limits)
+        {
+            let failure = error(failure.code, failure.message, false);
+            return self.interrupt_recovery_run(&lease.run_id, &failure).await;
+        }
         let journal = state
             .workspace_run_journals
             .get(&lease.run_id)
@@ -2175,20 +2246,30 @@ impl LocalControlService {
                 .iter()
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-            if is_terminal_workspace_status(&state.runs[index].status) {
+            if is_terminal_workspace_status(&state.runs[index].status)
+                && !api_run::needs_terminal_repair(&state.runs[index])
+            {
                 return Ok(state.runs[index].clone());
             }
-            let run = &mut state.runs[index];
+            let mut run = state.runs[index].clone();
             run.lease_epoch = run.lease_epoch.saturating_add(1);
-            run.status = "interrupted".into();
+            run.status = if run.status == "cancelling" || run.status == "cancelled" {
+                "cancelled"
+            } else {
+                "interrupted"
+            }
+            .into();
             run.phase = Some("terminal".into());
             run.error = Some(error(ErrorCode::RunRecoveryFailed, &failure.message, false));
-            expire_pending_native_approvals(run, NativeApprovalStatus::Expired);
+            api_run::interrupt(&mut run);
+            api_run::append_terminal_results(&mut state, &mut run)
+                .map_err(|_| recovery_error("could not settle interrupted API children"))?;
+            expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
             if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
                 journal.lease_epoch = run.lease_epoch;
             }
-            let run = state.runs[index].clone();
             release_session(&mut state, &run);
+            state.runs[index] = run.clone();
             let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
@@ -2322,7 +2403,7 @@ impl LocalControlService {
                 .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
-                && run.status == "cancelled"
+                && matches!(run.status.as_str(), "cancelled" | "cancelling")
                 && let Some(token) = self
                     .cancellations
                     .lock()
@@ -2347,7 +2428,7 @@ impl LocalControlService {
             .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
-            && run.status == "cancelled"
+            && matches!(run.status.as_str(), "cancelled" | "cancelling")
         {
             *decision = WorkspaceFinalizationDecision::Cancelled;
             control.cancellation.cancel();
@@ -2362,13 +2443,32 @@ impl LocalControlService {
         derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
         let mut created_workdir = None;
-        self.commit_command_inner(command, has_workspace_lease, derive_source_locked, &mut created_workdir)
+        let mut created_session_worktrees = Vec::new();
+        self.commit_command_inner(
+            command,
+            has_workspace_lease,
+            derive_source_locked,
+            &mut created_workdir,
+            &mut created_session_worktrees,
+        )
             .await
             .map_err(|mut failure| {
                 if let Some(path) = created_workdir {
                     // Filesystem and SQLite are separate commit domains. Preserve
                     // the new directory, including anything written concurrently.
                     failure.message = format!("{} Directory retained at {}. Inspect it before explicitly registering it or choosing another name.", failure.message, path.display());
+                    failure.retryable = false;
+                }
+                if !created_session_worktrees.is_empty() {
+                    let retained = created_session_worktrees
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    failure.message = format!(
+                        "{} Session worktree retained at {retained}; inspect it before retrying.",
+                        failure.message
+                    );
                     failure.retryable = false;
                 }
                 failure
@@ -2381,6 +2481,7 @@ impl LocalControlService {
         has_workspace_lease: bool,
         derive_source_locked: bool,
         created_workdir: &mut Option<PathBuf>,
+        created_session_worktrees: &mut Vec<PathBuf>,
     ) -> Result<CommandOutcome, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_command_records(&command).await?;
@@ -2418,6 +2519,7 @@ impl LocalControlService {
                 }
             }
             check_session_admission(&state, &command)?;
+            prepare_command_session_worktrees(&state, &command, created_session_worktrees)?;
             if !has_workspace_lease
                 && workspace_write_path(&state, &command, self.permission_limits)?.is_some()
             {
@@ -2771,11 +2873,6 @@ fn workspace_invocation(
     control: Arc<WorkspaceRunControl>,
     approvals: Arc<dyn WorkspaceApproval>,
 ) -> Result<WorkspaceAgentInvocation, DomainError> {
-    let project = state
-        .projects
-        .iter()
-        .find(|project| project.id == run.project_id)
-        .ok_or_else(|| DomainError::invariant(ErrorCode::InvalidProject, "project not found"))?;
     let user_text = state
         .messages
         .iter()
@@ -2817,7 +2914,7 @@ fn workspace_invocation(
         project_instructions,
         prompt,
         commit_subject: user_text,
-        cwd: PathBuf::from(&project.workdir),
+        cwd: run_workdir(state, run).map_err(api_domain_error)?,
         baseline_commit,
         baseline_index_tree,
         permission_profile: run.permission_profile,
@@ -2876,10 +2973,10 @@ fn effective_permission_profile(
         Some("read_only" | "strict") => SandboxAccess::ReadOnly,
         Some("workspace_write") => SandboxAccess::WorkspaceWrite,
         Some("full_access") => SandboxAccess::FullAccess,
-        Some(value) => {
+        Some(_) => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                format!("unsupported Agent sandbox policy {value:?}"),
+                "unsupported Agent sandbox policy",
                 false,
             ));
         }
@@ -2921,10 +3018,10 @@ fn effective_permission_profile(
                 false,
             ));
         }
-        Some(value) => {
+        Some(_) => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                format!("unsupported Codex approval policy {value:?}"),
+                "unsupported Codex approval policy",
                 false,
             ));
         }
@@ -2937,6 +3034,19 @@ fn effective_permission_profile(
         }
     };
     Ok(RunPermissionProfile { sandbox, approval })
+}
+
+fn validate_run_permission_ceiling(
+    profile: RunPermissionProfile,
+    limits: PermissionPolicyLimits,
+) -> Result<(), DomainError> {
+    if profile.sandbox > limits.max_sandbox {
+        return Err(DomainError::invariant(
+            ErrorCode::InvalidConfiguration,
+            "Run permission snapshot exceeds the administrator sandbox ceiling",
+        ));
+    }
+    Ok(())
 }
 
 fn native_approval_record(
@@ -2988,14 +3098,13 @@ fn native_approval_record(
                 false,
             )
         })?;
-        let profile: NativePermissionProfile =
-            serde_json::from_value(value).map_err(|failure| {
-                error(
-                    ErrorCode::ToolApprovalRequired,
-                    format!("invalid Codex permission profile: {failure}"),
-                    false,
-                )
-            })?;
+        let profile: NativePermissionProfile = serde_json::from_value(value).map_err(|_| {
+            error(
+                ErrorCode::ToolApprovalRequired,
+                "invalid Codex permission profile",
+                false,
+            )
+        })?;
         validate_native_permission_profile(&profile)?;
         if serde_json::to_vec(&profile)
             .map_err(|_| {
@@ -3218,7 +3327,12 @@ fn is_local_recovery_failure(code: ErrorCode) -> bool {
     )
 }
 
-fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, message: &str) {
+fn settle_recovered_run(
+    state: &mut WorkingSet,
+    index: usize,
+    status: &str,
+    message: &str,
+) -> Result<(), ApiError> {
     let mut run = state.runs[index].clone();
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
@@ -3235,9 +3349,13 @@ fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, mess
         message,
         false,
     ));
+    api_run::interrupt(&mut run);
+    api_run::append_terminal_results(state, &mut run)
+        .map_err(|_| recovery_error("could not settle recovered API children"))?;
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
     release_session(state, &run);
     state.runs[index] = run;
+    Ok(())
 }
 
 fn workspace_write_path(
@@ -3245,83 +3363,70 @@ fn workspace_write_path(
     command: &Command,
     permission_limits: PermissionPolicyLimits,
 ) -> Result<Option<PathBuf>, ApiError> {
-    let targets = match command {
-        Command::SendMessage { session_id, .. } => {
-            let session = state
-                .sessions
-                .iter()
-                .find(|session| session.id == *session_id)
-                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-            vec![(session.project_id.as_str(), session.agent_id.as_str())]
+    if let Some(project_id) = session_command_project_id(state, command)? {
+        let project = require_project_view(state, project_id)?;
+        return Ok(Some(PathBuf::from(&project.workdir)));
+    }
+    let Command::TriggerCron {
+        cron_id,
+        scheduled_at,
+    } = command
+    else {
+        return Ok(None);
+    };
+    if state.runs.iter().any(|run| {
+        run.cron_id.as_deref() == Some(cron_id.as_str()) && run.scheduled_at == Some(*scheduled_at)
+    }) {
+        return Ok(None);
+    }
+    let Some(cron) = state
+        .crons
+        .iter()
+        .find(|cron| cron.id == *cron_id && cron.enabled)
+    else {
+        return Ok(None);
+    };
+    let agent = require_agent(state, &cron.agent_id)?;
+    let provider = validate_config(state, &agent.config)?;
+    let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
+    if !matches!(
+        provider.kind,
+        AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
+    ) {
+        return Ok(None);
+    }
+    let project = require_project_view(state, &cron.project_id)?;
+    Ok(Some(PathBuf::from(&project.workdir)))
+}
+
+fn session_command_project_id<'a>(
+    state: &'a WorkingSet,
+    command: &'a Command,
+) -> Result<Option<&'a str>, ApiError> {
+    match command {
+        Command::CreateSession { project_id, .. } | Command::ForkSession { project_id, .. } => {
+            Ok(Some(project_id))
         }
-        Command::ForkSession {
-            project_id,
-            agent_id,
-            ..
-        } => vec![(project_id.as_str(), agent_id.as_str())],
         Command::DeriveSession {
             project_id,
             source_session_id,
-            agent_id,
             ..
         } => {
-            let source_session = state
+            state
                 .sessions
                 .iter()
                 .find(|session| session.id == *source_session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-            vec![
-                (project_id.as_str(), agent_id.as_str()),
-                (
-                    source_session.project_id.as_str(),
-                    source_session.agent_id.as_str(),
-                ),
-            ]
+            Ok(Some(project_id))
         }
-        Command::TriggerCron {
-            cron_id,
-            scheduled_at,
-        } => {
-            if state.runs.iter().any(|run| {
-                run.cron_id.as_deref() == Some(cron_id.as_str())
-                    && run.scheduled_at == Some(*scheduled_at)
-            }) {
-                return Ok(None);
-            }
-            state
-                .crons
-                .iter()
-                .find(|cron| cron.id == *cron_id && cron.enabled)
-                .map_or_else(Vec::new, |cron| {
-                    vec![(cron.project_id.as_str(), cron.agent_id.as_str())]
-                })
-        }
-        _ => Vec::new(),
-    };
-    let Some((project_id, _)) = targets.first().copied() else {
-        return Ok(None);
-    };
-    let requires_workspace_lease =
-        targets
+        Command::SendMessage { session_id, .. } => state
+            .sessions
             .iter()
-            .try_fold(false, |requires_lease, (_, agent_id)| {
-                let agent = require_agent(state, agent_id)?;
-                let provider = validate_config(state, &agent.config)?;
-                let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
-                if provider.kind != AgentMode::Codex {
-                    return Ok::<_, ApiError>(requires_lease);
-                }
-                Ok(true)
-            })?;
-    if !requires_workspace_lease {
-        return Ok(None);
+            .find(|session| session.id == *session_id)
+            .map(|session| Some(session.project_id.as_str()))
+            .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false)),
+        _ => Ok(None),
     }
-    let project = state
-        .projects
-        .iter()
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-    Ok(Some(PathBuf::from(&project.workdir)))
 }
 
 fn absolute_git_dir(workdir: &Path) -> Result<PathBuf, ApiError> {
@@ -3697,15 +3802,15 @@ fn derive_session(
         ));
     }
 
-    let source_is_leaf = !state
-        .messages
-        .iter()
-        .any(|message| message.parent_message_id.as_deref() == Some(input.at_message_id.as_str()));
     let can_reuse = source_locked
-        && source_session.active_run_id.is_none()
-        && source_session.current_message_id == input.at_message_id
-        && source_session.agent_id == input.agent_id
-        && source_is_leaf;
+        && derive_reuses_source(
+            state,
+            &input.id,
+            &input.project_id,
+            &source_session,
+            &input.agent_id,
+            &input.at_message_id,
+        );
     if can_reuse {
         return send_message(
             state,
@@ -3904,7 +4009,8 @@ fn create_session(
     agent_id: &str,
     at_message_id: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if id.trim().is_empty() || state.sessions.iter().any(|session| session.id == id) {
+    validate_session_path_component(&id)?;
+    if state.sessions.iter().any(|session| session.id == id) {
         return Err(error(
             ErrorCode::InvalidSession,
             "session id is empty or already exists",
@@ -3916,6 +4022,7 @@ fn create_session(
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    let project_workdir = project.workdir.clone();
     require_agent(state, agent_id)?;
     let head = at_message_id.unwrap_or_else(|| project.root_message_id.clone());
     let target = state
@@ -3936,10 +4043,12 @@ fn create_session(
             false,
         ));
     }
+    let session_workdir = session_worktree_path(&project_workdir, &id)?;
     let agent_id = agent_for_session(state, agent_id, &id)?;
     let session = SessionView {
         id: id.clone(),
         project_id,
+        workdir: session_workdir.to_string_lossy().into_owned(),
         name: String::new(),
         title: None,
         description: String::new(),
@@ -3954,6 +4063,89 @@ fn create_session(
         CommandResult::Session(session.clone()),
         vec![pending("session.created", Some(id), &session)],
     ))
+}
+
+fn validate_session_path_component(id: &str) -> Result<(), ApiError> {
+    // Session worktrees share .ait with the Project database and its sidecars.
+    if [
+        "project.sqlite3",
+        "project.sqlite3-wal",
+        "project.sqlite3-shm",
+        "project.sqlite3-journal",
+    ]
+    .iter()
+    .any(|reserved| {
+        id.trim_end_matches([' ', '.'])
+            .eq_ignore_ascii_case(reserved)
+    }) {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "session id is reserved for project storage",
+            false,
+        ));
+    }
+    if id.trim().is_empty()
+        || id == "."
+        || id == ".."
+        || id.contains('/')
+        || id.contains('\\')
+        || id.chars().any(char::is_control)
+    {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "session id must be a nonempty safe path component",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn session_worktree_path(project_workdir: &str, session_id: &str) -> Result<PathBuf, ApiError> {
+    validate_session_path_component(session_id)?;
+    Ok(Path::new(project_workdir).join(".ait").join(session_id))
+}
+
+fn run_workdir(state: &WorkingSet, run: &RunView) -> Result<PathBuf, ApiError> {
+    let project = state
+        .projects
+        .iter()
+        .find(|project| project.id == run.project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    let Some(session_id) = run.session_id.as_deref() else {
+        return Ok(PathBuf::from(&project.workdir));
+    };
+    let session = state
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id && session.project_id == run.project_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "run Session not found", false))?;
+    let expected = session_worktree_path(&project.workdir, session_id)?;
+    if Path::new(&session.workdir) != expected {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "Session workdir is outside its manager-owned worktree path",
+            false,
+        ));
+    }
+    Ok(expected)
+}
+
+fn derive_reuses_source(
+    state: &WorkingSet,
+    _requested_id: &str,
+    project_id: &str,
+    source: &SessionView,
+    agent_id: &str,
+    at_message_id: &str,
+) -> bool {
+    source.project_id == project_id
+        && source.active_run_id.is_none()
+        && source.current_message_id == at_message_id
+        && source.agent_id == agent_id
+        && !state
+            .messages
+            .iter()
+            .any(|message| message.parent_message_id.as_deref() == Some(at_message_id))
 }
 
 fn rename_session(
@@ -4142,11 +4334,10 @@ fn send_message(
         .clone_from(&user.id);
     state.sessions[index].version += 1;
     state.sessions[index].active_run_id = Some(run_id.clone());
-    let workspace_base_commit =
-        (provider.kind == AgentMode::Codex).then(|| git_baseline.commit.clone());
-    let workspace_base_index_tree = (provider.kind == AgentMode::Codex)
-        .then(|| git_baseline.index_tree.clone().into_boxed_str());
+    let workspace_base_commit = Some(git_baseline.commit.clone());
+    let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
     let run = RunView {
+        execution: None,
         id: run_id.clone(),
         project_id: session.project_id,
         base_message_id: user.id,
@@ -4265,6 +4456,14 @@ fn cancel_run(
         ));
     }
     let mut run = state.runs[index].clone();
+    if run.execution.is_some() {
+        run.status = "cancelling".into();
+        state.runs[index] = run.clone();
+        return Ok((
+            CommandResult::Run(run.clone()),
+            vec![pending("run.updated", Some(run.id.clone()), &run)],
+        ));
+    }
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
         journal.lease_epoch = run.lease_epoch;
@@ -4406,6 +4605,42 @@ fn validate_native_approval_grant(
             false,
         ));
     }
+    validate_native_approval_target(approval.kind, &approval.target)?;
+    match &approval.target {
+        // The current command approval contract cannot prove that an accepted
+        // shell command retains the filesystem sandbox. A cwd or redacted
+        // command preview is not a capability boundary.
+        NativeApprovalTarget::Command { .. }
+            if run_profile.sandbox != SandboxAccess::FullAccess =>
+        {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "command approval requires an explicitly selected full_access Run; sandbox confinement cannot be proven",
+                false,
+            ));
+        }
+        NativeApprovalTarget::FileChange {
+            grant_root,
+            changes,
+        } => {
+            if run_profile.sandbox == SandboxAccess::ReadOnly {
+                return Err(error(
+                    ErrorCode::InvalidConfiguration,
+                    "file approval exceeds the read_only Run sandbox",
+                    false,
+                ));
+            }
+            if run_profile.sandbox == SandboxAccess::WorkspaceWrite {
+                for path in grant_root
+                    .iter()
+                    .chain(changes.iter().map(|change| &change.path))
+                {
+                    ensure_permission_path_in_project(path, project_root)?;
+                }
+            }
+        }
+        _ => {}
+    }
     if approval.kind == NativeApprovalKind::Permissions {
         let permissions = approval.requested_permissions.as_ref().ok_or_else(|| {
             error(
@@ -4489,6 +4724,13 @@ fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<
 
     let root = lexical_absolute_path(project_root)?;
     let candidate = Path::new(path);
+    // Collapsing `symlink/..` lexically can hide an actual filesystem escape.
+    if candidate
+        .components()
+        .any(|part| part == Component::ParentDir)
+    {
+        return Err(project_boundary_error());
+    }
     let joined = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
@@ -4513,8 +4755,14 @@ fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<
     }
     let canonical_root = std::fs::canonicalize(&root).map_err(|_| project_boundary_error())?;
     let mut existing = normalized.as_path();
-    while !existing.exists() {
-        existing = existing.parent().ok_or_else(project_boundary_error)?;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or_else(project_boundary_error)?;
+            }
+            Err(_) => return Err(project_boundary_error()),
+        }
     }
     let canonical_existing =
         std::fs::canonicalize(existing).map_err(|_| project_boundary_error())?;
@@ -4708,6 +4956,7 @@ fn trigger_cron(
             .insert(run_id.clone(), reference.clone());
     }
     state.runs.push(RunView {
+        execution: None,
         id: run_id.clone(),
         project_id: cron.project_id,
         base_message_id: cron.base_message_id,
@@ -4752,6 +5001,19 @@ fn export_project(
         .iter()
         .filter(|message| message.project_id == project_id)
         .cloned()
+        .map(|mut message| {
+            if message
+                .data
+                .as_ref()
+                .is_some_and(|d| d.get("native_message").is_some())
+            {
+                message.data = None;
+                message.text.get_or_insert_with(|| {
+                    "[Host tool payload omitted from portable archive]".into()
+                });
+            }
+            message
+        })
         .collect::<Vec<_>>();
     let sessions = state
         .sessions
@@ -4762,6 +5024,9 @@ fn export_project(
             // An active Run is process-local state and cannot safely be resumed
             // from a portable archive.
             session.active_run_id = None;
+            // Session worktrees are host-local and are recreated below the
+            // destination Project's `.ait` directory on import.
+            session.workdir.clear();
             session
         })
         .collect::<Vec<_>>();
@@ -4803,6 +5068,56 @@ fn import_project(
     workdir: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_project_export(&archive)?;
+    validate_import_conflicts(state, &archive)?;
+    let canonical = prepare_git_root(Path::new(workdir))?;
+    let canonical_text = canonical.to_string_lossy().into_owned();
+    if state
+        .projects
+        .iter()
+        .any(|project| project.workdir == canonical_text)
+    {
+        return Err(error(
+            ErrorCode::ProjectPathAlreadyRegistered,
+            "project path is already registered",
+            false,
+        ));
+    }
+    let mut project = archive.project;
+    project.workdir = canonical_text;
+    project.base_commit = ensure_git_head(&canonical)?;
+    let mut sessions = archive.sessions;
+    for session in &mut sessions {
+        session.workdir = session_worktree_path(&project.workdir, &session.id)?
+            .to_string_lossy()
+            .into_owned();
+    }
+    for agent in archive.agents {
+        if !state.agents.iter().any(|existing| existing.id == agent.id) {
+            state.agents.push(agent);
+        }
+    }
+    for provider in archive.providers {
+        if !state.providers.iter().any(|p| p.provider.id == provider.id) {
+            state.providers.push(AgentProviderView {
+                provider,
+                has_secret: false,
+            });
+        }
+    }
+    state.messages.extend(archive.messages);
+    state.sessions.extend(sessions);
+    state.projects.push(project.clone());
+    Ok((
+        CommandResult::Project(project.clone()),
+        vec![pending(
+            "project.imported",
+            Some(project.id.clone()),
+            &project,
+        )],
+    ))
+}
+
+fn validate_import_conflicts(state: &WorkingSet, archive: &ProjectExport) -> Result<(), ApiError> {
     if state
         .projects
         .iter()
@@ -4858,47 +5173,7 @@ fn import_project(
             ));
         }
     }
-    let canonical = prepare_git_root(Path::new(workdir))?;
-    let canonical_text = canonical.to_string_lossy().into_owned();
-    if state
-        .projects
-        .iter()
-        .any(|project| project.workdir == canonical_text)
-    {
-        return Err(error(
-            ErrorCode::ProjectPathAlreadyRegistered,
-            "project path is already registered",
-            false,
-        ));
-    }
-
-    let mut project = archive.project;
-    project.workdir = canonical_text;
-    project.base_commit = ensure_git_head(&canonical)?;
-    for agent in archive.agents {
-        if !state.agents.iter().any(|existing| existing.id == agent.id) {
-            state.agents.push(agent);
-        }
-    }
-    for provider in archive.providers {
-        if !state.providers.iter().any(|p| p.provider.id == provider.id) {
-            state.providers.push(AgentProviderView {
-                provider,
-                has_secret: false,
-            });
-        }
-    }
-    state.messages.extend(archive.messages);
-    state.sessions.extend(archive.sessions);
-    state.projects.push(project.clone());
-    Ok((
-        CommandResult::Project(project.clone()),
-        vec![pending(
-            "project.imported",
-            Some(project.id.clone()),
-            &project,
-        )],
-    ))
+    Ok(())
 }
 
 fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
@@ -5140,22 +5415,506 @@ fn ensure_git_head(path: &Path) -> Result<String, ApiError> {
     })
 }
 
+fn prepare_command_session_worktrees(
+    state: &WorkingSet,
+    command: &Command,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ApiError> {
+    match command {
+        Command::ImportProject { archive, workdir } => {
+            prepare_import_session_worktrees(state, archive, workdir, created)
+        }
+        Command::CreateSession {
+            id,
+            project_id,
+            agent_id,
+            at_message_id,
+        } => {
+            let project = require_project_view(state, project_id)?;
+            let message_id = at_message_id
+                .as_deref()
+                .unwrap_or(project.root_message_id.as_str());
+            prepare_new_session_worktree(state, id, project_id, agent_id, message_id, created)
+        }
+        Command::ForkSession {
+            id,
+            project_id,
+            agent_id,
+            at_message_id,
+            text,
+        } => {
+            validate_message_text(text)?;
+            prepare_new_session_worktree(state, id, project_id, agent_id, at_message_id, created)
+        }
+        Command::DeriveSession {
+            id,
+            project_id,
+            source_session_id,
+            agent_id,
+            at_message_id,
+            text,
+        } => prepare_derived_session_worktree(
+            state,
+            id,
+            project_id,
+            source_session_id,
+            agent_id,
+            at_message_id,
+            text,
+            created,
+        ),
+        Command::SendMessage { session_id, .. } => {
+            prepare_existing_session_worktree(state, session_id, created)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn prepare_import_session_worktrees(
+    state: &WorkingSet,
+    archive: &ProjectExport,
+    workdir: &str,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ApiError> {
+    validate_project_export(archive)?;
+    validate_import_conflicts(state, archive)?;
+    let canonical = prepare_git_root(Path::new(workdir))?;
+    let mut project = archive.project.clone();
+    project.workdir = canonical.to_string_lossy().into_owned();
+    project.base_commit = ensure_git_head(&canonical)?;
+    for session in &archive.sessions {
+        ensure_session_worktree(&project, &session.id, &project.base_commit, created)?;
+    }
+    Ok(())
+}
+
+fn prepare_new_session_worktree(
+    state: &WorkingSet,
+    id: &str,
+    project_id: &str,
+    agent_id: &str,
+    message_id: &str,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ApiError> {
+    validate_session_path_component(id)?;
+    if state.sessions.iter().any(|session| session.id == id) {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "session id is already registered",
+            false,
+        ));
+    }
+    require_agent(state, agent_id)?;
+    let project = require_project_view(state, project_id)?;
+    validate_session_message(state, project_id, message_id)?;
+    let baseline = message_workspace_commit(state, project, message_id)?;
+    ensure_session_worktree(project, id, &baseline, created)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_derived_session_worktree(
+    state: &WorkingSet,
+    id: &str,
+    project_id: &str,
+    source_session_id: &str,
+    agent_id: &str,
+    at_message_id: &str,
+    text: &str,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ApiError> {
+    validate_message_text(text)?;
+    validate_session_path_component(id)?;
+    let source = state
+        .sessions
+        .iter()
+        .find(|session| session.id == source_session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    if !derive_reuses_source(state, id, project_id, source, agent_id, at_message_id) {
+        return prepare_new_session_worktree(
+            state,
+            id,
+            project_id,
+            agent_id,
+            at_message_id,
+            created,
+        );
+    }
+    let project = require_project_view(state, project_id)?;
+    let baseline = message_workspace_commit(state, project, &source.current_message_id)?;
+    ensure_session_worktree(project, &source.id, &baseline, created)
+}
+
+fn prepare_existing_session_worktree(
+    state: &WorkingSet,
+    session_id: &str,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ApiError> {
+    let session = state
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    let project = require_project_view(state, &session.project_id)?;
+    let baseline =
+        git_head(Path::new(&session.workdir))?.unwrap_or_else(|| project.base_commit.clone());
+    ensure_session_worktree(project, &session.id, &baseline, created)
+}
+
+fn validate_message_text(text: &str) -> Result<(), ApiError> {
+    if text.trim().is_empty() {
+        return Err(error(
+            ErrorCode::InvalidMessageRole,
+            "message text is required",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn require_project_view<'a>(
+    state: &'a WorkingSet,
+    project_id: &str,
+) -> Result<&'a ProjectView, ApiError> {
+    state
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))
+}
+
+fn validate_session_message(
+    state: &WorkingSet,
+    project_id: &str,
+    message_id: &str,
+) -> Result<(), ApiError> {
+    let message = state
+        .messages
+        .iter()
+        .find(|message| message.id == message_id)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::MessageNotFound,
+                "branch message not found",
+                false,
+            )
+        })?;
+    if message.project_id != project_id {
+        return Err(error(
+            ErrorCode::SessionMessageProjectMismatch,
+            "branch message belongs to another project",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn message_workspace_commit(
+    state: &WorkingSet,
+    project: &ProjectView,
+    message_id: &str,
+) -> Result<String, ApiError> {
+    let mut cursor = Some(message_id);
+    let mut seen = HashSet::new();
+    while let Some(id) = cursor {
+        if !seen.insert(id) {
+            return Err(error(
+                ErrorCode::InvalidMessageId,
+                "message path contains a cycle",
+                false,
+            ));
+        }
+        let message = state
+            .messages
+            .iter()
+            .find(|message| message.id == id)
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::MessageNotFound,
+                    "message path is incomplete",
+                    false,
+                )
+            })?;
+        if message.project_id != project.id {
+            return Err(error(
+                ErrorCode::SessionMessageProjectMismatch,
+                "message path belongs to another project",
+                false,
+            ));
+        }
+        if let Some(commit) = message
+            .data
+            .as_ref()
+            .and_then(|data| data.get("codex"))
+            .and_then(|codex| codex.get("commit_id"))
+            .and_then(Value::as_str)
+            .filter(|commit| is_git_commit(commit))
+        {
+            return Ok(commit.to_owned());
+        }
+        if let Some(commit) = message.git_commit.as_deref() {
+            return Ok(commit.to_owned());
+        }
+        cursor = message.parent_message_id.as_deref();
+    }
+    Ok(project.base_commit.clone())
+}
+
+fn ensure_session_worktree(
+    project: &ProjectView,
+    session_id: &str,
+    baseline: &str,
+    created: &mut Vec<PathBuf>,
+) -> Result<(), ApiError> {
+    let primary = Path::new(&project.workdir);
+    let worktree = session_worktree_path(&project.workdir, session_id)?;
+    let parent = worktree.parent().expect("Session worktree has .ait parent");
+    validate_session_worktree_parent(parent)?;
+    if validate_existing_session_worktree(&worktree)? {
+        return Ok(());
+    }
+    if created.iter().any(|path| path == &worktree) {
+        return Ok(());
+    }
+    ensure_ait_excluded(primary)?;
+    ensure_session_worktree_parent(parent)?;
+    validate_session_baseline(primary, baseline)?;
+    add_session_worktree(primary, &worktree, baseline)?;
+    if let Err(mut failure) = git_stdout(&worktree, &["reset", "--hard", baseline]) {
+        failure.message = format!(
+            "{}; partial Session worktree retained at {}",
+            failure.message,
+            worktree.display()
+        );
+        return Err(failure);
+    }
+    created.push(worktree);
+    Ok(())
+}
+
+fn validate_session_worktree_parent(parent: &Path) -> Result<bool, ApiError> {
+    match std::fs::symlink_metadata(parent) {
+        Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => Ok(true),
+        Ok(_) => Err(error(
+            ErrorCode::InvalidSession,
+            "Project .ait path must be a real directory",
+            false,
+        )),
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(failure) => Err(error(
+            ErrorCode::ProjectGitInitFailed,
+            format!("cannot inspect Project .ait directory: {failure}"),
+            false,
+        )),
+    }
+}
+
+fn validate_existing_session_worktree(worktree: &Path) -> Result<bool, ApiError> {
+    let metadata = match std::fs::symlink_metadata(worktree) {
+        Ok(metadata) => metadata,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(failure) => {
+            return Err(error(
+                ErrorCode::ProjectPathNotFound,
+                format!("cannot inspect Session worktree: {failure}"),
+                false,
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "Session worktree must be a real directory",
+            false,
+        ));
+    }
+    let top = git_stdout(worktree, &["rev-parse", "--show-toplevel"])?;
+    let canonical = worktree.canonicalize().map_err(|failure| {
+        error(
+            ErrorCode::ProjectPathNotFound,
+            format!("cannot resolve Session worktree: {failure}"),
+            false,
+        )
+    })?;
+    let top = PathBuf::from(top).canonicalize().map_err(|failure| {
+        error(
+            ErrorCode::InvalidSession,
+            format!("cannot resolve Session Git root: {failure}"),
+            false,
+        )
+    })?;
+    if top != canonical {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "Session workdir is not its own linked Git worktree",
+            false,
+        ));
+    }
+    Ok(true)
+}
+
+fn ensure_session_worktree_parent(parent: &Path) -> Result<(), ApiError> {
+    if validate_session_worktree_parent(parent)? {
+        return Ok(());
+    }
+    match std::fs::create_dir(parent) {
+        Ok(()) => Ok(()),
+        Err(failure) if failure.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_session_worktree_parent(parent).map(|_| ())
+        }
+        Err(failure) => Err(error(
+            ErrorCode::ProjectGitInitFailed,
+            format!("cannot create Project .ait directory: {failure}"),
+            false,
+        )),
+    }
+}
+
+fn validate_session_baseline(primary: &Path, baseline: &str) -> Result<(), ApiError> {
+    let commit_expression = format!("{baseline}^{{commit}}");
+    let verified = git_stdout(primary, &["rev-parse", "--verify", &commit_expression])?;
+    if verified != baseline {
+        return Err(error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Session baseline does not resolve to the recorded commit",
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn add_session_worktree(primary: &Path, worktree: &Path, baseline: &str) -> Result<(), ApiError> {
+    let worktree_text = worktree.to_string_lossy().into_owned();
+    git_stdout(
+        primary,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            "--no-checkout",
+            &worktree_text,
+            baseline,
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_ait_excluded(primary: &Path) -> Result<(), ApiError> {
+    let common = git_stdout(primary, &["rev-parse", "--git-common-dir"])?;
+    let common = PathBuf::from(common);
+    let common = if common.is_absolute() {
+        common
+    } else {
+        primary.join(common)
+    };
+    let info = common.join("info");
+    std::fs::create_dir_all(&info).map_err(|failure| {
+        error(
+            ErrorCode::ProjectGitInitFailed,
+            format!("cannot create Git info directory: {failure}"),
+            false,
+        )
+    })?;
+    let exclude = info.join("exclude");
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == "/.ait/") {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude)
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitInitFailed,
+                format!("cannot update Git info/exclude: {failure}"),
+                false,
+            )
+        })?;
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        IoWrite::write_all(&mut file, b"\n").map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitInitFailed,
+                format!("cannot update Git info/exclude: {failure}"),
+                false,
+            )
+        })?;
+    }
+    IoWrite::write_all(&mut file, b"/.ait/\n").map_err(|failure| {
+        error(
+            ErrorCode::ProjectGitInitFailed,
+            format!("cannot update Git info/exclude: {failure}"),
+            false,
+        )
+    })
+}
+
+fn git_stdout(cwd: &Path, arguments: &[&str]) -> Result<String, ApiError> {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(arguments)
+        .output()
+        .map_err(|failure| {
+            error(
+                ErrorCode::ProjectGitHeadUnavailable,
+                format!("cannot run Git for Session worktree: {failure}"),
+                false,
+            )
+        })?;
+    if !output.status.success() {
+        return Err(error(
+            ErrorCode::ProjectGitInitFailed,
+            String::from_utf8_lossy(&output.stderr).trim(),
+            false,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 fn command_git_baseline(
     state: &WorkingSet,
     command: &Command,
 ) -> Result<Option<GitBaseline>, ApiError> {
-    let project_id = match command {
-        Command::SendMessage { session_id, .. } => Some(
-            state
+    let path = match command {
+        Command::SendMessage { session_id, .. } => Some(PathBuf::from(
+            &state
                 .sessions
                 .iter()
                 .find(|session| session.id == *session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?
-                .project_id
-                .as_str(),
-        ),
-        Command::ForkSession { project_id, .. } | Command::DeriveSession { project_id, .. } => {
-            Some(project_id.as_str())
+                .workdir,
+        )),
+        Command::ForkSession { id, project_id, .. } => {
+            let project = state
+                .projects
+                .iter()
+                .find(|project| project.id == *project_id)
+                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            Some(session_worktree_path(&project.workdir, id)?)
+        }
+        Command::DeriveSession {
+            id,
+            project_id,
+            source_session_id,
+            agent_id,
+            at_message_id,
+            ..
+        } => {
+            let source = state
+                .sessions
+                .iter()
+                .find(|session| session.id == *source_session_id)
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            if derive_reuses_source(state, id, project_id, source, agent_id, at_message_id) {
+                Some(PathBuf::from(&source.workdir))
+            } else {
+                let project = state
+                    .projects
+                    .iter()
+                    .find(|project| project.id == *project_id)
+                    .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+                Some(session_worktree_path(&project.workdir, id)?)
+            }
         }
         Command::TriggerCron {
             cron_id,
@@ -5178,19 +5937,19 @@ fn command_git_baseline(
             if validate_config(state, &agent.config)?.kind != AgentMode::Codex {
                 return Ok(None);
             }
-            Some(cron.project_id.as_str())
+            let project = state
+                .projects
+                .iter()
+                .find(|project| project.id == cron.project_id)
+                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            Some(PathBuf::from(&project.workdir))
         }
         _ => return Ok(None),
     };
-    let Some(project_id) = project_id else {
+    let Some(path) = path else {
         return Ok(None);
     };
-    let project = state
-        .projects
-        .iter()
-        .find(|project| project.id == project_id)
-        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-    clean_git_baseline(Path::new(&project.workdir)).map(Some)
+    clean_git_baseline(&path).map(Some)
 }
 
 fn clean_git_baseline(path: &Path) -> Result<GitBaseline, ApiError> {
@@ -5449,7 +6208,15 @@ fn pending<T: Serialize>(kind: &str, entity_id: Option<String>, body: &T) -> Pen
     PendingEvent {
         kind: kind.into(),
         entity_id,
-        body: serde_json::to_value(body).unwrap_or(Value::Null),
+        body: {
+            let mut value = serde_json::to_value(body).unwrap_or(Value::Null);
+            if kind.starts_with("run.")
+                && let Some(object) = value.as_object_mut()
+            {
+                object.remove("execution");
+            }
+            value
+        },
         created_at: now(),
     }
 }
@@ -5594,6 +6361,7 @@ fn decode_records(read: ControlRead) -> Result<LoadedWorkingSet, ApiError> {
     }
     value = migrate_state(value)?;
     let mut state: WorkingSet = serde_json::from_value(value).map_err(serialization_error)?;
+    hydrate_session_workdirs(&mut state)?;
     for provider in builtin_providers() {
         if !state
             .providers
@@ -5608,6 +6376,29 @@ fn decode_records(read: ControlRead) -> Result<LoadedWorkingSet, ApiError> {
         revision: read.revision,
         original: state,
     })
+}
+
+fn hydrate_session_workdirs(state: &mut WorkingSet) -> Result<(), ApiError> {
+    for session in &mut state.sessions {
+        let Some(project) = state
+            .projects
+            .iter()
+            .find(|project| project.id == session.project_id)
+        else {
+            continue;
+        };
+        let expected = session_worktree_path(&project.workdir, &session.id)?;
+        if session.workdir.is_empty() {
+            session.workdir = expected.to_string_lossy().into_owned();
+        } else if Path::new(&session.workdir) != expected {
+            return Err(error(
+                ErrorCode::InvalidSession,
+                "Session workdir does not match its Project and id",
+                false,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn record_changes(
