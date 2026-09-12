@@ -22,9 +22,9 @@ CLI 只做参数校验、输入读取、DTO 构造和现有 HTTP 调用。所有
 | `SetProjectDefaultAgent` | `project set-default-agent --project-id --agent-id` |
 | `RegisterAgent` | `agent create --id --name --provider-id --model [--reasoning-effort]` |
 | `UpdateAgent` | `agent update --id --name --provider-id --model [--reasoning-effort]` |
-| `SaveAgentProvider` | `agent-provider save --id --name --kind [--url] [--input] [--secret-stdin]` |
-| `DiscoverProviderModels` | `agent-provider discover-models`（同 save 的输入 flags，无保存副作用） |
-| `RefreshProviderModels` | `agent-provider refresh-models --provider-id` |
+| `SaveAgentProvider` | `agent provider save --id --name --kind [--url] [--input] [--secret-stdin]` |
+| `DiscoverProviderModels` | `agent provider discover-models`（同 save 的输入 flags，无保存副作用） |
+| `RefreshProviderModels` | `agent provider refresh-models --provider-id` |
 | `SetSessionConfig` | `session set-config --session-id --provider-id --model [--reasoning-effort]` |
 | `CreateSession` | `session create --id --project-id --agent-id [--at-message-id]` |
 | `SetSessionAgent` | `session set-agent --session-id --agent-id` |
@@ -46,14 +46,15 @@ CLI 只做参数校验、输入读取、DTO 构造和现有 HTTP 调用。所有
 | `ResetSettings` | `settings reset` |
 | `ListProjects` | `project list` |
 | `ListAgents` | `agent list` |
-| `ListAgentProviders` | `agent-provider list` |
+| `ListAgentProviders` | `agent provider list` |
 | `ListSessions` | `session list --project-id` |
 | `ListMessages` | `message list --project-id` |
 | `ListRuns` | `run list --project-id` |
 | `ListCrons` | `cron list` |
 
-durable SSE 使用 `event list --after <u64 cursor>`。原有 `events`、`export`、`import`
-快捷入口继续公开，分别复用实体入口的映射与输出逻辑，不接收 Command JSON。
+durable SSE 使用 `event list --after <u64 cursor>`。经 NEC-257 修订，删除顶层 `events`，
+Provider 操作移到 `agent provider`，不保留旧命令别名。`export`、`import` 快捷入口继续公开，
+分别复用实体入口的映射与输出逻辑，不接收 Command JSON。
 
 ### 输入边界
 
@@ -66,7 +67,7 @@ durable SSE 使用 `event list --after <u64 cursor>`。原有 `events`、`export
   判断，避免复制 adapter 能力目录。Cron schedule/timezone 的语义也由现有业务校验负责。
 - Send/Fork/Derive 使用互斥的 `--text`、`--text-file <file|->`、`--text-stdin`。
   文件/stdin 必须是 UTF-8，完整保留换行、反斜杠和中文，不 trim 消息。
-- `agent-provider save/discover-models --input <file|->` 只接受模型数组（id/name/reasoning_efforts）。
+- `agent provider save/discover-models --input <file|->` 只接受模型数组（id/name/reasoning_efforts）。
   `settings set --input` 只接受完整 values 文档，revision 必须通过单独的 typed flag 传入。
   `project import --input` 只接受 Project archive。不能用这些入口输入 tagged transport Command。
 - Provider secret 仅用 `--secret-stdin`，不提供 secret 值参数或环境变量入口。要求 stdin 重定向，
@@ -82,7 +83,8 @@ durable SSE 使用 `event list --after <u64 cursor>`。原有 `events`、`export
 
 保留 JSON 成功/业务错误信封：成功退出 0；业务拒绝退出 2；clap 参数错误退出 2；本地输入、
 文件和传输错误退出 1。Export 成功只写文件；失败不覆盖目标文件。SSE 保持文本输出，默认有限回放
-256 条，不新增持续订阅。`--endpoint` 成为真正全局参数，可放在任何子命令层级。
+256 条，不新增持续订阅。经 NEC-257 修订，连接使用全局 `--host` / `--port`，
+默认 `127.0.0.1:7314`，协议固定 HTTP；删除 `--endpoint`，不保留兼容别名。
 
 Send/Fork/Derive 复用原同步 HTTP 路由；操作成功返回 Run 不代表 Run completed。
 帮助与流程要求读取 `status` 和 `error`。网络断开后先查询实体状态再决定是否重发；
@@ -102,7 +104,7 @@ turn/session；session grant 受管理员策略限制。CLI 固定枚举对应�
 
 - 33 个原 Command variant 均有显式 argv→DTO 期望值测试。测试通过 syn 读取真正的 enum 语法，
   将 variant 集合与覆盖集合比较，新增 variant 必须增加实际 CLI 调用案例。
-- 递归验证每一级帮助，覆盖缺参、非法 enum/时间戳/游标/revision、全局 endpoint、stdin、中文多行、
+- 递归验证每一级帮助，覆盖缺参、非法 enum/时间戳/游标/revision、全局 host/port、stdin、中文多行、
   含空格路径、模型 JSON 诊断及 secret 不出现在响应、事件、数据库文件中。
 - NEC-166 路由表与真实 router 的 Method/Path 集合自动比对，全部 CLI 映射必须引用表内 endpoint。
 - WF-01～WF-11 的文档和 CLI 进程调用全部迁移。WF-10 显式配置 workspace_write；WF-11 只通过

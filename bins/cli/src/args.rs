@@ -19,11 +19,20 @@ use crate::input::{self, StdinSource};
     about = "Manage Projects, Agents and Runs through the local daemon"
 )]
 pub(crate) struct Arguments {
-    /// Local daemon HTTP endpoint (valid at every subcommand level).
-    #[arg(long, global = true, default_value = "http://127.0.0.1:7314", value_parser = input::url)]
-    pub(crate) endpoint: reqwest::Url,
+    /// Local daemon hostname or IP address, without a scheme or port (always HTTP).
+    #[arg(long, global = true, default_value = "127.0.0.1", value_parser = input::host)]
+    pub(crate) host: String,
+    /// Local daemon HTTP port (valid at every subcommand level).
+    #[arg(long, global = true, default_value_t = 7314, value_parser = clap::value_parser!(u16).range(1..))]
+    pub(crate) port: u16,
     #[command(subcommand)]
     pub(crate) command: CliCommand,
+}
+
+impl Arguments {
+    pub(crate) fn endpoint(&self) -> String {
+        format!("http://{}:{}", self.host, self.port)
+    }
 }
 
 #[derive(Subcommand)]
@@ -37,11 +46,6 @@ pub(crate) enum CliCommand {
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
-    },
-    /// Manage Provider operations.
-    AgentProvider {
-        #[command(subcommand)]
-        command: AgentProviderCommand,
     },
     /// Manage Session operations.
     Session {
@@ -72,11 +76,6 @@ pub(crate) enum CliCommand {
     Event {
         #[command(subcommand)]
         command: EventCommand,
-    },
-    /// Replay durable SSE after a cursor (also: event list).
-    Events {
-        #[arg(long, default_value_t = 0)]
-        after: u64,
     },
     /// Export a Project archive to a file (also: project export).
     Export(ExportArgs),
@@ -132,6 +131,11 @@ pub(crate) enum ProjectCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum AgentCommand {
+    /// Manage Provider connections and models.
+    Provider {
+        #[command(subcommand)]
+        command: AgentProviderCommand,
+    },
     /// List Agents.
     List,
     /// Create a reusable Agent.
@@ -358,7 +362,7 @@ pub(crate) struct Config {
     provider_id: String,
     #[arg(long, value_parser = input::id)]
     model: String,
-    /// Provider/model-specific effort from agent-provider list (validated by the daemon).
+    /// Provider/model-specific effort from agent provider list (validated by the daemon).
     #[arg(long, value_parser = input::id)]
     reasoning_effort: Option<String>,
 }
@@ -445,12 +449,12 @@ impl ProviderArgs {
     ) -> Result<(AgentProvider, Option<ProviderSecret>), io::Error> {
         if self.secret_stdin && self.input.as_deref() == Some(std::path::Path::new("-")) {
             return Err(input::invalid(
-                "agent-provider: --input - and --secret-stdin cannot share stdin",
+                "agent provider: --input - and --secret-stdin cannot share stdin",
             ));
         }
         if self.secret_stdin && matches!(source, StdinSource::Terminal) {
             return Err(input::invalid(
-                "agent-provider: --secret-stdin requires redirected stdin (terminal echo is unsafe)",
+                "agent provider: --secret-stdin requires redirected stdin (terminal echo is unsafe)",
             ));
         }
         let models = self
@@ -467,7 +471,7 @@ impl ProviderArgs {
                 }
             }
             if text.is_empty() {
-                return Err(input::invalid("agent-provider: empty secret stdin"));
+                return Err(input::invalid("agent provider: empty secret stdin"));
             }
             Some(ProviderSecret(text))
         } else {
@@ -559,8 +563,7 @@ impl CliCommand {
     ) -> Result<Action, io::Error> {
         let command = match self {
             Self::Project { command } => return command.into_action(stdin),
-            Self::Agent { command } => command.into(),
-            Self::AgentProvider { command } => command.into_command(stdin, source)?,
+            Self::Agent { command } => command.into_command(stdin, source)?,
             Self::Session { command } => command.into_command(stdin)?,
             Self::Message { command } => command.into(),
             Self::Run { command } => command.into(),
@@ -568,8 +571,7 @@ impl CliCommand {
             Self::Settings { command } => command.into_command(stdin)?,
             Self::Event {
                 command: EventCommand::List { after },
-            }
-            | Self::Events { after } => return Ok(Action::Events { after }),
+            } => return Ok(Action::Events { after }),
             Self::Export(args) => return Ok(args.into()),
             Self::Import(args) => args.read(stdin)?,
         };
@@ -626,9 +628,10 @@ impl ProjectCommand {
     }
 }
 
-impl From<AgentCommand> for Command {
-    fn from(value: AgentCommand) -> Self {
-        match value {
+impl AgentCommand {
+    fn into_command(self, stdin: &mut dyn Read, source: StdinSource) -> Result<Command, io::Error> {
+        let command = match self {
+            AgentCommand::Provider { command } => return command.into_command(stdin, source),
             AgentCommand::List => Command::ListAgents,
             AgentCommand::Create { id, name, config } => Command::RegisterAgent {
                 id,
@@ -640,7 +643,8 @@ impl From<AgentCommand> for Command {
                 name,
                 config: config.into(),
             },
-        }
+        };
+        Ok(command)
     }
 }
 

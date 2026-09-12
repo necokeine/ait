@@ -66,8 +66,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     case!(&["agent", "list"] => ListAgents);
     case!(&["agent", "create", "--id", "id", "--name", "name", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => RegisterAgent { id: "id".into(), name: "name".into(), config: config.clone() });
     case!(&["agent", "update", "--id", "id", "--name", "name", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => UpdateAgent { id: "id".into(), name: "name".into(), config: config.clone() });
-    case!(&["agent-provider", "list"] => ListAgentProviders);
-    case!(&["agent-provider", "refresh-models", "--provider-id", "provider_id"] => RefreshProviderModels { provider_id: "provider_id".into() });
+    case!(&["agent", "provider", "list"] => ListAgentProviders);
+    case!(&["agent", "provider", "refresh-models", "--provider-id", "provider_id"] => RefreshProviderModels { provider_id: "provider_id".into() });
     case!(&["session", "list", "--project-id", "project_id"] => ListSessions { project_id: "project_id".into() });
     case!(&["session", "create", "--id", "id", "--project-id", "project_id", "--agent-id", "agent_id", "--at-message-id", "at_message_id"] => CreateSession { id: "id".into(), project_id: "project_id".into(), agent_id: "agent_id".into(), at_message_id: Some("at_message_id".into()) });
     case!(&["session", "set-agent", "--session-id", "session_id", "--agent-id", "agent_id"] => SetSessionAgent { session_id: "session_id".into(), agent_id: "agent_id".into() });
@@ -101,8 +101,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     };
     let models_path = directory.path().join("models with spaces.json");
     std::fs::write(&models_path, serde_json::to_vec(&provider.models).unwrap()).unwrap();
-    case!(&["agent-provider", "save", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => SaveAgentProvider { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
-    case!(&["agent-provider", "discover-models", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => DiscoverProviderModels { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
+    case!(&["agent", "provider", "save", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => SaveAgentProvider { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
+    case!(&["agent", "provider", "discover-models", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => DiscoverProviderModels { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
     case!(&["project", "export", "--project-id", "p", "--output", "archive with spaces.json"] => ExportProject { project_id: "p".into() });
     case!(&["project", "import", "--input", archive_path.to_str().unwrap(), "--workdir", "path with spaces"] => ImportProject { archive: archive, workdir: "path with spaces".into() });
     case!(&["settings", "set", "--expected-revision", "42", "--input", settings_path.to_str().unwrap()] => SaveSettings { expected_revision: 42, values: settings });
@@ -150,7 +150,7 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
 }
 
 #[test]
-fn all_help_levels_are_discoverable_and_the_retired_entry_is_absent() {
+fn all_help_levels_are_discoverable_and_retired_entries_are_absent() {
     fn visit(command: &clap::Command, path: &[String]) {
         assert!(!command.is_hide_set());
         let mut args = path.to_owned();
@@ -158,7 +158,9 @@ fn all_help_levels_are_discoverable_and_the_retired_entry_is_absent() {
         let error = Arguments::try_parse_from(args).err().expect("help exits");
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
-        assert!(help.contains("--endpoint"));
+        assert!(help.contains("--host"));
+        assert!(help.contains("--port"));
+        assert!(!help.contains("--endpoint"));
         for child in command.get_subcommands() {
             assert!(help.contains(child.get_name()));
             let mut path = path.to_owned();
@@ -171,10 +173,24 @@ fn all_help_levels_are_discoverable_and_the_retired_entry_is_absent() {
     assert!(
         command
             .get_subcommands()
-            .all(|command| command.get_name() != "command")
+            .all(|command| !["command", "events", "agent-provider"].contains(&command.get_name()))
+    );
+    let agent = command.find_subcommand("agent").unwrap();
+    let provider = agent.find_subcommand("provider").unwrap();
+    assert_eq!(
+        provider
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["list", "save", "discover-models", "refresh-models"])
     );
     visit(&command, &["ait".into()]);
-    for args in [vec!["ait", "command"], vec!["ait", "command", "-"]] {
+    for args in [
+        vec!["ait", "command"],
+        vec!["ait", "command", "-"],
+        vec!["ait", "events"],
+        vec!["ait", "agent-provider", "list"],
+    ] {
         assert_eq!(
             Arguments::try_parse_from(args).err().unwrap().kind(),
             clap::error::ErrorKind::InvalidSubcommand
@@ -198,7 +214,8 @@ fn required_parameters_and_typed_values_fail_before_io() {
         vec!["project", "register", "--id", "p"],
         vec!["run", "get", "--run-id", "  "],
         vec![
-            "agent-provider",
+            "agent",
+            "provider",
             "save",
             "--id",
             "p",
@@ -260,38 +277,116 @@ fn required_parameters_and_typed_values_fail_before_io() {
 }
 
 #[test]
-fn global_endpoint_and_sse_shortcut_are_preserved() {
-    for args in [
-        vec![
-            "ait",
-            "--endpoint",
-            "http://localhost:1",
-            "run",
-            "get",
-            "--run-id",
-            "r",
-        ],
-        vec![
-            "ait",
-            "run",
-            "get",
-            "--run-id",
-            "r",
-            "--endpoint",
-            "http://localhost:1",
-        ],
+fn host_and_port_are_global_at_every_provider_command_level() {
+    for index in 1..=4 {
+        let mut args = vec!["ait", "agent", "provider", "list"];
+        args.splice(index..index, ["--host", "localhost", "--port", "17314"]);
+        let arguments = Arguments::try_parse_from(args).unwrap();
+        assert_eq!(arguments.endpoint(), "http://localhost:17314");
+        assert!(matches!(
+            arguments
+                .command
+                .into_action(&mut "".as_bytes(), StdinSource::Redirected)
+                .unwrap(),
+            Action::Execute(Command::ListAgentProviders)
+        ));
+    }
+    let arguments = Arguments::try_parse_from([
+        "ait",
+        "--host",
+        "localhost",
+        "agent",
+        "provider",
+        "--port",
+        "17314",
+        "list",
+    ])
+    .unwrap();
+    assert_eq!(arguments.endpoint(), "http://localhost:17314");
+}
+
+#[test]
+fn daemon_address_defaults_overrides_and_ipv6_use_http() {
+    for (flags, expected) in [
+        (vec![], "http://127.0.0.1:7314"),
+        (vec!["--host", "localhost"], "http://localhost:7314"),
+        (vec!["--port", "80"], "http://127.0.0.1:80"),
+        (vec!["--port", "65535"], "http://127.0.0.1:65535"),
+        (
+            vec!["--host", "192.0.2.1", "--port", "1"],
+            "http://192.0.2.1:1",
+        ),
+        (vec!["--host", "::1"], "http://[::1]:7314"),
+        (
+            vec!["--host", "[::1]", "--port", "17314"],
+            "http://[::1]:17314",
+        ),
+        (vec!["--host", "2001:db8::1"], "http://[2001:db8::1]:7314"),
     ] {
-        assert_eq!(
-            Arguments::try_parse_from(args).unwrap().endpoint.as_str(),
-            "http://localhost:1/"
+        let arguments =
+            Arguments::try_parse_from(["ait", "project", "list"].into_iter().chain(flags)).unwrap();
+        assert_eq!(arguments.endpoint(), expected);
+        let url = reqwest::Url::parse(&arguments.endpoint()).unwrap();
+        assert_eq!(url.scheme(), "http");
+    }
+}
+
+#[test]
+fn malformed_daemon_addresses_and_endpoint_flag_are_rejected() {
+    for host in [
+        "",
+        " ",
+        "local host",
+        "localhost\n",
+        "http://localhost",
+        "https://localhost",
+        "localhost:7314",
+        "user@localhost",
+        "localhost/path",
+        "localhost/",
+        "localhost\\path",
+        "localhost?query",
+        "localhost#fragment",
+        "%6cocalhost",
+        "[::1]:7314",
+        "[::1",
+        "::g",
+        "[localhost]",
+        "256.0.0.1",
+    ] {
+        assert!(
+            Arguments::try_parse_from(["ait", "project", "list", "--host", host]).is_err(),
+            "accepted host {host:?}"
         );
     }
-    for args in [
-        vec!["events", "--after", "12"],
-        vec!["event", "list", "--after", "12"],
-    ] {
-        assert!(matches!(action(&args, ""), Action::Events { after: 12 }));
+    for port in ["", "0", "65536", "-1", "http", "1.5"] {
+        assert!(
+            Arguments::try_parse_from(["ait", "project", "list", "--port", port]).is_err(),
+            "accepted port {port:?}"
+        );
     }
+    assert!(
+        Arguments::try_parse_from([
+            "ait",
+            "project",
+            "list",
+            "--endpoint",
+            "http://localhost:7314"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn event_list_preserves_cursor_and_default() {
+    assert!(matches!(
+        action(&["event", "list", "--after", "12"], ""),
+        Action::Events { after: 12 }
+    ));
+    assert!(matches!(
+        action(&["event", "list"], ""),
+        Action::Events { after: 0 }
+    ));
 }
 
 #[test]
@@ -357,7 +452,8 @@ fn approval_requires_a_scope_and_provider_stdin_is_not_shared() {
     );
     let command = Arguments::try_parse_from([
         "ait",
-        "agent-provider",
+        "agent",
+        "provider",
         "save",
         "--id",
         "p",
@@ -385,7 +481,8 @@ fn secret_stdin_rejects_terminal_before_reading() {
     for operation in ["save", "discover-models"] {
         let command = Arguments::try_parse_from([
             "ait",
-            "agent-provider",
+            "agent",
+            "provider",
             operation,
             "--id",
             "p",
@@ -413,7 +510,8 @@ fn secret_stdin_accepts_injected_redirected_reader() {
     for operation in ["save", "discover-models"] {
         let result = action(
             &[
-                "agent-provider",
+                "agent",
+                "provider",
                 operation,
                 "--id",
                 "p",

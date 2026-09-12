@@ -43,9 +43,10 @@ daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/regist
 按用户目标组织的操作步骤、失败恢复和当前行为差距见 [CLI 用户流程](workflows/README.md)。
 对应验收测试运行 `cargo test -p ait-cli --test workflows`，覆盖真实 CLI 到 HTTP/SQLite 的完整路径。
 
-CLI 按 `project`、`agent-provider`、`agent`、`session`、`message`、`run`、`cron`、`settings`、`event`
+CLI 按 `project`、`agent`、`session`、`message`、`run`、`cron`、`settings`、`event`
 分组，每一级都提供 `--help`；标量通过 flags 输入，多行文本支持 `--text-file` / `--text-stdin`。
-Provider 凭据使用 `agent-provider save --secret-stdin`，不得粘贴到命令行。
+Provider 操作位于 `agent provider`。CLI 使用全局 `--host` / `--port` 连接 daemon，默认 `127.0.0.1:7314`，协议固定 HTTP。
+Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命令行。
 `session send` 返回后必须检查 Run 的 `status` 与 `error`，`ok=true` 不代表执行完成。
 
 权限默认是 `permissions.sandbox=read_only`、`permissions.approval=on_request`。Agent 写代码前应按
@@ -54,7 +55,8 @@ Provider 凭据使用 `agent-provider save --secret-stdin`，不得粘贴到命�
 新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek 使用
 宿主工具循环，按精确 provider+model 目录与 HostTools 可执行能力求交。API 首版文件操作始终
 限制在 Project 根内，`full_access` 也不能越出此边界；执行范围见 [WF-13](workflows/13-api-provider-tool-loop.md)。
-CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md)。
+CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md) 与
+[NEC-257 修订](docs/decisions/NEC-257/adr-001-cli-command-and-address-simplification.md)。
 
 GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait desktop** 的桌面产物；
 版本准备、打标签、产物校验和故障恢复见 [发布操作指南](docs/operations/releasing.md)。

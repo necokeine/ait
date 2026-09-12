@@ -73,7 +73,7 @@ cat > "$WF_ROOT/models.json" <<'JSON'
 [{"id":"deepseek-v4-flash","name":"deepseek-v4-flash","reasoning_efforts":[]}]
 JSON
 # 从安全来源重定向原始 key（文件内容仅为 key，可有末尾换行；不是整个 .env）
-ait agent-provider save --id deepseek --name DeepSeek --kind deepseek \
+ait agent provider save --id deepseek --name DeepSeek --kind deepseek \
   --url https://api.deepseek.com --input "$WF_ROOT/models.json" \
   --secret-stdin < /path/to/protected-key-file
 ```
@@ -81,8 +81,8 @@ ait agent-provider save --id deepseek --name DeepSeek --kind deepseek \
 现有 `.env` 应通过 `test_with_deepseek.sh` 的 Rust 加载器读取；不要 source 它，也不要把 key
 粘贴到命令行或使用 echo 字面量。`--secret-stdin` 不接受 key 参数，直接连终端会被拒绝以避免回显。
 `--input -` 可从 stdin 读取模型列表，但不能与 `--secret-stdin` 共用 stdin；此时请使用模型文件。
-`agent-provider discover-models` 接受同样的 flags，可以在保存前预览模型；
-`agent-provider refresh-models --provider-id deepseek` 使用已保存连接刷新目录。
+`agent provider discover-models` 接受同样的 flags，可以在保存前预览模型；
+`agent provider refresh-models --provider-id deepseek` 使用已保存连接刷新目录。
 
 daemon 将 Secret 写入操作系统凭据库；SQLite 仅保留引用，响应只显示 `has_secret=true`。
 本次目录、数据库和对应凭据项会保留以便复核、重开该工作空间；删除临时目录不会自动删除

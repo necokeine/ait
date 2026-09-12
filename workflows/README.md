@@ -55,10 +55,11 @@ WF-11 使用原生 DeepSeek Provider，由
 cargo build -p ait-cli -p ait-daemon
 export AIT_REPO="$PWD"
 export WF_ROOT="$(mktemp -d)"
-export AIT_ENDPOINT="http://127.0.0.1:17314"
+export AIT_HOST="127.0.0.1"
+export AIT_PORT="17314"
 mkdir -p "$WF_ROOT/project"
 set -o pipefail
-ait() { "$AIT_REPO/target/debug/ait-cli" --endpoint "$AIT_ENDPOINT" "$@"; }
+ait() { "$AIT_REPO/target/debug/ait-cli" --host "$AIT_HOST" --port "$AIT_PORT" "$@"; }
 printf '演练目录：%s\n' "$WF_ROOT"
 ```
 
@@ -69,7 +70,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 ```
 
 看到监听地址后，在终端 A 执行 `ait project list`。若端口已被占用，给本次演练选择另一个端口，
-同时修改 `AIT_ENDPOINT` 和 `--listen`。演练结束后在终端 B 按 Ctrl-C 停止本次服务。
+同时修改 `AIT_PORT` 和 `--listen`。演练结束后在终端 B 按 Ctrl-C 停止本次服务。
 数据库、响应文件、归档都放在 `$WF_ROOT` 下，位于 Project 的 Git 工作目录之外，避免让发送输入的 Git 检查失败。
 
 先执行 WF-01，再按需执行其余流程；它们使用不同的 Session ID。重复一篇流程时应使用新的 ID，
@@ -78,14 +79,16 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 ## 公共输入输出约定
 
 从 `ait --help`、`ait <实体> --help` 和 `ait <实体> <动作> --help` 发现全部参数。
-`--endpoint` 是全局 flag，可以放在任意子命令层级。常用标量使用 flags；ID 是非空、不含控制字符的
+`--host` 与 `--port` 是全局 flags，可以放在任意子命令层级，默认分别为 `127.0.0.1` 和 `7314`，协议固定 HTTP。
+`--host` 只接受域名或 IP（IPv6 可带方括号），不接受协议、端口、凭据或路径；`--port` 范围为 1–65535。
+常用标量使用 flags；ID 是非空、不含控制字符的
 不透明字符串（允许空格），路径按单个 shell 参数引用；固定枚举由 clap 校验。模型及 reasoning effort
 来自动态 Provider 目录，具体组合由 daemon 校验，CLI 不复制目录或业务规则。
 
 | 实体 | 动作 |
 | --- | --- |
 | `project` | `list`、`register`、`set-default-agent`、`export`、`import` |
-| `agent-provider` | `list`、`save`、`discover-models`、`refresh-models` |
+| `agent provider` | `list`、`save`、`discover-models`、`refresh-models` |
 | `agent` | `list`、`create`、`update` |
 | `session` | `list`、`create`、`set-agent`、`set-config`、`rename`、`set-title`、`send`、`fork`、`derive` |
 | `message` | `list`（要求 `--project-id`） |
@@ -94,7 +97,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | `settings` | `get`、`set`、`reset` |
 | `event` | `list --after <cursor>`（durable SSE 回放） |
 
-保留 `events`、`export`、`import` 顶层快捷入口，行为分别等同于 `event list`、`project export`、`project import`。
+事件只通过 `event list` 读取。保留 `export`、`import` 顶层快捷入口，行为分别等同于 `project export`、`project import`。
 文本使用 `--text`、`--text-file <file|->`、`--text-stdin` 三选一，保留多行中文和反斜杠。
 Provider secret 仅由 `--secret-stdin` 接收，不放 argv、shell history、JSON 模型文件或响应；见 WF-11。
 实体 `--input <file|->` 只用于 Provider 模型数组、完整 settings values 或 Project archive，均不包含命令标签。

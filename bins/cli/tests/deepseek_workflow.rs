@@ -100,7 +100,8 @@ impl Drop for Daemon {
 
 struct Workflow {
     root: PathBuf,
-    endpoint: String,
+    host: String,
+    port: u16,
     credential: Credential,
     daemon: Option<Daemon>,
 }
@@ -175,7 +176,7 @@ impl Workflow {
                     .lines()
                     .find_map(|line| line.strip_prefix("AIT daemon listening on "))
                 {
-                    break endpoint.to_owned();
+                    break reqwest::Url::parse(endpoint).expect("daemon HTTP address");
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -184,7 +185,8 @@ impl Workflow {
         .expect("daemon startup exceeded 10s");
         Self {
             root,
-            endpoint,
+            host: endpoint.host_str().unwrap().to_owned(),
+            port: endpoint.port_or_known_default().unwrap(),
             credential,
             daemon: Some(daemon),
         }
@@ -223,7 +225,7 @@ impl Workflow {
 
     async fn cli_stdin(&self, name: &str, arguments: &[&str], input: &str, seconds: u64) -> Value {
         let mut child = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
-            .args(["--endpoint", &self.endpoint])
+            .args(["--host", &self.host, "--port", &self.port.to_string()])
             .args(arguments)
             .current_dir(&self.root)
             .env_remove("DEEPSEEK_API_KEY")
@@ -256,7 +258,7 @@ impl Workflow {
         let output = self
             .output(
                 Command::new(env!("CARGO_BIN_EXE_ait-cli"))
-                    .args(["--endpoint", &self.endpoint])
+                    .args(["--host", &self.host, "--port", &self.port.to_string()])
                     .args(arguments)
                     .current_dir(&self.root)
                     .env("NO_PROXY", "*")
@@ -408,7 +410,8 @@ async fn wf11_real_deepseek_python_hello_world() {
         .cli_stdin(
             "provider",
             &[
-                "agent-provider",
+                "agent",
+                "provider",
                 "save",
                 "--id",
                 "deepseek",
