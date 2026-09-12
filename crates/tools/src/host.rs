@@ -8,6 +8,7 @@ use cap_std::fs::OpenOptionsExt;
 use cap_std::fs::{Dir, OpenOptions};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     io::{Read, Write},
     path::{Component, Path},
@@ -15,12 +16,47 @@ use std::{
     time::Duration,
 };
 use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
 
 /// Maximum input file, argument or output bytes accepted by host tools.
 pub const MAX_BYTES: usize = 65_536;
 /// Production factory. Full access remains a ceiling, not an automatic escape grant.
 #[derive(Default)]
 pub struct HostToolFactory;
+/// Observable filesystem boundaries; callbacks run on the I/O worker.
+pub trait HostIoObserver: Send + Sync {
+    /// Observe a boundary without changing tool arguments or filesystem authority.
+    fn checkpoint(&self, execution_id: &str, point: HostIoCheckpoint);
+}
+/// Checkpoints used for host diagnostics and deterministic I/O fault injection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostIoCheckpoint {
+    /// Before reading file contents.
+    BeforeRead,
+    /// Before publishing an atomic replacement.
+    BeforePublish,
+}
+struct ObservedFactory(Arc<dyn HostIoObserver>);
+impl HostToolFactory {
+    /// Install an observer without replacing the production filesystem executor.
+    pub fn with_observer(observer: Arc<dyn HostIoObserver>) -> impl RunToolFactory {
+        ObservedFactory(observer)
+    }
+}
+impl RunToolFactory for ObservedFactory {
+    fn create(
+        &self,
+        root: &Path,
+        profile: RunPermissionProfile,
+    ) -> Result<Arc<dyn RunTool>, DomainError> {
+        Ok(Arc::new(HostTools {
+            root: Arc::new(open_project_root(root)?),
+            profile,
+            observer: Some(self.0.clone()),
+            workers: Arc::new(Workers::default()),
+        }))
+    }
+}
 impl RunToolFactory for HostToolFactory {
     fn create(
         &self,
@@ -28,8 +64,10 @@ impl RunToolFactory for HostToolFactory {
         profile: RunPermissionProfile,
     ) -> Result<Arc<dyn RunTool>, DomainError> {
         Ok(Arc::new(HostTools {
-            root: open_project_root(root)?,
+            root: Arc::new(open_project_root(root)?),
             profile,
+            observer: None,
+            workers: Arc::new(Workers::default()),
         }))
     }
 }
@@ -90,9 +128,32 @@ pub fn parameters(name: &str) -> Option<Value> {
     Some(schema)
 }
 
+#[derive(Clone)]
 struct HostTools {
-    root: Dir,
+    root: Arc<Dir>,
     profile: RunPermissionProfile,
+    observer: Option<Arc<dyn HostIoObserver>>,
+    workers: Arc<Workers>,
+}
+
+#[derive(Default)]
+struct Workers {
+    stopping: CancellationToken,
+    active: AtomicUsize,
+    done: tokio::sync::Notify,
+}
+struct WorkerGuard(Arc<Workers>);
+impl Drop for WorkerGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+        self.0.done.notify_waiters();
+    }
+}
+struct TemporaryFile<'a>(&'a Dir, &'a str);
+impl Drop for TemporaryFile<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.remove_file(self.1);
+    }
 }
 fn failed() -> DomainError {
     DomainError::invariant(
@@ -113,7 +174,28 @@ fn safe_component(value: &str) -> bool {
     !value.starts_with('.') && !value.eq_ignore_ascii_case("node_modules")
 }
 impl HostTools {
-    fn parent(&self, path: &str) -> Result<(Dir, String), DomainError> {
+    fn check(&self, request: &ToolInvocation) -> Result<(), DomainError> {
+        if request.cancellation.is_cancelled() || self.workers.stopping.is_cancelled() {
+            return Err(DomainError::invariant(
+                ErrorCode::RunCancelled,
+                "host I/O cancelled before the next effect boundary",
+            ));
+        }
+        Ok(())
+    }
+    fn checkpoint(
+        &self,
+        request: &ToolInvocation,
+        point: HostIoCheckpoint,
+    ) -> Result<(), DomainError> {
+        self.check(request)?;
+        if let Some(observer) = &self.observer {
+            observer.checkpoint(request.execution_id.as_str(), point);
+        }
+        self.check(request)
+    }
+    fn parent(&self, path: &str, request: &ToolInvocation) -> Result<(Dir, String), DomainError> {
+        self.check(request)?;
         let mut parts = Vec::new();
         for part in Path::new(path).components() {
             match part {
@@ -131,37 +213,51 @@ impl HostTools {
         let name = parts.pop().ok_or_else(denied)?;
         let mut dir = self.root.try_clone().map_err(|_| failed())?;
         for part in parts {
+            self.check(request)?;
             dir = dir.open_dir_nofollow(part).map_err(|_| denied())?;
         }
         Ok((dir, name))
     }
-    fn read(&self, path: &str) -> Result<String, DomainError> {
-        let (dir, name) = self.parent(path)?;
+    fn read(&self, path: &str, request: &ToolInvocation) -> Result<String, DomainError> {
+        self.checkpoint(request, HostIoCheckpoint::BeforeRead)?;
+        let (dir, name) = self.parent(path, request)?;
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
         #[cfg(unix)]
         options.custom_flags(libc::O_NONBLOCK);
-        let file = dir.open_with(name, &options).map_err(|_| failed())?;
+        let mut file = dir.open_with(name, &options).map_err(|_| failed())?;
         if !file.metadata().map_err(|_| failed())?.is_file() {
             return Err(denied());
         }
-        let mut text = String::new();
-        file.take((MAX_BYTES + 1) as u64)
-            .read_to_string(&mut text)
-            .map_err(|_| failed())?;
-        if text.len() > MAX_BYTES {
-            return Err(failed());
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            self.check(request)?;
+            let count = file.read(&mut buffer).map_err(|_| failed())?;
+            if count == 0 {
+                break;
+            }
+            if bytes.len() + count > MAX_BYTES {
+                return Err(failed());
+            }
+            bytes.extend_from_slice(&buffer[..count]);
         }
-        Ok(text)
+        self.check(request)?;
+        String::from_utf8(bytes).map_err(|_| failed())
     }
-    fn write(&self, path: &str, content: &str, execution: &str) -> Result<(), DomainError> {
+    fn write(
+        &self,
+        path: &str,
+        content: &str,
+        request: &ToolInvocation,
+    ) -> Result<(), DomainError> {
         if self.profile.sandbox == SandboxAccess::ReadOnly {
             return Err(denied());
         }
         if content.len() > MAX_BYTES {
             return Err(failed());
         }
-        let (dir, name) = self.parent(path)?;
+        let (dir, name) = self.parent(path, request)?;
         if dir
             .symlink_metadata(&name)
             .is_ok_and(|m| !m.is_file() || m.is_symlink())
@@ -169,27 +265,32 @@ impl HostTools {
             return Err(denied());
         }
         // Replace atomically; never truncate an existing hard link or follow a symlink.
-        let temporary = format!(".ait-tool-{execution}");
+        let temporary = format!(".ait-tool-{}", request.execution_id.as_str());
+        self.check(request)?;
         let mut file = dir
             .open_with(&temporary, OpenOptions::new().write(true).create_new(true))
             .map_err(|_| failed())?;
-        let result = (|| {
-            file.write_all(content.as_bytes()).map_err(|_| failed())?;
-            file.sync_all().map_err(|_| failed())?;
-            dir.rename(&temporary, &dir, name).map_err(|_| failed())
-        })();
-        if result.is_err() {
-            let _ = dir.remove_file(&temporary);
+        let _cleanup = TemporaryFile(&dir, &temporary);
+        for chunk in content.as_bytes().chunks(8192) {
+            self.check(request)?;
+            file.write_all(chunk).map_err(|_| failed())?;
         }
-        result
+        self.check(request)?;
+        file.sync_all().map_err(|_| failed())?;
+        self.checkpoint(request, HostIoCheckpoint::BeforePublish)?;
+        dir.rename(&temporary, &dir, name).map_err(|_| failed())
     }
     fn files(
+        &self,
         dir: &Dir,
         prefix: &str,
         files: &mut Vec<String>,
         visited: &mut usize,
+        request: &ToolInvocation,
     ) -> Result<(), DomainError> {
+        self.check(request)?;
         for entry in dir.entries().map_err(|_| failed())? {
+            self.check(request)?;
             *visited += 1;
             if *visited > 2_000 {
                 return Err(failed());
@@ -204,21 +305,23 @@ impl HostTools {
             if kind.is_file() {
                 files.push(path);
             } else if kind.is_dir() {
-                Self::files(
+                self.files(
                     &dir.open_dir_nofollow(&name).map_err(|_| denied())?,
                     &format!("{path}/"),
                     files,
                     visited,
+                    request,
                 )?;
             }
         }
         Ok(())
     }
     fn filesystem(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
+        self.check(request)?;
         let args = &request.arguments;
         match request.tool_name.as_str() {
             "read" => {
-                let text = self.read(string(args, "file_path")?)?;
+                let text = self.read(string(args, "file_path")?, request)?;
                 let offset =
                     usize::try_from(args.get("offset").and_then(Value::as_u64).unwrap_or(1))
                         .map_err(|_| failed())?;
@@ -233,13 +336,13 @@ impl HostTools {
                 self.write(
                     string(args, "file_path")?,
                     string(args, "content")?,
-                    request.execution_id.as_str(),
+                    request,
                 )?;
                 Ok(json!({"written":true}))
             }
             "edit" => {
                 let path = string(args, "file_path")?;
-                let text = self.read(path)?;
+                let text = self.read(path, request)?;
                 let old = string(args, "old_string")?;
                 let new = string(args, "new_string")?;
                 let count = text.matches(old).count();
@@ -257,7 +360,7 @@ impl HostTools {
                 if expanded > MAX_BYTES {
                     return Err(failed());
                 }
-                self.write(path, &text.replace(old, new), request.execution_id.as_str())?;
+                self.write(path, &text.replace(old, new), request)?;
                 Ok(json!({"replaced":count}))
             }
             "grep" => {
@@ -266,17 +369,19 @@ impl HostTools {
                     .build()
                     .map_err(|_| failed())?;
                 let mut files = Vec::new();
-                Self::files(&self.root, "", &mut files, &mut 0)?;
+                self.files(&self.root, "", &mut files, &mut 0, request)?;
                 files.sort();
                 let mut found = Vec::new();
                 let mut bytes = 0;
                 for path in files {
-                    if let Ok(text) = self.read(&path) {
+                    self.check(request)?;
+                    if let Ok(text) = self.read(&path, request) {
                         for (line, text) in text
                             .lines()
                             .enumerate()
                             .filter(|(_, text)| pattern.is_match(text))
                         {
+                            self.check(request)?;
                             bytes += path.len() + text.len() + 32;
                             if bytes > MAX_BYTES / 2 {
                                 return Err(failed());
@@ -285,12 +390,14 @@ impl HostTools {
                         }
                     }
                 }
+                self.check(request)?;
                 Ok(json!({"matches":found}))
             }
             _ => Err(denied()),
         }
     }
     async fn shell(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
+        self.check(request)?;
         let words = shlex::split(string(&request.arguments, "command")?).ok_or_else(denied)?;
         // This slice deliberately admits only pure, finite shell utilities. No shell
         // interpreter, evaluation, inherited environment, network or filesystem writes.
@@ -335,10 +442,17 @@ impl HostTools {
             }
             Ok(json!({"stdout":String::from_utf8_lossy(&output),"exit_status":status.code()}))
         };
-        tokio::select! {
-            result = tokio::time::timeout(Duration::from_millis(timeout), work) => result.map_err(|_| DomainError::invariant(ErrorCode::RunLimitExceeded,"tool timeout elapsed"))?,
+        let result = tokio::select! {
+            biased;
             () = request.cancellation.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled,"tool cancelled")),
+            () = self.workers.stopping.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled,"host tools stopped")),
+            result = tokio::time::timeout(Duration::from_millis(timeout), work) => result.map_err(|_| DomainError::invariant(ErrorCode::RunLimitExceeded,"tool timeout elapsed"))?,
+        };
+        if result.is_err() {
+            let _ = child.kill().await;
         }
+        let _ = child.wait().await;
+        result
     }
 }
 #[async_trait]
@@ -359,7 +473,9 @@ impl RunTool for HostTools {
     fn requires_approval(&self, _: &str, args: &Value) -> bool {
         args.get("sandbox_permissions").is_some()
     }
-    async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+    async fn execute(&self, mut request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        request.cancellation = request.cancellation.child_token();
+        let _cancel_on_drop = request.cancellation.clone().drop_guard();
         if request.cancellation.is_cancelled() {
             return Err(DomainError::invariant(
                 ErrorCode::RunCancelled,
@@ -385,15 +501,40 @@ impl RunTool for HostTools {
         if request.arguments.to_string().len() > MAX_BYTES {
             return Err(failed());
         }
+        self.workers.active.fetch_add(1, Ordering::SeqCst);
+        let guard = WorkerGuard(self.workers.clone());
+        let host = self.clone();
         let output = if request.tool_name == "bash" {
-            self.shell(&request).await?
+            tokio::spawn(async move {
+                let _guard = guard;
+                host.shell(&request).await
+            })
+            .await
+            .map_err(|_| failed())??
         } else {
-            self.filesystem(&request)?
+            tokio::task::spawn_blocking(move || {
+                let _guard = guard;
+                host.filesystem(&request)
+            })
+            .await
+            .map_err(|_| failed())??
         };
         if output.to_string().len() > MAX_BYTES {
             return Err(failed());
         }
         Ok(ToolOutcome { output })
+    }
+    async fn cancel_and_drain(&self) {
+        self.workers.stopping.cancel();
+        loop {
+            let notified = self.workers.done.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.workers.active.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            notified.await;
+        }
     }
     async fn reconcile(&self, _: &ToolExecution) -> Result<ToolRecovery, DomainError> {
         Ok(ToolRecovery::Unknown)

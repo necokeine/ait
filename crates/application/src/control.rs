@@ -1479,9 +1479,7 @@ impl LocalControlService {
         let worker_run_id = run_id.clone();
         let task_control = Arc::clone(&control);
         let task = tokio::spawn(async move {
-            worker
-                .execute_workspace_agent(&worker_run_id, task_control)
-                .await
+            Box::pin(worker.execute_workspace_agent(&worker_run_id, task_control)).await
         });
         let result = match task.await {
             Ok(Ok(run)) => Ok(run),
@@ -1775,11 +1773,18 @@ impl LocalControlService {
                     ));
                 }
             }
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_workspace_status(&run.status) && !api_run::needs_terminal_repair(&run) {
                 let _ = self.store.clear_progress(&lease.run_id).await;
                 return Ok(run);
             }
-            if run.status == "settling" && result.is_err() {
+            if run.execution.is_some() && run.status == "cancelling" {
+                run.status = "cancelled".into();
+                run.error = Some(error(
+                    ErrorCode::RunCancelled,
+                    "API Run cancellation completed after worker settlement",
+                    false,
+                ));
+            } else if run.status == "settling" && result.is_err() {
                 let failure = result.as_ref().expect_err("checked error");
                 run.status = "interrupted".into();
                 run.error = Some(error(
@@ -1803,6 +1808,9 @@ impl LocalControlService {
             };
             expire_pending_native_approvals(&mut run, approval_status);
             run.phase = Some("terminal".into());
+            api_run::interrupt(&mut run);
+            api_run::append_terminal_results(&mut state, &mut run)
+                .map_err(|_| recovery_error("could not settle API child records"))?;
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.updated", Some(lease.run_id.clone()), &run);
@@ -1910,7 +1918,10 @@ impl LocalControlService {
             run_ids: state
                 .runs
                 .iter()
-                .filter(|run| !is_terminal_workspace_status(&run.status))
+                .filter(|run| {
+                    !is_terminal_workspace_status(&run.status)
+                        || api_run::needs_terminal_repair(run)
+                })
                 .map(|run| run.id.clone())
                 .collect(),
         })
@@ -1998,11 +2009,46 @@ impl LocalControlService {
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             if is_terminal_workspace_status(&state.runs[index].status) {
-                return Ok(WorkspaceRecoveryClaim::Skip);
+                if !api_run::needs_terminal_repair(&state.runs[index]) {
+                    return Ok(WorkspaceRecoveryClaim::Skip);
+                }
+                let terminal = if state.runs[index].status == "cancelled" {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                settle_recovered_run(
+                    &mut state,
+                    index,
+                    terminal,
+                    "repaired inconsistent API terminal state; unknown effects will not replay",
+                )?;
+                let run = state.runs[index].clone();
+                match self
+                    .persist_records(
+                        &loaded,
+                        &state,
+                        vec![pending("run.updated", Some(run_id.into()), &run)],
+                    )
+                    .await
+                {
+                    Ok(()) => return Ok(WorkspaceRecoveryClaim::Recovered(Box::new(run))),
+                    Err(ControlStoreError::Conflict) => continue,
+                    Err(e) => return Err(store_error(e)),
+                }
             }
             let policy = recovery_policy(&state);
             let status = state.runs[index].status.clone();
             let claim = match policy {
+                _ if status == "cancelling" => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "cancelled",
+                        "run cancellation was completed during daemon recovery",
+                    )?;
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
                 RecoveryPolicy::ResumeSafe if state.runs[index].execution.is_some() => {
                     return Ok(WorkspaceRecoveryClaim::Execute);
                 }
@@ -2045,18 +2091,9 @@ impl LocalControlService {
                             index,
                             "interrupted",
                             "checkpointed workspace result is incomplete; recovery material was preserved for review",
-                        );
+                        )?;
                         WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                     }
-                }
-                RecoveryPolicy::ResumeSafe if status == "cancelling" => {
-                    settle_recovered_run(
-                        &mut state,
-                        index,
-                        "cancelled",
-                        "run cancellation was completed during daemon recovery",
-                    );
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::ResumeSafe => {
                     settle_recovered_run(
@@ -2064,7 +2101,7 @@ impl LocalControlService {
                         index,
                         "interrupted",
                         "run effects are not proven replay-safe; isolated workspace recovery material was preserved for review",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Ask => {
@@ -2073,7 +2110,7 @@ impl LocalControlService {
                         index,
                         "interrupted",
                         "recovery policy requires user review; workspace changes were preserved",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Fail => {
@@ -2082,7 +2119,7 @@ impl LocalControlService {
                         index,
                         "failed",
                         "run failed because the daemon restarted",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
             };
@@ -2185,21 +2222,30 @@ impl LocalControlService {
                 .iter()
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-            if is_terminal_workspace_status(&state.runs[index].status) {
+            if is_terminal_workspace_status(&state.runs[index].status)
+                && !api_run::needs_terminal_repair(&state.runs[index])
+            {
                 return Ok(state.runs[index].clone());
             }
-            let run = &mut state.runs[index];
+            let mut run = state.runs[index].clone();
             run.lease_epoch = run.lease_epoch.saturating_add(1);
-            run.status = "interrupted".into();
+            run.status = if run.status == "cancelling" || run.status == "cancelled" {
+                "cancelled"
+            } else {
+                "interrupted"
+            }
+            .into();
             run.phase = Some("terminal".into());
             run.error = Some(error(ErrorCode::RunRecoveryFailed, &failure.message, false));
-            api_run::interrupt(run);
-            expire_pending_native_approvals(run, NativeApprovalStatus::Expired);
+            api_run::interrupt(&mut run);
+            api_run::append_terminal_results(&mut state, &mut run)
+                .map_err(|_| recovery_error("could not settle interrupted API children"))?;
+            expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
             if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
                 journal.lease_epoch = run.lease_epoch;
             }
-            let run = state.runs[index].clone();
             release_session(&mut state, &run);
+            state.runs[index] = run.clone();
             let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
@@ -3241,7 +3287,12 @@ fn is_local_recovery_failure(code: ErrorCode) -> bool {
     )
 }
 
-fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, message: &str) {
+fn settle_recovered_run(
+    state: &mut WorkingSet,
+    index: usize,
+    status: &str,
+    message: &str,
+) -> Result<(), ApiError> {
     let mut run = state.runs[index].clone();
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
@@ -3259,9 +3310,12 @@ fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, mess
         false,
     ));
     api_run::interrupt(&mut run);
+    api_run::append_terminal_results(state, &mut run)
+        .map_err(|_| recovery_error("could not settle recovered API children"))?;
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
     release_session(state, &run);
     state.runs[index] = run;
+    Ok(())
 }
 
 fn workspace_write_path(

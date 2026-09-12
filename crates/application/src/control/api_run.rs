@@ -16,6 +16,7 @@ use ait_ports::{
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
+use futures_util::FutureExt;
 
 fn store_failure(_: impl std::fmt::Debug) -> RunStoreError {
     RunStoreError::Other("host Run persistence failed".into())
@@ -106,41 +107,30 @@ impl LocalControlService {
             .initialize(view)
             .await
             .map_err(|_| recovery_error("could not initialize API Run"))?;
+        let current = store.latest_view().await?;
+        if is_terminal_workspace_status(&current.status) {
+            return Ok(current);
+        }
+        // A recovered durable cancel is a settlement instruction, never a new
+        // provider/tool invocation (even if credentials or the Project moved).
+        if current.status == "cancelling" {
+            let mut run = store
+                .load_run(&RunId::new(&view.id))
+                .await
+                .map_err(|_| recovery_error("could not read cancelled API Run"))?;
+            run.status = RunStatus::Cancelled;
+            run.phase = ait_domain::RunPhase::Terminal;
+            run.stop_reason = Some(ait_domain::RunStopReason::Cancelled);
+            run.next_retry_at = None;
+            run.ended_at = Some(ait_domain::TimestampMs(now()));
+            store
+                .save_run(run)
+                .await
+                .map_err(|_| recovery_error("could not settle cancelled API Run"))?;
+            return store.latest_view().await;
+        }
         let state = self.read_run_records(&view.id).await?.original;
-        let preparation = (|| {
-            validate_run_permission_ceiling(view.permission_profile, self.permission_limits)?;
-            let project = state
-                .projects
-                .iter()
-                .find(|p| p.id == view.project_id)
-                .ok_or_else(|| {
-                    DomainError::invariant(ErrorCode::InvalidProject, "Run Project is missing")
-                })?;
-            let tools = match &self.api_tools {
-                Some(factory) => {
-                    factory.create(Path::new(&project.workdir), view.permission_profile)?
-                }
-                None => Arc::new(NoTools) as Arc<dyn RunTool>,
-            };
-            let gateway = self.provider_gateway.clone().ok_or_else(|| {
-                DomainError::invariant(
-                    ErrorCode::InvalidConfiguration,
-                    "provider gateway is unavailable",
-                )
-            })?;
-            let credential = state
-                .run_credentials
-                .get(&view.id)
-                .cloned()
-                .ok_or_else(|| {
-                    DomainError::invariant(
-                        ErrorCode::InvalidConfiguration,
-                        "provider credential is missing",
-                    )
-                })?;
-            Ok::<_, DomainError>((tools, gateway, credential))
-        })();
-        let (tools, gateway, credential) = match preparation {
+        let (tools, agent) = match self.prepare_api_executor(view, &state).await {
             Ok(parts) => parts,
             Err(failure) => {
                 let mut run = store
@@ -151,6 +141,7 @@ impl LocalControlService {
                 run.phase = ait_domain::RunPhase::Terminal;
                 run.stop_reason = Some(ait_domain::RunStopReason::Failed);
                 run.error = Some(failure);
+                run.next_retry_at = None;
                 run.ended_at = Some(ait_domain::TimestampMs(now()));
                 store
                     .save_run(run)
@@ -161,26 +152,81 @@ impl LocalControlService {
         };
         let coordinator = RunCoordinator::new(
             store.clone(),
-            Arc::new(ProviderAgent {
-                gateway,
-                view: view.clone(),
-                credential,
-                names: tools.executable_tools(),
-            }),
-            tools,
+            Arc::new(agent),
+            tools.clone(),
             Arc::new(DenyEscalation),
             Arc::new(SystemClock),
             Arc::new(UuidIds),
         );
-        coordinator
-            .drive(&RunId::new(&view.id), cancellation)
-            .await
+        let outcome =
+            std::panic::AssertUnwindSafe(coordinator.drive(&RunId::new(&view.id), cancellation))
+                .catch_unwind()
+                .await;
+        // Includes panic/store-error paths: a dropped tool future can still own
+        // blocking I/O. Join it before the outer supervisor writes terminal state.
+        tools.cancel_and_drain().await;
+        outcome
+            .map_err(|_| recovery_error("API execution task failed; effects require review"))?
             .map_err(|_| {
                 recovery_error(
                     "API Run stopped at a durable boundary; inspect execution before recovery",
                 )
             })?;
         store.latest_view().await
+    }
+
+    async fn prepare_api_executor(
+        &self,
+        view: &RunView,
+        state: &WorkingSet,
+    ) -> Result<(Arc<dyn RunTool>, ProviderAgent), DomainError> {
+        validate_run_permission_ceiling(view.permission_profile, self.permission_limits)?;
+        let project = state
+            .projects
+            .iter()
+            .find(|p| p.id == view.project_id)
+            .ok_or_else(|| {
+                DomainError::invariant(ErrorCode::InvalidProject, "Run Project is missing")
+            })?;
+        let tools = match &self.api_tools {
+            Some(factory) => {
+                let factory = factory.clone();
+                let root = Path::new(&project.workdir).to_path_buf();
+                let profile = view.permission_profile;
+                tokio::task::spawn_blocking(move || factory.create(&root, profile))
+                    .await
+                    .map_err(|_| {
+                        DomainError::invariant(
+                            ErrorCode::ToolExecutionFailed,
+                            "host executor preparation failed",
+                        )
+                    })??
+            }
+            None => Arc::new(NoTools) as Arc<dyn RunTool>,
+        };
+        let gateway = self.provider_gateway.clone().ok_or_else(|| {
+            DomainError::invariant(
+                ErrorCode::InvalidConfiguration,
+                "provider gateway is unavailable",
+            )
+        })?;
+        let credential = state
+            .run_credentials
+            .get(&view.id)
+            .cloned()
+            .ok_or_else(|| {
+                DomainError::invariant(
+                    ErrorCode::InvalidConfiguration,
+                    "provider credential is missing",
+                )
+            })?;
+        let agent = ProviderAgent {
+            gateway,
+            view: view.clone(),
+            credential,
+            names: tools.executable_tools(),
+        };
+        Ok((tools, agent))
     }
 }
 fn api_domain_error_reverse(e: DomainError) -> ApiError {
@@ -216,7 +262,7 @@ impl ControlRunStore {
                 .iter_mut()
                 .find(|r| r.id == self.id)
                 .ok_or_else(conflict)?;
-            if target.execution.is_some() {
+            if target.execution.is_some() || is_terminal_workspace_status(&target.status) {
                 return Ok(());
             }
             let now = ait_domain::TimestampMs(now());
@@ -311,7 +357,7 @@ impl ControlRunStore {
     }
     async fn persist(
         &self,
-        mut run: Run,
+        run: Run,
         attempt: Option<RunAttempt>,
         tool: Option<ToolExecution>,
         message: Option<Message>,
@@ -324,6 +370,7 @@ impl ControlRunStore {
             .clone()
             .ok_or_else(conflict)?;
         for _ in 0..8 {
+            let mut run = run.clone();
             let loaded = self
                 .service
                 .read_run_records(&self.id)
@@ -336,7 +383,7 @@ impl ControlRunStore {
                 .position(|r| r.id == self.id)
                 .ok_or_else(conflict)?;
             let mut view = state.runs[index].clone();
-            if view.status == "cancelling" && run.status == RunStatus::Completed {
+            if view.status == "cancelling" && run.status.is_terminal() {
                 run.status = RunStatus::Cancelled;
                 run.stop_reason = Some(ait_domain::RunStopReason::Cancelled);
             }
@@ -368,7 +415,9 @@ impl ControlRunStore {
             if let Some(message) = &message {
                 append_projection(&mut state, &view, &run, &expected, message)?;
             }
-            view.status = status(&run);
+            if view.status != "cancelling" || run.status.is_terminal() {
+                view.status = status(&run);
+            }
             view.phase = Some(
                 serde_json::to_value(run.phase)
                     .map_err(store_failure)?
@@ -379,6 +428,11 @@ impl ControlRunStore {
             view.last_message_id = run.last_message_id.map(|id| id.as_uuid().to_string());
             view.error = run.error.clone().map(api_domain_error_reverse);
             if run.status.is_terminal() {
+                if run.status != RunStatus::Completed {
+                    interrupt(&mut view);
+                    append_terminal_results(&mut state, &mut view)?;
+                    run = view.execution.as_ref().ok_or_else(conflict)?.run.clone();
+                }
                 release_session(&mut state, &view);
             }
             state.runs[index] = view;
@@ -604,7 +658,9 @@ fn append_projection(
         .iter_mut()
         .find(|s| Some(&s.id) == view.session_id.as_ref())
     {
-        if session.active_run_id.as_deref() != Some(&view.id)
+        let owns_pointer = session.active_run_id.as_deref() == Some(&view.id)
+            || (run.status.is_terminal() && session.active_run_id.is_none());
+        if !owns_pointer
             || session.current_message_id
                 != expected
                     .last_message_id
@@ -612,6 +668,12 @@ fn append_projection(
                     .as_uuid()
                     .to_string()
         {
+            // Old terminal projections may already have released this Session.
+            // Preserve a moved/rebound pointer; the result remains on its Run's
+            // immutable branch and is still independently queryable.
+            if run.status.is_terminal() {
+                return Ok(());
+            }
             return Err(conflict());
         }
         session.current_message_id = message.id.as_uuid().to_string();
@@ -666,19 +728,32 @@ fn validate_tool_child(
 
 /// Keep the public projection and canonical aggregate consistent on policy-driven recovery stops.
 pub(super) fn interrupt(view: &mut RunView) {
+    if view.status == "completed" && !needs_terminal_repair(view) {
+        return;
+    }
     let Some(execution) = view.execution.as_mut() else {
         return;
     };
     let (status, reason) = if view.status == "cancelled" {
         (RunStatus::Cancelled, ait_domain::RunStopReason::Cancelled)
+    } else if view.status == "limit_exceeded" {
+        (
+            RunStatus::LimitExceeded,
+            ait_domain::RunStopReason::RuntimeLimit,
+        )
     } else {
         (RunStatus::Failed, ait_domain::RunStopReason::Failed)
     };
+    if execution.run.status != status || execution.run.stop_reason.is_none() {
+        execution.run.stop_reason = Some(reason);
+    }
     execution.run.status = status;
     execution.run.phase = ait_domain::RunPhase::Terminal;
-    execution.run.stop_reason = Some(reason);
     execution.run.next_retry_at = None;
-    execution.run.ended_at = Some(ait_domain::TimestampMs(now()));
+    execution
+        .run
+        .ended_at
+        .get_or_insert_with(|| ait_domain::TimestampMs(now()));
     execution.run.error = view
         .error
         .as_ref()
@@ -694,4 +769,123 @@ pub(super) fn interrupt(view: &mut RunView) {
             attempt.error.clone_from(&execution.run.error);
         }
     }
+    for tool in &mut execution.tools {
+        if !tool.status.is_terminal() {
+            tool.status = if status == RunStatus::Cancelled {
+                ait_domain::ToolExecutionStatus::Cancelled
+            } else {
+                ait_domain::ToolExecutionStatus::Failed
+            };
+            if tool.approval_status == ait_domain::ToolApprovalStatus::Pending {
+                tool.approval_status = ait_domain::ToolApprovalStatus::NotRequired;
+            }
+            tool.ended_at = execution.run.ended_at;
+            tool.error = Some(DomainError::invariant(
+                if status == RunStatus::Cancelled {
+                    ErrorCode::RunCancelled
+                } else {
+                    ErrorCode::RunRecoveryFailed
+                },
+                if tool.started_at.is_some() {
+                    "execution interrupted; effect unknown; automatic replay refused"
+                } else {
+                    "execution stopped before dispatch"
+                },
+            ));
+        }
+    }
+    view.status = serde_json::to_value(status)
+        .expect("status serializes")
+        .as_str()
+        .expect("status string")
+        .into();
+    view.phase = Some("terminal".into());
+}
+
+pub(super) fn needs_terminal_repair(view: &RunView) -> bool {
+    is_terminal_workspace_status(&view.status)
+        && view.execution.as_ref().is_some_and(|execution| {
+            !execution.run.status.is_terminal()
+                || status(&execution.run) != view.status
+                || execution
+                    .attempts
+                    .iter()
+                    .any(|a| a.status == ait_domain::RunAttemptStatus::Running)
+                || execution.tools.iter().any(|t| !t.status.is_terminal())
+        })
+}
+
+/// Complete already known/abandoned results in the same terminal CAS. Never
+/// execute or reconcile an effect here, and never modify an existing Message.
+pub(super) fn append_terminal_results(
+    state: &mut WorkingSet,
+    view: &mut RunView,
+) -> Result<(), RunStoreError> {
+    let Some(mut execution) = view.execution.take() else {
+        return Ok(());
+    };
+    execution.tools.sort_by_key(|tool| {
+        let sequence = state
+            .messages
+            .iter()
+            .find(|m| m.id == tool.assistant_message_id.as_uuid().to_string())
+            .and_then(|m| m.data.as_ref())
+            .and_then(|data| data["native_message"]["run_seq"].as_u64())
+            .unwrap_or(0);
+        (sequence, tool.tool_use_index, tool.attempt)
+    });
+    let run = &mut execution.run;
+    for tool in &mut execution.tools {
+        if tool.tool_result_message_id.is_some() || !tool.status.is_terminal() {
+            continue;
+        }
+        if run.step_count >= run.budget.max_steps {
+            break;
+        }
+        let result_status = match tool.status {
+            ait_domain::ToolExecutionStatus::Succeeded => ait_domain::ToolResultStatus::Succeeded,
+            ait_domain::ToolExecutionStatus::Failed => ait_domain::ToolResultStatus::Failed,
+            ait_domain::ToolExecutionStatus::Denied => ait_domain::ToolResultStatus::Denied,
+            ait_domain::ToolExecutionStatus::Cancelled => ait_domain::ToolResultStatus::Cancelled,
+            _ => unreachable!("terminal tool"),
+        };
+        let expected = run.clone();
+        let id = MessageId::new(Uuid::new_v4());
+        run.step_count += 1;
+        run.last_message_id = Some(id);
+        let message = Message {
+            id,
+            project_id: run.project_id.clone(),
+            parent_message_id: Some(expected.last_message_id.unwrap_or(expected.base_message_id)),
+            role: MessageRole::User,
+            kind: MessageKind::ToolResult,
+            origin: MessageOrigin::Tool,
+            sub_messages: Vec::new(),
+            created_by_session_id: run.follow_session_id.clone(),
+            run_id: Some(run.id.clone()),
+            run_seq: Some(run.step_count),
+            tool_result: Some(ait_domain::ToolResult {
+                call_id: tool.call_id.clone(),
+                status: result_status,
+                output: tool
+                    .result
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(store_failure)?,
+                error: tool.error.as_ref().map(ToString::to_string),
+            }),
+            git_commit: None,
+            metadata: ait_domain::DomainMetadata::default(),
+            created_at: run.ended_at.unwrap_or(ait_domain::TimestampMs(now())),
+        };
+        tool.validate_result_message(&message)
+            .map_err(store_failure)?;
+        append_projection(state, view, run, &expected, &message)?;
+        tool.tool_result_message_id = Some(id);
+    }
+    run.validate().map_err(store_failure)?;
+    view.last_message_id = run.last_message_id.map(|id| id.as_uuid().to_string());
+    view.execution = Some(execution);
+    Ok(())
 }

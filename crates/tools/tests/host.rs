@@ -2,9 +2,61 @@
 #![allow(clippy::pedantic)]
 use ait_domain::{ErrorCode, RunId, RunPermissionProfile, SandboxAccess, ToolExecutionId};
 use ait_ports::{RunToolFactory, ToolInvocation};
+use ait_tools::host::{HostIoCheckpoint, HostIoObserver};
 use ait_tools::host::{HostToolFactory, MAX_BYTES};
 use serde_json::{Value, json};
+use std::sync::{Arc, Condvar, Mutex};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Default)]
+struct Overlap {
+    entered: Mutex<usize>,
+    wake: Condvar,
+    overlapped: std::sync::atomic::AtomicBool,
+}
+impl HostIoObserver for Overlap {
+    fn checkpoint(&self, _: &str, point: HostIoCheckpoint) {
+        if point != HostIoCheckpoint::BeforeRead {
+            return;
+        }
+        let mut count = self.entered.lock().unwrap();
+        *count += 1;
+        if *count == 2 {
+            self.overlapped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.wake.notify_all();
+        }
+        let (mut count, _) = self
+            .wake
+            .wait_timeout_while(count, std::time::Duration::from_secs(1), |_| {
+                !self.overlapped.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .unwrap();
+        *count -= 1;
+    }
+}
+#[tokio::test]
+async fn production_file_reads_overlap_without_blocking_the_async_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("file"), "actual file").unwrap();
+    let overlap = Arc::new(Overlap::default());
+    let tools = HostToolFactory::with_observer(overlap.clone())
+        .create(
+            &root.path().canonicalize().unwrap(),
+            RunPermissionProfile::default(),
+        )
+        .unwrap();
+    let (first, second) = tokio::join!(
+        tools.execute(call("read", json!({"file_path":"file"}))),
+        tools.execute(call("read", json!({"file_path":"file"})))
+    );
+    assert_eq!(first.unwrap().output["text"], "1: actual file\n");
+    assert_eq!(second.unwrap().output["text"], "1: actual file\n");
+    assert!(
+        overlap.overlapped.load(std::sync::atomic::Ordering::SeqCst),
+        "real HostTools must have two active file workers"
+    );
+}
 fn call(name: &str, args: Value) -> ToolInvocation {
     ToolInvocation {
         run_id: RunId::new("run"),

@@ -14,6 +14,9 @@ HTTP fixture 使用实际 Rig OpenAI Responses / DeepSeek Chat Completions adapt
 
 独立验证文件内容、Python 执行结果、Git `?? hello.py`、Run/Message 身份、parent/run_seq、
 Agent revision、单一 attempt、usage、唯一 ToolResult，以及重新打开 SQLite 后的查询结果。
+故障回归另外验证真实文件读取重叠、发布前取消/deadline 等待 worker 清理、取消后崩溃快照
+恢复及 store error/task panic 的原子终态结算。取消请求可先显示 cancelling；只有工作线程
+退出后才确认 cancelled 并释放 Session，慢磁盘上的已开始系统调用可能延迟这一确认。
 API 文件变化保留在 Project 工作区供成员审阅，没有自动 Git 提交；确认后自行提交，再发送下一条需要干净 Git 基线的输入。
 
 默认 `read_only` 只广告读取、搜索与受控命令。创建/编辑需先通过设置选择 `workspace_write`。

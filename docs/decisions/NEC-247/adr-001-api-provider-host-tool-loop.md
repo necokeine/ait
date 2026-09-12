@@ -29,12 +29,21 @@ Rig adapter 保留原供应商 call/item id 和 reasoning 元数据，把 ToolRe
 - 文件操作以 cap-std Project 句柄为根，逐级打开无符号链接目录，禁止绝对路径、父路径、隐藏组件。
   写入为同目录临时文件原子替换，防止截断硬链接目标。单个参数/文件/结果上限 64 KiB。
 - 读取、正则搜索和受控命令最多四个并发；有写入、审批或更大批次时串行。结果稳定排序。
+- 文件系统调用放入受跟踪的 blocking worker，避免阻塞 Tokio；目录遍历、分块读写、fsync
+  及原子替换前均检查取消。deadline/取消优先被观察，丢弃调用 future 会停止其子 token；
+  `RunTool::cancel_and_drain` 取消并等待所有文件线程/命令退出，再允许 Run 终态与 Session 释放。
+  OS 内已经开始的同步调用无法强制中断，因此取消确认可能等待慢磁盘返回；不会提前报告终态。
 - 首版 shell 仅固定的 echo/printf/sleep，无 shell 解释、继承环境、网络或后台任务；最长 30 秒，
   超时/取消/超限会终止子进程。Windows 不广告 shell。
 - 显式 sandbox 升级由原生 `RunApproval` 端口拒绝并持久化 denied；没有借用 Codex 审批或虚构批准。
   批准也不能改变执行器的 Run 权限上限。后续交互审批可以替换该端口。
 - intent 与 Running 记录必须在执行前 ACK。重启时 Running 工具结果未知则失败并保留记录，绝不盲重放。
   已保存的终态结果仅补齐唯一 ToolResult；API 已保存 Message 路径可以继续原 Run。
+- `RunView.status=cancelling` 是持久化取消意图，在所有非终态中间保存中保持优先级。
+  重启优先消费该意图，跳过 Provider/工具准备，原子补齐 cancelled 结果并释放 Session。
+- store error/task panic 先 drain 执行器，再在同一 CAS 内结算公开 Run、canonical Run、Running
+  attempts/tools 和缺失的终态 ToolResult。未知副作用记录为终态失败并明确拒绝重放。
+  启动扫描同时修复旧版本留下的“外层终态、内层仍运行”记录，不能直接 skip。
 - Provider/工具错误为有界安全诊断，run 事件移除 execution 载荷；可移植归档省略原生工具参数、
   output 和 provider metadata，保留文本占位。完整执行历史只在本机 Message/Run 查询中可见。
 
@@ -48,3 +57,6 @@ FullAccess 是管理员允许的能力上限，首版执行器仍只开放 Proje
 [WF-13](../../../workflows/13-api-provider-tool-loop.md) 默认离线执行真实两种 HTTP adapter 与公共
 Session/Run/SQLite 路径，独立检查文件、Python、Git、Message、Run、usage 和重启查询。
 WF-11 改为模型用 write/read 创建文件；付费调用继续显式 opt-in。
+
+NEC-247 审查回归在 HostTools 的真实 I/O 边界注入重叠/发布前阻塞，在 ControlStore commit
+边界捕获取消后的崩溃快照、注入结果保存失败及 task panic，再重开 SQLite 检查终态一致性。

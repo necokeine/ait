@@ -622,7 +622,7 @@ impl RunCoordinator {
         // Every intent is durable before any future is polled. Join preserves
         // proposal order even if the executors finish in the opposite order.
         let results = futures_util::future::join_all(executions.iter().map(|e| {
-            self.controlled(
+            self.controlled_tool(
                 self.tools.execute(ToolInvocation {
                     run_id: run.id.clone(),
                     call_id: e.call_id.clone(),
@@ -844,7 +844,7 @@ impl RunCoordinator {
                 .save_tool_execution(run, execution.clone())
                 .await?;
             let result = self
-                .controlled(
+                .controlled_tool(
                     self.tools.execute(ToolInvocation {
                         run_id: run.id.clone(),
                         call_id: execution.call_id.clone(),
@@ -1047,6 +1047,22 @@ impl RunCoordinator {
         }
     }
 
+    async fn controlled_tool<F>(
+        &self,
+        future: F,
+        run: &Run,
+        cancellation: &CancellationToken,
+    ) -> Controlled<ToolOutcome>
+    where
+        F: Future<Output = Result<ToolOutcome, DomainError>> + Send,
+    {
+        let result = self.controlled(future, run, cancellation).await;
+        if matches!(result, Controlled::Cancelled | Controlled::TimedOut) {
+            self.tools.cancel_and_drain().await;
+        }
+        result
+    }
+
     async fn controlled<F, T>(
         &self,
         future: F,
@@ -1060,15 +1076,15 @@ impl RunCoordinator {
             let deadline = TimestampMs(started.0.saturating_add(i64_from_u64(limit.0)));
             tokio::select! {
                 biased;
-                result = future => Controlled::Returned(result),
                 () = cancellation.cancelled() => Controlled::Cancelled,
                 () = self.clock.sleep_until(deadline) => Controlled::TimedOut,
+                result = future => Controlled::Returned(result),
             }
         } else {
             tokio::select! {
                 biased;
-                result = future => Controlled::Returned(result),
                 () = cancellation.cancelled() => Controlled::Cancelled,
+                result = future => Controlled::Returned(result),
             }
         }
     }

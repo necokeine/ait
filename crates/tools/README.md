@@ -88,6 +88,10 @@ is bounded. Windows does not advertise a shell executor yet.
 
 The host persists intent before execution and a unique user ToolResult afterward.
 Up to four safe calls can run concurrently; results append in proposal order.
+Filesystem calls run on tracked blocking workers with cancellation checks during
+traversal, chunked I/O and before atomic publication. Cancellation/deadline drains
+all workers before terminal state or Session release; an OS call already in flight
+may delay that acknowledgment, but cannot outlive it. Commands are killed and reaped.
 Successful tool rounds keep the same attempt. Unknown crash outcomes are never
 replayed. API changes remain uncommitted for member review. See
 [NEC-247](../../docs/decisions/NEC-247/adr-001-api-provider-host-tool-loop.md) and

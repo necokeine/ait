@@ -1,5 +1,6 @@
 //! WF-13: real API HTTP fixtures through the public Session/Run path and SQLite.
 #![allow(clippy::pedantic)]
+mod api_tool_faults;
 mod support;
 use ait_agent_adapters::{LLMClient, LLMClientConfig, LLMProvider, provider_turn};
 use ait_application::LocalControlService;
@@ -87,6 +88,7 @@ struct Fixture {
     service: LocalControlService,
     requests: Arc<Mutex<Vec<Value>>>,
     server: tokio::task::JoinHandle<()>,
+    store: Arc<api_tool_faults::InjectedStore>,
 }
 impl Fixture {
     async fn new(kind: ProviderKind, responses: Vec<Value>, sandbox: &str) -> Self {
@@ -121,11 +123,12 @@ impl Fixture {
         config.base_url = Some(url.clone());
         let directory = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let service = LocalControlService::new(Arc::new(
+        let store = Arc::new(api_tool_faults::InjectedStore::new(
             SqliteControlStore::open(directory.path().join("ait.db")).unwrap(),
-        ))
-        .with_provider_gateway(Arc::new(Gateway(LLMClient::new(config).unwrap())))
-        .with_api_tools(Arc::new(ait_tools::host::HostToolFactory));
+        ));
+        let service = LocalControlService::new(store.clone())
+            .with_provider_gateway(Arc::new(Gateway(LLMClient::new(config).unwrap())))
+            .with_api_tools(Arc::new(ait_tools::host::HostToolFactory));
         let mut settings = default_settings();
         settings
             .0
@@ -195,6 +198,7 @@ impl Fixture {
             service,
             requests,
             server,
+            store,
         }
     }
     async fn run(&self) -> ait_contracts::RunView {

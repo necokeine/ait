@@ -381,6 +381,7 @@ impl RunClock for ManualClock {
     }
 
     async fn sleep_until(&self, deadline: TimestampMs) {
+        tokio::task::yield_now().await;
         self.0.store(deadline.0, Ordering::SeqCst);
     }
 }
@@ -1194,4 +1195,134 @@ async fn unknown_interrupted_side_effect_is_never_replayed() {
             .tool_result_message_id
             .is_none()
     );
+}
+
+#[derive(Default)]
+struct PausedFilePublish {
+    entered: tokio::sync::Notify,
+    release: std::sync::Condvar,
+    released: Mutex<bool>,
+}
+impl ait_tools::host::HostIoObserver for PausedFilePublish {
+    fn checkpoint(&self, _: &str, point: ait_tools::host::HostIoCheckpoint) {
+        if point == ait_tools::host::HostIoCheckpoint::BeforePublish {
+            self.entered.notify_one();
+            let _guard = self
+                .release
+                .wait_while(self.released.lock().unwrap(), |released| !*released)
+                .unwrap();
+        }
+    }
+}
+impl PausedFilePublish {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.release.notify_all();
+    }
+}
+struct GatedDeadline {
+    now: AtomicI64,
+    expire: CancellationToken,
+}
+#[async_trait]
+impl RunClock for GatedDeadline {
+    fn now(&self) -> TimestampMs {
+        TimestampMs(self.now.load(Ordering::SeqCst))
+    }
+    async fn sleep_until(&self, deadline: TimestampMs) {
+        self.expire.cancelled().await;
+        self.now.store(deadline.0, Ordering::SeqCst);
+    }
+}
+#[tokio::test]
+async fn host_file_mutation_cancellation_and_deadline_join_workers_before_terminal_state() {
+    use ait_ports::RunToolFactory;
+    for (operation, deadline) in [
+        ("write", false),
+        ("write", true),
+        ("edit", false),
+        ("edit", true),
+    ] {
+        let (mut run, messages) = fixture();
+        run.budget.max_runtime = Some(DurationMs(1000));
+        let store = Arc::new(MemoryStore::seeded(run, messages));
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("result"), "original").unwrap();
+        let checkpoint = Arc::new(PausedFilePublish::default());
+        let tools = ait_tools::host::HostToolFactory::with_observer(checkpoint.clone())
+            .create(
+                &root.path().canonicalize().unwrap(),
+                ait_domain::RunPermissionProfile {
+                    sandbox: ait_domain::SandboxAccess::WorkspaceWrite,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut proposal = tool_calls(&[("mutate", operation)]);
+        let SubMessage::ToolUse(tool) = &mut proposal.sub_messages[0] else {
+            unreachable!()
+        };
+        tool.arguments = if operation == "write" {
+            json!({"file_path":"result","content":"must not appear"})
+        } else {
+            json!({"file_path":"result","old_string":"original","new_string":"must not appear"})
+        }
+        .to_string();
+        let clock = Arc::new(GatedDeadline {
+            now: AtomicI64::new(10),
+            expire: CancellationToken::new(),
+        });
+        let engine = RunCoordinator::new(
+            store.clone(),
+            Arc::new(ScriptedAgent::new(vec![Ok(proposal)])),
+            tools.clone(),
+            Arc::new(ScriptedApprovals::new(vec![])),
+            clock.clone(),
+            Arc::new(SequenceIds::default()),
+        );
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task =
+            tokio::spawn(async move { engine.drive(&RunId::new("run-1"), task_cancel).await });
+        checkpoint.entered.notified().await;
+        if deadline {
+            clock.expire.cancel();
+        } else {
+            cancel.cancel();
+        }
+        // A bounded observation window must not complete while the OS worker is held.
+        let mut task = task;
+        let early = tokio::time::timeout(std::time::Duration::from_millis(30), &mut task).await;
+        let stayed_active = early.is_err() && !store.snapshot().run.status.is_terminal();
+        checkpoint.release();
+        if early.is_err() {
+            task.await.unwrap().unwrap();
+        }
+        tools.cancel_and_drain().await;
+        assert!(
+            stayed_active,
+            "Run must not end while a file worker can still publish"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("result")).unwrap(),
+            "original",
+            "no mutation after cancellation/deadline"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "temporary file must be cleaned before terminal state"
+        );
+        let saved = store.snapshot();
+        assert_eq!(
+            saved.run.status,
+            if deadline {
+                RunStatus::LimitExceeded
+            } else {
+                RunStatus::Cancelled
+            }
+        );
+        assert_eq!(saved.tools[0].status, ToolExecutionStatus::Cancelled);
+        assert!(saved.tools[0].tool_result_message_id.is_some());
+    }
 }

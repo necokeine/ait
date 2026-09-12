@@ -583,6 +583,11 @@ pub trait RunTool: Send + Sync {
     /// Executes a previously persisted tool intent.
     async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError>;
 
+    /// Cancels and joins all owned work before a Run may become terminal.
+    /// Adapters that start work surviving a dropped execute future must override
+    /// this method. Return only once no owned worker can produce a late effect.
+    async fn cancel_and_drain(&self) {}
+
     /// Reconciles a persisted Running execution after process recovery.
     async fn reconcile(&self, execution: &ToolExecution) -> Result<ToolRecovery, DomainError>;
 }

@@ -17,13 +17,13 @@ cap-fs-ext = "4.0"
 libc = "0.2"
 regex = "1"
 shlex = "1"
-tokio = { version = "1", features = ["process", "io-util", "time", "macros"] }
+tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 jsonschema = { version = "0.33", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
-tokio-util = { version = "0.7", features = ["rt"] }
 
 [lints]
 workspace = true
