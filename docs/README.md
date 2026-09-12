@@ -63,6 +63,9 @@
 
 ## 配套设计
 
+- `decisions/NEC-240/adr-001-skill-market-and-groups.md`：Skill 不可变修订、Skill Market
+  发现/导入边界、非嵌套 Skill Group、Agent 绑定与 Run 固定快照的 Proposed 需求方案；尚未授权实现。
+
 - `decisions/adr-012-codex-native-tool-set.md`：仅 Codex Provider 使用 core 原生工具、app-server 分层提示词，以及两轮 Python Hello World 真机验收。
 
 - `decisions/adr-011-default-api-tool-set.md`：默认 System Prompt、参考 DeepSeek Harness 的工具定义、模型覆盖与 API 请求组装；工具执行仍归宿主。
