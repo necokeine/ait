@@ -1,3 +1,4 @@
+//! Bounded progress reporting and drain before terminal persistence.
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
