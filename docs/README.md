@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-257/adr-001-cli-command-and-address-simplification.md`：删除顶层 `events`、将 Provider 操作移到 `agent provider`，并以全局 `--host` / `--port` 固定 HTTP 连接 daemon。
+
 - `decisions/NEC-235/adr-001-global-and-project-storage.md`：全局 `ait.sqlite3` catalog 与每 Project `.ait/project.sqlite3` 的物理拆分、实际运行路径、可恢复提交、旧库迁移和独立备份。
 
 - `decisions/adr-013-session-worktrees.md`：每个 Session 使用固定的

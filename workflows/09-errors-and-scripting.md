@@ -31,7 +31,7 @@ cat "$WF_ROOT/invalid.err"
 | 未知/缺失子命令、缺少必填 flag、非法 enum/时间戳/游标 | 2 | 空 | 参数诊断和用法 |
 | 实体 `--input` JSON 损坏或形状错误 | 1 | 空 | 解析诊断；修正 JSON |
 | import 文件缺失/损坏、export 本地写入失败 | 1 | 空 | I/O 或解析诊断；修正路径或文件 |
-| endpoint 不可达或 HTTP 失败 | 1 | 空 | 传输诊断；检查本次服务和 endpoint |
+| 主机或端口不可达或 HTTP 失败 | 1 | 空 | 传输诊断；检查本次服务、主机和端口 |
 
 业务错误例：不存在的 Run 当前为 `INVALID_RUN`，旧 Session version 为
 `SESSION_POINTER_CONFLICT`，不支持的 Agent 配置为 `INVALID_AGENT_CONFIGURATION`。

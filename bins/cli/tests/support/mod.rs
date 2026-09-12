@@ -23,7 +23,7 @@ use tokio::{
 
 pub struct Workspace {
     pub directory: TempDir,
-    pub endpoint: String,
+    pub address: std::net::SocketAddr,
     gateway: Option<Arc<dyn AgentProviderGateway>>,
     shutdown: Option<oneshot::Sender<()>>,
     server: Option<JoinHandle<()>>,
@@ -61,7 +61,7 @@ impl Workspace {
     pub async fn with_gateway(gateway: Option<Arc<dyn AgentProviderGateway>>) -> Self {
         let mut workspace = Self {
             directory: TempDir::new().unwrap(),
-            endpoint: String::new(),
+            address: ([127, 0, 0, 1], 0).into(),
             gateway,
             shutdown: None,
             server: None,
@@ -86,7 +86,7 @@ impl Workspace {
         }
         let service = Arc::new(service);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        self.endpoint = format!("http://{}", listener.local_addr().unwrap());
+        self.address = listener.local_addr().unwrap();
         let (shutdown, stopped) = oneshot::channel();
         self.shutdown = Some(shutdown);
         self.server = Some(tokio::spawn(async move {
@@ -125,7 +125,12 @@ impl Workspace {
         // Never inherit a developer's proxy settings for the loopback test server.
         let mut process = Command::new(env!("CARGO_BIN_EXE_ait-cli"));
         process
-            .args(["--endpoint", &self.endpoint])
+            .args([
+                "--host",
+                &self.address.ip().to_string(),
+                "--port",
+                &self.address.port().to_string(),
+            ])
             .args(arguments)
             .current_dir(self.directory.path())
             .env("NO_PROXY", "*")
@@ -143,7 +148,12 @@ impl Workspace {
 
     pub async fn cli_stdin(&self, arguments: &[&str], input: &str) -> Output {
         let mut process = Command::new(env!("CARGO_BIN_EXE_ait-cli"))
-            .args(["--endpoint", &self.endpoint])
+            .args([
+                "--host",
+                &self.address.ip().to_string(),
+                "--port",
+                &self.address.port().to_string(),
+            ])
             .args(arguments)
             .current_dir(self.directory.path())
             .env("NO_PROXY", "*")
@@ -177,7 +187,7 @@ impl Workspace {
     pub async fn view(&self) -> Value {
         let projects = success(&self.cli(&["project", "list"]).await);
         let agents = success(&self.cli(&["agent", "list"]).await);
-        let providers = success(&self.cli(&["agent-provider", "list"]).await);
+        let providers = success(&self.cli(&["agent", "provider", "list"]).await);
         let crons = success(&self.cli(&["cron", "list"]).await);
         let mut sessions = Vec::new();
         let mut messages = Vec::new();

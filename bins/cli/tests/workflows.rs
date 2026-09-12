@@ -687,19 +687,26 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     assert_eq!(help.status.code(), Some(0));
     let help_text = String::from_utf8(help.stdout).unwrap();
     for command in [
-        "project",
-        "agent",
-        "agent-provider",
-        "session",
-        "message",
-        "run",
-        "cron",
-        "settings",
-        "event",
-        "export",
-        "project",
-        "import",
-        "--endpoint",
+        "project", "agent", "session", "message", "run", "cron", "settings", "event", "export",
+        "import", "--host", "--port",
+    ] {
+        assert!(
+            help_text.contains(command),
+            "missing {command}: {help_text}"
+        );
+    }
+    assert!(!help_text.contains("agent-provider"));
+    assert!(!help_text.contains("--endpoint"));
+    let help = workspace.cli(&["agent", "provider", "--help"]).await;
+    assert_eq!(help.status.code(), Some(0));
+    let help_text = String::from_utf8(help.stdout).unwrap();
+    for command in [
+        "list",
+        "save",
+        "discover-models",
+        "refresh-models",
+        "--host",
+        "--port",
     ] {
         assert!(
             help_text.contains(command),
@@ -714,6 +721,11 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         vec!["event", "list", "--after", "invalid"],
         vec!["project", "export"],
         vec!["command"],
+        vec!["events"],
+        vec!["agent-provider", "list"],
+        vec!["project", "list", "--endpoint", "http://127.0.0.1:7314"],
+        vec!["project", "list", "--host", "https://localhost"],
+        vec!["project", "list", "--port", "65536"],
     ] {
         let output = workspace.cli(&arguments).await;
         assert_eq!(output.status.code(), Some(2), "{output:?}");
@@ -886,7 +898,8 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
     let mut workspace = Workspace::with_gateway(Some(gateway.clone())).await;
     let secret = "sk-must-stay-private";
     let args = [
-        "agent-provider",
+        "agent",
+        "provider",
         "save",
         "--id",
         "api",
@@ -914,11 +927,17 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
         secret
     );
     let refreshed = workspace
-        .call(&["agent-provider", "refresh-models", "--provider-id", "api"])
+        .call(&[
+            "agent",
+            "provider",
+            "refresh-models",
+            "--provider-id",
+            "api",
+        ])
         .await;
     assert_eq!(refreshed["models"][0]["id"], "m");
     let mut discover = args;
-    discover[1] = "discover-models";
+    discover[2] = "discover-models";
     let output = workspace.cli_stdin(&discover, secret).await;
     failure(&output, "PROVIDER_FAILED");
     assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
@@ -926,15 +945,7 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
 
     let before = workspace.view().await;
     let input_args = [
-        "agent-provider",
-        "save",
-        "--id",
-        "p",
-        "--name",
-        "P",
-        "--kind",
-        "deepseek",
-        "--input",
+        "agent", "provider", "save", "--id", "p", "--name", "P", "--kind", "deepseek", "--input",
         "-",
     ];
     for input in [
@@ -958,7 +969,7 @@ async fn wf11_stdin_commands_keep_credentials_out_of_diagnostics() {
     let output = workspace.cli_stdin(&args, "").await;
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(workspace.view().await, before);
-    let listed = workspace.cli(&["agent-provider", "list"]).await;
+    let listed = workspace.cli(&["agent", "provider", "list"]).await;
     assert!(!String::from_utf8_lossy(&listed.stdout).contains(secret));
     let replay = workspace.cli(&["event", "list"]).await;
     assert!(!String::from_utf8_lossy(&replay.stdout).contains(secret));
@@ -1095,14 +1106,7 @@ async fn typed_writes_stdin_and_files_reach_the_production_router() {
     let before = workspace.view().await;
     for args in [
         vec![
-            "agent-provider",
-            "save",
-            "--id",
-            "p",
-            "--name",
-            "P",
-            "--kind",
-            "invalid",
+            "agent", "provider", "save", "--id", "p", "--name", "P", "--kind", "invalid",
         ],
         vec![
             "cron",
@@ -1130,7 +1134,7 @@ async fn provider_secret_is_absent_from_malformed_response_diagnostics() {
         Json(json!({"api_version": 1, "ok": false, "error": {"code": body["secret"], "message": "bad response", "retryable": false}}))
     }));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    workspace.endpoint = format!("http://{}", listener.local_addr().unwrap());
+    workspace.address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
@@ -1138,7 +1142,8 @@ async fn provider_secret_is_absent_from_malformed_response_diagnostics() {
     let output = workspace
         .cli_stdin(
             &[
-                "agent-provider",
+                "agent",
+                "provider",
                 "save",
                 "--id",
                 "p",
@@ -1157,6 +1162,6 @@ async fn provider_secret_is_absent_from_malformed_response_diagnostics() {
     assert!(output.stdout.is_empty());
     let diagnostic = String::from_utf8(output.stderr).unwrap();
     assert!(!diagnostic.contains(secret));
-    assert!(diagnostic.contains("agent-provider request failed"));
+    assert!(diagnostic.contains("agent provider request failed"));
     workspace.stop().await;
 }
