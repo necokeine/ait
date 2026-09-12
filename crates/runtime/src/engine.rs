@@ -128,7 +128,7 @@ impl RunCoordinator {
 
             let head = run.last_message_id.unwrap_or(run.base_message_id);
             let path = self.store.load_message_path(&head).await?;
-            if let Some(assistant) = pending_tool_assistant(&path).cloned() {
+            if let Some(assistant) = pending_tool_assistant(&path, &run.id).cloned() {
                 match self
                     .process_tools(run, assistant, cancellation.clone())
                     .await?
@@ -142,7 +142,10 @@ impl RunCoordinator {
                 continue;
             }
             match visible_tail(&path) {
-                Some(message) if message.role == MessageRole::Assistant => {
+                Some(message)
+                    if message.role == MessageRole::Assistant
+                        && message.run_id.as_ref() == Some(&run.id) =>
+                {
                     run = self.settle(run).await?;
                     let expected_queue_version = run.queue_version;
                     run.status = RunStatus::Completed;
@@ -151,7 +154,7 @@ impl RunCoordinator {
                     run.ended_at = Some(self.clock.now());
                     match self.store.try_complete(run, expected_queue_version).await? {
                         CompletionResult::Completed(completed) => {
-                            return Ok(DriveOutcome::Completed(completed));
+                            return Ok(Self::terminal_outcome(completed));
                         }
                         CompletionResult::QueueChanged(changed) => {
                             run = changed;
@@ -192,7 +195,7 @@ impl RunCoordinator {
                 .await;
         }
 
-        let known_call_ids = tool_call_ids(&path);
+        let known_call_ids = tool_call_ids(&path, &run.id);
 
         let mut attempts = self.store.load_attempts(&run.id).await?;
         let recovering = matches!(
@@ -212,7 +215,12 @@ impl RunCoordinator {
             run = self.store.save_attempt(run, interrupted.clone()).await?;
         }
 
-        if run.attempt_count >= run.retry_policy.max_attempts {
+        let continuation = !recovering
+            && visible_tail(&path).is_some_and(|m| m.kind == MessageKind::ToolResult)
+            && attempts
+                .last()
+                .is_some_and(|a| a.status == RunAttemptStatus::Completed);
+        if !continuation && run.attempt_count >= run.retry_policy.max_attempts {
             return self
                 .finish(
                     run,
@@ -226,7 +234,11 @@ impl RunCoordinator {
                 .await;
         }
 
-        let attempt_number = run.attempt_count.saturating_add(1);
+        let attempt_number = if continuation {
+            run.attempt_count
+        } else {
+            run.attempt_count.saturating_add(1)
+        };
         let reason = if recovering {
             RunAttemptReason::Recovery
         } else if attempt_number == 1 {
@@ -234,20 +246,38 @@ impl RunCoordinator {
         } else {
             RunAttemptReason::Retry
         };
-        let attempt_id = self.ids.attempt_id();
+        let attempt_id = if continuation {
+            attempts.last().expect("continuation attempt").id.clone()
+        } else {
+            self.ids.attempt_id()
+        };
         let mut attempt = RunAttempt {
             id: attempt_id.clone(),
             run_id: run.id.clone(),
             number: attempt_number,
-            reason,
-            checkpoint_id: if reason == RunAttemptReason::Recovery {
+            reason: if continuation {
+                attempts.last().expect("continuation attempt").reason
+            } else {
+                reason
+            },
+            checkpoint_id: if continuation {
+                attempts
+                    .last()
+                    .expect("continuation attempt")
+                    .checkpoint_id
+                    .clone()
+            } else if reason == RunAttemptReason::Recovery {
                 run.checkpoint_id.clone()
             } else {
                 None
             },
             status: RunAttemptStatus::Running,
             error: None,
-            started_at: self.clock.now(),
+            started_at: if continuation {
+                attempts.last().expect("continuation attempt").started_at
+            } else {
+                self.clock.now()
+            },
             ended_at: None,
         };
         // Recovery is valid without a compaction checkpoint: the committed Run
@@ -279,6 +309,7 @@ impl RunCoordinator {
 
         match response {
             Controlled::Returned(Ok(response)) => {
+                add_usage(&mut run.usage, &response.usage);
                 if response.sub_messages.is_empty() {
                     let error = DomainError::invariant(
                         ErrorCode::InvalidRun,
@@ -292,11 +323,10 @@ impl RunCoordinator {
                         .finish(run, RunStatus::Failed, RunStopReason::Failed, Some(error))
                         .await;
                 }
-                if let Some(call_id) = duplicate_tool_call(&known_call_ids, &response.sub_messages)
-                {
+                if duplicate_tool_call(&known_call_ids, &response.sub_messages).is_some() {
                     let error = DomainError::invariant(
                         ErrorCode::ToolCallDuplicate,
-                        format!("tool call identity is duplicated in this Run: {call_id}"),
+                        "tool call identity is duplicated in this Run",
                     );
                     attempt.status = RunAttemptStatus::Failed;
                     attempt.error = Some(error.clone());
@@ -340,7 +370,6 @@ impl RunCoordinator {
                 attempt.ended_at = Some(self.clock.now());
                 run.phase = RunPhase::PersistingMessageAndAdvancingSession;
                 run = self.store.save_attempt(run, attempt).await?;
-                add_usage(&mut run.usage, &response.usage);
                 run.step_count = next_step;
                 run.last_message_id = Some(message_id);
                 run.phase = RunPhase::AssemblingContext;
@@ -423,6 +452,10 @@ impl RunCoordinator {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "intent persistence and stable result ordering form one protocol"
+    )]
     async fn process_tools(
         &self,
         mut run: Run,
@@ -433,6 +466,26 @@ impl RunCoordinator {
             .store
             .load_tool_executions(&run.id, &assistant.id)
             .await?;
+
+        let count = assistant
+            .sub_messages
+            .iter()
+            .filter(|p| matches!(p, SubMessage::ToolUse(_)))
+            .count();
+        if persisted.is_empty()
+            && (2..=4).contains(&count)
+            && run.budget.max_steps.saturating_sub(run.step_count)
+                >= u64::try_from(count).unwrap_or(u64::MAX)
+            && assistant.sub_messages.iter().all(|p| match p {
+                SubMessage::ToolUse(t) => serde_json::from_str(&t.arguments)
+                    .is_ok_and(|a| self.tools.parallel_safe(&t.tool_name, &a)),
+                _ => true,
+            })
+        {
+            return self
+                .process_parallel_tools(run, assistant, cancellation)
+                .await;
+        }
 
         for (index, part) in assistant.sub_messages.iter().enumerate() {
             let SubMessage::ToolUse(tool_use) = part else {
@@ -528,6 +581,109 @@ impl RunCoordinator {
         Ok(ToolLoop::Continue(run))
     }
 
+    async fn process_parallel_tools(
+        &self,
+        mut run: Run,
+        assistant: Message,
+        cancellation: CancellationToken,
+    ) -> Result<ToolLoop, RunCoordinatorError> {
+        let mut executions = Vec::new();
+        for (index, part) in assistant.sub_messages.iter().enumerate() {
+            let SubMessage::ToolUse(tool) = part else {
+                continue;
+            };
+            let timestamp = self.clock.now();
+            let execution = ToolExecution {
+                id: self.ids.tool_execution_id(),
+                run_id: run.id.clone(),
+                call_id: tool.call_id.clone(),
+                assistant_message_id: assistant.id,
+                tool_use_index: u32::try_from(index).expect("bounded tool index"),
+                tool_result_message_id: None,
+                tool_name: tool.tool_name.clone(),
+                arguments: serde_json::from_str(&tool.arguments).expect("validated arguments"),
+                attempt: 1,
+                approval_status: ToolApprovalStatus::NotRequired,
+                status: ToolExecutionStatus::Running,
+                result: None,
+                error: None,
+                started_at: Some(timestamp),
+                ended_at: None,
+                created_at: timestamp,
+            };
+            run.phase = RunPhase::ExecutingTool;
+            run.usage.tool_executions = run.usage.tool_executions.saturating_add(1);
+            run = self
+                .store
+                .save_tool_execution(run, execution.clone())
+                .await?;
+            executions.push(execution);
+        }
+        // Every intent is durable before any future is polled. Join preserves
+        // proposal order even if the executors finish in the opposite order.
+        let results = futures_util::future::join_all(executions.iter().map(|e| {
+            self.controlled(
+                self.tools.execute(ToolInvocation {
+                    run_id: run.id.clone(),
+                    call_id: e.call_id.clone(),
+                    execution_id: e.id.clone(),
+                    tool_name: e.tool_name.clone(),
+                    arguments: e.arguments.clone(),
+                    cancellation: cancellation.clone(),
+                }),
+                &run,
+                &cancellation,
+            )
+        }))
+        .await;
+        let mut timed_out = false;
+        for (mut execution, result) in executions.into_iter().zip(results) {
+            match result {
+                Controlled::Returned(Ok(outcome)) => {
+                    execution.status = ToolExecutionStatus::Succeeded;
+                    execution.result = Some(outcome.output);
+                }
+                Controlled::Returned(Err(error)) => {
+                    record_tool_error(&mut execution, error);
+                }
+                Controlled::Cancelled => {
+                    execution.status = ToolExecutionStatus::Cancelled;
+                    execution.error = Some(DomainError::invariant(
+                        ErrorCode::RunCancelled,
+                        "tool cancelled",
+                    ));
+                }
+                Controlled::TimedOut => {
+                    timed_out = true;
+                    execution.status = ToolExecutionStatus::Cancelled;
+                    execution.error = Some(DomainError::invariant(
+                        ErrorCode::RunLimitExceeded,
+                        "tool runtime limit elapsed",
+                    ));
+                }
+            }
+            execution.ended_at = Some(self.clock.now());
+            run.phase = RunPhase::PersistingToolResult;
+            run = self
+                .store
+                .save_tool_execution(run, execution.clone())
+                .await?;
+            run = self.persist_tool_result(run, execution).await?;
+        }
+        if timed_out {
+            return Ok(ToolLoop::Terminal(
+                self.finish(
+                    run,
+                    RunStatus::LimitExceeded,
+                    RunStopReason::RuntimeLimit,
+                    None,
+                )
+                .await?,
+            ));
+        }
+        Ok(ToolLoop::Continue(run))
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn resume_tool(
         &self,
@@ -562,7 +718,7 @@ impl RunCoordinator {
                 Controlled::Returned(Ok(ToolRecovery::Unknown)) => {
                     let error = DomainError::invariant(
                         ErrorCode::RunRecoveryFailed,
-                        format!("tool effect is unknown for call {}", execution.call_id),
+                        "tool effect is unknown; automatic replay refused",
                     );
                     run = self
                         .finish(run, RunStatus::Failed, RunStopReason::Failed, Some(error))
@@ -713,8 +869,7 @@ impl RunCoordinator {
                     Some(RunStopReason::Cancelled)
                 }
                 Controlled::Returned(Err(error)) => {
-                    execution.status = ToolExecutionStatus::Failed;
-                    execution.error = Some(error);
+                    record_tool_error(&mut execution, error);
                     None
                 }
                 Controlled::Cancelled => {
@@ -944,20 +1099,21 @@ fn visible_tail(path: &[ProjectedMessage]) -> Option<&Message> {
     })
 }
 
-fn pending_tool_assistant(path: &[ProjectedMessage]) -> Option<&Message> {
+fn pending_tool_assistant<'a>(path: &'a [ProjectedMessage], run_id: &RunId) -> Option<&'a Message> {
     let resolved: HashSet<&str> = path
         .iter()
         .filter_map(|projected| match projected {
             ProjectedMessage::Visible(Message {
                 tool_result: Some(result),
+                run_id: Some(result_run),
                 ..
-            }) => Some(result.call_id.as_str()),
+            }) if result_run == run_id => Some(result.call_id.as_str()),
             _ => None,
         })
         .collect();
     path.iter().rev().find_map(|projected| match projected {
         ProjectedMessage::Visible(message)
-            if message.role == MessageRole::Assistant
+            if message.role == MessageRole::Assistant && message.run_id.as_ref() == Some(run_id)
                 && message.sub_messages.iter().any(|part| {
                     matches!(part, SubMessage::ToolUse(tool_use) if !resolved.contains(tool_use.call_id.as_str()))
                 }) =>
@@ -968,11 +1124,13 @@ fn pending_tool_assistant(path: &[ProjectedMessage]) -> Option<&Message> {
     })
 }
 
-fn tool_call_ids(path: &[ProjectedMessage]) -> HashSet<String> {
+fn tool_call_ids(path: &[ProjectedMessage], run_id: &RunId) -> HashSet<String> {
     path.iter()
         .filter_map(|projected| match projected {
-            ProjectedMessage::Visible(message) => Some(&message.sub_messages),
-            ProjectedMessage::Redacted { .. } => None,
+            ProjectedMessage::Visible(message) if message.run_id.as_ref() == Some(run_id) => {
+                Some(&message.sub_messages)
+            }
+            _ => None,
         })
         .flatten()
         .filter_map(|part| match part {
@@ -1006,6 +1164,18 @@ fn add_usage(total: &mut RunUsage, delta: &RunUsage) {
                 .saturating_add(right.map_or(0, |cost| cost.0)),
         )),
     };
+}
+
+fn record_tool_error(execution: &mut ToolExecution, error: DomainError) {
+    execution.status = match error.code {
+        ErrorCode::RunCancelled => ToolExecutionStatus::Cancelled,
+        ErrorCode::ToolApprovalRequired => {
+            execution.approval_status = ToolApprovalStatus::Denied;
+            ToolExecutionStatus::Denied
+        }
+        _ => ToolExecutionStatus::Failed,
+    };
+    execution.error = Some(error);
 }
 
 fn budget_exceeded(run: &Run) -> Option<RunStopReason> {

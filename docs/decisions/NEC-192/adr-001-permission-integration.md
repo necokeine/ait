@@ -59,7 +59,7 @@ Run 生命周期、Agent revision 或领域依赖。
 
 ## 限制与协议依据
 
-普通 API Provider 尚无宿主工具桥；三级值是能力上限，不是新工具能力。Codex 的实际进程/文件
+普通 API Provider 的宿主工具桥见 NEC-247；三级值仍是能力上限，执行器只能开放已实现能力。Codex 的实际进程/文件
 隔离仍由所安装的 native harness 执行；本轮离线协议和 Git 集成测试不替代真实模型、各 OS 的
 sandbox 验收。应用层拒绝无法证明安全的授权；未来支持受限 command escalation 时，需要
 携带可验证的精确权限集合并重新核验协议，不得单凭命令文本放行。

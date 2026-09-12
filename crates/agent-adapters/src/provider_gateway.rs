@@ -138,6 +138,23 @@ impl AgentProviderGateway for RigProviderGateway {
         discover_models(client_with_secret(provider, secret.to_owned())?).await
     }
 
+    async fn complete_turn(
+        &self,
+        provider: &AgentProvider,
+        credential_ref: &str,
+        config: &AgentConfiguration,
+        request: ait_ports::AgentInvocation,
+        executable_tools: Vec<String>,
+    ) -> Result<ait_ports::AgentResponse, DomainError> {
+        crate::provider_turn::complete_turn(
+            &client(provider, credential_ref).await?,
+            config,
+            request,
+            &executable_tools,
+        )
+        .await
+    }
+
     async fn complete(
         &self,
         provider: &AgentProvider,

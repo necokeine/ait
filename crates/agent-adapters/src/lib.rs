@@ -17,3 +17,6 @@ pub use provider_gateway::RigProviderGateway;
 pub use error::{AdapterError, AdapterErrorKind};
 pub use llm::{LLMClient, LLMClientConfig, LLMProvider};
 pub use protocol::*;
+
+/// Structured provider turn conversion.
+pub mod provider_turn;

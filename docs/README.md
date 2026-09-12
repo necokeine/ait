@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-247/adr-001-api-provider-host-tool-loop.md`：公共 API Provider 复用 RunCoordinator 的持久化工具循环、固定权限与执行器能力过滤；WF-13 默认离线验收。
+
 - `decisions/NEC-192/adr-001-permission-integration.md`：三级权限跨入口集成核验、command/file
   审批上限、隔离授权路径往返、恢复时管理员上限重检与权限错误脱敏。
 
@@ -11,8 +13,7 @@
 - `decisions/NEC-241/adr-001-entity-cli.md`：类型化实体 CLI、专用凭据 stdin、完整 Command 映射覆盖和权限设置迁移。
 
 - `decisions/NEC-234/adr-001-api-provider-run-permissions.md`：OpenAI、DeepSeek 等普通 API
-  Provider 与 Codex 共用三级 sandbox Run 快照及管理员上限；纯文本网关不把权限上限伪装成
-  尚未实现的工具能力。
+  Provider 与 Codex 共用三级 sandbox Run 快照及管理员上限；NEC-247 工具执行器沿用该上限。
 
 - `decisions/NEC-233/adr-001-project-scoped-desktop-data.md`：Desktop 读取拆分为 Project catalog、
   全局 Agent/Provider catalog 与显式 `project_id` 的单 Project 投影；删除 Electron `workspace.view`，

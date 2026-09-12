@@ -10,9 +10,9 @@ NEC-208 已经把桌面的三级 sandbox 设置解析为不可变的 `RunPermiss
 Codex Provider 上执行解析。OpenAI、DeepSeek 等普通 LLM API Provider 无条件得到 serde
 默认的 `read_only`，既忽略成员的明确选择，也绕过 daemon 的 `max_sandbox` 管理员上限。
 
-普通 Provider 当前通过 `AgentProviderGateway::complete` 执行单次纯文本请求。网关会清除
-function catalog，不执行 shell、文件或其他宿主工具。因此权限等级首先是 Run 准入时固定的能力
-上限；在宿主工具桥接完成前，它不能被解释成模型已经获得对应的操作能力。
+NEC-247 已将普通 Provider 接入既有 RunCoordinator 和宿主工具执行器。
+本文定义的权限快照与管理员上限继续适用；实际能力、持久化和恢复见
+`../NEC-247/adr-001-api-provider-host-tool-loop.md`。
 
 ## 决策
 
@@ -25,22 +25,19 @@ function catalog，不执行 shell、文件或其他宿主工具。因此权限�
    `INVALID_CONFIGURATION` fail closed。`SendMessage`、`ForkSession` 与 `DeriveSession` 的
    预准入读取及事务重读都必须包含同一 revision 的真实 Settings；派生的复用和分叉遵守同一规则，
    被拒绝时也不得新增 Session 或修改源 Session。
-3. sandbox 等级是宿主可授予能力的上限，不是 API 模型自身的权限声明。当前纯文本 Rig 网关在
-   三档下都不暴露工具，因此没有本地文件副作用；`workspace_write` 和 `full_access` 只会让 Run
-   保存对应上限，不会凭空给远程模型提供主机访问。
+3. sandbox 等级是宿主能力上限。API 工具表与真实执行器求交，`read_only` 不广告写操作，
+   `workspace_write` 与 `full_access` 也必须经过执行器自身的路径和命令约束。
 4. `permissions.approval` 仍是 Codex 原生 harness 的策略。普通 API Provider 没有原生审批协议，
    其 Run 保留保守的 `OnRequest` 值，不把 Codex 的 `untrusted_only` 分类语义伪装成通用能力。
-5. 普通 Provider 的准入会验证权限上限，但当前不获取 Codex workspace lease，因为纯文本网关
-   不写工作区。未来接入 ToolUse/ToolResult 执行桥时，宿主必须读取 Run 快照，在工具执行前按
-   该 sandbox 上限限制路径和进程，并为任何工作区写入复用 Project 写租约；不得由 adapter
-   自行扩大权限。
+5. NEC-247 的 API 工具 Run 获取 Project 写租约；执行器读取固定 Run 快照，限制路径和进程，
+   不得自行扩大权限。当前审批升级保守拒绝，并保存明确的 ToolResult。
 
 ## 后果
 
 - OpenAI、DeepSeek 与 Codex 的新 Run 都能准确展示成员选择的三级 sandbox，且共同受 daemon
   上限限制。
 - 历史 Run 和执行中的 Run 保持原快照；迁移时缺少权限字段仍由 serde 以 `read_only` 恢复。
-- 当前普通 Provider 仍是纯文本能力。权限设置不夸大为尚未实现的工具执行或操作系统 sandbox。
+- 普通 Provider 只开放真实执行器能力；权限设置不代表任意进程或完整工具目录已获授权。
 
 ## 验证
 

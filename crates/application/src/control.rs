@@ -29,10 +29,9 @@ use ait_domain::{
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
     ControlRecordKind, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
-    ProjectDirectoryCreator, ProviderMessage, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
-    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationGate,
-    WorkspaceOutputItem, WorkspaceResultSink,
+    ProjectDirectoryCreator, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceApprovalDecision,
+    WorkspaceApprovalRequest, WorkspaceIntegrationGate, WorkspaceOutputItem, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -41,6 +40,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod agents;
+mod api_run;
 mod progress;
 use agents::{
     InvocationGuard, agent_for_session, builtin_providers, check_session_admission, migrate_state,
@@ -342,6 +342,7 @@ pub struct LocalControlService {
         Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<WorkspaceApprovalDecision>>>>>,
     permission_limits: PermissionPolicyLimits,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
+    api_tools: Option<Arc<dyn ait_ports::RunToolFactory>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
@@ -376,6 +377,7 @@ impl LocalControlService {
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
+            api_tools: None,
             host_provider_catalog: None,
             workspace_agent: None,
             session_title_generator: None,
@@ -398,10 +400,18 @@ impl LocalControlService {
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
+            api_tools: None,
             host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
         }
+    }
+
+    /// Installs the host tool executor factory used only by API Providers.
+    #[must_use]
+    pub fn with_api_tools(mut self, factory: Arc<dyn ait_ports::RunToolFactory>) -> Self {
+        self.api_tools = Some(factory);
+        self
     }
 
     /// Adds the host capability used only when Project registration omits a workdir.
@@ -414,6 +424,7 @@ impl LocalControlService {
         self
     }
 
+    /// Installs the credential and API completion gateway.
     #[must_use]
     pub fn with_provider_gateway(mut self, gateway: Arc<dyn AgentProviderGateway>) -> Self {
         self.provider_gateway = Some(gateway);
@@ -568,7 +579,11 @@ impl LocalControlService {
             let run = record_value(&run_read, Kind::Run, run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let project_id = required_string(run, "project_id")?;
-            let message_id = required_string(run, "base_message_id")?;
+            let message_id = run
+                .get("last_message_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or(required_string(run, "base_message_id")?);
             let mut filters = vec![
                 ControlFilter::id(Kind::Run, run_id),
                 ControlFilter::id(Kind::Project, project_id),
@@ -1334,6 +1349,11 @@ impl LocalControlService {
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
+        if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+            return self
+                .execute_api_run(&run, control.cancellation.clone())
+                .await;
+        }
         let Some(lease) = self.set_run_running(&run.id).await? else {
             let state = self.read_run_records(&run.id).await?.original;
             return state
@@ -1357,7 +1377,10 @@ impl LocalControlService {
             // before invoking either provider after startup recovery.
             validate_run_permission_ceiling(run.permission_profile, self.permission_limits)?;
             match run.provider.kind {
-                AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, &run).await,
+                AgentMode::OpenAI | AgentMode::DeepSeek => Err(DomainError::invariant(
+                    ErrorCode::InvalidRun,
+                    "API Run must use the host coordinator",
+                )),
                 AgentMode::Codex => {
                     self.invoke_codex_workspace_checkpointed(
                         &state,
@@ -1980,6 +2003,9 @@ impl LocalControlService {
             let policy = recovery_policy(&state);
             let status = state.runs[index].status.clone();
             let claim = match policy {
+                RecoveryPolicy::ResumeSafe if state.runs[index].execution.is_some() => {
+                    return Ok(WorkspaceRecoveryClaim::Execute);
+                }
                 RecoveryPolicy::ResumeSafe if status == "queued" => {
                     return Ok(WorkspaceRecoveryClaim::Execute);
                 }
@@ -2167,6 +2193,7 @@ impl LocalControlService {
             run.status = "interrupted".into();
             run.phase = Some("terminal".into());
             run.error = Some(error(ErrorCode::RunRecoveryFailed, &failure.message, false));
+            api_run::interrupt(run);
             expire_pending_native_approvals(run, NativeApprovalStatus::Expired);
             if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
                 journal.lease_epoch = run.lease_epoch;
@@ -2306,7 +2333,7 @@ impl LocalControlService {
                 .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
-                && run.status == "cancelled"
+                && matches!(run.status.as_str(), "cancelled" | "cancelling")
                 && let Some(token) = self
                     .cancellations
                     .lock()
@@ -2331,7 +2358,7 @@ impl LocalControlService {
             .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
-            && run.status == "cancelled"
+            && matches!(run.status.as_str(), "cancelled" | "cancelling")
         {
             *decision = WorkspaceFinalizationDecision::Cancelled;
             control.cancellation.cancel();
@@ -3231,6 +3258,7 @@ fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, mess
         message,
         false,
     ));
+    api_run::interrupt(&mut run);
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
     release_session(state, &run);
     state.runs[index] = run;
@@ -3304,7 +3332,10 @@ fn workspace_write_path(
                 let agent = require_agent(state, agent_id)?;
                 let provider = validate_config(state, &agent.config)?;
                 let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
-                if provider.kind != AgentMode::Codex {
+                if !matches!(
+                    provider.kind,
+                    AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
+                ) {
                     return Ok::<_, ApiError>(requires_lease);
                 }
                 Ok(true)
@@ -4138,11 +4169,10 @@ fn send_message(
         .clone_from(&user.id);
     state.sessions[index].version += 1;
     state.sessions[index].active_run_id = Some(run_id.clone());
-    let workspace_base_commit =
-        (provider.kind == AgentMode::Codex).then(|| git_baseline.commit.clone());
-    let workspace_base_index_tree = (provider.kind == AgentMode::Codex)
-        .then(|| git_baseline.index_tree.clone().into_boxed_str());
+    let workspace_base_commit = Some(git_baseline.commit.clone());
+    let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
     let run = RunView {
+        execution: None,
         id: run_id.clone(),
         project_id: session.project_id,
         base_message_id: user.id,
@@ -4261,6 +4291,14 @@ fn cancel_run(
         ));
     }
     let mut run = state.runs[index].clone();
+    if run.execution.is_some() {
+        run.status = "cancelling".into();
+        state.runs[index] = run.clone();
+        return Ok((
+            CommandResult::Run(run.clone()),
+            vec![pending("run.updated", Some(run.id.clone()), &run)],
+        ));
+    }
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
         journal.lease_epoch = run.lease_epoch;
@@ -4753,6 +4791,7 @@ fn trigger_cron(
             .insert(run_id.clone(), reference.clone());
     }
     state.runs.push(RunView {
+        execution: None,
         id: run_id.clone(),
         project_id: cron.project_id,
         base_message_id: cron.base_message_id,
@@ -4797,6 +4836,19 @@ fn export_project(
         .iter()
         .filter(|message| message.project_id == project_id)
         .cloned()
+        .map(|mut message| {
+            if message
+                .data
+                .as_ref()
+                .is_some_and(|d| d.get("native_message").is_some())
+            {
+                message.data = None;
+                message.text.get_or_insert_with(|| {
+                    "[Host tool payload omitted from portable archive]".into()
+                });
+            }
+            message
+        })
         .collect::<Vec<_>>();
     let sessions = state
         .sessions
@@ -5494,7 +5546,15 @@ fn pending<T: Serialize>(kind: &str, entity_id: Option<String>, body: &T) -> Pen
     PendingEvent {
         kind: kind.into(),
         entity_id,
-        body: serde_json::to_value(body).unwrap_or(Value::Null),
+        body: {
+            let mut value = serde_json::to_value(body).unwrap_or(Value::Null);
+            if kind.starts_with("run.")
+                && let Some(object) = value.as_object_mut()
+            {
+                object.remove("execution");
+            }
+            value
+        },
         created_at: now(),
     }
 }

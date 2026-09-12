@@ -567,6 +567,16 @@ pub enum ToolRecovery {
 /// Tool catalog/execution boundary consumed by the coordinator.
 #[async_trait]
 pub trait RunTool: Send + Sync {
+    /// Names the host can actually execute. Empty by default for older adapters.
+    fn executable_tools(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Whether calls can overlap without changing their observable effects.
+    fn parallel_safe(&self, _tool_name: &str, _arguments: &Value) -> bool {
+        false
+    }
+
     /// Returns whether host policy requires an approval for this call.
     fn requires_approval(&self, tool_name: &str, arguments: &Value) -> bool;
 
@@ -622,4 +632,17 @@ pub trait RunIdGenerator: Send + Sync {
     fn attempt_id(&self) -> RunAttemptId;
     /// Creates a tool execution identity.
     fn tool_execution_id(&self) -> ToolExecutionId;
+}
+
+/// Factory for host executors pinned to the admitted Project and permission ceiling.
+pub trait RunToolFactory: Send + Sync {
+    /// Assemble a capability-scoped executor; no side effects occur at creation.
+    ///
+    /// # Errors
+    /// Returns a safe error if the Project capability cannot be opened.
+    fn create(
+        &self,
+        root: &std::path::Path,
+        profile: RunPermissionProfile,
+    ) -> Result<Arc<dyn RunTool>, DomainError>;
 }

@@ -30,11 +30,10 @@ DeepSeek Harness；父任务 NEC-189 要求共享默认配置及按模型覆盖�
    ToolCall 仍作为数据交还宿主，符合 ADR-007 的单次调用边界。目录不代表
    授权或执行能力。DeepSeek 的 `content: null` 及省略 tool-call `index`
    由窄 HTTP 适配层归一化，以兼容 Rig 0.42 的响应解析器。
-5. 首阶段不实现 Shell/文件/Web/子 Agent 等执行器或多轮运行器。现有
-   `AgentProviderGateway::complete -> String` 无法处理 ToolCall，因此使用
-   默认 system 加纯文本历史，不发送工具目录；`LLMClient::prompt` 同样如此。
-   宿主接入工具时必须经过 ToolUse/ToolResult 持久化、权限和 Run 终止屏障，
-   不能在 `LLMClient` 内隐式执行模型选定的命令。
+5. NEC-247 接入 `AgentProviderGateway::complete_turn` 和既有 RunCoordinator。
+   精确模型目录与真实执行器求交后才广告工具；ToolUse/ToolResult 和权限由宿主持久化、执行。
+   `LLMClient::prompt` 保留纯文本无工具语义。执行边界和限制见
+   `NEC-247/adr-001-api-provider-host-tool-loop.md`，LLMClient 内不执行模型选定的命令。
 6. 默认验证使用实际 Rig client 对接本地 HTTP fixtures，重点验证 DeepSeek
    的消息顺序、函数封装与调用 ID/推理内容回传，同时覆盖 OpenAI 请求格式。
    提供忽略执行的 DeepSeek 真网 smoke test，由操作者显式配置环境凭证及模型。
@@ -43,5 +42,4 @@ DeepSeek Harness；父任务 NEC-189 要求共享默认配置及按模型覆盖�
 
 调用方可直接构建可审查的 Prompt/Tool set，也可为某模型提供完整替代配置。
 现有文本聊天开始使用默认身份和工作指导，但不会暴露尚未接入的工具。
-后续工具执行阶段仍须实现桥接、权限、能力过滤及持久化，不能把 Schema
-覆盖率当作可执行能力覆盖率。此次不改变 Message、Session、Run 的领域边界。
+NEC-247 的宿主工具桥只开放已安装执行器，不能把完整 Schema 目录当作可执行能力。此次不改变 Message、Session、Run 的领域边界。

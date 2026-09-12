@@ -66,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 allow_session_approvals: !arguments.deny_session_approvals,
             })
             .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
+            .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
             .with_host_provider_catalog(catalog)
             .with_session_title_generator(titles),
     );

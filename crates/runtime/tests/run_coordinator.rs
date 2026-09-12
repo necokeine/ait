@@ -541,6 +541,59 @@ fn coordinator(
 }
 
 #[tokio::test]
+async fn a_new_run_invokes_the_agent_when_its_base_is_an_older_assistant() {
+    let (mut run, mut messages) = fixture();
+    let parent = messages.last().unwrap().id;
+    let prior = Message {
+        id: MessageId::from_u128(3),
+        project_id: run.project_id.clone(),
+        parent_message_id: Some(parent),
+        role: MessageRole::Assistant,
+        kind: MessageKind::Standard,
+        origin: MessageOrigin::Agent,
+        sub_messages: vec![SubMessage::Text {
+            text: "prior final".into(),
+        }],
+        created_by_session_id: None,
+        run_id: Some(RunId::new("older-run")),
+        run_seq: Some(1),
+        tool_result: None,
+        git_commit: None,
+        metadata: DomainMetadata::default(),
+        created_at: TimestampMs(3),
+    };
+    run.base_message_id = prior.id;
+    messages.push(prior);
+    let store = Arc::new(MemoryStore::seeded(run, messages));
+    let engine = coordinator(
+        store.clone(),
+        Arc::new(ScriptedAgent::new(vec![Ok(text("new final"))])),
+        Arc::new(ScriptedTools::default()),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(10)),
+    );
+    engine
+        .drive(&RunId::new("run-1"), CancellationToken::new())
+        .await
+        .unwrap();
+    let saved = store.snapshot();
+    assert_eq!(saved.run.status, RunStatus::Completed);
+    assert_eq!(saved.run.attempt_count, 1);
+    assert_eq!(saved.run.step_count, 1);
+    let final_message = saved
+        .messages
+        .iter()
+        .find(|m| Some(m.id) == saved.run.last_message_id)
+        .unwrap();
+    assert_eq!(final_message.run_id, Some(RunId::new("run-1")));
+    assert_eq!(
+        final_message.parent_message_id,
+        Some(MessageId::from_u128(3))
+    );
+    assert_eq!(final_message.sub_messages, text("new final").sub_messages);
+}
+
+#[tokio::test]
 async fn completes_an_ordinary_reply_after_durable_message_commit() {
     let (run, messages) = fixture();
     let store = Arc::new(MemoryStore::seeded(run, messages));
@@ -981,5 +1034,164 @@ async fn crash_recovery_persists_a_known_tool_outcome_without_reexecution() {
             .tools
             .iter()
             .all(|execution| execution.tool_result_message_id.is_some())
+    );
+}
+
+struct ParallelTools {
+    store: Arc<MemoryStore>,
+    barrier: tokio::sync::Barrier,
+    second_done: tokio::sync::Semaphore,
+    completed: Mutex<Vec<String>>,
+}
+#[async_trait]
+impl RunTool for ParallelTools {
+    fn parallel_safe(&self, _: &str, _: &serde_json::Value) -> bool {
+        true
+    }
+    fn requires_approval(&self, _: &str, _: &serde_json::Value) -> bool {
+        false
+    }
+    async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        let persisted = self.store.snapshot();
+        assert_eq!(
+            persisted.tools.len(),
+            2,
+            "all intents must exist before either execution starts"
+        );
+        assert!(
+            persisted
+                .tools
+                .iter()
+                .all(|t| t.status == ToolExecutionStatus::Running)
+        );
+        self.barrier.wait().await;
+        if request.call_id == "first" {
+            self.second_done.acquire().await.unwrap().forget();
+        }
+        self.completed.lock().unwrap().push(request.call_id.clone());
+        if request.call_id == "second" {
+            self.second_done.add_permits(1);
+        }
+        Ok(ToolOutcome {
+            output: json!(request.call_id),
+        })
+    }
+    async fn reconcile(&self, _: &ToolExecution) -> Result<ToolRecovery, DomainError> {
+        Ok(ToolRecovery::Unknown)
+    }
+}
+#[tokio::test]
+async fn parallel_tools_finish_out_of_order_but_commit_results_in_order_on_same_attempt() {
+    let (run, messages) = fixture();
+    let store = Arc::new(MemoryStore::seeded(run, messages));
+    let tools = Arc::new(ParallelTools {
+        store: store.clone(),
+        barrier: tokio::sync::Barrier::new(2),
+        second_done: tokio::sync::Semaphore::new(0),
+        completed: Mutex::new(Vec::new()),
+    });
+    let agent = Arc::new(ScriptedAgent::new(vec![
+        Ok(tool_calls(&[("first", "read"), ("second", "read")])),
+        Ok(text("done")),
+    ]));
+    let coordinator = RunCoordinator::new(
+        store.clone(),
+        agent,
+        tools.clone(),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(10)),
+        Arc::new(SequenceIds::default()),
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        coordinator.drive(&RunId::new("run-1"), CancellationToken::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(*tools.completed.lock().unwrap(), ["second", "first"]);
+    let state = store.snapshot();
+    assert_eq!(state.run.attempt_count, 1);
+    assert_eq!(state.run.usage.tool_executions, 2);
+    let mut results = state
+        .messages
+        .iter()
+        .filter(|m| m.tool_result.is_some())
+        .collect::<Vec<_>>();
+    results.sort_by_key(|m| m.run_seq);
+    assert_eq!(
+        results
+            .iter()
+            .map(|m| m.tool_result.as_ref().unwrap().call_id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+}
+
+#[tokio::test]
+async fn unknown_interrupted_side_effect_is_never_replayed() {
+    let (run, messages) = fixture();
+    let original = Arc::new(MemoryStore::seeded(run, messages));
+    coordinator(
+        original.clone(),
+        Arc::new(ScriptedAgent::new(vec![
+            Ok(tool_calls(&[("call", "side_effect")])),
+            Ok(text("done")),
+        ])),
+        Arc::new(ScriptedTools::default()),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(10)),
+    )
+    .drive(&RunId::new("run-1"), CancellationToken::new())
+    .await
+    .unwrap();
+    let mut snapshot = original.snapshot();
+    let assistant = snapshot
+        .messages
+        .iter()
+        .find(|m| m.run_seq == Some(1))
+        .unwrap()
+        .clone();
+    snapshot.run.status = RunStatus::Running;
+    snapshot.run.phase = RunPhase::ExecutingTool;
+    snapshot.run.stop_reason = None;
+    snapshot.run.ended_at = None;
+    snapshot.run.step_count = 1;
+    snapshot.run.last_message_id = Some(assistant.id);
+    let mut execution = snapshot.tools.remove(0);
+    execution.status = ToolExecutionStatus::Running;
+    execution.result = None;
+    execution.ended_at = None;
+    execution.tool_result_message_id = None;
+    let recovered = Arc::new(MemoryStore::seeded(
+        snapshot.run,
+        snapshot
+            .messages
+            .into_iter()
+            .filter(|m| m.run_seq.is_none_or(|seq| seq <= 1))
+            .collect(),
+    ));
+    recovered.insert_tool(execution);
+    let tools = Arc::new(ScriptedTools::default());
+    let result = coordinator(
+        recovered.clone(),
+        Arc::new(ScriptedAgent::new(vec![])),
+        tools.clone(),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(20)),
+    )
+    .drive(&RunId::new("run-1"), CancellationToken::new())
+    .await
+    .unwrap();
+    let DriveOutcome::Terminal(run) = result else {
+        panic!("unknown effect must fail closed")
+    };
+    assert_eq!(run.error.unwrap().code, ErrorCode::RunRecoveryFailed);
+    assert!(tools.calls.lock().unwrap().is_empty());
+    assert_eq!(recovered.snapshot().tools.len(), 1);
+    assert!(
+        recovered.snapshot().tools[0]
+            .tool_result_message_id
+            .is_none()
     );
 }
