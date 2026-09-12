@@ -40,7 +40,7 @@ Completions 的非 `off` 等级显式发送 `thinking.type=enabled` 与
 `reasoning_effort`；参考 [DeepSeek Harness 的 adapter-owned effort
 约定](https://github.com/deepseek-ai/deepseek-harness/blob/c389f96bf3a9b6807cb71ed6bdad5849be0df6d8/packages/llm/llm-deepseek/README.md)，
 `off` 转换为 `thinking.type=disabled` 且不得作为 `reasoning_effort=off`
-发送。空值不发送任何控制字段，保留供应商默认。参考：[DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)。当前远程 LLM 执行投影文本历史并进行一次调用；Codex 的工作区工具循环仍由其 adapter 负责。
+发送。空值不发送任何控制字段，保留供应商默认。参考：[DeepSeek thinking mode](https://api-docs.deepseek.com/guides/thinking_mode/)。NEC-247 的公共 OpenAI/DeepSeek 路径通过 RunCoordinator 携带完整 Message 历史执行宿主工具循环；Codex 的 native 工具循环由其 harness 负责。
 
 ## 凭证
 

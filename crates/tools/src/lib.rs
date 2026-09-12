@@ -11,6 +11,8 @@ use serde_json::Value;
 
 /// Codex-native tools and layered instructions, separate from API catalogs.
 pub mod codex;
+/// Capability-scoped local host executors.
+pub mod host;
 
 /// Version of Ait's bundled prompt and tool contracts.
 pub const DEFAULT_TOOL_SET_REVISION: &str = "ait-default-v1";

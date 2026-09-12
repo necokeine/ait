@@ -3,8 +3,8 @@ use super::{
     AgentConfiguration, AgentMode, AgentProvider, AgentProviderGateway, AgentProviderView,
     AgentView, ApiError, Arc, Command, CommandResult, ControlStoreError, DomainError, ErrorCode,
     HashMap, HashSet, HostProviderModelCatalog, LocalControlService, Mutex, PendingEvent,
-    ProviderMessage, ProviderModel, RunView, SessionView, Uuid, Value, Weak, WorkingSet,
-    WorkspaceAgentResponse, error, json, pending, require_agent, serialization_error, store_error,
+    ProviderModel, SessionView, Uuid, Value, Weak, WorkingSet, error, json, pending, require_agent,
+    serialization_error, store_error,
 };
 use ait_contracts::ProviderSecret;
 
@@ -604,52 +604,9 @@ impl LocalControlService {
         ))
     }
 
-    pub(super) async fn invoke_provider(
-        &self,
-        state: &WorkingSet,
-        run: &RunView,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let gateway = self.provider_gateway.as_deref().ok_or_else(|| {
-            DomainError::invariant(
-                ErrorCode::InvalidConfiguration,
-                "provider gateway is not configured",
-            )
-        })?;
-        let reference = state.run_credentials.get(&run.id).ok_or_else(|| {
-            DomainError::invariant(
-                ErrorCode::InvalidConfiguration,
-                "provider secret is not configured",
-            )
-        })?;
-        let mut messages = Vec::new();
-        let mut current = Some(run.base_message_id.as_str());
-        while let Some(id) = current {
-            let message = state.messages.iter().find(|m| m.id == id).ok_or_else(|| {
-                DomainError::invariant(ErrorCode::MessageNotFound, "message path is incomplete")
-            })?;
-            if let Some(text) = &message.text {
-                messages.push(ProviderMessage {
-                    role: message.role.clone(),
-                    text: text.clone(),
-                });
-            }
-            current = message.parent_message_id.as_deref();
-        }
-        messages.reverse();
-        let assistant_text = gateway
-            .complete(&run.provider, reference, &run.config, messages)
-            .await?;
-        Ok(WorkspaceAgentResponse {
-            assistant_text,
-            commit_id: None,
-            operations: Vec::new(),
-            output_items: Vec::new(),
-        })
-    }
-
     #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
-    pub(super) fn invoke_mock() -> WorkspaceAgentResponse {
-        WorkspaceAgentResponse {
+    pub(super) fn invoke_mock() -> ait_ports::WorkspaceAgentResponse {
+        ait_ports::WorkspaceAgentResponse {
             assistant_text: "Mock assistant response.".into(),
             commit_id: None,
             operations: Vec::new(),

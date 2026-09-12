@@ -100,7 +100,9 @@ dependencies = [
  "ait-runtime",
  "ait-scheduler",
  "ait-storage-sqlite",
+ "ait-tools",
  "async-trait",
+ "axum",
  "criterion",
  "futures-util",
  "serde",
@@ -159,6 +161,7 @@ dependencies = [
  "ait-ports",
  "ait-project-local",
  "ait-storage-sqlite",
+ "ait-tools",
  "async-trait",
  "axum",
  "clap",
@@ -242,8 +245,11 @@ version = "0.0.1"
 dependencies = [
  "ait-domain",
  "ait-ports",
+ "ait-tools",
  "async-trait",
+ "futures-util",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -290,10 +296,19 @@ version = "0.0.1"
 dependencies = [
  "ait-domain",
  "ait-ports",
+ "async-trait",
+ "cap-fs-ext",
+ "cap-std",
  "jsonschema",
+ "libc",
+ "regex",
  "serde",
  "serde_json",
+ "shlex 1.3.0",
+ "tempfile",
  "thiserror",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -805,7 +820,7 @@ dependencies = [
  "find-msvc-tools",
  "jobserver",
  "libc",
- "shlex",
+ "shlex 2.0.1",
 ]
 
 [[package]]
@@ -3323,6 +3338,12 @@ dependencies = [
  "cpufeatures 0.3.1",
  "digest 0.11.3",
 ]
+
+[[package]]
+name = "shlex"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shlex"

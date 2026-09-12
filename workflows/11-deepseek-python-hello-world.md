@@ -7,9 +7,9 @@ DeepSeek 默认 Agent，让它生成 `hello.py`，随后独立运行程序并校
 请求发送到 `https://api.deepseek.com`。模型和地址见
 [DeepSeek 官方文档](https://api-docs.deepseek.com/)。
 配置与执行遵循 [ADR-009](../docs/decisions/adr-009-session-exclusion-and-agent-providers.md)。
-当前远程 Provider 返回文本，不执行文件工具；默认权限为 `read_only` / `on_request`。
-本流程在模型返回后由测试保存文件，不需要扩大 Run 权限；测试把模型的完整原始响应保存为 `hello.py`，
-再独立校验。这个文件保存步骤属于工作流，不代表 AIT 已支持远程模型的工作区工具循环。
+公共路径使用 NEC-247 的宿主工具循环。流程将新 Run 权限设置为 `workspace_write`，
+让模型通过 `write` 创建文件、通过 `read` 核对，再独立校验磁盘文件；测试不代写源码。
+默认离线覆盖见 [WF-13](13-api-provider-tool-loop.md)。
 
 ## 前置条件与运行入口
 
@@ -119,10 +119,12 @@ ait session rename --session-id hello-world --name 'DeepSeek Hello World'
 真实工作流测试先在 Project 目录外创建 `prompt with spaces.txt`，写入多行 UTF-8 指令，
 随后实际执行 `ait session send --session-id hello-world --text-file "$WF_ROOT/prompt with spaces.txt"`。
 手工执行时也应先准备该文件；或者选择 `--text-stdin`。
-指令要求返回 `hello.py` 的完整原始代码，不加 Markdown 围栏或说明：无参数 `main()` 只打印字面值 `Hello, world!`，
+发送前读取 `ait settings get`，将完整 values 文档的 `permissions.sandbox` 改为
+`workspace_write`，用 `ait settings set --expected-revision <revision> --input <file>` 保存。
+指令要求工具创建并读取 `hello.py`：无参数 `main()` 只打印字面值 `Hello, world!`，
 仅在 `if __name__ == "__main__"` 中调用；无依赖、导入或其他行为。
-测试在获取成功的 assistant 响应后原样写入 `hello.py`，不去掉围栏、修补代码或替换为固定样例。
-因此模型返回围栏、额外说明或错误代码时，后续 AST 校验会失败。本任务不要求额外 Git 提交。
+模型仅返回源码文本不能通过验收；必须有成功的 write/read ToolExecution 和真实文件。
+不要求额外 Git 提交，改动留待审阅。
 
 测试同步等待 `session send`，最多 600 秒。必须同时满足 `ok=true`、
 `status=completed`、`error=null`；queued、failed、超时或只有文字回复均不算通过。
@@ -135,7 +137,7 @@ ait session rename --session-id hello-world --name 'DeepSeek Hello World'
 - Project 默认 Agent 和 Session Agent 都为 `deepseek`，Run 固定同一 Agent revision/config，
   `run.provider.kind=deepseek`。
 - assistant 输出非空；Session 指向 Run 最终 Message，`active_run_id=null`。
-- 项目除 `.git` 外恰好只有普通文件 `hello.py`，其内容逐字等于 assistant 响应。
+- 项目除 `.git` 外恰好只有普通文件 `hello.py`，且存在成功的 write/read ToolExecution；由独立逻辑校验器核对内容。
 - 历史仍只有初始空提交，HEAD 等于 Project 的 `base_commit`；
   user Message 的 `git_commit` 也等于该基线。
 - [逻辑校验器](../bins/cli/tests/fixtures/verify_hello.py) 先用 AST 检查约定结构，
@@ -162,5 +164,5 @@ base_commit、文件列表、源码来源、stdout 与逻辑验证结果，不�
 | 生成额外文件、逻辑不符或输出不符 | 验收失败，保留原始产物；不要手工改成 Hello World 后标记模型成功 |
 | 需要重试 | 重新运行脚本，使用新的临时目录；不要复用失败的 Run 或数据库 |
 
-本流程覆盖一轮真实原生 DeepSeek 文本生成、原样保存和独立验收，不覆盖自动文件工具循环、
+本流程覆盖真实 DeepSeek 经宿主工具循环创建/读取文件及独立验收，不覆盖任意 shell、
 模型发现、网络重试、执行中恢复或凭据回收。没有真实 `verification.json` 时，应记录“未完成真实验收”。

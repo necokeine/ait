@@ -11,6 +11,7 @@ dev-mock-provider = [
 ]
 
 [dependencies]
+ait-tools = { path = "../../crates/tools" }
 ait-agent-adapters = { path = "../../crates/agent-adapters" }
 ait-application = { path = "../../crates/application" }
 ait-api-http = { path = "../../crates/api-http" }

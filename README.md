@@ -41,10 +41,12 @@ CLI 按 `project`、`agent-provider`、`agent`、`session`、`message`、`run`�
 Provider 凭据使用 `agent-provider save --secret-stdin`，不得粘贴到命令行。
 `session send` 返回后必须检查 Run 的 `status` 与 `error`，`ok=true` 不代表执行完成。
 
-权限默认是 `permissions.sandbox=read_only`、`permissions.approval=on_request`。Codex 写代码前应按
+权限默认是 `permissions.sandbox=read_only`、`permissions.approval=on_request`。Agent 写代码前应按
 [WF-08](workflows/08-settings.md#在代码写入前设置权限) 读取 settings 的最新 revision，用
 `settings set --expected-revision <revision> --input <完整values文件>` 保存 `workspace_write`，然后发送输入。
-新 Run 固定权限快照，仍受管理员上限约束；普通 API Provider 当前只返回文本，不执行文件工具。
+新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek 使用
+宿主工具循环，按精确 provider+model 目录与 HostTools 可执行能力求交。API 首版文件操作始终
+限制在 Project 根内，`full_access` 也不能越出此边界；执行范围见 [WF-13](workflows/13-api-provider-tool-loop.md)。
 CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md)。
 
 GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait desktop** 的桌面产物；

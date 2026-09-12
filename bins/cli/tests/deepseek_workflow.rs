@@ -16,13 +16,11 @@ use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
 const MODEL: &str = "deepseek-v4-flash";
 const VERIFY_LOGIC: &str = include_str!("fixtures/verify_hello.py");
-const PROMPT: &str = "Generate the complete source of one Python file named hello.py. \
-    Return only raw Python code, without Markdown fences or explanations.\n\
-    Define a zero-argument main() that only calls print with the literal Hello, world! \
-    and implicitly returns None. Call main() only under if __name__ == \"__main__\". \
-    No imports, dependencies, or extra behavior. Running python3 -I -B hello.py \
-    must print exactly Hello, world! followed by a newline. The caller will save your \
-    exact response as hello.py and independently inspect and execute it.";
+const PROMPT: &str = "Use the write tool to create hello.py in the Project, then use read to verify it. \
+    Define a zero-argument main() that only prints the literal Hello, world! and implicitly returns None. \
+    Call main() only under if __name__ == \"__main__\". No imports, dependencies, or extra behavior. \
+    Do not return the source instead of creating the file. After verification, give a short final report. \
+    The user will independently validate and execute the file; do not attempt arbitrary shell commands.";
 
 // Deliberately not Debug: neither command diagnostics nor dotenv parse errors may expose it.
 struct Credential(String);
@@ -498,6 +496,27 @@ async fn wf11_real_deepseek_python_hello_world() {
         .await;
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["current_message_id"], project["root_message_id"]);
+    let settings = workflow
+        .cli("settings-before", &["settings", "get"], 20)
+        .await;
+    let mut values = settings["values"].clone();
+    values["permissions.sandbox"] = json!("workspace_write");
+    let settings_path = workflow.root.join("settings.json");
+    fs::write(&settings_path, serde_json::to_vec(&values).unwrap()).unwrap();
+    workflow
+        .cli(
+            "permissions",
+            &[
+                "settings",
+                "set",
+                "--expected-revision",
+                &settings["revision"].to_string(),
+                "--input",
+                settings_path.to_str().unwrap(),
+            ],
+            20,
+        )
+        .await;
     let prompt_path = workflow.root.join("prompt with spaces.txt");
     fs::write(&prompt_path, PROMPT).unwrap();
     eprintln!("WF-11: asking the native DeepSeek Provider ({model}); deadline 600s");
@@ -563,14 +582,20 @@ async fn verify_run(
         workflow.git(&["rev-parse", "HEAD"]).await.trim(),
         project["base_commit"].as_str().unwrap()
     );
-    assert!(workflow.git(&["status", "--porcelain=v1"]).await.is_empty());
-    // Native remote Providers currently return text, not workspace tool effects.
-    // Save the exact model response; never strip fences, repair code or substitute a fixture.
-    let source = assistant["text"].as_str().unwrap();
-    fs::write(directory.join("hello.py"), source).unwrap();
-    assert_eq!(
-        fs::read_to_string(directory.join("hello.py")).unwrap(),
-        source
+    // The file must already exist because the host executed the model's tool call.
+    assert!(
+        run["execution"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["tool_name"] == "write" && tool["status"] == "succeeded")
+    );
+    assert!(
+        run["execution"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["tool_name"] == "read" && tool["status"] == "succeeded")
     );
     let files = fs::read_dir(&directory)
         .unwrap()
@@ -631,7 +656,7 @@ fn finish_report(
         "model": model, "project_id": project["id"], "default_agent_id": agent["id"],
         "run_id": run["id"], "run_status": run["status"], "base_commit": project["base_commit"],
         "files": ["hello.py"], "stdout": stdout, "logic_verified": true,
-        "source": "exact assistant response saved by workflow", "git_status": "?? hello.py",
+        "source": "host-executed write ToolUse", "git_status": "?? hello.py",
     });
     fs::write(
         workflow.root.join("verification.json"),

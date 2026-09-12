@@ -53,7 +53,7 @@ ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-valu
 权限在新 Run 准入时固定，受 daemon 管理员上限约束，修改不会扩大已有 Run 的权限。
 `strict` 是 `read_only` 兼容值；`full_access` 只在明确选择且管理员允许时生效。
 旧值 `approval=always` 无法映射当前 Codex 协议，会拒绝 Codex Run 准入；使用 `on_request` 或 `untrusted_only`。
-普通 API Provider 当前只生成文本，即使选择 `workspace_write` 也不会获得尚未实现的宿主工具。
+OpenAI/DeepSeek 使用 HostTools，按精确 provider+model 目录与真实可执行能力求交；`workspace_write` 开放 Project 根内写入，首版 `full_access` 也不扩大该根，并受管理员上限约束。Codex 使用独立的 native sandbox。
 
 管理员 `ait-daemon --max-sandbox` 使用 CLI 的连字符拼写：`read-only`、`workspace-write`、
 `full-access`（默认上限）。该上限对 Codex/OpenAI/DeepSeek 均生效，不等于新 Run 的默认权限；

@@ -16,12 +16,14 @@ Run 生命周期、Agent revision 或领域依赖。
 | Desktop/Rust settings、HTTP、Run JSON | `read_only` | `workspace_write` | `full_access` |
 | daemon `--max-sandbox` | `read-only` | `workspace-write` | `full-access` |
 | Codex native sandbox | `read-only` | `workspace-write` | `danger-full-access` |
-| 普通 API Provider | 纯文本，无宿主工具 | 纯文本，无宿主工具 | 纯文本，无宿主工具 |
+| OpenAI/DeepSeek HostTools（NEC-247） | Project 读取/搜索、受控命令，禁止写入 | 增加 Project 根内 write/edit | 首版仍限制 Project 根，并受管理员上限约束 |
 
 新建/重置 settings 默认 `read_only + on_request`；`strict` 仅为历史 `read_only` 别名。
 `full-access` 是 daemon 默认允许的最高上限，不会替成员选择 `full_access`。Send/Fork/Derive/Cron
 均在新 Run 准入时固定权限；旧 Run 不读取后续 settings。普通 API Provider 的 approval
 仍按 NEC-234 固定为 `on_request`；Codex 的未知值、缺失值和 `always` 均拒绝准入。
+API 工具广告取精确 provider+model 目录与宿主可执行能力的交集；未实现工具不发送。
+下述 native command/file 审批规则适用于 Codex；API HostTools 不借用该协议，升级请求由宿主拒绝。
 
 1. 每次 `turn/start`（含 resume）都显式发送 sandbox policy、cwd 和 approval policy。
    `workspaceWrite.writableRoots` 仅包含该 Run 的隔离 cwd，`excludeTmpdirEnvVar` 与
@@ -47,11 +49,12 @@ Run 生命周期、Agent revision 或领域依赖。
 ## 核验对应关系
 
 - `crates/api-http/tests/permissions.rs`：真实 router → settings → durable Run →
-  `CodexWorkspaceAgent` → native sandbox 参数；OpenAI/DeepSeek 纯文本 gateway；三档/strict、
+  `CodexWorkspaceAgent` → native sandbox 参数；OpenAI/DeepSeek 权限快照 gateway fixture；三档/strict、
   发送/Cron、reset 后快照不变、未知设置/管理员上限拒绝、零新增 Message/Run 与零 provider 调用。
 - `crates/application/tests/session_agent_config.rs`：发送、Fork、Derive 的快照及 CAS 重读；
   三档 command/file/legacy 审批矩阵、路径逃逸、symlink、拒绝不携带 scope/grant、秘密错误脱敏。
 - `crates/application/tests/run_execution.rs`：queued/settling 恢复时上限重新核验。
+- `crates/application/tests/api_tool_loop.rs`：真实 OpenAI/DeepSeek HTTP fixture 与 HostTools、取消崩溃恢复及终态子记录结算。
 - `crates/agent-adapters/tests/codex_workspace.rs`、`codex_protocol.rs`：Run 快照到 wire 映射、
   实际隔离路径校验和 permissions 往返、原 request ID、拒绝/取消、只读实际写入丢弃。
 - `crates/api-http/tests/http.rs`：非法权限 action/scope 和 settings JSON 不回显输入。
@@ -59,7 +62,7 @@ Run 生命周期、Agent revision 或领域依赖。
 
 ## 限制与协议依据
 
-普通 API Provider 尚无宿主工具桥；三级值是能力上限，不是新工具能力。Codex 的实际进程/文件
+普通 API Provider 的宿主工具桥见 NEC-247；三级值仍是能力上限，执行器只能开放已实现能力。Codex 的实际进程/文件
 隔离仍由所安装的 native harness 执行；本轮离线协议和 Git 集成测试不替代真实模型、各 OS 的
 sandbox 验收。应用层拒绝无法证明安全的授权；未来支持受限 command escalation 时，需要
 携带可验证的精确权限集合并重新核验协议，不得单凭命令文本放行。

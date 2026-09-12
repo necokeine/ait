@@ -20,6 +20,7 @@
 | [WF-09](09-errors-and-scripting.md) | 在脚本中判断命令结果并处理输入错误 | `wf09_cli_diagnostics_do_not_mutate_workspace` |
 | [WF-10](10-create-project-with-codex.md) | 空目录启动 daemon、接入项目、真实 Codex 生成 Rust Hello World 并提交 | `project_creation.rs::wf10_create_project_with_real_codex_and_commit`（手动启用） |
 | [WF-11](11-deepseek-python-hello-world.md) | 从 .env 配置 DeepSeek 默认 Agent，生成并独立验证单文件 Python Hello World | `deepseek_workflow.rs::wf11_real_deepseek_python_hello_world`（手动启用） |
+| [WF-13](13-api-provider-tool-loop.md) | OpenAI/DeepSeek 工具创建、读取与搜索文件，验证 Git/Message/Run 和重启查询 | `ait-application::api_tool_loop`（默认离线执行） |
 
 ```bash
 cargo test -p ait-cli --test workflows
@@ -123,7 +124,7 @@ HTTP 映射见 [实体操作 API](../docs/decisions/NEC-166/entity-operation-htt
 | `event list` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |
 | Cron 配置和手动 occurrence 可用，daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
 | 启用真实 Codex 和 AI 标题生成需要外部执行环境 | 手工流程使用 `builtin-codex`；WF-01～09 自动化通过 `WorkspaceAgent` port 注入 fake，WF-10 提供明确 opt-in 的真实执行测试 |
-| 原生远程 Provider 返回一轮文本，不执行工作区工具 | WF-11 原样保存模型返回的 Python 源码后独立验证；自动文件操作和工具循环需后续实现 |
+| API 工具首版为文件/搜索和有限命令；没有任意 shell 或自动 Git 提交 | WF-13 离线验证宿主工具循环，WF-11 显式启用真实 DeepSeek；修改保留为待审阅 Git diff |
 
 修改流程时同步修改表中的测试，注明哪些行为是已实现契约、哪些是待校正差距。
 添加新流程使用下一个 WF 编号，保持一篇 Markdown 对应一个用户目标；不要只记录命令清单。

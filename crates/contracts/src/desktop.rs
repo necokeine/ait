@@ -414,7 +414,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.sandbox",
             SettingCategory::Permissions,
             "Sandbox profile",
-            "Default read_only forbids Agent writes; workspace_write allows only the isolated Project; explicit full_access removes the filesystem sandbox if the administrator permits it. API providers currently generate text only in all three profiles. Legacy strict is a read_only alias.",
+            "Default read_only forbids Agent writes. Codex uses its native sandbox and isolated Project; full_access requires administrator permission. OpenAI/DeepSeek HostTools use the exact provider/model catalog intersected with executable capabilities: workspace_write and full_access both remain within the Project root, under the administrator ceiling. Legacy strict is a read_only alias.",
             SettingKind::Select {
                 options: vec![
                     "read_only".into(),

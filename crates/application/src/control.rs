@@ -29,10 +29,9 @@ use ait_domain::{
 use ait_ports::{
     AgentProviderGateway, ControlChange, ControlFilter, ControlRead, ControlRecord,
     ControlRecordKind, ControlStore, ControlStoreError, HostProviderModelCatalog, PendingEvent,
-    ProjectDirectoryCreator, ProviderMessage, SessionTitleGenerator, SessionTitleRequest,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
-    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationGate,
-    WorkspaceOutputItem, WorkspaceResultSink,
+    ProjectDirectoryCreator, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceApprovalDecision,
+    WorkspaceApprovalRequest, WorkspaceIntegrationGate, WorkspaceOutputItem, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -41,6 +40,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod agents;
+mod api_run;
 mod progress;
 use agents::{
     InvocationGuard, agent_for_session, builtin_providers, check_session_admission, migrate_state,
@@ -342,6 +342,7 @@ pub struct LocalControlService {
         Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<WorkspaceApprovalDecision>>>>>,
     permission_limits: PermissionPolicyLimits,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
+    api_tools: Option<Arc<dyn ait_ports::RunToolFactory>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
@@ -376,6 +377,7 @@ impl LocalControlService {
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
+            api_tools: None,
             host_provider_catalog: None,
             workspace_agent: None,
             session_title_generator: None,
@@ -398,10 +400,18 @@ impl LocalControlService {
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
+            api_tools: None,
             host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
         }
+    }
+
+    /// Installs the host tool executor factory used only by API Providers.
+    #[must_use]
+    pub fn with_api_tools(mut self, factory: Arc<dyn ait_ports::RunToolFactory>) -> Self {
+        self.api_tools = Some(factory);
+        self
     }
 
     /// Adds the host capability used only when Project registration omits a workdir.
@@ -414,6 +424,7 @@ impl LocalControlService {
         self
     }
 
+    /// Installs the credential and API completion gateway.
     #[must_use]
     pub fn with_provider_gateway(mut self, gateway: Arc<dyn AgentProviderGateway>) -> Self {
         self.provider_gateway = Some(gateway);
@@ -568,7 +579,11 @@ impl LocalControlService {
             let run = record_value(&run_read, Kind::Run, run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             let project_id = required_string(run, "project_id")?;
-            let message_id = required_string(run, "base_message_id")?;
+            let message_id = run
+                .get("last_message_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or(required_string(run, "base_message_id")?);
             let mut filters = vec![
                 ControlFilter::id(Kind::Run, run_id),
                 ControlFilter::id(Kind::Project, project_id),
@@ -1334,6 +1349,11 @@ impl LocalControlService {
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
+        if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+            return self
+                .execute_api_run(&run, control.cancellation.clone())
+                .await;
+        }
         let Some(lease) = self.set_run_running(&run.id).await? else {
             let state = self.read_run_records(&run.id).await?.original;
             return state
@@ -1357,7 +1377,10 @@ impl LocalControlService {
             // before invoking either provider after startup recovery.
             validate_run_permission_ceiling(run.permission_profile, self.permission_limits)?;
             match run.provider.kind {
-                AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, &run).await,
+                AgentMode::OpenAI | AgentMode::DeepSeek => Err(DomainError::invariant(
+                    ErrorCode::InvalidRun,
+                    "API Run must use the host coordinator",
+                )),
                 AgentMode::Codex => {
                     self.invoke_codex_workspace_checkpointed(
                         &state,
@@ -1456,9 +1479,7 @@ impl LocalControlService {
         let worker_run_id = run_id.clone();
         let task_control = Arc::clone(&control);
         let task = tokio::spawn(async move {
-            worker
-                .execute_workspace_agent(&worker_run_id, task_control)
-                .await
+            Box::pin(worker.execute_workspace_agent(&worker_run_id, task_control)).await
         });
         let result = match task.await {
             Ok(Ok(run)) => Ok(run),
@@ -1752,11 +1773,18 @@ impl LocalControlService {
                     ));
                 }
             }
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_workspace_status(&run.status) && !api_run::needs_terminal_repair(&run) {
                 let _ = self.store.clear_progress(&lease.run_id).await;
                 return Ok(run);
             }
-            if run.status == "settling" && result.is_err() {
+            if run.execution.is_some() && run.status == "cancelling" {
+                run.status = "cancelled".into();
+                run.error = Some(error(
+                    ErrorCode::RunCancelled,
+                    "API Run cancellation completed after worker settlement",
+                    false,
+                ));
+            } else if run.status == "settling" && result.is_err() {
                 let failure = result.as_ref().expect_err("checked error");
                 run.status = "interrupted".into();
                 run.error = Some(error(
@@ -1780,6 +1808,9 @@ impl LocalControlService {
             };
             expire_pending_native_approvals(&mut run, approval_status);
             run.phase = Some("terminal".into());
+            api_run::interrupt(&mut run);
+            api_run::append_terminal_results(&mut state, &mut run)
+                .map_err(|_| recovery_error("could not settle API child records"))?;
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.updated", Some(lease.run_id.clone()), &run);
@@ -1887,7 +1918,10 @@ impl LocalControlService {
             run_ids: state
                 .runs
                 .iter()
-                .filter(|run| !is_terminal_workspace_status(&run.status))
+                .filter(|run| {
+                    !is_terminal_workspace_status(&run.status)
+                        || api_run::needs_terminal_repair(run)
+                })
                 .map(|run| run.id.clone())
                 .collect(),
         })
@@ -1975,11 +2009,49 @@ impl LocalControlService {
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             if is_terminal_workspace_status(&state.runs[index].status) {
-                return Ok(WorkspaceRecoveryClaim::Skip);
+                if !api_run::needs_terminal_repair(&state.runs[index]) {
+                    return Ok(WorkspaceRecoveryClaim::Skip);
+                }
+                let terminal = if state.runs[index].status == "cancelled" {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
+                settle_recovered_run(
+                    &mut state,
+                    index,
+                    terminal,
+                    "repaired inconsistent API terminal state; unknown effects will not replay",
+                )?;
+                let run = state.runs[index].clone();
+                match self
+                    .persist_records(
+                        &loaded,
+                        &state,
+                        vec![pending("run.updated", Some(run_id.into()), &run)],
+                    )
+                    .await
+                {
+                    Ok(()) => return Ok(WorkspaceRecoveryClaim::Recovered(Box::new(run))),
+                    Err(ControlStoreError::Conflict) => continue,
+                    Err(e) => return Err(store_error(e)),
+                }
             }
             let policy = recovery_policy(&state);
             let status = state.runs[index].status.clone();
             let claim = match policy {
+                _ if status == "cancelling" => {
+                    settle_recovered_run(
+                        &mut state,
+                        index,
+                        "cancelled",
+                        "run cancellation was completed during daemon recovery",
+                    )?;
+                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                }
+                RecoveryPolicy::ResumeSafe if state.runs[index].execution.is_some() => {
+                    return Ok(WorkspaceRecoveryClaim::Execute);
+                }
                 RecoveryPolicy::ResumeSafe if status == "queued" => {
                     return Ok(WorkspaceRecoveryClaim::Execute);
                 }
@@ -2019,18 +2091,9 @@ impl LocalControlService {
                             index,
                             "interrupted",
                             "checkpointed workspace result is incomplete; recovery material was preserved for review",
-                        );
+                        )?;
                         WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                     }
-                }
-                RecoveryPolicy::ResumeSafe if status == "cancelling" => {
-                    settle_recovered_run(
-                        &mut state,
-                        index,
-                        "cancelled",
-                        "run cancellation was completed during daemon recovery",
-                    );
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::ResumeSafe => {
                     settle_recovered_run(
@@ -2038,7 +2101,7 @@ impl LocalControlService {
                         index,
                         "interrupted",
                         "run effects are not proven replay-safe; isolated workspace recovery material was preserved for review",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Ask => {
@@ -2047,7 +2110,7 @@ impl LocalControlService {
                         index,
                         "interrupted",
                         "recovery policy requires user review; workspace changes were preserved",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Fail => {
@@ -2056,7 +2119,7 @@ impl LocalControlService {
                         index,
                         "failed",
                         "run failed because the daemon restarted",
-                    );
+                    )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
             };
@@ -2159,20 +2222,30 @@ impl LocalControlService {
                 .iter()
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-            if is_terminal_workspace_status(&state.runs[index].status) {
+            if is_terminal_workspace_status(&state.runs[index].status)
+                && !api_run::needs_terminal_repair(&state.runs[index])
+            {
                 return Ok(state.runs[index].clone());
             }
-            let run = &mut state.runs[index];
+            let mut run = state.runs[index].clone();
             run.lease_epoch = run.lease_epoch.saturating_add(1);
-            run.status = "interrupted".into();
+            run.status = if run.status == "cancelling" || run.status == "cancelled" {
+                "cancelled"
+            } else {
+                "interrupted"
+            }
+            .into();
             run.phase = Some("terminal".into());
             run.error = Some(error(ErrorCode::RunRecoveryFailed, &failure.message, false));
-            expire_pending_native_approvals(run, NativeApprovalStatus::Expired);
+            api_run::interrupt(&mut run);
+            api_run::append_terminal_results(&mut state, &mut run)
+                .map_err(|_| recovery_error("could not settle interrupted API children"))?;
+            expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
             if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
                 journal.lease_epoch = run.lease_epoch;
             }
-            let run = state.runs[index].clone();
             release_session(&mut state, &run);
+            state.runs[index] = run.clone();
             let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
@@ -2306,7 +2379,7 @@ impl LocalControlService {
                 .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
-                && run.status == "cancelled"
+                && matches!(run.status.as_str(), "cancelled" | "cancelling")
                 && let Some(token) = self
                     .cancellations
                     .lock()
@@ -2331,7 +2404,7 @@ impl LocalControlService {
             .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
-            && run.status == "cancelled"
+            && matches!(run.status.as_str(), "cancelled" | "cancelling")
         {
             *decision = WorkspaceFinalizationDecision::Cancelled;
             control.cancellation.cancel();
@@ -3214,7 +3287,12 @@ fn is_local_recovery_failure(code: ErrorCode) -> bool {
     )
 }
 
-fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, message: &str) {
+fn settle_recovered_run(
+    state: &mut WorkingSet,
+    index: usize,
+    status: &str,
+    message: &str,
+) -> Result<(), ApiError> {
     let mut run = state.runs[index].clone();
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
@@ -3231,9 +3309,13 @@ fn settle_recovered_run(state: &mut WorkingSet, index: usize, status: &str, mess
         message,
         false,
     ));
+    api_run::interrupt(&mut run);
+    api_run::append_terminal_results(state, &mut run)
+        .map_err(|_| recovery_error("could not settle recovered API children"))?;
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
     release_session(state, &run);
     state.runs[index] = run;
+    Ok(())
 }
 
 fn workspace_write_path(
@@ -3304,7 +3386,10 @@ fn workspace_write_path(
                 let agent = require_agent(state, agent_id)?;
                 let provider = validate_config(state, &agent.config)?;
                 let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
-                if provider.kind != AgentMode::Codex {
+                if !matches!(
+                    provider.kind,
+                    AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
+                ) {
                     return Ok::<_, ApiError>(requires_lease);
                 }
                 Ok(true)
@@ -4138,11 +4223,10 @@ fn send_message(
         .clone_from(&user.id);
     state.sessions[index].version += 1;
     state.sessions[index].active_run_id = Some(run_id.clone());
-    let workspace_base_commit =
-        (provider.kind == AgentMode::Codex).then(|| git_baseline.commit.clone());
-    let workspace_base_index_tree = (provider.kind == AgentMode::Codex)
-        .then(|| git_baseline.index_tree.clone().into_boxed_str());
+    let workspace_base_commit = Some(git_baseline.commit.clone());
+    let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
     let run = RunView {
+        execution: None,
         id: run_id.clone(),
         project_id: session.project_id,
         base_message_id: user.id,
@@ -4261,6 +4345,14 @@ fn cancel_run(
         ));
     }
     let mut run = state.runs[index].clone();
+    if run.execution.is_some() {
+        run.status = "cancelling".into();
+        state.runs[index] = run.clone();
+        return Ok((
+            CommandResult::Run(run.clone()),
+            vec![pending("run.updated", Some(run.id.clone()), &run)],
+        ));
+    }
     run.lease_epoch = run.lease_epoch.saturating_add(1);
     if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
         journal.lease_epoch = run.lease_epoch;
@@ -4753,6 +4845,7 @@ fn trigger_cron(
             .insert(run_id.clone(), reference.clone());
     }
     state.runs.push(RunView {
+        execution: None,
         id: run_id.clone(),
         project_id: cron.project_id,
         base_message_id: cron.base_message_id,
@@ -4797,6 +4890,19 @@ fn export_project(
         .iter()
         .filter(|message| message.project_id == project_id)
         .cloned()
+        .map(|mut message| {
+            if message
+                .data
+                .as_ref()
+                .is_some_and(|d| d.get("native_message").is_some())
+            {
+                message.data = None;
+                message.text.get_or_insert_with(|| {
+                    "[Host tool payload omitted from portable archive]".into()
+                });
+            }
+            message
+        })
         .collect::<Vec<_>>();
     let sessions = state
         .sessions
@@ -5494,7 +5600,15 @@ fn pending<T: Serialize>(kind: &str, entity_id: Option<String>, body: &T) -> Pen
     PendingEvent {
         kind: kind.into(),
         entity_id,
-        body: serde_json::to_value(body).unwrap_or(Value::Null),
+        body: {
+            let mut value = serde_json::to_value(body).unwrap_or(Value::Null);
+            if kind.starts_with("run.")
+                && let Some(object) = value.as_object_mut()
+            {
+                object.remove("execution");
+            }
+            value
+        },
         created_at: now(),
     }
 }
