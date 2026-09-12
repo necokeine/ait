@@ -8,7 +8,7 @@ use ait_agent_adapters::codex::{
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_domain::SandboxAccess;
 use ait_ports::{HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent};
-use ait_storage_sqlite::SqliteControlStore;
+use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -30,7 +30,7 @@ impl From<MaximumSandbox> for SandboxAccess {
 
 #[derive(Parser)]
 struct Arguments {
-    /// `SQLite` control-plane database.
+    /// Global `SQLite` catalog; Project histories live in `<project>/.ait/project.sqlite3`.
     #[arg(long, default_value = "ait.sqlite3")]
     database: PathBuf,
     /// Loopback address exposed to local clients.
@@ -83,6 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 failure.code, failure.message
             ))
         })?;
+    for (project_id, failure) in recovery_plan.unavailable_projects() {
+        eprintln!("Project {project_id} startup recovery deferred: {failure}");
+    }
     let recovery_count = recovery_plan.len();
     let recovery_service = service.clone();
     let mut recovery =

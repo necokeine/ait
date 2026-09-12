@@ -1,6 +1,6 @@
 -- NEC-146 POC v3: per-Project runtime database.
 -- Preserved from the accepted design work in NEC-146.
--- Location: <project-root>/.metafab/project.sqlite3
+-- Location: <project-root>/.ait/project.sqlite3
 
 PRAGMA application_id = 0x4d465031; -- "MFP1"
 PRAGMA user_version = 3;

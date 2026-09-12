@@ -11,6 +11,9 @@ use async_trait::async_trait;
 use rusqlite::{Connection, MAIN_DB, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
+mod split;
+pub use split::SplitSqliteControlStore;
+
 const RETAINED_EVENTS: usize = 50_000;
 const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
                  PRAGMA synchronous = FULL;
@@ -120,7 +123,8 @@ const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
                  CREATE INDEX IF NOT EXISTS run_progress_project
                    ON run_progress(json_extract(body_json, '$.project_id'));";
 
-/// SQLite-backed normalized application records and transactional event outbox.
+/// Single-file records and outbox for embedded tests and legacy migration tooling.
+/// Production file-backed callers use [`SplitSqliteControlStore`].
 pub struct SqliteControlStore {
     connection: Mutex<Connection>,
 }
@@ -133,6 +137,14 @@ impl SqliteControlStore {
     /// Returns an error when the database cannot be opened, initialized, or migrated.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ControlStoreError> {
         let connection = Connection::open(path).map_err(sql_error)?;
+        let application_id: u32 = connection
+            .pragma_query_value(None, "application_id", |row| row.get(0))
+            .map_err(sql_error)?;
+        if application_id != 0 {
+            return Err(ControlStoreError::Other(
+                "use SplitSqliteControlStore for a global or Project database".into(),
+            ));
+        }
         Self::initialize(connection)
     }
 

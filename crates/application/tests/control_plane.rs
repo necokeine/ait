@@ -50,7 +50,7 @@ impl WorkspaceAgent for FixtureCodex {
     }
 }
 
-fn fixture_service(store: Arc<SqliteControlStore>) -> LocalControlService {
+fn fixture_service(store: Arc<dyn ait_ports::ControlStore>) -> LocalControlService {
     LocalControlService::with_workspace_agent(store, Arc::new(FixtureCodex))
 }
 
@@ -691,7 +691,9 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     let database = temporary.path().join("ait.sqlite3");
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = fixture_service(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let service = fixture_service(Arc::new(
+        ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap(),
+    ));
 
     let project = match run(
         &service,
@@ -838,8 +840,9 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     }));
 
     drop(service);
-    let recovered =
-        LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let recovered = LocalControlService::new(Arc::new(
+        ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap(),
+    ));
     let workspace = workspace(&recovered).await;
     assert_eq!(workspace.runs.len(), 2);
     assert_eq!(workspace.messages, before_restart.messages);
@@ -879,16 +882,31 @@ async fn session_worktree_paths_reject_traversal_and_symbolic_link_parents() {
     )
     .await;
 
-    let traversal = service
-        .execute(Command::CreateSession {
-            id: "../escape".into(),
-            project_id: "safe-project".into(),
-            agent_id: "safe-agent".into(),
-            at_message_id: None,
-        })
-        .await;
-    assert_eq!(traversal.error.unwrap().code, ErrorCode::InvalidSession);
+    for id in [
+        "../escape",
+        "project.sqlite3",
+        "project.sqlite3-wal",
+        "project.sqlite3-shm",
+        "project.sqlite3-journal",
+        "PROJECT.SQLITE3-WAL",
+        "project.sqlite3-shm. ",
+    ] {
+        let rejected = service
+            .execute(Command::CreateSession {
+                id: id.into(),
+                project_id: "safe-project".into(),
+                agent_id: "safe-agent".into(),
+                at_message_id: None,
+            })
+            .await;
+        assert_eq!(
+            rejected.error.unwrap().code,
+            ErrorCode::InvalidSession,
+            "{id}"
+        );
+    }
     assert!(!temporary.path().join("escape").exists());
+    assert!(!project_dir.join(".ait").exists());
 
     symlink(&outside, project_dir.join(".ait")).unwrap();
     let linked_parent = service
@@ -1159,7 +1177,9 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
     let database = temporary.path().join("desktop.sqlite3");
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = fixture_service(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let service = fixture_service(Arc::new(
+        ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap(),
+    ));
     let project = match run(
         &service,
         Command::RegisterProject {
@@ -1214,8 +1234,9 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
     assert_eq!(saved.revision, 2);
     drop(service);
 
-    let recovered =
-        LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    let recovered = LocalControlService::new(Arc::new(
+        ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap(),
+    ));
     let workspace = workspace(&recovered).await;
     assert_eq!(workspace.sessions.len(), 1);
     assert_eq!(workspace.messages.len(), 3);

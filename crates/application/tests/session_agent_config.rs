@@ -3294,7 +3294,7 @@ async fn fresh_workspace_exposes_only_the_codex_builtin() {
 async fn development_mock_is_selectable_and_persists_without_external_executors() {
     let database_directory = tempfile::tempdir().unwrap();
     let database = database_directory.path().join("mock-control.sqlite3");
-    let store = Arc::new(SqliteControlStore::open(&database).unwrap());
+    let store = Arc::new(ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap());
     // No Provider gateway or Codex workspace harness is installed. A completed
     // result therefore proves the Mock invocation stayed on its local branch.
     let service = LocalControlService::new(store.clone());
@@ -3367,7 +3367,8 @@ async fn development_mock_is_selectable_and_persists_without_external_executors(
 
     drop(service);
     drop(store);
-    let reopened_store = Arc::new(SqliteControlStore::open(&database).unwrap());
+    let reopened_store =
+        Arc::new(ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap());
     let reopened_service = LocalControlService::new(reopened_store);
     let persisted = view(&reopened_service).await;
     let user = persisted

@@ -21,7 +21,7 @@ use ait_ports::{
     ControlChange, ControlFilter, ControlRecordKind, ControlStore, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
-use ait_storage_sqlite::SqliteControlStore;
+use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -35,6 +35,25 @@ struct DaemonGuard {
 }
 
 struct SeedAgent;
+
+#[tokio::test]
+async fn startup_scan_defers_an_offline_project_without_losing_its_run() {
+    let temporary = TempDir::new().unwrap();
+    let project = temporary.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let database = temporary.path().join("global.sqlite3");
+    seed_queued_run(&database, &project).await;
+    let service = LocalControlService::new(Arc::new(SqliteControlStore::open(&database).unwrap()));
+    assert_eq!(service.prepare_startup_recovery().await.unwrap().len(), 1);
+    let offline = temporary.path().join("offline");
+    fs::rename(&project, &offline).unwrap();
+    let plan = service.prepare_startup_recovery().await.unwrap();
+    assert!(plan.is_empty());
+    assert_eq!(plan.unavailable_projects().len(), 1);
+    assert_eq!(plan.unavailable_projects()[0].0, "recovery-project");
+    fs::rename(offline, project).unwrap();
+    assert_eq!(service.prepare_startup_recovery().await.unwrap().len(), 1);
+}
 
 #[async_trait]
 impl WorkspaceAgent for SeedAgent {
