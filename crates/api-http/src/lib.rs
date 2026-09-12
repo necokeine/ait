@@ -21,7 +21,10 @@ use axum::{
     Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        IntoResponse, Response as HttpResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -471,7 +474,7 @@ struct ResolveNativeApprovalRequest {
     scope: Option<ApprovalGrantScope>,
 }
 
-fn malformed_permission_request(status: StatusCode) -> (StatusCode, Json<Response>) {
+fn malformed_permission_request(status: StatusCode) -> HttpResponse {
     // Serde diagnostics may quote invalid enum values or unknown keys verbatim.
     (
         status,
@@ -481,15 +484,18 @@ fn malformed_permission_request(status: StatusCode) -> (StatusCode, Json<Respons
             retryable: false,
         })),
     )
+        .into_response()
 }
 
 async fn resolve_native_approval(
     State(state): State<ApiState>,
     request: Result<Json<ResolveNativeApprovalRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Response>, (StatusCode, Json<Response>)> {
-    let Json(request) =
-        request.map_err(|failure| malformed_permission_request(failure.status()))?;
-    Ok(execute_command(
+) -> HttpResponse {
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(failure) => return malformed_permission_request(failure.status()),
+    };
+    execute_command(
         state,
         Command::ResolveNativeApproval {
             run_id: request.run_id,
@@ -498,7 +504,8 @@ async fn resolve_native_approval(
             scope: request.scope,
         },
     )
-    .await)
+    .await
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -648,17 +655,20 @@ struct SaveSettingsRequest {
 async fn save_settings(
     State(state): State<ApiState>,
     request: Result<Json<SaveSettingsRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Response>, (StatusCode, Json<Response>)> {
-    let Json(request) =
-        request.map_err(|failure| malformed_permission_request(failure.status()))?;
-    Ok(execute_command(
+) -> HttpResponse {
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(failure) => return malformed_permission_request(failure.status()),
+    };
+    execute_command(
         state,
         Command::SaveSettings {
             expected_revision: request.expected_revision,
             values: request.values,
         },
     )
-    .await)
+    .await
+    .into_response()
 }
 
 async fn reset_settings(State(state): State<ApiState>) -> Json<Response> {

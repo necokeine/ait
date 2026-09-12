@@ -360,18 +360,46 @@ async fn malformed_approval_and_settings_requests_do_not_echo_secret_values() {
     let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
         SqliteControlStore::in_memory().unwrap(),
     ))));
-    for (path, body) in [
+    for (path, body, status) in [
         (
             "/v1/run/approval/resolve",
-            serde_json::json!({"run_id":"r","approval_id":"a","action":"fixture-secret"}),
+            r#"{"run_id":"r","approval_id":"a","action":"fixture-secret"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (
             "/v1/run/approval/resolve",
-            serde_json::json!({"run_id":"r","approval_id":"a","action":"approve","scope":"fixture-secret"}),
+            r#"{"run_id":"r","approval_id":"a","action":"approve","scope":"fixture-secret"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/run/approval/resolve",
+            r#"{"run_id":"r","approval_id":"a","action":"approve","fixture-secret":true}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/run/approval/resolve",
+            r#"{"run_id":"fixture-secret","#,
+            StatusCode::BAD_REQUEST,
         ),
         (
             "/v1/settings/save",
-            serde_json::json!({"expected_revision":"fixture-secret","values":{}}),
+            r#"{"expected_revision":"fixture-secret","values":{}}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/settings/save",
+            r#"{"expected_revision":0,"values":["fixture-secret"]}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/settings/save",
+            r#"{"expected_revision":0,"values":{},"fixture-secret":true}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/settings/save",
+            r#"{"expected_revision":0,"values":{"key":"fixture-secret"},"#,
+            StatusCode::BAD_REQUEST,
         ),
     ] {
         let response = app
@@ -379,14 +407,55 @@ async fn malformed_approval_and_settings_requests_do_not_echo_secret_values() {
             .oneshot(
                 Request::post(path)
                     .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
+                    .body(Body::from(body))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert!(response.status().is_client_error());
+        assert_eq!(response.status(), status, "{path}");
+        assert_eq!(response.headers()["content-type"], "application/json");
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let text = std::str::from_utf8(&body).unwrap();
-        assert!(!text.contains("fixture-secret"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({
+                "api_version": 1,
+                "ok": false,
+                "error": {
+                    "code": "INVALID_CONFIGURATION",
+                    "message": "invalid permission or settings request",
+                    "retryable": false
+                }
+            }),
+            "{path}"
+        );
     }
+}
+
+#[tokio::test]
+async fn valid_approval_json_preserves_application_error_response() {
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
+        SqliteControlStore::in_memory().unwrap(),
+    ))));
+    let response = app
+        .oneshot(
+            Request::post("/v1/run/approval/resolve")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"run_id":"fixture-secret","approval_id":"a","action":"approve"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "application/json");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({
+            "api_version": 1,
+            "ok": false,
+            "error": {"code":"INVALID_RUN","message":"run not found","retryable":false}
+        })
+    );
 }
