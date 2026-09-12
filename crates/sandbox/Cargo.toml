@@ -6,6 +6,15 @@ publish.workspace = true
 
 [dependencies]
 ait-ports = { path = "../ports" }
+ait-domain = { path = "../domain" }
+ait-tools = { path = "../tools" }
+async-trait = "0.1"
+serde_json = "1"
+process-wrap = { version = "10", features = ["tokio1"] }
+tokio = { version = "1", features = ["process", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal", "process"] }
 
 [lints]
 workspace = true

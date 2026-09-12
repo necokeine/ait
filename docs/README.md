@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- NEC-248 将生产 Run 接入受监督的独立 worker；协议、事务 receipt、恢复与平台限制见 `operations/worker-processes.md` 和 NEC-169 ADR。
+
 - `decisions/NEC-247/adr-001-api-provider-host-tool-loop.md`：公共 API Provider 复用 RunCoordinator 的持久化工具循环、固定权限与能力过滤；包括文件 worker drain、持久化取消与错误/panic 原子结算，WF-13 默认离线验收。
 
 - `decisions/NEC-192/adr-001-permission-integration.md`：三级权限跨入口集成核验、command/file
@@ -85,6 +87,8 @@
 - `decisions/adr-008-control-command-execution.md`：Control 命令内部完成 Run 执行，结果 DTO 与执行指令分离，以及查询/Cron 重放的无执行副作用边界。
 
 ## 运维手册
+
+- `operations/worker-processes.md`：生产 daemon/worker 拓扑、ACK 与 fencing、恢复、进程树回收、权限/资源上限及凭证边界。
 
 - `operations/releasing.md`：Ait desktop 版本准备、双平台 GitHub Release、产物校验与失败恢复。
 - `operations/reliability-security-observability.md`：数据保留、附件 mark-and-sweep、数据库备份/恢复、可靠性测试矩阵与性能基线。

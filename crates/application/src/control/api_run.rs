@@ -87,6 +87,10 @@ impl RunApproval for DenyEscalation {
 }
 
 impl LocalControlService {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "execution and failure settlement remain a single guarded lifecycle"
+    )]
     pub(super) async fn execute_api_run(
         &self,
         view: &RunView,
@@ -130,6 +134,41 @@ impl LocalControlService {
             return store.latest_view().await;
         }
         let state = self.read_run_records(&view.id).await?.original;
+        if let Some(dispatcher) = &self.run_dispatcher {
+            validate_run_permission_ceiling(view.permission_profile, self.permission_limits)
+                .map_err(api_domain_error_reverse)?;
+            let project = state
+                .projects
+                .iter()
+                .find(|p| p.id == view.project_id)
+                .ok_or_else(|| recovery_error("Run Project is missing"))?;
+            let reference = state
+                .run_credentials
+                .get(&view.id)
+                .ok_or_else(|| recovery_error("Run credential reference is missing"))?;
+            let credential = self
+                .provider_gateway
+                .as_ref()
+                .ok_or_else(|| recovery_error("provider gateway is unavailable"))?
+                .credential_grant(reference)
+                .await
+                .map_err(api_domain_error_reverse)?;
+            dispatcher
+                .dispatch(ait_ports::ApiRunDispatch {
+                    run_id: RunId::new(&view.id),
+                    workdir: Path::new(&project.workdir).to_path_buf(),
+                    permission: view.permission_profile,
+                    maximum_sandbox: self.permission_limits.max_sandbox,
+                    provider: view.provider.clone(),
+                    config: view.config.clone(),
+                    credential,
+                    store: store.clone(),
+                    cancellation,
+                })
+                .await
+                .map_err(api_domain_error_reverse)?;
+            return store.latest_view().await;
+        }
         let (tools, agent) = match self.prepare_api_executor(view, &state).await {
             Ok(parts) => parts,
             Err(failure) => {
@@ -237,6 +276,54 @@ struct ControlRunStore {
     id: String,
     expected: Mutex<Option<Run>>,
 }
+struct WorkerOperation<'a> {
+    lease: &'a ait_ports::WorkerLease,
+    id: &'a str,
+    fingerprint: String,
+    completed: Option<bool>,
+}
+fn validate_worker_transition(
+    before: &Run,
+    after: &Run,
+    completion: Option<bool>,
+) -> Result<(), RunStoreError> {
+    if before.status.is_terminal()
+        || before.id != after.id
+        || before.project_id != after.project_id
+        || before.base_message_id != after.base_message_id
+        || before.agent_id != after.agent_id
+        || before.agent_revision != after.agent_revision
+        || before.agent_snapshot != after.agent_snapshot
+        || before.budget != after.budget
+        || before.retry_policy != after.retry_policy
+        || before.follow_session_id != after.follow_session_id
+        || before.trigger != after.trigger
+        || before.cron_id != after.cron_id
+        || before.scheduled_at != after.scheduled_at
+        || before.created_at != after.created_at
+        || before.dedupe_key != after.dedupe_key
+        || (before.started_at.is_some() && before.started_at != after.started_at)
+        || (after.status == RunStatus::Queued && before.status != RunStatus::Queued)
+        || after.step_count < before.step_count
+        || after.step_count > before.step_count.saturating_add(1)
+        || after.attempt_count < before.attempt_count
+        || after.attempt_count > before.attempt_count.saturating_add(1)
+        || after.compaction_count < before.compaction_count
+        || after.compaction_count > before.compaction_count.saturating_add(1)
+        || after.queue_version != before.queue_version
+        || after.queue_cursor < before.queue_cursor
+        || after.usage.input_tokens < before.usage.input_tokens
+        || after.usage.cached_input_tokens < before.usage.cached_input_tokens
+        || after.usage.output_tokens < before.usage.output_tokens
+        || after.usage.tool_executions < before.usage.tool_executions
+        || (before.usage.cost.is_some() && after.usage.cost < before.usage.cost)
+        || (after.status == RunStatus::Completed
+            && (completion != Some(true) || before.status != RunStatus::Settling))
+    {
+        return Err(conflict());
+    }
+    Ok(())
+}
 impl ControlRunStore {
     async fn latest_view(&self) -> Result<RunView, ApiError> {
         self.service
@@ -329,6 +416,8 @@ impl ControlRunStore {
                 run,
                 attempts: Vec::new(),
                 tools: Vec::new(),
+                worker_instance_id: None,
+                worker_receipts: std::collections::BTreeMap::new(),
             }));
             match self
                 .service
@@ -355,12 +444,17 @@ impl ControlRunStore {
             .map(|e| *e)
             .ok_or_else(conflict)
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "message, Session, canonical Run and receipt are one atomic transaction"
+    )]
     async fn persist(
         &self,
         run: Run,
         attempt: Option<RunAttempt>,
         tool: Option<ToolExecution>,
         message: Option<Message>,
+        operation: Option<WorkerOperation<'_>>,
     ) -> Result<Run, RunStoreError> {
         run.validate().map_err(store_failure)?;
         let expected = self
@@ -383,6 +477,37 @@ impl ControlRunStore {
                 .position(|r| r.id == self.id)
                 .ok_or_else(conflict)?;
             let mut view = state.runs[index].clone();
+            if let Some(operation) = &operation {
+                if view.id != operation.lease.run_id.as_str()
+                    || view.lease_epoch != operation.lease.epoch
+                    || view
+                        .execution
+                        .as_ref()
+                        .and_then(|e| e.worker_instance_id.as_deref())
+                        != Some(&operation.lease.instance_id)
+                {
+                    return Err(conflict());
+                }
+                if let Some(receipt) = view
+                    .execution
+                    .as_ref()
+                    .and_then(|e| e.worker_receipts.get(operation.id))
+                {
+                    if receipt.fingerprint != operation.fingerprint {
+                        return Err(conflict());
+                    }
+                    return Ok(receipt.run.clone());
+                }
+                validate_worker_transition(&expected, &run, operation.completed)?;
+                if message.as_ref().map_or(
+                    run.last_message_id != expected.last_message_id
+                        || run.step_count != expected.step_count,
+                    |message| run.last_message_id != Some(message.id),
+                ) || (attempt.is_none() && run.attempt_count != expected.attempt_count)
+                {
+                    return Err(conflict());
+                }
+            }
             if view.status == "cancelling" && run.status.is_terminal() {
                 run.status = RunStatus::Cancelled;
                 run.stop_reason = Some(ait_domain::RunStopReason::Cancelled);
@@ -395,6 +520,9 @@ impl ControlRunStore {
             }
             if let Some(attempt) = &attempt {
                 attempt.validate().map_err(store_failure)?;
+                if attempt.run_id != run.id || attempt.number > run.attempt_count {
+                    return Err(conflict());
+                }
                 execution.attempts.retain(|a| a.id != attempt.id);
                 execution.attempts.push(attempt.clone());
             }
@@ -436,6 +564,20 @@ impl ControlRunStore {
                 release_session(&mut state, &view);
             }
             state.runs[index] = view;
+            if let Some(operation) = &operation {
+                let execution = state.runs[index].execution.as_mut().ok_or_else(conflict)?;
+                if execution.worker_receipts.len() >= 8192 {
+                    return Err(conflict());
+                }
+                execution.worker_receipts.insert(
+                    operation.id.into(),
+                    ait_contracts::WorkerCommitReceipt {
+                        fingerprint: operation.fingerprint.clone(),
+                        run: run.clone(),
+                        completed: operation.completed,
+                    },
+                );
+            }
             // Run events retain the public shape; pending() excludes execution payloads.
             let events = vec![pending(
                 "run.updated",
@@ -456,6 +598,119 @@ impl ControlRunStore {
 }
 #[async_trait]
 impl RunStore for ControlRunStore {
+    async fn claim_worker(&self, instance: &str) -> Result<ait_ports::WorkerLease, RunStoreError> {
+        for _ in 0..8 {
+            let loaded = self
+                .service
+                .read_run_records(&self.id)
+                .await
+                .map_err(store_failure)?;
+            let mut state = loaded.original.clone();
+            let view = state
+                .runs
+                .iter_mut()
+                .find(|v| v.id == self.id)
+                .ok_or_else(conflict)?;
+            if is_terminal_workspace_status(&view.status) {
+                return Err(conflict());
+            }
+            view.lease_epoch = view.lease_epoch.checked_add(1).ok_or_else(conflict)?;
+            view.execution
+                .as_mut()
+                .ok_or_else(conflict)?
+                .worker_instance_id = Some(instance.into());
+            let lease = ait_ports::WorkerLease {
+                run_id: RunId::new(&self.id),
+                instance_id: instance.into(),
+                epoch: view.lease_epoch,
+            };
+            match self
+                .service
+                .persist_records(&loaded, &state, Vec::new())
+                .await
+            {
+                Ok(()) => return Ok(lease),
+                Err(ControlStoreError::Conflict) => {}
+                Err(e) => return Err(store_failure(e)),
+            }
+        }
+        Err(conflict())
+    }
+    async fn commit_worker(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        operation_id: &str,
+        mutation: ait_ports::RunMutation,
+    ) -> Result<ait_ports::RunReceipt, RunStoreError> {
+        use ait_ports::RunMutation;
+        if operation_id.is_empty() || operation_id.len() > 256 || lease.run_id.as_str() != self.id {
+            return Err(conflict());
+        }
+        let fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&mutation).map_err(store_failure)?)
+        );
+        let view = self.latest_view().await.map_err(store_failure)?;
+        let execution = view.execution.as_ref().ok_or_else(conflict)?;
+        if view.lease_epoch != lease.epoch
+            || execution.worker_instance_id.as_deref() != Some(&lease.instance_id)
+        {
+            return Err(conflict());
+        }
+        if let Some(receipt) = execution.worker_receipts.get(operation_id) {
+            if receipt.fingerprint != fingerprint {
+                return Err(conflict());
+            }
+            return Ok(ait_ports::RunReceipt {
+                run: receipt.run.clone(),
+                completed: receipt.completed,
+            });
+        }
+        let (run, attempt, tool, message, completed) = match mutation {
+            RunMutation::SaveRun(run) => (run, None, None, None, None),
+            RunMutation::SaveAttempt(run, attempt) => (run, Some(attempt), None, None, None),
+            RunMutation::AppendMessage(run, message) => (run, None, None, Some(message), None),
+            RunMutation::SaveTool(run, tool) => (run, None, Some(tool), None, None),
+            RunMutation::AppendToolResult(run, tool, message) => {
+                (run, None, Some(tool), Some(message), None)
+            }
+            RunMutation::Complete(run, version) => {
+                if execution
+                    .tools
+                    .iter()
+                    .any(|t| !t.status.is_terminal() || t.tool_result_message_id.is_none())
+                {
+                    return Err(conflict());
+                }
+                if execution.run.queue_version == version {
+                    (run, None, None, None, Some(true))
+                } else {
+                    (execution.run.clone(), None, None, None, Some(false))
+                }
+            }
+            RunMutation::DrainQueue(run) => {
+                if run.queue_version != run.queue_cursor {
+                    return Err(conflict());
+                }
+                (run, None, None, None, None)
+            }
+        };
+        let run = self
+            .persist(
+                run,
+                attempt,
+                tool,
+                message,
+                Some(WorkerOperation {
+                    lease,
+                    id: operation_id,
+                    fingerprint,
+                    completed,
+                }),
+            )
+            .await?;
+        Ok(ait_ports::RunReceipt { run, completed })
+    }
     async fn load_run(&self, _: &RunId) -> Result<Run, RunStoreError> {
         let run = self.state().await?.run;
         *self.expected.lock().map_err(store_failure)? = Some(run.clone());
@@ -546,20 +801,20 @@ impl RunStore for ControlRunStore {
             .collect())
     }
     async fn save_run(&self, run: Run) -> Result<Run, RunStoreError> {
-        self.persist(run, None, None, None).await
+        self.persist(run, None, None, None, None).await
     }
     async fn save_attempt(&self, run: Run, attempt: RunAttempt) -> Result<Run, RunStoreError> {
-        self.persist(run, Some(attempt), None, None).await
+        self.persist(run, Some(attempt), None, None, None).await
     }
     async fn append_message(&self, run: Run, message: Message) -> Result<Run, RunStoreError> {
-        self.persist(run, None, None, Some(message)).await
+        self.persist(run, None, None, Some(message), None).await
     }
     async fn save_tool_execution(
         &self,
         run: Run,
         tool: ToolExecution,
     ) -> Result<Run, RunStoreError> {
-        self.persist(run, None, Some(tool), None).await
+        self.persist(run, None, Some(tool), None, None).await
     }
     async fn append_tool_result(
         &self,
@@ -567,7 +822,8 @@ impl RunStore for ControlRunStore {
         tool: ToolExecution,
         message: Message,
     ) -> Result<Run, RunStoreError> {
-        self.persist(run, None, Some(tool), Some(message)).await
+        self.persist(run, None, Some(tool), Some(message), None)
+            .await
     }
     async fn try_complete(
         &self,
@@ -603,7 +859,8 @@ fn append_projection(
     message: &Message,
 ) -> Result<(), RunStoreError> {
     message.validate().map_err(store_failure)?;
-    if message.run_id.as_ref() != Some(&run.id)
+    if message.project_id != run.project_id
+        || message.run_id.as_ref() != Some(&run.id)
         || message.run_seq != Some(run.step_count)
         || run.step_count != expected.step_count + 1
         || message.parent_message_id

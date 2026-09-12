@@ -81,12 +81,56 @@ struct WorkingSet {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct WorkspaceRunJournal {
+    #[serde(default)]
+    worker_instance_id: Option<String>,
+    #[serde(default)]
+    worker_receipts: HashMap<String, String>,
     operation_id: String,
     lease_epoch: u64,
     #[serde(default)]
     baseline_ref: Option<String>,
     #[serde(default)]
     result: Option<WorkspaceAgentResponse>,
+}
+
+fn workspace_fingerprint(method: &str, value: &impl Serialize) -> Result<String, ApiError> {
+    use sha2::Digest;
+    let bytes =
+        serde_json::to_vec(value).map_err(|_| recovery_error("invalid workspace operation"))?;
+    Ok(format!("{method}:{:x}", sha2::Sha256::digest(bytes)))
+}
+fn record_workspace_receipt(
+    journal: &mut WorkspaceRunJournal,
+    lease: &WorkspaceExecutionLease,
+    operation: Option<&ait_ports::WorkspaceWorkerOperation>,
+    fingerprint: &str,
+) -> Result<bool, ApiError> {
+    let Some(operation) = operation else {
+        return Ok(false);
+    };
+    if operation.lease.run_id.as_str() != lease.run_id
+        || operation.lease.epoch != lease.lease_epoch
+        || journal.worker_instance_id.as_deref() != Some(&operation.lease.instance_id)
+    {
+        return Err(recovery_error("stale workspace worker lease"));
+    }
+    if operation.operation_id.is_empty() || operation.operation_id.len() > 256 {
+        return Err(recovery_error("invalid worker operation identity"));
+    }
+    if let Some(existing) = journal.worker_receipts.get(&operation.operation_id) {
+        return if existing == fingerprint {
+            Ok(true)
+        } else {
+            Err(recovery_error("workspace operation identity conflict"))
+        };
+    }
+    if journal.worker_receipts.len() >= 8192 {
+        return Err(recovery_error("worker receipt limit exceeded"));
+    }
+    journal
+        .worker_receipts
+        .insert(operation.operation_id.clone(), fingerprint.into());
+    Ok(false)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,9 +154,21 @@ impl DurableWorkspaceResultSink {
 
 #[async_trait::async_trait]
 impl WorkspaceResultSink for DurableWorkspaceResultSink {
+    async fn checkpoint_worker(
+        &self,
+        operation: &ait_ports::WorkspaceWorkerOperation,
+        result: WorkspaceAgentResponse,
+    ) -> Result<(), DomainError> {
+        self.service
+            .persist_workspace_result(&self.lease, result, Some(operation))
+            .await
+            .map_err(api_domain_error)?;
+        self.checkpointed.store(true, Ordering::Release);
+        Ok(())
+    }
     async fn checkpoint(&self, result: WorkspaceAgentResponse) -> Result<(), DomainError> {
         self.service
-            .persist_workspace_result(&self.lease, result)
+            .persist_workspace_result(&self.lease, result, None)
             .await
             .map_err(api_domain_error)?;
         self.checkpointed.store(true, Ordering::Release);
@@ -236,11 +292,35 @@ impl WorkspaceRunControl {
 
 #[async_trait::async_trait]
 impl WorkspaceIntegrationGate for WorkspaceRunControl {
+    async fn claim_worker(&self, instance: &str) -> Result<ait_ports::WorkerLease, DomainError> {
+        let binding = self.integration_lease.get().ok_or_else(|| {
+            api_domain_error(recovery_error("workspace execution lease unavailable"))
+        })?;
+        binding
+            .service
+            .claim_workspace_worker(&binding.lease, instance)
+            .await
+            .map_err(api_domain_error)
+    }
+    async fn begin_worker_integration(
+        &self,
+        operation: &ait_ports::WorkspaceWorkerOperation,
+    ) -> Result<(), DomainError> {
+        self.begin_integration_with_worker(Some(operation)).await
+    }
     async fn begin_integration(&self) -> Result<(), DomainError> {
+        self.begin_integration_with_worker(None).await
+    }
+}
+impl WorkspaceRunControl {
+    async fn begin_integration_with_worker(
+        &self,
+        operation: Option<&ait_ports::WorkspaceWorkerOperation>,
+    ) -> Result<(), DomainError> {
         let mut decision = self.finalization.lock().await;
         match *decision {
             WorkspaceFinalizationDecision::Open if !self.cancellation.is_cancelled() => {}
-            WorkspaceFinalizationDecision::Integrating => return Ok(()),
+            WorkspaceFinalizationDecision::Integrating => {}
             WorkspaceFinalizationDecision::Open | WorkspaceFinalizationDecision::Cancelled => {
                 return Err(DomainError::invariant(
                     ErrorCode::RunCancelled,
@@ -256,7 +336,7 @@ impl WorkspaceIntegrationGate for WorkspaceRunControl {
         })?;
         binding
             .service
-            .claim_workspace_integration(&binding.lease)
+            .claim_workspace_integration(&binding.lease, operation)
             .await
             .map_err(api_domain_error)?;
         *decision = WorkspaceFinalizationDecision::Integrating;
@@ -343,6 +423,9 @@ pub struct LocalControlService {
     permission_limits: PermissionPolicyLimits,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
     api_tools: Option<Arc<dyn ait_ports::RunToolFactory>>,
+    run_dispatcher: Option<Arc<dyn ait_ports::RunDispatcher>>,
+    draining: Arc<AtomicBool>,
+    admission: Arc<tokio::sync::RwLock<()>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
@@ -378,6 +461,9 @@ impl LocalControlService {
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
             api_tools: None,
+            run_dispatcher: None,
+            draining: Arc::new(AtomicBool::new(false)),
+            admission: Arc::new(tokio::sync::RwLock::new(())),
             host_provider_catalog: None,
             workspace_agent: None,
             session_title_generator: None,
@@ -401,6 +487,9 @@ impl LocalControlService {
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
             api_tools: None,
+            run_dispatcher: None,
+            draining: Arc::new(AtomicBool::new(false)),
+            admission: Arc::new(tokio::sync::RwLock::new(())),
             host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
@@ -411,6 +500,13 @@ impl LocalControlService {
     #[must_use]
     pub fn with_api_tools(mut self, factory: Arc<dyn ait_ports::RunToolFactory>) -> Self {
         self.api_tools = Some(factory);
+        self
+    }
+
+    /// Installs supervised execution for all API Runs, including startup recovery.
+    #[must_use]
+    pub fn with_run_dispatcher(mut self, dispatcher: Arc<dyn ait_ports::RunDispatcher>) -> Self {
+        self.run_dispatcher = Some(dispatcher);
         self
     }
 
@@ -1127,6 +1223,34 @@ impl LocalControlService {
         }
     }
 
+    /// Stop new Run admission, then persist cancellation before signalling workers.
+    /// Integrating Git results retain their existing finalization authority.
+    /// # Errors
+    /// Returns a store failure if shutdown intent cannot be recorded.
+    pub async fn begin_shutdown(&self) -> Result<(), ApiError> {
+        self.draining.store(true, Ordering::Release);
+        // Finish all already-admitted commits before scanning durable Runs.
+        let _admission = self.admission.write().await;
+        let plan = self.prepare_startup_recovery().await?;
+        for run_id in plan.run_ids {
+            let response = self.execute(Command::CancelRun { run_id }).await;
+            if let Some(failure) = response.error
+                && failure.code != ErrorCode::RunAlreadyTerminal
+            {
+                return Err(failure);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether all application-owned execution/settlement tasks have released their Runs.
+    #[must_use]
+    pub fn runs_drained(&self) -> bool {
+        self.cancellations
+            .lock()
+            .is_ok_and(|active| active.is_empty())
+    }
+
     /// Persists a new interactive Run and returns immediately while the
     /// daemon-owned task continues independently of the requesting client.
     pub async fn submit(self: &Arc<Self>, command: Command) -> Response {
@@ -1336,6 +1460,10 @@ impl LocalControlService {
         ))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "workspace result checkpoints and recovery are one guarded settlement path"
+    )]
     async fn execute_workspace_agent(
         &self,
         run_id: &str,
@@ -1443,6 +1571,41 @@ impl LocalControlService {
                 )
                 .await;
         }
+        // A worker can die after the result checkpoint or Git publication but
+        // before its final reply. Reuse NEC-212's durable claim/reconciliation;
+        // this increments the epoch and never invokes the model again.
+        if run.provider.kind == AgentMode::Codex && result.is_err() && self.run_dispatcher.is_some()
+        {
+            let latest = self.read_run_records(&run.id).await?.original;
+            if latest
+                .runs
+                .iter()
+                .any(|r| r.id == run.id && r.status == "settling")
+            {
+                match self.claim_startup_recovery(&run.id).await? {
+                    WorkspaceRecoveryClaim::Finalize(recovery_lease) => {
+                        let recovery_control = Arc::new(WorkspaceRunControl::new());
+                        recovery_control
+                            .bind_integration_lease(self.clone(), recovery_lease.clone())?;
+                        let _invocation = InvocationGuard::new(
+                            Arc::clone(&self.cancellations),
+                            &run.id,
+                            recovery_control.cancellation.clone(),
+                        );
+                        let _control = WorkspaceRunControlGuard::new(
+                            Arc::clone(&self.workspace_run_controls),
+                            &run.id,
+                            &recovery_control,
+                        );
+                        return self
+                            .recover_checkpointed_run(&recovery_lease, recovery_control)
+                            .await;
+                    }
+                    WorkspaceRecoveryClaim::Recovered(run) => return Ok(*run),
+                    WorkspaceRecoveryClaim::Execute | WorkspaceRecoveryClaim::Skip => {}
+                }
+            }
+        }
         self.finish_workspace_run(&lease, result).await
     }
 
@@ -1545,6 +1708,8 @@ impl LocalControlService {
             state.workspace_run_journals.insert(
                 run_id.to_owned(),
                 WorkspaceRunJournal {
+                    worker_instance_id: None,
+                    worker_receipts: HashMap::new(),
                     operation_id: operation_id.clone(),
                     lease_epoch,
                     baseline_ref,
@@ -1571,10 +1736,59 @@ impl LocalControlService {
         ))
     }
 
+    async fn claim_workspace_worker(
+        &self,
+        lease: &WorkspaceExecutionLease,
+        instance: &str,
+    ) -> Result<ait_ports::WorkerLease, ApiError> {
+        if uuid::Uuid::parse_str(instance).is_err() {
+            return Err(recovery_error("invalid worker identity"));
+        }
+        for _ in 0..4 {
+            let loaded = self.read_run_records(&lease.run_id).await?;
+            let mut state = loaded.original.clone();
+            let run = state
+                .runs
+                .iter()
+                .find(|r| r.id == lease.run_id)
+                .ok_or_else(|| recovery_error("Run missing"))?;
+            ensure_current_lease(run, lease)?;
+            if is_terminal_workspace_status(&run.status) {
+                return Err(recovery_error("terminal Run rejects worker claim"));
+            }
+            let journal = state
+                .workspace_run_journals
+                .get_mut(&lease.run_id)
+                .ok_or_else(|| recovery_error("workspace journal missing"))?;
+            ensure_journal_lease(journal, lease)?;
+            if journal
+                .worker_instance_id
+                .as_ref()
+                .is_some_and(|id| id != instance)
+            {
+                return Err(recovery_error("worker already claimed execution epoch"));
+            }
+            journal.worker_instance_id = Some(instance.into());
+            match self.persist_records(&loaded, &state, Vec::new()).await {
+                Ok(()) => {
+                    return Ok(ait_ports::WorkerLease {
+                        run_id: ait_domain::RunId::new(&lease.run_id),
+                        instance_id: instance.into(),
+                        epoch: lease.lease_epoch,
+                    });
+                }
+                Err(ControlStoreError::Conflict) => {}
+                Err(error) => return Err(store_error(error)),
+            }
+        }
+        Err(recovery_error("worker lease claim conflicted"))
+    }
+
     async fn persist_workspace_result(
         &self,
         lease: &WorkspaceExecutionLease,
         result: WorkspaceAgentResponse,
+        worker: Option<&ait_ports::WorkspaceWorkerOperation>,
     ) -> Result<RunView, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&lease.run_id).await?;
@@ -1591,6 +1805,10 @@ impl LocalControlService {
                 .get_mut(&lease.run_id)
                 .ok_or_else(|| recovery_error("workspace result journal is missing"))?;
             ensure_journal_lease(journal, lease)?;
+            let fingerprint = workspace_fingerprint("checkpoint", &result)?;
+            if record_workspace_receipt(journal, lease, worker, &fingerprint)? {
+                return Ok(run);
+            }
             if is_terminal_workspace_status(&run.status) {
                 return if journal.result.as_ref() == Some(&result) {
                     Ok(run)
@@ -1600,10 +1818,8 @@ impl LocalControlService {
                     ))
                 };
             }
-            if run.status == "settling" && journal.result.as_ref() == Some(&result) {
-                return Ok(run);
-            }
-            if run.status != "running" {
+            let repeated = run.status == "settling" && journal.result.as_ref() == Some(&result);
+            if run.status != "running" && !repeated {
                 return Err(error(
                     ErrorCode::RunNotResumable,
                     "run is not accepting a workspace result checkpoint",
@@ -1615,8 +1831,16 @@ impl LocalControlService {
             run.phase = Some("result_persisted".into());
             run.error = None;
             state.runs[index] = run.clone();
-            let event = pending("run.result_persisted", Some(lease.run_id.clone()), &run);
-            match self.persist_records(&loaded, &state, vec![event]).await {
+            let events = if repeated {
+                Vec::new()
+            } else {
+                vec![pending(
+                    "run.result_persisted",
+                    Some(lease.run_id.clone()),
+                    &run,
+                )]
+            };
+            match self.persist_records(&loaded, &state, events).await {
                 Ok(()) => return Ok(run),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
@@ -1632,6 +1856,7 @@ impl LocalControlService {
     async fn claim_workspace_integration(
         &self,
         lease: &WorkspaceExecutionLease,
+        worker: Option<&ait_ports::WorkspaceWorkerOperation>,
     ) -> Result<RunView, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&lease.run_id).await?;
@@ -1645,9 +1870,12 @@ impl LocalControlService {
             ensure_current_lease(&run, lease)?;
             let journal = state
                 .workspace_run_journals
-                .get(&lease.run_id)
+                .get_mut(&lease.run_id)
                 .ok_or_else(|| recovery_error("workspace result journal is missing"))?;
             ensure_journal_lease(journal, lease)?;
+            if record_workspace_receipt(journal, lease, worker, "integration")? {
+                return Ok(run);
+            }
             if is_terminal_workspace_status(&run.status) {
                 return Err(error(
                     ErrorCode::RunAlreadyTerminal,
@@ -1660,14 +1888,20 @@ impl LocalControlService {
                     "workspace integration requires a durable result checkpoint",
                 ));
             }
-            if run.phase.as_deref() == Some("integrating") {
-                return Ok(run);
-            }
+            let repeated = run.phase.as_deref() == Some("integrating");
             run.phase = Some("integrating".into());
             run.error = None;
             state.runs[index] = run.clone();
-            let event = pending("run.integration_claimed", Some(lease.run_id.clone()), &run);
-            match self.persist_records(&loaded, &state, vec![event]).await {
+            let events = if repeated {
+                Vec::new()
+            } else {
+                vec![pending(
+                    "run.integration_claimed",
+                    Some(lease.run_id.clone()),
+                    &run,
+                )]
+            };
+            match self.persist_records(&loaded, &state, events).await {
                 Ok(()) => return Ok(run),
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),
@@ -2076,6 +2310,11 @@ impl LocalControlService {
                             .get_mut(run_id)
                             .ok_or_else(|| recovery_error("validated result journal disappeared"))?
                             .lease_epoch = lease_epoch;
+                        state
+                            .workspace_run_journals
+                            .get_mut(run_id)
+                            .ok_or_else(|| recovery_error("result journal disappeared"))?
+                            .worker_instance_id = None;
                         let run = &mut state.runs[index];
                         run.lease_epoch = lease_epoch;
                         run.phase = Some("reconciling_result".into());
@@ -2357,6 +2596,20 @@ impl LocalControlService {
         has_workspace_lease: bool,
         derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
+        let interactive = matches!(
+            &command,
+            Command::SendMessage { .. }
+                | Command::ForkSession { .. }
+                | Command::DeriveSession { .. }
+        );
+        let _admission = if interactive {
+            Some(self.admission.read().await)
+        } else {
+            None
+        };
+        if interactive && self.draining.load(Ordering::Acquire) {
+            return Err(error(ErrorCode::RunCancelled, "daemon is draining", false));
+        }
         let cancellation_run_id = match &command {
             Command::CancelRun { run_id }
             | Command::ResolveNativeApproval {

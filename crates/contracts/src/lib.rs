@@ -435,6 +435,19 @@ pub struct ApiRunExecution {
     pub run: ait_domain::Run,
     pub attempts: Vec<ait_domain::RunAttempt>,
     pub tools: Vec<ait_domain::ToolExecution>,
+    /// Current worker identity, fenced together with `RunView.lease_epoch`.
+    #[serde(default)]
+    pub worker_instance_id: Option<String>,
+    /// Atomic mutation receipts; payloads are hashed, never copied into this journal.
+    #[serde(default)]
+    pub worker_receipts: std::collections::BTreeMap<String, WorkerCommitReceipt>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WorkerCommitReceipt {
+    pub fingerprint: String,
+    pub run: ait_domain::Run,
+    pub completed: Option<bool>,
 }
 
 /// Portable, credential-free Project and Session archive.
@@ -559,3 +572,4 @@ pub struct AgentProviderView {
 }
 
 mod archive;
+pub mod worker;

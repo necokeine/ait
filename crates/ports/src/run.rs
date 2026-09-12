@@ -49,6 +49,23 @@ pub enum CompletionResult {
 /// preconditions and return [`RunStoreError::Conflict`] for stale writes.
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    /// Claims a fresh durable worker lease before spawning an executor.
+    async fn claim_worker(&self, _instance: &str) -> Result<crate::WorkerLease, RunStoreError> {
+        Err(crate::dispatch::unsupported_worker_store())
+    }
+
+    /// Atomically commits a mutation and its immutable idempotency receipt.
+    /// Reusing an operation id with different input must fail; old leases fail
+    /// even when their operation id has a receipt.
+    async fn commit_worker(
+        &self,
+        _lease: &crate::WorkerLease,
+        _operation_id: &str,
+        _mutation: crate::RunMutation,
+    ) -> Result<crate::RunReceipt, RunStoreError> {
+        Err(crate::dispatch::unsupported_worker_store())
+    }
+
     /// Loads the latest Run snapshot.
     async fn load_run(&self, id: &RunId) -> Result<Run, RunStoreError>;
 
@@ -141,6 +158,23 @@ pub trait RunAgent: Send + Sync {
 /// Linearization boundary between cancellation and externally visible workspace integration.
 #[async_trait]
 pub trait WorkspaceIntegrationGate: std::fmt::Debug + Send + Sync {
+    /// Bind the sole worker instance to the already-claimed durable execution epoch.
+    async fn claim_worker(&self, _instance: &str) -> Result<crate::WorkerLease, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "worker lease port unavailable",
+        ))
+    }
+    /// Claim Git publication and persist the operation receipt in the same transaction.
+    async fn begin_worker_integration(
+        &self,
+        _operation: &crate::WorkspaceWorkerOperation,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "worker integration port unavailable",
+        ))
+    }
     /// Claims finalization for the running invocation.
     ///
     /// Once this succeeds, cancellation must not persist a cancelled terminal
@@ -467,6 +501,17 @@ pub trait SessionTitleGenerator: Send + Sync {
 /// its Run ref but before it is published into the primary Project checkout.
 #[async_trait]
 pub trait WorkspaceResultSink: Send + Sync {
+    /// Atomically persist a fenced checkpoint and its idempotency receipt.
+    async fn checkpoint_worker(
+        &self,
+        _operation: &crate::WorkspaceWorkerOperation,
+        _result: WorkspaceAgentResponse,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::RunRecoveryFailed,
+            "worker checkpoint port unavailable",
+        ))
+    }
     /// Persists the complete response so a daemon restart can reconcile the
     /// already-created commit without re-running the provider turn.
     async fn checkpoint(&self, result: WorkspaceAgentResponse) -> Result<(), DomainError>;

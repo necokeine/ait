@@ -1,5 +1,9 @@
 //! Composition boundary for executing one supervised AIT Run.
 
+mod privacy;
+pub mod stdio;
+mod workspace;
+
 use std::sync::Arc;
 
 use ait_domain::RunId;

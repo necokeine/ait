@@ -15,8 +15,15 @@ if (!sourceMetadata?.isFile()) {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const destination = resolve(here, "..", "release-resources", "bin", "ait-daemon");
+const workerSource = resolve(dirname(source), "ait-worker");
+if (!(await stat(workerSource).catch(() => null))?.isFile()) {
+  throw new Error("Build ait-worker beside ait-daemon before staging the release.");
+}
 await mkdir(dirname(destination), { recursive: true });
 await copyFile(source, destination);
 await chmod(destination, 0o755);
+const workerDestination = resolve(dirname(destination), "ait-worker");
+await copyFile(workerSource, workerDestination);
+await chmod(workerDestination, 0o755);
 
 console.log(`Staged ${source} at ${destination}`);

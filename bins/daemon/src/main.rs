@@ -3,7 +3,7 @@
 use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use ait_agent_adapters::codex::{
-    CodexAppServerAdapter, CodexAppServerConfig, CodexSessionTitleGenerator, CodexWorkspaceAgent,
+    CodexAppServerAdapter, CodexAppServerConfig, CodexSessionTitleGenerator,
 };
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_domain::SandboxAccess;
@@ -43,6 +43,13 @@ struct Arguments {
     /// Disable session-scoped native approval grants.
     #[arg(long)]
     deny_session_approvals: bool,
+    /// Trusted worker executable; defaults to ait-worker beside ait-daemon.
+    #[arg(long)]
+    worker_binary: Option<PathBuf>,
+    /// Strict per-Run cost ceiling in millionths of the billing currency.
+    /// Providers without verifiable prices are denied before invocation.
+    #[arg(long)]
+    max_run_cost_micros: Option<u64>,
 }
 
 #[tokio::main]
@@ -52,24 +59,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("local API must bind a loopback address".into());
     }
     let store = Arc::new(SqliteControlStore::open(arguments.database)?);
+    let worker_binary = match arguments.worker_binary {
+        Some(path) => path,
+        None => std::env::current_exe()?.with_file_name(if cfg!(windows) {
+            "ait-worker.exe"
+        } else {
+            "ait-worker"
+        }),
+    };
+    let supervisor = Arc::new(
+        ait_ipc::supervisor::WorkerSupervisor::new(worker_binary)
+            .with_cost_ceiling(arguments.max_run_cost_micros),
+    );
     let adapter = Arc::new(CodexAppServerAdapter::new(CodexAppServerConfig::default())?);
-    let codex: Arc<dyn WorkspaceAgent> = Arc::new(CodexWorkspaceAgent::new(adapter.clone()));
+    let codex: Arc<dyn WorkspaceAgent> = supervisor.clone();
     let catalog: Arc<dyn HostProviderModelCatalog> = adapter.clone();
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
-    let service = Arc::new(
-        LocalControlService::with_workspace_agent(store, codex)
-            .with_project_directory_creator(Arc::new(
-                ait_project_local::DocumentsProjectDirectory::default(),
-            ))
-            .with_permission_limits(PermissionPolicyLimits {
-                max_sandbox: arguments.max_sandbox.into(),
-                allow_session_approvals: !arguments.deny_session_approvals,
-            })
-            .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
-            .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
-            .with_host_provider_catalog(catalog)
-            .with_session_title_generator(titles),
-    );
+    let mut service = LocalControlService::with_workspace_agent(store, codex)
+        .with_project_directory_creator(Arc::new(
+            ait_project_local::DocumentsProjectDirectory::default(),
+        ))
+        .with_permission_limits(PermissionPolicyLimits {
+            max_sandbox: arguments.max_sandbox.into(),
+            allow_session_approvals: !arguments.deny_session_approvals,
+        })
+        .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
+        .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
+        .with_run_dispatcher(supervisor.clone())
+        .with_host_provider_catalog(catalog);
+    if arguments.max_run_cost_micros.is_none() {
+        service = service.with_session_title_generator(titles);
+    }
+    let service = Arc::new(service);
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
     eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
     // Binding is the daemon ownership boundary. Startup scanning is read-only,
@@ -87,30 +108,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let recovery_service = service.clone();
     let mut recovery =
         tokio::spawn(async move { recovery_service.run_startup_recovery(recovery_plan).await });
-    let server = axum::serve(listener, ait_api_http::router(service)).into_future();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = axum::serve(listener, ait_api_http::router(service.clone()))
+        .with_graceful_shutdown(async {
+            let _ = stopped.await;
+        })
+        .into_future();
     tokio::pin!(server);
-    tokio::select! {
-        result = &mut server => {
-            recovery.abort();
-            result?;
-        }
-        result = &mut recovery => {
-            match result {
-                Ok(Ok(recovered)) if !recovered.is_empty() => {
-                    eprintln!("reconciled {} Run(s) after startup", recovered.len());
+    let mut recovery_done = false;
+    loop {
+        tokio::select! {
+            result=&mut server=>{result?;break;},
+            ()=shutdown_signal()=>break,
+            result=&mut recovery,if !recovery_done=>{
+                recovery_done=true;
+                match result {
+                    Ok(Ok(recovered)) if recovery_count>0=>eprintln!("reconciled {} Run(s) after startup",recovered.len()),
+                    Ok(Ok(_))=>{},
+                    _=>eprintln!("startup recovery stopped; inspect durable Run state"),
                 }
-                Ok(Ok(_)) if recovery_count > 0 => {
-                    eprintln!("startup recovery plan contained no runnable work");
-                }
-                Ok(Ok(_)) => {}
-                Ok(Err(failure)) => eprintln!(
-                    "startup recovery supervisor stopped ({}): {}",
-                    failure.code, failure.message
-                ),
-                Err(failure) => eprintln!("startup recovery supervisor failed: {failure}"),
             }
-            server.await?;
         }
     }
+    let _ = stop.send(());
+    // Cancellation is persisted before cooperative messages are sent to children.
+    if service.begin_shutdown().await.is_err() {
+        eprintln!("shutdown intent could not be fully persisted");
+    }
+    supervisor.drain();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !service.runs_drained() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    if !recovery_done {
+        recovery.abort();
+        let _ = recovery.await;
+    }
     Ok(())
+}
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut terminate) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+        } else {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }

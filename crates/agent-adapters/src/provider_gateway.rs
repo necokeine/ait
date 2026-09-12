@@ -99,6 +99,16 @@ fn text_request(
 
 #[async_trait]
 impl AgentProviderGateway for RigProviderGateway {
+    async fn credential_grant(&self, reference: &str) -> Result<String, DomainError> {
+        let reference = reference.to_owned();
+        tokio::task::spawn_blocking(move || {
+            keyring::Entry::new("ait.agent-provider", &reference)
+                .and_then(|entry| entry.get_password())
+        })
+        .await
+        .map_err(|_| credential_error())?
+        .map_err(|_| credential_error())
+    }
     async fn store_secret(&self, reference: &str, secret: &str) -> Result<(), DomainError> {
         let reference = reference.to_owned();
         let secret = secret.to_owned();
