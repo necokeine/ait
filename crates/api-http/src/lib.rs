@@ -471,11 +471,25 @@ struct ResolveNativeApprovalRequest {
     scope: Option<ApprovalGrantScope>,
 }
 
+fn malformed_permission_request(status: StatusCode) -> (StatusCode, Json<Response>) {
+    // Serde diagnostics may quote invalid enum values or unknown keys verbatim.
+    (
+        status,
+        Json(Response::failure(ApiError {
+            code: ErrorCode::InvalidConfiguration,
+            message: "invalid permission or settings request".into(),
+            retryable: false,
+        })),
+    )
+}
+
 async fn resolve_native_approval(
     State(state): State<ApiState>,
-    Json(request): Json<ResolveNativeApprovalRequest>,
-) -> Json<Response> {
-    execute_command(
+    request: Result<Json<ResolveNativeApprovalRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Response>, (StatusCode, Json<Response>)> {
+    let Json(request) =
+        request.map_err(|failure| malformed_permission_request(failure.status()))?;
+    Ok(execute_command(
         state,
         Command::ResolveNativeApproval {
             run_id: request.run_id,
@@ -484,7 +498,7 @@ async fn resolve_native_approval(
             scope: request.scope,
         },
     )
-    .await
+    .await)
 }
 
 #[derive(Deserialize)]
@@ -633,16 +647,18 @@ struct SaveSettingsRequest {
 
 async fn save_settings(
     State(state): State<ApiState>,
-    Json(request): Json<SaveSettingsRequest>,
-) -> Json<Response> {
-    execute_command(
+    request: Result<Json<SaveSettingsRequest>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Response>, (StatusCode, Json<Response>)> {
+    let Json(request) =
+        request.map_err(|failure| malformed_permission_request(failure.status()))?;
+    Ok(execute_command(
         state,
         Command::SaveSettings {
             expected_revision: request.expected_revision,
             values: request.values,
         },
     )
-    .await
+    .await)
 }
 
 async fn reset_settings(State(state): State<ApiState>) -> Json<Response> {

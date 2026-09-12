@@ -36,7 +36,8 @@ struct Arguments {
     /// Loopback address exposed to local clients.
     #[arg(long, default_value = "127.0.0.1:7314")]
     listen: SocketAddr,
-    /// Maximum Codex filesystem sandbox access the administrator permits.
+    /// Maximum filesystem sandbox access permitted for every provider.
+    /// This ceiling does not change the `read_only` default for new Runs.
     #[arg(long, value_enum, default_value = "full-access")]
     max_sandbox: MaximumSandbox,
     /// Disable session-scoped native approval grants.

@@ -68,14 +68,18 @@ dependencies = [
 name = "ait-api-http"
 version = "0.0.1"
 dependencies = [
+ "ait-agent-adapters",
  "ait-application",
  "ait-contracts",
  "ait-domain",
  "ait-observability",
+ "ait-ports",
  "ait-project-local",
  "ait-storage-sqlite",
  "async-stream",
+ "async-trait",
  "axum",
+ "futures-util",
  "http-body-util",
  "serde",
  "serde_json",

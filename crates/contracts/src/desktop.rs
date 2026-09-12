@@ -399,7 +399,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.approval",
             SettingCategory::Permissions,
             "Approval mode",
-            "on_request follows Codex escalation requests; untrusted_only asks for commands Codex classifies as untrusted. Legacy always cannot be represented by the current protocol and makes Codex Run admission fail closed.",
+            "Codex only: on_request follows escalation requests; untrusted_only asks for untrusted commands. Shell approvals require an explicit full_access Run because confinement cannot be proven; network approvals remain separate. Legacy always makes Codex Run admission fail closed. API providers use on_request without native approvals.",
             SettingKind::Select {
                 options: vec![
                     "on_request".into(),
@@ -414,11 +414,11 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.sandbox",
             SettingCategory::Permissions,
             "Sandbox profile",
-            "read_only forbids Agent writes; workspace_write allows only the isolated Project; full_access removes the filesystem sandbox only when explicitly selected. Legacy strict is a read_only alias.",
+            "Default read_only forbids Agent writes; workspace_write allows only the isolated Project; explicit full_access removes the filesystem sandbox if the administrator permits it. API providers currently generate text only in all three profiles. Legacy strict is a read_only alias.",
             SettingKind::Select {
                 options: vec![
-                    "workspace_write".into(),
                     "read_only".into(),
+                    "workspace_write".into(),
                     "full_access".into(),
                     "strict".into(),
                 ],

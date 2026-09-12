@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/NEC-192/adr-001-permission-integration.md`：三级权限跨入口集成核验、command/file
+  审批上限、隔离授权路径往返、恢复时管理员上限重检与权限错误脱敏。
+
 - `decisions/NEC-195/adr-001-name-only-project-creation.md`：省略工作目录时在当前用户 Documents
   独占创建同名目录；沿用 Git/原子注册流程，明确冲突拒绝、CAS 重试与失败目录保留语义。
 

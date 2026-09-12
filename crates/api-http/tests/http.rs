@@ -354,3 +354,39 @@ async fn name_only_http_request_accepts_null_and_returns_stable_conflict() {
         }
     }
 }
+
+#[tokio::test]
+async fn malformed_approval_and_settings_requests_do_not_echo_secret_values() {
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
+        SqliteControlStore::in_memory().unwrap(),
+    ))));
+    for (path, body) in [
+        (
+            "/v1/run/approval/resolve",
+            serde_json::json!({"run_id":"r","approval_id":"a","action":"fixture-secret"}),
+        ),
+        (
+            "/v1/run/approval/resolve",
+            serde_json::json!({"run_id":"r","approval_id":"a","action":"approve","scope":"fixture-secret"}),
+        ),
+        (
+            "/v1/settings/save",
+            serde_json::json!({"expected_revision":"fixture-secret","values":{}}),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error());
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let text = std::str::from_utf8(&body).unwrap();
+        assert!(!text.contains("fixture-secret"));
+    }
+}
