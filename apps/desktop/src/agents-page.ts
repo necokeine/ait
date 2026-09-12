@@ -13,8 +13,8 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   let view: AgentsPageView | undefined;
   container.innerHTML = `<header class="agents-page-header"><div><span class="eyebrow">Workspace</span><h1 id="agents-page-title" tabindex="-1">Agents</h1><p>Connections and reusable configurations for your Projects and Sessions.</p></div><button id="agent-create" class="primary-button" type="button">New Agent</button></header>
     <div class="agents-page-scroll">
+      <section class="agents-catalog-section" aria-label="Named Agent configurations"><header class="catalog-heading"><div><p>Choose a preset in any Project or Session. Session-specific configurations stay in their Session.</p></div></header><div id="agent-editor" class="agent-editor is-hidden"></div><div id="named-agent-list" class="named-agent-list"></div></section>
       <section class="agents-catalog-section" aria-labelledby="providers-title"><header class="catalog-heading"><div><h2 id="providers-title">Agent providers</h2><p>Shared connections and the models you have enabled.</p></div><button id="agents-add-provider" class="secondary-button" type="button">Add provider</button></header><div id="agents-provider-list" class="provider-cards"></div></section>
-      <section class="agents-catalog-section" aria-labelledby="named-agents-title"><header class="catalog-heading"><div><h2 id="named-agents-title">Named Agent configurations</h2><p>Choose a preset in any Project or Session. Session-specific configurations stay in their Session.</p></div></header><div id="agent-editor" class="agent-editor is-hidden"></div><div id="named-agent-list" class="named-agent-list"></div></section>
     </div>`;
   const get = <T extends Element>(selector: string): T => container.querySelector<T>(selector)!;
   const editor = get<HTMLElement>("#agent-editor");
