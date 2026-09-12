@@ -35,6 +35,22 @@ pub fn validate_serialized_tool_arguments(
     Ok(value)
 }
 
+/// Classify already-parsed tool arguments before a `ToolExecution` is persisted.
+///
+/// # Errors
+/// Returns a stable reason for oversized or sensitive input.
+pub fn validate_tool_argument_value(value: &Value) -> Result<(), SensitiveArgumentReason> {
+    if serde_json::to_vec(value).map_or(true, |serialized| {
+        serialized.len() > MAX_PRIVATE_TOOL_ARGUMENT_BYTES
+    }) {
+        return Err(SensitiveArgumentReason::Oversized);
+    }
+    if let Some(reason) = sensitive_argument_reason(value) {
+        return Err(reason);
+    }
+    Ok(())
+}
+
 /// Return the first stable reason a JSON value is unsafe to persist as tool input.
 #[must_use]
 pub fn sensitive_argument_reason(value: &Value) -> Option<SensitiveArgumentReason> {
@@ -244,5 +260,30 @@ mod tests {
         let rendered = value.to_string();
         assert!(!rendered.contains("private-material"));
         assert!(!rendered.contains("password"));
+    }
+
+    #[test]
+    fn malformed_and_oversized_arguments_fail_closed_at_the_byte_boundary() {
+        let malformed_secret = "NEC248_MALFORMED_UNIT_SECRET";
+        let malformed = format!(r#"{{"file_path":"leak.txt","content":"{malformed_secret}""#);
+        let malformed_error = validate_serialized_tool_arguments(&malformed).unwrap_err();
+        assert_eq!(malformed_error, SensitiveArgumentReason::InvalidJson);
+        assert!(!format!("{malformed_error:?}").contains(malformed_secret));
+
+        let at_limit = format!("\"{}\"", "x".repeat(MAX_PRIVATE_TOOL_ARGUMENT_BYTES - 2));
+        assert_eq!(at_limit.len(), MAX_PRIVATE_TOOL_ARGUMENT_BYTES);
+        assert!(validate_serialized_tool_arguments(&at_limit).is_ok());
+
+        let oversized = format!("{at_limit}x");
+        assert_eq!(
+            validate_serialized_tool_arguments(&oversized),
+            Err(SensitiveArgumentReason::Oversized)
+        );
+        assert_eq!(
+            validate_tool_argument_value(&json!({
+                "content": "x".repeat(MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
+            })),
+            Err(SensitiveArgumentReason::Oversized)
+        );
     }
 }

@@ -10,6 +10,8 @@ use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -79,6 +81,25 @@ fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
         json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
     }
 }
+fn openai_response_with_raw_tool_arguments(arguments: &str) -> Value {
+    json!({
+        "id": "resp_private_input_fixture",
+        "object": "response",
+        "created_at": 0,
+        "status": "completed",
+        "model": "fixture-model",
+        "tools": [],
+        "output": [{
+            "type": "function_call",
+            "id": "fc_leak",
+            "call_id": "leak",
+            "name": "write",
+            "arguments": arguments,
+            "status": "completed"
+        }],
+        "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
+    })
+}
 async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
     let r = service.execute(command).await;
     assert!(r.ok, "{:?}", r.error);
@@ -94,6 +115,20 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(kind: ProviderKind, responses: Vec<Value>, sandbox: &str) -> Self {
+        Self::new_with_worker(
+            kind,
+            responses,
+            sandbox,
+            env!("CARGO_BIN_EXE_ait-worker").into(),
+        )
+        .await
+    }
+    async fn new_with_worker(
+        kind: ProviderKind,
+        responses: Vec<Value>,
+        sandbox: &str,
+        worker: std::path::PathBuf,
+    ) -> Self {
         let responses = Arc::new(Mutex::new(VecDeque::from(responses)));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let captured = requests.clone();
@@ -119,9 +154,7 @@ impl Fixture {
         let store = Arc::new(SqliteControlStore::open(directory.path().join("ait.db")).unwrap());
         let service = LocalControlService::new(store.clone())
             .with_provider_gateway(Arc::new(Gateway))
-            .with_run_dispatcher(Arc::new(ait_ipc::supervisor::WorkerSupervisor::new(
-                env!("CARGO_BIN_EXE_ait-worker").into(),
-            )));
+            .with_run_dispatcher(Arc::new(ait_ipc::supervisor::WorkerSupervisor::new(worker)));
         let mut settings = default_settings();
         settings
             .0
@@ -755,6 +788,124 @@ async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
                     .windows(serialized_arguments.len())
                     .any(|window| window == serialized_arguments.as_bytes()),
                 "{shape}: a surface contained untruncated sensitive arguments"
+            );
+        }
+        f.finish().await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn malformed_and_oversized_tool_inputs_leave_no_process_or_persistence_trace() {
+    let harness = tempfile::tempdir().unwrap();
+    let wrapper = harness.path().join("ait-worker-with-stderr-capture");
+    let stderr_path = harness.path().join("worker.stderr");
+    let worker = serde_json::to_string(env!("CARGO_BIN_EXE_ait-worker")).unwrap();
+    let stderr = serde_json::to_string(&stderr_path.to_string_lossy()).unwrap();
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/usr/bin/env python3\nimport os,sys\nfd=os.open({stderr},os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\nos.dup2(fd,2)\nos.execv({worker},[{worker}]+sys.argv[1:])\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let malformed_secret = "NEC248_MALFORMED_PROCESS_SECRET";
+    let oversized_secret = "NEC248_OVERSIZED_PROCESS_SECRET";
+    let cases = [
+        (
+            "malformed",
+            malformed_secret,
+            format!(r#"{{"file_path":"leak.txt","content":"{malformed_secret}""#),
+        ),
+        (
+            "oversized",
+            oversized_secret,
+            format!(
+                r#"{{"file_path":"leak.txt","content":"{oversized_secret}{}"}}"#,
+                "x".repeat(ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
+            ),
+        ),
+    ];
+
+    for (shape, secret, arguments) in cases {
+        assert!(
+            shape == "malformed"
+                || arguments.len() > ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES
+        );
+        let reply = openai_response_with_raw_tool_arguments(&arguments);
+        let f = Fixture::new_with_worker(
+            ProviderKind::OpenAI,
+            vec![reply; 3],
+            "workspace_write",
+            wrapper.clone(),
+        )
+        .await;
+        let run = f.run().await;
+        assert!(
+            matches!(run.status.as_str(), "failed" | "interrupted"),
+            "{shape}: {run:?}"
+        );
+        let execution = run.execution.as_ref().unwrap();
+        assert!(
+            execution.tools.is_empty(),
+            "{shape}: ToolExecution persisted"
+        );
+        assert!(!f.workdir.join("leak.txt").exists(), "{shape}");
+
+        let view = support::workspace(&f.service).await;
+        assert!(view.sessions[0].active_run_id.is_none(), "{shape}");
+        assert!(
+            view.messages.iter().all(|message| {
+                message
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("native_message"))
+                    .is_none_or(|message| message["run_id"] != run.id)
+            }),
+            "{shape}: assistant Message persisted"
+        );
+        let archive = ok(
+            &f.service,
+            Command::ExportProject {
+                project_id: "p".into(),
+            },
+        )
+        .await;
+        let events = f.service.replay_events(0, 1000).await.unwrap();
+        let checkpoints = f.service.progress_checkpoints("p").await.unwrap();
+        let stderr = std::fs::read(&stderr_path).unwrap_or_default();
+        let mut artifacts = vec![
+            format!("{run:?}").into_bytes(),
+            format!("{view:?}").into_bytes(),
+            serde_json::to_vec(&archive).unwrap(),
+            serde_json::to_vec(&events).unwrap(),
+            serde_json::to_vec(&checkpoints).unwrap(),
+            stderr,
+        ];
+        for path in [
+            f.directory.path().join("ait.db"),
+            f.directory.path().join("ait.db-wal"),
+            f.project.path().join(".ait/project.sqlite3"),
+            f.project.path().join(".ait/project.sqlite3-wal"),
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                artifacts.push(bytes);
+            }
+        }
+        for artifact in artifacts {
+            assert!(
+                !artifact
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+                "{shape}: raw private input reached a durable, exported, event, checkpoint, stderr, or protocol diagnostic surface"
+            );
+            assert!(
+                !artifact
+                    .windows(arguments.len())
+                    .any(|window| window == arguments.as_bytes()),
+                "{shape}: complete private arguments reached an inspected surface"
             );
         }
         f.finish().await;

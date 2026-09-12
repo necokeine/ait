@@ -369,36 +369,37 @@ impl StoreServer {
     }
 }
 
-fn validate_private_input(request: &StoreRequest) -> Result<(), ProtocolError> {
-    fn message(value: &ait_contracts::worker::model::Message) -> Result<(), ProtocolError> {
-        for part in &value.sub_messages {
-            if let ait_contracts::worker::model::SubMessage::ToolUse(tool) = part {
-                ait_contracts::sensitive::validate_serialized_tool_arguments(&tool.arguments)
-                    .map_err(|_| ProtocolError::InvalidTransition)?;
-            }
+fn validate_wire_message_tool_inputs(
+    value: &ait_contracts::worker::model::Message,
+) -> Result<(), ProtocolError> {
+    for part in &value.sub_messages {
+        if let ait_contracts::worker::model::SubMessage::ToolUse(tool) = part {
+            ait_contracts::sensitive::validate_serialized_tool_arguments(&tool.arguments)
+                .map_err(|_| ProtocolError::InvalidTransition)?;
         }
-        Ok(())
     }
-    fn tool(value: &ait_contracts::worker::model::ToolExecution) -> Result<(), ProtocolError> {
-        if serde_json::to_vec(&value.arguments).map_or(true, |serialized| {
-            serialized.len() > ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES
-        }) || ait_contracts::sensitive::sensitive_argument_reason(&value.arguments).is_some()
-        {
-            return Err(ProtocolError::InvalidTransition);
-        }
-        Ok(())
-    }
+    Ok(())
+}
+fn validate_wire_tool_input(
+    value: &ait_contracts::worker::model::ToolExecution,
+) -> Result<(), ProtocolError> {
+    ait_contracts::sensitive::validate_tool_argument_value(&value.arguments)
+        .map_err(|_| ProtocolError::InvalidTransition)
+}
 
+fn validate_private_input(request: &StoreRequest) -> Result<(), ProtocolError> {
     match request {
-        StoreRequest::AppendMessage { message: value, .. } => message(value),
-        StoreRequest::SaveTool { tool: value, .. } => tool(value),
+        StoreRequest::AppendMessage { message: value, .. } => {
+            validate_wire_message_tool_inputs(value)
+        }
+        StoreRequest::SaveTool { tool: value, .. } => validate_wire_tool_input(value),
         StoreRequest::AppendToolResult {
             tool: execution,
             message: result,
             ..
         } => {
-            tool(execution)?;
-            message(result)
+            validate_wire_tool_input(execution)?;
+            validate_wire_message_tool_inputs(result)
         }
         _ => Ok(()),
     }
@@ -410,4 +411,71 @@ fn page<T>(entries: Vec<T>, offset: u32) -> Result<(Vec<T>, Option<u32>), Protoc
     }
     let next = (entries.len() > offset + 1).then(|| u32::try_from(offset + 1).unwrap_or(u32::MAX));
     Ok((entries.into_iter().skip(offset).take(1).collect(), next))
+}
+
+#[cfg(test)]
+mod private_input_tests {
+    use super::*;
+    use ait_contracts::worker::model;
+
+    fn assistant_message(arguments: String) -> model::Message {
+        model::Message {
+            id: "message".into(),
+            project_id: "project".into(),
+            parent_message_id: Some("parent".into()),
+            role: model::MessageRole::Assistant,
+            kind: model::MessageKind::Standard,
+            origin: model::MessageOrigin::Agent,
+            sub_messages: vec![model::SubMessage::ToolUse(model::ToolUse {
+                call_id: "private-input".into(),
+                tool_name: "write".into(),
+                arguments,
+                provider_metadata: None,
+            })],
+            created_by_session_id: None,
+            run_id: Some("run".into()),
+            run_seq: Some(1),
+            tool_result: None,
+            git_commit: None,
+            metadata: std::collections::BTreeMap::new(),
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn daemon_ipc_rejects_malformed_messages_and_oversized_tool_intents() {
+        let malformed_secret = "NEC248_MALFORMED_IPC_SECRET";
+        let malformed = assistant_message(format!(r#"{{"content":"{malformed_secret}""#));
+        let error = validate_wire_message_tool_inputs(&malformed).unwrap_err();
+        assert_eq!(error, ProtocolError::InvalidTransition);
+        assert!(!error.to_string().contains(malformed_secret));
+
+        let oversized_secret = "NEC248_OVERSIZED_IPC_SECRET";
+        let tool = model::ToolExecution {
+            id: "tool".into(),
+            run_id: "run".into(),
+            call_id: "private-input".into(),
+            assistant_message_id: "message".into(),
+            tool_use_index: 0,
+            tool_result_message_id: None,
+            tool_name: "write".into(),
+            arguments: serde_json::json!({
+                "content": format!(
+                    "{oversized_secret}{}",
+                    "x".repeat(ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
+                )
+            }),
+            attempt: 1,
+            approval_status: model::ToolApprovalStatus::NotRequired,
+            status: model::ToolExecutionStatus::Pending,
+            result: None,
+            error: None,
+            started_at: None,
+            ended_at: None,
+            created_at: 1,
+        };
+        let error = validate_wire_tool_input(&tool).unwrap_err();
+        assert_eq!(error, ProtocolError::InvalidTransition);
+        assert!(!error.to_string().contains(oversized_secret));
+    }
 }
