@@ -458,13 +458,15 @@ if mode=='pollution':
     print('secret stdout pollution',flush=True);sys.exit(1)
 if mode=='exit':sys.exit(7)
 if mode=='handshake':time.sleep(10)
-def send(sequence,lease,payload):
-    data=json.dumps(dict(sequence=sequence,lease=lease,payload=payload)).encode()
+def send(sequence,lease,payload,major=1,minor=0):
+    data=json.dumps(dict(protocol_major=major,protocol_minor=minor,sequence=sequence,lease=lease,payload=payload)).encode()
     sys.stdout.buffer.write(struct.pack('>I',len(data))+data);sys.stdout.buffer.flush()
 def read():
     length=struct.unpack('>I',sys.stdin.buffer.read(4))[0]
     return json.loads(sys.stdin.buffer.read(length))
-send(1,None,dict(type='hello',protocol_major=2 if mode=='version' else 1,required_capabilities=['unknown'] if mode=='capability' else ['run-store-v1','commit-ack-v1','lease-v1'],max_frame_bytes=1048576,pid=os.getpid()))
+major=2 if mode=='version' else 1
+capabilities=['run-store-v1','commit-ack-v1','lease-v1']
+send(1,None,dict(type='hello',protocol_major=major,protocol_minor=0,minimum_protocol_minor=0,capabilities=capabilities,required_capabilities=['unknown'] if mode=='capability' else capabilities,max_frame_bytes=1048576,pid=os.getpid()),major=major)
 read();bootstrap=read()
 lease=bootstrap['lease']
 send(2,lease,dict(type='ready',pid=os.getpid()))
@@ -524,11 +526,17 @@ async fn daemon_pipe_eof_terminates_real_worker() {
         ait_sandbox::spawn_worker(std::path::Path::new(env!("CARGO_BIN_EXE_ait-worker"))).unwrap();
     let mut reader = Reader::new(child.stdout().take().unwrap(), MAX_FRAME_BYTES);
     let mut writer = Writer::new(child.stdin().take().unwrap(), MAX_FRAME_BYTES);
-    let Payload::Hello(hello) = reader.read().await.unwrap().payload else {
+    let hello_frame = reader.read().await.unwrap();
+    let Payload::Hello(hello) = hello_frame.payload else {
         panic!()
     };
     assert_ne!(hello.pid, std::process::id());
-    writer.write(None, Payload::HelloAck).await.unwrap();
+    let ack = hello.negotiate(MAX_FRAME_BYTES).unwrap();
+    reader.negotiate(ack.protocol_minor).unwrap();
+    writer.negotiate(ack.protocol_minor).unwrap();
+    reader.constrain(ack.max_frame_bytes);
+    writer.constrain(ack.max_frame_bytes);
+    writer.write(None, Payload::HelloAck(ack)).await.unwrap();
     let lease = Lease {
         run_id: "eof-run".into(),
         worker_instance_id: "eof-worker".into(),

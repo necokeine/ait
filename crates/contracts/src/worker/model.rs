@@ -18,7 +18,6 @@ pub enum NativeApprovalFileChangeKind {
 
 /// Worker v1 Run record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Run {
     /// Run identity.
     pub id: String,
@@ -94,7 +93,6 @@ pub struct Run {
 
 /// Worker v1 `RunAttempt` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunAttempt {
     /// Attempt identity.
     pub id: String,
@@ -121,7 +119,6 @@ pub struct RunAttempt {
 
 /// Worker v1 `RunBudget` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunBudget {
     /// Maximum persisted Agent/tool steps; must be positive.
     pub max_steps: u64,
@@ -138,7 +135,6 @@ pub struct RunBudget {
 
 /// Worker v1 `RunUsage` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct RunUsage {
     /// Uncached input tokens.
     pub input_tokens: u64,
@@ -155,7 +151,6 @@ pub struct RunUsage {
 
 /// Worker v1 `RetryPolicy` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RetryPolicy {
     /// Maximum number of attempts including the initial attempt.
     pub max_attempts: u32,
@@ -287,7 +282,6 @@ pub enum RunAttemptStatus {
 
 /// Worker v1 Message record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Message {
     /// Message identity.
     pub id: String,
@@ -364,7 +358,6 @@ pub enum MessageOrigin {
 
 /// Worker v1 `ToolResult` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolResult {
     /// Provider-stable `ToolUse` call identity.
     pub call_id: String,
@@ -392,7 +385,6 @@ pub enum ToolResultStatus {
 
 /// Worker v1 `ToolUse` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolUse {
     /// Provider-stable call identity, unique within its Run.
     pub call_id: String,
@@ -455,7 +447,6 @@ pub enum ProjectedMessage {
 
 /// Worker v1 `ToolExecution` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolExecution {
     /// Execution attempt identity.
     pub id: String,
@@ -530,7 +521,6 @@ pub enum ToolExecutionStatus {
 
 /// Worker v1 `AgentConfigSnapshot` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentConfigSnapshot {
     /// Selected Agent.
     pub agent_id: String,
@@ -578,7 +568,6 @@ pub enum AgentCapability {
 
 /// Worker v1 `ToolPolicy` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolPolicy {
     /// Permission used when no exact tool-name override exists.
     pub default: ToolPermission,
@@ -601,7 +590,6 @@ pub enum ToolPermission {
 
 /// Worker v1 `DomainError` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct DomainError {
     /// Stable machine-readable code.
     pub code: ErrorCode,
@@ -743,7 +731,6 @@ pub enum ErrorCode {
 
 /// Worker v1 `RunPermissionProfile` record; independent of domain serialization.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RunPermissionProfile {
     /// Maximum filesystem access granted to the harness for the complete Run.
     pub sandbox: SandboxAccess,
@@ -859,7 +846,6 @@ pub enum NativeNetworkProtocol {
 
 /// Worker v1 `NativeApprovalFileChange` value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct NativeApprovalFileChange {
     /// Proposed file path.
     pub path: String,
@@ -869,7 +855,6 @@ pub struct NativeApprovalFileChange {
 
 /// Worker v1 `WorkspaceAgentResponse` value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WorkspaceAgentResponse {
     /// Final assistant result shown in the Session.
     pub assistant_text: String,
@@ -891,7 +876,6 @@ pub struct WorkspaceAgentResponse {
 
 /// Worker v1 `WorkspaceOperation` value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WorkspaceOperation {
     /// Harness-stable item identity when one was supplied.
     pub id: String,
@@ -982,7 +966,6 @@ pub enum WorkspaceProgressEvent {
 
 /// Worker v1 `WorkspaceApprovalRequest` value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WorkspaceApprovalRequest {
     /// Stable Ait Run identifier.
     pub run_id: String,

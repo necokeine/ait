@@ -40,19 +40,7 @@ impl RunAgent for ApiAgent {
             &self.names,
         )
         .await?;
-        for part in &response.sub_messages {
-            if let SubMessage::ToolUse(tool) = part {
-                let unsafe_input = tool.arguments.len() > 16_384
-                    || serde_json::from_str(&tool.arguments)
-                        .map_or(true, |value| crate::privacy::unsafe_arguments(&value));
-                if unsafe_input {
-                    return Err(DomainError::invariant(
-                        ErrorCode::ToolApprovalRequired,
-                        "tool arguments exceed the private input policy",
-                    ));
-                }
-            }
-        }
+        validate_tool_arguments(&response)?;
         Ok(response)
     }
 }
@@ -66,11 +54,28 @@ impl RunAgent for ScriptedAgent {
         let reply = self.replies.get(index).ok_or_else(|| {
             DomainError::invariant(ErrorCode::ProviderFailed, "scripted response exhausted")
         })?;
-        Ok(AgentResponse {
+        let response = AgentResponse {
             sub_messages: reply.clone(),
             usage: RunUsage::default(),
-        })
+        };
+        validate_tool_arguments(&response)?;
+        Ok(response)
     }
+}
+
+fn validate_tool_arguments(response: &AgentResponse) -> Result<(), DomainError> {
+    for part in &response.sub_messages {
+        if let SubMessage::ToolUse(tool) = part
+            && let Err(reason) =
+                ait_contracts::sensitive::validate_serialized_tool_arguments(&tool.arguments)
+        {
+            return Err(DomainError::invariant(
+                ErrorCode::InvalidSubmessageKind,
+                format!("tool arguments rejected by private input policy ({reason:?})"),
+            ));
+        }
+    }
+    Ok(())
 }
 /// Runs a handshake and a Run, then joins tools and protocol pumps.
 /// # Errors
@@ -79,11 +84,23 @@ pub async fn serve() -> Result<(), ProtocolError> {
     let mut reader = Reader::new(tokio::io::stdin(), MAX_FRAME_BYTES);
     let mut writer = Writer::new(tokio::io::stdout(), MAX_FRAME_BYTES);
     let bootstrap = tokio::time::timeout(Duration::from_secs(3), async {
-        writer.write(None, Payload::Hello(Hello::current())).await?;
-        let ack = reader.read().await?;
-        if ack.lease.is_some() || !matches!(ack.payload, Payload::HelloAck) {
+        let hello = Hello::current();
+        writer.write(None, Payload::Hello(hello.clone())).await?;
+        let frame = reader.read().await?;
+        let Payload::HelloAck(ack) = frame.payload else {
+            return Err(ProtocolError::VersionMismatch);
+        };
+        ack.validate(&hello)?;
+        if frame.lease.is_some()
+            || frame.protocol_major != ack.protocol_major
+            || frame.protocol_minor != ack.protocol_minor
+        {
             return Err(ProtocolError::VersionMismatch);
         }
+        reader.constrain(ack.max_frame_bytes);
+        writer.constrain(ack.max_frame_bytes);
+        reader.negotiate(ack.protocol_minor)?;
+        writer.negotiate(ack.protocol_minor)?;
         let frame = reader.read().await?;
         let Payload::Bootstrap(bootstrap) = frame.payload else {
             return Err(ProtocolError::InvalidFrame);
@@ -92,8 +109,9 @@ pub async fn serve() -> Result<(), ProtocolError> {
             return Err(ProtocolError::StaleWorkerLease);
         }
         bootstrap.limits.validate()?;
-        reader.constrain(bootstrap.limits.max_frame_bytes);
-        writer.constrain(bootstrap.limits.max_frame_bytes);
+        if bootstrap.limits.max_frame_bytes != ack.max_frame_bytes {
+            return Err(ProtocolError::ResourceLimit);
+        }
         if bootstrap.permission.sandbox > bootstrap.maximum_sandbox {
             return Err(ProtocolError::ResourceLimit);
         }

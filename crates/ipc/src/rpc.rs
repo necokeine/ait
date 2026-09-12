@@ -264,6 +264,7 @@ impl StoreServer {
         if lease != &self.lease {
             return Err(ProtocolError::StaleWorkerLease);
         }
+        validate_private_input(&request)?;
         let id = RunId::new(&lease.run_id);
         let rejected = |_| ProtocolError::InvalidTransition;
         let mutation = match request {
@@ -365,6 +366,41 @@ impl StoreServer {
                 run: Box::new(receipt.run.to_wire()),
             },
         })
+    }
+}
+
+fn validate_private_input(request: &StoreRequest) -> Result<(), ProtocolError> {
+    fn message(value: &ait_contracts::worker::model::Message) -> Result<(), ProtocolError> {
+        for part in &value.sub_messages {
+            if let ait_contracts::worker::model::SubMessage::ToolUse(tool) = part {
+                ait_contracts::sensitive::validate_serialized_tool_arguments(&tool.arguments)
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
+            }
+        }
+        Ok(())
+    }
+    fn tool(value: &ait_contracts::worker::model::ToolExecution) -> Result<(), ProtocolError> {
+        if serde_json::to_vec(&value.arguments).map_or(true, |serialized| {
+            serialized.len() > ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES
+        }) || ait_contracts::sensitive::sensitive_argument_reason(&value.arguments).is_some()
+        {
+            return Err(ProtocolError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    match request {
+        StoreRequest::AppendMessage { message: value, .. } => message(value),
+        StoreRequest::SaveTool { tool: value, .. } => tool(value),
+        StoreRequest::AppendToolResult {
+            tool: execution,
+            message: result,
+            ..
+        } => {
+            tool(execution)?;
+            message(result)
+        }
+        _ => Ok(()),
     }
 }
 fn page<T>(entries: Vec<T>, offset: u32) -> Result<(Vec<T>, Option<u32>), ProtocolError> {

@@ -5,7 +5,13 @@ use super::{
     error, is_terminal_workspace_status, json, now, pending, recovery_error, release_session,
     validate_run_permission_ceiling,
 };
-use ait_contracts::ApiRunExecution;
+use ait_contracts::{
+    ApiRunExecution,
+    sensitive::{
+        MAX_PRIVATE_TOOL_ARGUMENT_BYTES, sensitive_argument_reason,
+        validate_serialized_tool_arguments,
+    },
+};
 use ait_domain::{
     Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectedMessage, Run, RunAttempt,
     RunId, RunStatus, SubMessage, ToolExecution,
@@ -26,6 +32,27 @@ fn invalid(message: &str) -> ApiError {
 }
 fn conflict() -> RunStoreError {
     RunStoreError::Conflict("host Run state changed".into())
+}
+fn sensitive_tool_input() -> RunStoreError {
+    RunStoreError::Other("host Run rejected sensitive tool input".into())
+}
+fn validate_message_tool_inputs(message: &Message) -> Result<(), RunStoreError> {
+    for part in &message.sub_messages {
+        if let SubMessage::ToolUse(tool) = part {
+            validate_serialized_tool_arguments(&tool.arguments)
+                .map_err(|_| sensitive_tool_input())?;
+        }
+    }
+    Ok(())
+}
+fn validate_execution_tool_input(tool: &ToolExecution) -> Result<(), RunStoreError> {
+    if serde_json::to_vec(&tool.arguments).map_or(true, |serialized| {
+        serialized.len() > MAX_PRIVATE_TOOL_ARGUMENT_BYTES
+    }) || sensitive_argument_reason(&tool.arguments).is_some()
+    {
+        return Err(sensitive_tool_input());
+    }
+    Ok(())
 }
 fn message_id(id: &str) -> Result<MessageId, RunStoreError> {
     Uuid::parse_str(id)
@@ -853,6 +880,7 @@ fn append_projection(
     expected: &Run,
     message: &Message,
 ) -> Result<(), RunStoreError> {
+    validate_message_tool_inputs(message)?;
     message.validate().map_err(store_failure)?;
     if message.project_id != run.project_id
         || message.run_id.as_ref() != Some(&run.id)
@@ -941,6 +969,7 @@ fn validate_tool_child(
     tool: &ToolExecution,
     result: Option<&Message>,
 ) -> Result<(), RunStoreError> {
+    validate_execution_tool_input(tool)?;
     if tool.run_id != run.id {
         return Err(conflict());
     }

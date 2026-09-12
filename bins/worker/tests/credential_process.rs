@@ -2,6 +2,7 @@
 #![cfg(unix)]
 #![allow(clippy::pedantic)]
 use std::os::unix::fs::PermissionsExt;
+use std::{io::Write, process::Stdio};
 use tokio::io::AsyncReadExt;
 
 #[tokio::test]
@@ -74,5 +75,49 @@ print('NEC248-test-secret',file=sys.stderr)
     );
     for bytes in [&result.stdout, &result.stderr] {
         assert!(!String::from_utf8_lossy(bytes).contains("NEC248-test-secret"));
+    }
+}
+
+#[test]
+fn real_worker_protocol_diagnostic_never_echoes_sensitive_input() {
+    let secrets = [
+        "NEC248_PRIVATE_KEY_DIAGNOSTIC",
+        "NEC248_ACCESS_KEY_DIAGNOSTIC",
+        "NEC248_CREDENTIAL_DIAGNOSTIC",
+        "NEC248_AUTH_DIAGNOSTIC",
+        "NEC248_URI_DIAGNOSTIC",
+        "NEC248_PEM_DIAGNOSTIC",
+    ];
+    let malformed = serde_json::json!({
+        "private_key": secrets[0],
+        "access_key": secrets[1],
+        "credential": secrets[2],
+        "auth": secrets[3],
+        "uri": format!("https://user:{}@example.test", secrets[4]),
+        "pem": format!("-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----", secrets[5]),
+    })
+    .to_string();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ait-worker"))
+        .args(["--stdio", "--protocol-major", "1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(&u32::try_from(malformed.len()).unwrap().to_be_bytes())
+        .unwrap();
+    input.write_all(malformed.as_bytes()).unwrap();
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("InvalidFrame"));
+    for bytes in [&output.stdout, &output.stderr] {
+        let diagnostic = String::from_utf8_lossy(bytes);
+        assert!(!diagnostic.contains(&malformed));
+        for secret in secrets {
+            assert!(!diagnostic.contains(secret));
+        }
     }
 }

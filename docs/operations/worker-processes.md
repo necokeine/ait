@@ -25,8 +25,11 @@ stdout 的任何普通文本都会被判为协议污染。
 
 - v1 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
   `ait-ipc::mapping` 显式转换。每个 frame 是 u32 big-endian 长度和 UTF-8 JSON。
-- 握手验证主版本、双方 required capabilities、进程 PID 和 frame 上限。握手后每个
-  frame 都携带 `Run ID + worker_instance_id + lease_epoch`；每方向 sequence 严格递增。
+- `hello` 声明 minor 区间、支持/required capabilities、进程 PID 和 frame 上限；
+  `hello_ack` 显式选择共同 minor、capability 交集和较小 frame 上限。每个 envelope 携带
+  major/minor，协商后版本漂移会被拒绝；同 major 未知 optional field/capability 被忽略，
+  未知 required capability 和消息 kind 继续失败。握手后每个 frame 还携带
+  `Run ID + worker_instance_id + lease_epoch`；每方向 sequence 严格递增。
   RPC request ID 严格递增，ACK 必须同时匹配 request ID 和 operation ID。
 - daemon 的 `ControlRunStore::commit_worker` 在同一 SQLite CAS 中提交 Message、工具状态、
   Run、Session 和 receipt。相同 operation ID/内容返回原 receipt；换内容、旧 lease、
@@ -98,7 +101,11 @@ daemon 在 bootstrap 时从凭证存储取得当前 Provider 的最小 grant，�
 Codex 使用其既有用户登录存储，worker 不复制登录文件进入 journal 或 Project export。
 
 grant 的 Debug 固定为 `[REDACTED]`，管道双方拒绝回传 grant；协议错误没有原始 JSON、
-stderr 或 SDK 文本。API 拒绝包含敏感字段/凭证命令或超限的工具参数；native operation
+stderr 或 SDK 文本。共享、可审计的 fail-closed 分类覆盖 private/access key、
+credential/auth、URI user-info、PEM、常见 credential marker 以及超限/畸形 JSON；worker
+在形成 assistant Message 前拒绝，daemon IPC store adapter 与 application persistence
+adapter 又分别在 Message 和 ToolExecution intent 写入前复核。API 因而拒绝包含这些形态
+的工具参数；native operation
 只做有界脱敏展示，不伪装成 AIT ToolUse。worker stdout 只写 frame，稳定日志走 stderr；
 生产 supervisor 丢弃子进程 stderr，避免第三方意外日志进入 daemon 日志。
 此处保护的是运行凭证和已识别敏感参数，不能识别用户自行放入普通正文的任意秘密。
@@ -114,13 +121,13 @@ npm run typecheck
 npm test
 ```
 
-- `bins/worker/tests/process_providers.rs`：真实 worker + SQLite + 离线 OpenAI/DeepSeek HTTP；
+- `bins/worker/tests/process_providers.rs`：真实 worker + 拆分 SQLite + 离线 OpenAI/DeepSeek HTTP；
   ToolUse → ToolResult → final，18 个 API ACK kill 边界、durable receipt 重放/冲突/旧 fence，
-  credential echo 对 DB/WAL、事件、checkpoint、export 的回归。
+  各类敏感 ToolUse 对全局/Project DB/WAL、事件、checkpoint、export 的回归。
 - `bins/worker/tests/process_codex.rs`：9 个 native checkpoint/integration/finished kill 边界，
   一次 Provider 调用、唯一 Git commit/Message、原 Run ID 和 Session 释放。
 - `bins/worker/tests/completes_run.rs`、`credential_process.rs`、`crates/ipc` 单元测试：真实
-  stdio/父管道 EOF、错误版本/能力、超限/畸形/序列回退/污染/非零退出/超时、后代回收、
+  stdio/父管道 EOF、双向跨 minor、错误版本/能力、超限/畸形/序列回退/污染/非零退出/超时、后代回收、
   慢消费者和 argv/env/stderr 脱敏。
 - `bins/daemon/tests/codex_http.rs`：生产 HTTP → dispatcher → worker → fake Codex，4000 个
   delta 的 cursor replay、启动恢复期间可用的 readiness 和唯一执行。

@@ -8,6 +8,8 @@ use ait_domain::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod sensitive;
+
 /// Current command/event wire contract version.
 pub const API_VERSION: u16 = 1;
 

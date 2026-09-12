@@ -148,14 +148,20 @@ impl WorkerSupervisor {
                     return Err(ProtocolError::InvalidFrame);
                 };
                 hello.validate()?;
-                if frame.lease.is_some() || hello.pid != pid {
+                if frame.lease.is_some()
+                    || hello.pid != pid
+                    || frame.protocol_major != hello.protocol_major
+                    || frame.protocol_minor != hello.protocol_minor
+                {
                     return Err(ProtocolError::InvalidFrame);
                 }
-                bootstrap.limits.max_frame_bytes =
-                    bootstrap.limits.max_frame_bytes.min(hello.max_frame_bytes);
+                let ack = hello.negotiate(bootstrap.limits.max_frame_bytes)?;
+                bootstrap.limits.max_frame_bytes = ack.max_frame_bytes;
                 reader.constrain(bootstrap.limits.max_frame_bytes);
                 writer.constrain(bootstrap.limits.max_frame_bytes);
-                writer.write(None, Payload::HelloAck).await?;
+                reader.negotiate(ack.protocol_minor)?;
+                writer.negotiate(ack.protocol_minor)?;
+                writer.write(None, Payload::HelloAck(ack)).await?;
                 writer
                     .write(
                         Some(bootstrap.lease.clone()),

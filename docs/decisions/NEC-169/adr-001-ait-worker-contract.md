@@ -18,6 +18,11 @@ Codex 的 `WorkspaceAgent` adapter 复用同一 supervisor；checkpoint、approv
 wire v1 定义独立字段，不把 domain/SDK 对象作为 RPC payload。协议错误只输出稳定代码。
 store 提交和 operation receipt 必须在同一事务持久化；缓存不构成跨重启幂等保证。
 worker 退出码不是 Run 终态证据；结果以 daemon 持久状态和 NEC-212 结算为准。
+每个 envelope 显式携带 major/minor。`hello` 声明可消费的 minor 区间、支持与 required
+capability 及 frame 上限；`hello_ack` 固定双方共同 minor、capability 交集和较小的 frame
+上限，后续 frame 必须使用该选择。同 major 的未知 optional JSON field 和未知 optional
+capability 被忽略；无交集的 minor、未知 required capability、未知消息 kind 或协商后版本
+漂移继续以稳定协议错误终止。
 
 NEC-248 已落地一 Run 一进程、双向 stdio v1、SQLite 原子 receipt、API/Codex 共用
 supervisor、恢复与进程树回收。生产打包必须同时携带 daemon 和 worker。具体上限、
@@ -255,6 +260,10 @@ sequenceDiagram
 - Sandbox 决定技术隔离，Approval 决定是否授权；审批通过不能绕过 sandbox profile。
 - credential grant 只包含本次 Run/Provider 所需的最小材料，保存在内存中并在退出时清理；worker 不接收系统主密钥或数据库凭证。
 - worker、Provider 与工具的 stdout/stderr 都要限流。工具 stdout 作为受限结果/附件处理，绝不能混入 worker protocol stdout。
+- ToolUse 参数在 assistant Message 与 ToolExecution intent 的任何持久化之前执行同一套
+  fail-closed 分类；私钥/access key、credential/auth 字段、URI user-info、PEM 私钥、
+  常见 credential marker 或超限/畸形 JSON 均被拒绝。worker、daemon IPC store adapter
+  与 application 持久化 adapter 分层复核，诊断只保存稳定原因，不回显字段或值。
 - 初始有界容量沿用 NEC-154：semantic event 128、provider raw delta 64；满载时 durable/semantic producer await，ephemeral delta 可合并。
 - bootstrap 明确 wall-clock deadline、token/cost/step 预算、max frame、最大工具并发、最大输出字节与允许的 sandbox profile。
 

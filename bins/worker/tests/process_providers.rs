@@ -6,7 +6,7 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProviderSecret, default_settings};
 use ait_domain::{AgentConfiguration, AgentProvider, DomainError, ProviderKind, ProviderModel};
 use ait_ports::{AgentInvocation, AgentProviderGateway, AgentResponse, ProviderMessage};
-use ait_storage_sqlite::SqliteControlStore;
+use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
@@ -668,51 +668,97 @@ async fn receipts_survive_sqlite_commit_and_reject_stale_or_changed_replays() {
 }
 
 #[tokio::test]
-async fn credential_echo_never_reaches_database_checkpoint_events_or_export() {
-    let secret = "offline-fixture-key";
-    let reply = response(
-        ProviderKind::OpenAI,
-        &[(
-            "leak",
-            "write",
-            json!({"file_path":"leak.txt","content":secret}),
-        )],
-    );
-    let f = Fixture::new(ProviderKind::OpenAI, vec![reply; 3], "workspace_write").await;
-    let run = f.run().await;
-    assert!(matches!(run.status.as_str(), "failed" | "interrupted"));
-    assert!(!f.workdir.join("leak.txt").exists());
-    let view = support::workspace(&f.service).await;
-    assert!(view.sessions[0].active_run_id.is_none());
-    assert!(!format!("{view:?}").contains(secret));
-    let archive = ok(
-        &f.service,
-        Command::ExportProject {
-            project_id: "p".into(),
-        },
-    )
-    .await;
-    assert!(!serde_json::to_string(&archive).unwrap().contains(secret));
-    assert!(
-        !serde_json::to_string(&f.service.replay_events(0, 1000).await.unwrap())
-            .unwrap()
-            .contains(secret)
-    );
-    assert!(
-        !serde_json::to_string(&f.service.progress_checkpoints("p").await.unwrap())
-            .unwrap()
-            .contains(secret)
-    );
-    for name in ["ait.db", "ait.db-wal"] {
-        if let Ok(bytes) = std::fs::read(f.directory.path().join(name)) {
+async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
+    let cases = vec![
+        (
+            "private_key",
+            "NEC248_PRIVATE_KEY_MATERIAL",
+            json!({"file_path":"leak.txt","private_key":"NEC248_PRIVATE_KEY_MATERIAL"}),
+        ),
+        (
+            "access_key",
+            "NEC248_ACCESS_KEY_MATERIAL",
+            json!({"file_path":"leak.txt","aws_access_key_id":"NEC248_ACCESS_KEY_MATERIAL"}),
+        ),
+        (
+            "credential",
+            "NEC248_CREDENTIAL_MATERIAL",
+            json!({"file_path":"leak.txt","credential":"NEC248_CREDENTIAL_MATERIAL"}),
+        ),
+        (
+            "auth",
+            "NEC248_AUTH_MATERIAL",
+            json!({"file_path":"leak.txt","auth":"NEC248_AUTH_MATERIAL"}),
+        ),
+        (
+            "uri_user_info",
+            "NEC248_URI_MATERIAL",
+            json!({"file_path":"leak.txt","source_uri":"https://user:NEC248_URI_MATERIAL@example.test/path"}),
+        ),
+        (
+            "pem",
+            "NEC248_PEM_MATERIAL",
+            json!({"file_path":"leak.txt","content":"-----BEGIN PRIVATE KEY-----\nNEC248_PEM_MATERIAL\n-----END PRIVATE KEY-----"}),
+        ),
+    ];
+
+    for (shape, secret, arguments) in cases {
+        let serialized_arguments = arguments.to_string();
+        let reply = response(ProviderKind::OpenAI, &[("leak", "write", arguments)]);
+        let f = Fixture::new(ProviderKind::OpenAI, vec![reply; 3], "workspace_write").await;
+        let run = f.run().await;
+        assert!(
+            matches!(run.status.as_str(), "failed" | "interrupted"),
+            "{shape}: {run:?}"
+        );
+        assert!(!f.workdir.join("leak.txt").exists(), "{shape}");
+        let view = support::workspace(&f.service).await;
+        assert!(view.sessions[0].active_run_id.is_none(), "{shape}");
+        let archive = ok(
+            &f.service,
+            Command::ExportProject {
+                project_id: "p".into(),
+            },
+        )
+        .await;
+        let events = f.service.replay_events(0, 1000).await.unwrap();
+        let checkpoints = f.service.progress_checkpoints("p").await.unwrap();
+        let protocol_diagnostic =
+            ait_contracts::worker::ProtocolError::InvalidTransition.to_string();
+        let mut artifacts = vec![
+            format!("{run:?}").into_bytes(),
+            format!("{view:?}").into_bytes(),
+            serde_json::to_vec(&archive).unwrap(),
+            serde_json::to_vec(&events).unwrap(),
+            serde_json::to_vec(&checkpoints).unwrap(),
+            protocol_diagnostic.into_bytes(),
+        ];
+        for path in [
+            f.directory.path().join("ait.db"),
+            f.directory.path().join("ait.db-wal"),
+            f.project.path().join(".ait/project.sqlite3"),
+            f.project.path().join(".ait/project.sqlite3-wal"),
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                artifacts.push(bytes);
+            }
+        }
+        for artifact in artifacts {
             assert!(
-                !bytes
+                !artifact
                     .windows(secret.len())
-                    .any(|window| window == secret.as_bytes())
+                    .any(|window| window == secret.as_bytes()),
+                "{shape}: a durable, exported, checkpoint, event, stderr/protocol diagnostic surface contained the raw secret"
+            );
+            assert!(
+                !artifact
+                    .windows(serialized_arguments.len())
+                    .any(|window| window == serialized_arguments.as_bytes()),
+                "{shape}: a surface contained untruncated sensitive arguments"
             );
         }
+        f.finish().await;
     }
-    f.finish().await;
 }
 
 #[tokio::test]
