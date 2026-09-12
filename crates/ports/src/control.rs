@@ -1,10 +1,11 @@
 #![allow(missing_docs)]
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A durable control-plane entity family.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum ControlRecordKind {
     Project,
     Agent,
@@ -107,7 +108,7 @@ impl ControlFilter {
 }
 
 /// One independently stored, versioned application record.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlRecord {
     pub kind: ControlRecordKind,
     pub id: String,
@@ -123,14 +124,14 @@ pub struct ControlRead {
 }
 
 /// One row-level change committed atomically with durable events.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ControlChange {
     Put(ControlRecord),
     Delete { kind: ControlRecordKind, id: String },
 }
 
 /// Event to append atomically with an entity change.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingEvent {
     pub kind: String,
     pub entity_id: Option<String>,
@@ -139,7 +140,7 @@ pub struct PendingEvent {
 }
 
 /// Durable event returned to a reconnecting client.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DurableEvent {
     pub cursor: u64,
     pub kind: String,
@@ -164,7 +165,7 @@ pub struct DurableEventPage {
 }
 
 /// Latest bounded display projection for one active Run.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProgressCheckpoint {
     pub run_id: String,
     pub body: Value,

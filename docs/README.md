@@ -4,6 +4,8 @@
 
 - NEC-248 将生产 Run 接入受监督的独立 worker；协议、事务 receipt、恢复与平台限制见 `operations/worker-processes.md` 和 NEC-169 ADR。
 
+- `decisions/NEC-235/adr-001-global-and-project-storage.md`：全局 `ait.sqlite3` catalog 与每 Project `.ait/project.sqlite3` 的物理拆分、实际运行路径、可恢复提交、旧库迁移和独立备份。
+
 - `decisions/adr-013-session-worktrees.md`：每个 Session 使用固定的
   `<Project>/.ait/<session-id>` linked worktree；Session-bound Run、工具、标题生成和恢复均以该目录为工作目录，Project 主检出保持干净。
 
@@ -76,7 +78,7 @@
 - `decisions/NEC-152/local-api-cli-vertical-slice.md`：本地 HTTP/CLI 纵向切片、SSE cursor 重连、SQLite 恢复与可执行验收说明。
 - `decisions/NEC-147/adr-001-message-session-store-boundaries.md`：MessageStore 初始化与 append-only 边界、独立 SessionStore，以及 append 后 CAS 的失败保留语义。
 - `decisions/NEC-149/adr-001-project-path-and-instruction-snapshots.md`：Project 路径授权、指令优先级/revision 与新 Session 根快照事务边界。
-- `decisions/NEC-146/adr-002-split-sqlite-poc-v3.md`：系统目录与 Project `.metafab` 双层 SQLite 设计及 SQL PoC。
+- `decisions/NEC-146/adr-002-split-sqlite-poc-v3.md`：系统目录与 Project `.ait` 双层 SQLite 设计及 SQL PoC。
 - `decisions/NEC-151/ADR-002-agent-provider-contract.md`：Agent 配置与 Provider Adapter 契约。
 - `decisions/NEC-151/ADR-003-agent-adapters-codex.md`：Agent Adapter crate 与 Codex 集成边界。
 - `decisions/NEC-154/adr-002-rust-workspace-runtime-architecture.md`：Rust workspace 与运行时架构，Accepted 实现基线。

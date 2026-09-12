@@ -29,7 +29,7 @@
 
 本次实现采用 NEC-146 的所有权划分：Project registry、Agent/Provider、Cron/Settings 属于全局目录，
 Message、Session、Run、run credential 与 workspace journal 都带明确 Project 归属。这个记录边界使后续把
-Project 范围表移动到 `<project>/.metafab/project.sqlite3` 时无需再次拆解单体 JSON。
+Project 范围表移动到 `<project>/.ait/project.sqlite3` 时无需再次拆解单体 JSON。
 
 当前 daemon 的 `--database` 仍指定一个物理 SQLite 文件；本次不伪造跨文件原子事务，也没有宣称已经完成
 NEC-146 的全局文件 + 每 Project 文件路由。物理拆库需要按 NEC-146 的 saga、project identity、独立备份与

@@ -12,7 +12,7 @@ use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     AgentProviderGateway, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
 };
-use ait_storage_sqlite::SqliteControlStore;
+use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tempfile::TempDir;

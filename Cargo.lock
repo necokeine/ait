@@ -303,6 +303,7 @@ dependencies = [
  "ait-ports",
  "async-trait",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

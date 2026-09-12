@@ -60,8 +60,9 @@ adapter 前必须把该流程实现为可 dry-run 的维护命令。
 ## SQLite 备份
 
 不要直接复制处于 WAL 模式的 `.sqlite3` 文件。在线备份使用
-`SqliteControlStore::backup_to`（SQLite Online Backup API）；备份包含 control records
-和 durable event outbox，不包含外置 provider secret。每次备份后：
+`SplitSqliteControlStore::backup_global_to` 和 `backup_project_to`（SQLite Online Backup API）。
+全局库只包含目录、路由与事件索引；每个 `<project>/.ait/project.sqlite3` 保存该项目的
+历史、事件正文和 checkpoint。必须分别备份，不包含外置 provider secret。每次备份后：
 
 1. 以只读/隔离连接打开备份。
 2. 执行 `PRAGMA quick_check;`，结果必须是 `ok`。
@@ -73,21 +74,24 @@ adapter 前必须把该流程实现为可 dry-run 的维护命令。
 ```bash
 sqlite3 ait.sqlite3 ".backup 'backups/ait-2026-09-04.sqlite3'"
 sqlite3 backups/ait-2026-09-04.sqlite3 "PRAGMA quick_check;"
+sqlite3 /path/to/project/.ait/project.sqlite3 ".backup 'backups/project-2026-09-04.sqlite3'"
 ```
 
 ## 恢复演练
 
-1. 停止 daemon 并记录当前数据库、`-wal`、`-shm` 文件位置。
+1. 停止所有写入者，记录全局库和每个 Project 库及其 `-wal`、`-shm` 文件位置。
 2. 保留故障现场副本，不在原文件上试修。
 3. 对备份执行 `PRAGMA quick_check;`。
-4. 恢复到一个新数据库路径；库内调用可使用 `SqliteControlStore::restore_from`。
+4. 恢复一致的一套全局与项目备份，保留 Project 路径和 identity/coordinator ID；全局库可指向新路径。不要把旧全局路由索引与较新的 Project 库任意混用。
 5. 用 Projects/Sessions/Messages/Runs 的 list command 验证 Project 数量、Session head 和 Message 路径；用
    `events --after <已知 cursor>` 验证 outbox 连续性。
 6. 仅在验证通过后将 daemon 指向恢复库。恢复后的新写入从恢复 revision 继续；备份之后
    已确认成功的写入不会自动重放，需依据审计记录人工确认。
 
 至少每季度做一次隔离恢复演练。单元验收
-`online_backup_restores_a_consistent_revision_and_outbox` 会验证 revision 与 outbox 的一致恢复。
+`histories_events_progress_and_backups_are_physically_separate` 验证独立备份；
+`prepared_and_decided_crash_windows_recover_exactly_once` 验证跨库提交恢复。迁移前备份保留原单文件历史，
+恢复旧程序应使用该备份，不向新拆分库降级写入。
 
 ## 可靠性测试矩阵
 

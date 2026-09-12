@@ -96,7 +96,7 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
         for path in [
             "../outside",
             ".git/config",
-            ".metafab/database",
+            ".ait/database",
             ".env",
             outside.path().join("absolute").to_str().unwrap(),
         ] {
