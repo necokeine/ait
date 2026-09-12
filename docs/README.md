@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- NEC-248 将生产 Run 接入受监督的独立 worker；协议、事务 receipt、恢复与平台限制见 `operations/worker-processes.md` 和 NEC-169 ADR。
+
 - `decisions/NEC-257/adr-001-cli-command-and-address-simplification.md`：删除顶层 `events`、将 Provider 操作移到 `agent provider`，并以全局 `--host` / `--port` 固定 HTTP 连接 daemon。
 
 - `decisions/NEC-235/adr-001-global-and-project-storage.md`：全局 `ait.sqlite3` catalog 与每 Project `.ait/project.sqlite3` 的物理拆分、实际运行路径、可恢复提交、旧库迁移和独立备份。
@@ -92,6 +94,8 @@
 - `decisions/adr-008-control-command-execution.md`：Control 命令内部完成 Run 执行，结果 DTO 与执行指令分离，以及查询/Cron 重放的无执行副作用边界。
 
 ## 运维手册
+
+- `operations/worker-processes.md`：生产 daemon/worker 拓扑、ACK 与 fencing、恢复、进程树回收、权限/资源上限及凭证边界。
 
 - `operations/releasing.md`：Ait desktop 版本准备、双平台 GitHub Release、产物校验与失败恢复。
 - `operations/reliability-security-observability.md`：数据保留、附件 mark-and-sweep、数据库备份/恢复、可靠性测试矩阵与性能基线。

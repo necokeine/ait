@@ -52,7 +52,7 @@ WF-11 使用原生 DeepSeek Provider，由
 在仓库根目录的终端 A 执行：
 
 ```bash
-cargo build -p ait-cli -p ait-daemon
+cargo build -p ait-cli -p ait-daemon -p ait-worker
 export AIT_REPO="$PWD"
 export WF_ROOT="$(mktemp -d)"
 export AIT_HOST="127.0.0.1"

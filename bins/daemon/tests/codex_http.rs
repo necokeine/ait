@@ -110,7 +110,7 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     let codex_log = temporary.path().join("codex.jsonl");
     let fake_bin = temporary.path().join("bin");
     fs::create_dir(&fake_bin).unwrap();
-    install_fake_codex(&fake_bin.join("codex"));
+    install_fake_codex(&fake_bin.join("codex"), 0);
 
     let address = unused_loopback_address();
     let daemon_log = temporary.path().join("daemon.log");
@@ -125,7 +125,6 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
             &address.to_string(),
         ])
         .env("PATH", env::join_paths(search_paths).unwrap())
-        .env("AIT_FAKE_CODEX_LOG", &codex_log)
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
         .spawn()
@@ -170,7 +169,9 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     assert!(submitted_at.elapsed() < Duration::from_millis(500));
     let run_id = response["result"]["value"]["id"].as_str().unwrap();
 
-    let progress_deadline = Instant::now() + Duration::from_secs(2);
+    // A cold worker may spend up to three seconds in the private handshake.
+    // HTTP admission above remains sub-500ms; progress includes process startup.
+    let progress_deadline = Instant::now() + Duration::from_secs(5);
     let progress = loop {
         let progress: Value = client
             .get(format!(
@@ -267,7 +268,7 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     let codex_log = temporary.path().join("codex.jsonl");
     let fake_bin = temporary.path().join("bin");
     fs::create_dir(&fake_bin).unwrap();
-    install_fake_codex(&fake_bin.join("codex"));
+    install_fake_codex(&fake_bin.join("codex"), 16);
     let address = unused_loopback_address();
     let daemon_log = temporary.path().join("daemon.log");
     let log = File::create(&daemon_log).unwrap();
@@ -282,8 +283,6 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
             &address.to_string(),
         ])
         .env("PATH", env::join_paths(search_paths).unwrap())
-        .env("AIT_FAKE_CODEX_LOG", &codex_log)
-        .env("AIT_FAKE_CODEX_DELAY_SECONDS", "16")
         .stdout(Stdio::null())
         .stderr(Stdio::from(log))
         .spawn()
@@ -306,7 +305,9 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     .await;
     daemon.assert_running();
     let mut last_run = Value::Null;
-    let completed = tokio::time::timeout(Duration::from_secs(6), async {
+    // Include the worker handshake in addition to the deliberately blocked
+    // 16-second provider. The Desktop readiness budget above is unchanged.
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let runs: Value = client
                 .get(format!(
@@ -533,7 +534,7 @@ fn assert_ok(response: &Value) {
     assert_eq!(response["ok"], true, "daemon response: {response}");
 }
 
-fn install_fake_codex(path: &Path) {
+fn install_fake_codex(path: &Path, delay: u32) {
     fs::write(
         path,
         format!(
@@ -541,7 +542,7 @@ fn install_fake_codex(path: &Path) {
 [ "$1" = "app-server" ] || exit 2
 read_line() {{
   IFS= read -r line || exit 3
-  printf '%s\n' "$line" >> "$AIT_FAKE_CODEX_LOG"
+  printf '%s\n' "$line" >> "$(dirname "$0")/../codex.jsonl"
 }}
 read_line
 printf '%s\n' '{{"id":0,"result":{{}}}}'
@@ -554,7 +555,7 @@ esac
 printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
 read_line
 printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-http-test"}}}}}}'
-[ -z "$AIT_FAKE_CODEX_DELAY_SECONDS" ] || sleep "$AIT_FAKE_CODEX_DELAY_SECONDS"
+sleep {delay}
 printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":""}}}}}}'
 printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
 printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":"Inspecting the project."}}}}}}'

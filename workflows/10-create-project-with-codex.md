@@ -47,7 +47,7 @@
 在终端 A 的 AIT 仓库根目录执行：
 
 ```bash
-cargo build -p ait-cli -p ait-daemon
+cargo build -p ait-cli -p ait-daemon -p ait-worker
 export AIT_REPO="$PWD"
 export WF_ROOT="$(mktemp -d)"
 export AIT_HOST="127.0.0.1"
@@ -164,3 +164,11 @@ AIT 通过 [Codex app-server](https://developers.openai.com/codex/app-server) �
 - Codex 失败、超时或生成内容不满足验收：保留目录、响应和 Git 状态用于诊断；
   测试应失败，不以模拟模式替代后宣称真实执行通过。
 - 本流程验证成功路径，不覆盖网络重试、执行中重启或完整崩溃恢复。
+
+## 生产 worker 与故障恢复
+
+启动 daemon 前同时构建同版本的 `ait-worker`，放在同一目录。Session 中的 Codex Run 由
+独立 worker 执行；取消、审批与进度仍通过原 CLI/Desktop 接口操作。连接断开后先查看
+原 Run 的状态，checkpoint 已确认的结果会走既有 Git 结算；未知结果保留恢复材料，
+不要重发任务来猜测副作用。配置、平台限制与排障见
+[worker 运维手册](../docs/operations/worker-processes.md)。

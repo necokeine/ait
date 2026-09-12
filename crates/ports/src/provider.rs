@@ -6,6 +6,14 @@ use async_trait::async_trait;
 /// A provider adapter resolves credential references without exposing secrets to state.
 #[async_trait]
 pub trait AgentProviderGateway: Send + Sync {
+    /// Resolves a minimum-scope, in-memory grant for a supervised worker.
+    /// This value must only cross the private pipe, never logs or durable state.
+    async fn credential_grant(&self, _reference: &str) -> Result<String, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::InvalidConfiguration,
+            "provider does not support worker credential grants",
+        ))
+    }
     /// Store a credential under an opaque, immutable reference.
     async fn store_secret(&self, reference: &str, secret: &str) -> Result<(), DomainError>;
     /// Delete an unused credential after a failed configuration transaction.

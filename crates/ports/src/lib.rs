@@ -1,6 +1,7 @@
 //! Abstract ports consumed by the domain and application layers.
 
 mod control;
+mod dispatch;
 mod message;
 mod project;
 mod provider;
@@ -12,6 +13,9 @@ pub use control::{
     ControlChange, ControlFilter, ControlRead, ControlRecord, ControlRecordKind, ControlStore,
     ControlStoreError, DurableEvent, DurableEventPage, EventBounds, PendingEvent,
     ProgressCheckpoint,
+};
+pub use dispatch::{
+    ApiRunDispatch, RunDispatcher, RunMutation, RunReceipt, WorkerLease, WorkspaceWorkerOperation,
 };
 pub use message::{MessageStore, MessageStoreError};
 pub use project::{

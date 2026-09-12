@@ -70,7 +70,7 @@ Release Note，并用本次构建覆盖同名产物。
 Linux x86_64：
 
 ```bash
-cargo build --locked --release -p ait-daemon --target x86_64-unknown-linux-gnu
+cargo build --locked --release -p ait-daemon -p ait-worker --target x86_64-unknown-linux-gnu
 cd apps/desktop
 npm ci
 npm run stage:daemon -- ../../target/x86_64-unknown-linux-gnu/release/ait-daemon
@@ -80,7 +80,7 @@ npm run package:linux
 Apple Silicon：
 
 ```bash
-cargo build --locked --release -p ait-daemon --target aarch64-apple-darwin
+cargo build --locked --release -p ait-daemon -p ait-worker --target aarch64-apple-darwin
 cd apps/desktop
 npm ci
 npm run stage:daemon -- ../../target/aarch64-apple-darwin/release/ait-daemon

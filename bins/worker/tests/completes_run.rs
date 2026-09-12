@@ -53,6 +53,32 @@ impl DaemonStore {
 
 #[async_trait]
 impl RunStore for DaemonStore {
+    async fn commit_worker(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        _: &str,
+        mutation: ait_ports::RunMutation,
+    ) -> Result<ait_ports::RunReceipt, RunStoreError> {
+        use ait_ports::RunMutation;
+        assert_eq!(lease.run_id, RunId::new("run-worker-test"));
+        let (run, completed) = match mutation {
+            RunMutation::SaveRun(run) | RunMutation::DrainQueue(run) => {
+                (self.save_run(run).await?, None)
+            }
+            RunMutation::SaveAttempt(run, attempt) => {
+                (self.save_attempt(run, attempt).await?, None)
+            }
+            RunMutation::AppendMessage(run, message) => {
+                (self.append_message(run, message).await?, None)
+            }
+            RunMutation::Complete(run, version) => match self.try_complete(run, version).await? {
+                CompletionResult::Completed(run) => (run, Some(true)),
+                CompletionResult::QueueChanged(run) => (run, Some(false)),
+            },
+            _ => return Err(RunStoreError::Other("unexpected tool".into())),
+        };
+        Ok(ait_ports::RunReceipt { run, completed })
+    }
     async fn load_run(&self, id: &RunId) -> Result<Run, RunStoreError> {
         let state = self.0.lock().unwrap();
         if &state.run.id == id {
@@ -174,6 +200,52 @@ impl RunStore for DaemonStore {
     async fn drain_queue(&self, run: Run) -> Result<Run, RunStoreError> {
         self.save_run(run).await
     }
+}
+
+#[tokio::test]
+async fn stdio_process_commits_message_and_terminal_barrier() {
+    use ait_contracts::worker::{Bootstrap, Executor, Lease, Limits};
+    use ait_ipc::{mapping::Wire, supervisor::WorkerSupervisor};
+    let root = tempfile::tempdir().unwrap();
+    let (run, messages) = fixture();
+    let store = Arc::new(DaemonStore::seeded(run, messages));
+    let bootstrap = Bootstrap {
+        lease: Lease {
+            run_id: "run-worker-test".into(),
+            worker_instance_id: "offline-test".into(),
+            lease_epoch: 1,
+        },
+        limits: Limits::default(),
+        workdir: root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        permission: ait_domain::RunPermissionProfile::default().to_wire(),
+        maximum_sandbox: ait_domain::SandboxAccess::ReadOnly.to_wire(),
+        executor: Executor::Scripted {
+            replies: vec![vec![
+                SubMessage::Text {
+                    text: "subprocess reply".into(),
+                }
+                .to_wire(),
+            ]],
+        },
+    };
+    let supervisor = WorkerSupervisor::new(env!("CARGO_BIN_EXE_ait-worker").into());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        supervisor.execute(bootstrap, store.clone(), CancellationToken::new()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let snapshot = store.snapshot();
+    assert_eq!(snapshot.run.status, RunStatus::Completed);
+    assert_eq!(snapshot.messages.len(), 3);
+    assert_eq!(snapshot.run.step_count, 1);
+    assert_eq!(snapshot.attempts.len(), 1);
 }
 
 struct OneReplyAgent;
@@ -359,4 +431,143 @@ async fn worker_completes_one_run() {
             text: "worker completed the run".into()
         }]
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn supervisor_rejects_bad_workers_and_reaps_descendants() {
+    use ait_contracts::worker::{Bootstrap, Executor, Lease, Limits, ProtocolError};
+    use ait_ipc::{mapping::Wire, supervisor::WorkerSupervisor};
+    use std::os::unix::fs::PermissionsExt;
+    for (mode, expected) in [
+        ("version", ProtocolError::VersionMismatch),
+        ("capability", ProtocolError::UnsupportedCapability),
+        ("pollution", ProtocolError::FrameTooLarge),
+        ("exit", ProtocolError::UnexpectedEof),
+        ("handshake", ProtocolError::HandshakeTimeout),
+        ("heartbeat", ProtocolError::HeartbeatTimeout),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join("worker");
+        let pidfile = root.path().join("descendant");
+        let script = format!(
+            r"#!/usr/bin/env python3
+import os,sys,json,struct,time,subprocess
+mode={mode:?}
+if mode=='pollution':
+    print('secret stdout pollution',flush=True);sys.exit(1)
+if mode=='exit':sys.exit(7)
+if mode=='handshake':time.sleep(10)
+def send(sequence,lease,payload,major=1,minor=0):
+    data=json.dumps(dict(protocol_major=major,protocol_minor=minor,sequence=sequence,lease=lease,payload=payload)).encode()
+    sys.stdout.buffer.write(struct.pack('>I',len(data))+data);sys.stdout.buffer.flush()
+def read():
+    length=struct.unpack('>I',sys.stdin.buffer.read(4))[0]
+    return json.loads(sys.stdin.buffer.read(length))
+major=2 if mode=='version' else 1
+capabilities=['run-store-v1','commit-ack-v1','lease-v1']
+send(1,None,dict(type='hello',protocol_major=major,protocol_minor=0,minimum_protocol_minor=0,capabilities=capabilities,required_capabilities=['unknown'] if mode=='capability' else capabilities,max_frame_bytes=1048576,pid=os.getpid()),major=major)
+read();bootstrap=read()
+lease=bootstrap['lease']
+send(2,lease,dict(type='ready',pid=os.getpid()))
+child=subprocess.Popen(['sleep','30'])
+open({pidfile:?},'w').write(str(child.pid))
+time.sleep(30)
+",
+            pidfile = pidfile.to_string_lossy()
+        );
+        std::fs::write(&worker, script).unwrap();
+        std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (run, messages) = fixture();
+        let store = Arc::new(DaemonStore::seeded(run, messages));
+        let bootstrap = Bootstrap {
+            lease: Lease {
+                run_id: "run-worker-test".into(),
+                worker_instance_id: "fault".into(),
+                lease_epoch: 1,
+            },
+            limits: Limits::default(),
+            workdir: root.path().to_string_lossy().into_owned(),
+            permission: ait_domain::RunPermissionProfile::default().to_wire(),
+            maximum_sandbox: ait_domain::SandboxAccess::ReadOnly.to_wire(),
+            executor: Executor::Scripted { replies: vec![] },
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(7),
+            WorkerSupervisor::new(worker).execute(bootstrap, store, CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err(), expected, "{mode}");
+        if mode == "heartbeat" {
+            let pid = std::fs::read_to_string(pidfile).unwrap();
+            let output = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let status = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                status.trim().is_empty() || status.trim().starts_with('Z'),
+                "descendant survived: {status}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn daemon_pipe_eof_terminates_real_worker() {
+    use ait_contracts::worker::{Bootstrap, Executor, Lease, Limits, MAX_FRAME_BYTES, Payload};
+    use ait_ipc::{
+        codec::{Reader, Writer},
+        mapping::Wire,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let mut child =
+        ait_sandbox::spawn_worker(std::path::Path::new(env!("CARGO_BIN_EXE_ait-worker"))).unwrap();
+    let mut reader = Reader::new(child.stdout().take().unwrap(), MAX_FRAME_BYTES);
+    let mut writer = Writer::new(child.stdin().take().unwrap(), MAX_FRAME_BYTES);
+    let hello_frame = reader.read().await.unwrap();
+    let Payload::Hello(hello) = hello_frame.payload else {
+        panic!()
+    };
+    assert_ne!(hello.pid, std::process::id());
+    let ack = hello.negotiate(MAX_FRAME_BYTES).unwrap();
+    reader.negotiate(ack.protocol_minor).unwrap();
+    writer.negotiate(ack.protocol_minor).unwrap();
+    reader.constrain(ack.max_frame_bytes);
+    writer.constrain(ack.max_frame_bytes);
+    writer.write(None, Payload::HelloAck(ack)).await.unwrap();
+    let lease = Lease {
+        run_id: "eof-run".into(),
+        worker_instance_id: "eof-worker".into(),
+        lease_epoch: 1,
+    };
+    writer
+        .write(
+            Some(lease.clone()),
+            Payload::Bootstrap(Box::new(Bootstrap {
+                lease,
+                limits: Limits::default(),
+                workdir: root
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                permission: ait_domain::RunPermissionProfile::default().to_wire(),
+                maximum_sandbox: ait_domain::SandboxAccess::ReadOnly.to_wire(),
+                executor: Executor::Scripted { replies: vec![] },
+            })),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        reader.read().await.unwrap().payload,
+        Payload::Ready { .. }
+    ));
+    drop(writer);
+    tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
 }

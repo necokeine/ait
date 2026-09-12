@@ -12,6 +12,8 @@ files:
 extraResources:
   - from: release-resources/bin/ait-daemon
     to: bin/ait-daemon
+  - from: release-resources/bin/ait-worker
+    to: bin/ait-worker
 
 mac:
   category: public.app-category.developer-tools
