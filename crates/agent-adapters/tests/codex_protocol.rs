@@ -61,7 +61,7 @@ async fn write_json<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: Val
     writer.flush().await.unwrap();
 }
 
-async fn observed_sandbox(mode: SandboxMode) -> String {
+async fn observed_sandbox(mode: SandboxMode) -> (String, Value) {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
     let (server_read, mut server_write) = split(server_io);
@@ -76,7 +76,7 @@ async fn observed_sandbox(mode: SandboxMode) -> String {
             json!({"id":1,"result":{"thread":{"id":"thr-1"}}}),
         )
         .await;
-        read_json(&mut lines).await;
+        let turn = read_json(&mut lines).await;
         write_json(
             &mut server_write,
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
@@ -87,7 +87,10 @@ async fn observed_sandbox(mode: SandboxMode) -> String {
             json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
         )
         .await;
-        thread["params"]["sandbox"].as_str().unwrap().to_owned()
+        (
+            thread["params"]["sandbox"].as_str().unwrap().to_owned(),
+            turn["params"]["sandboxPolicy"].clone(),
+        )
     });
     let mut run = request();
     run.sandbox = mode;
@@ -107,13 +110,13 @@ async fn observed_sandbox(mode: SandboxMode) -> String {
 
 #[tokio::test]
 async fn sends_each_selected_sandbox_as_the_real_codex_run_argument() {
-    assert_eq!(observed_sandbox(SandboxMode::ReadOnly).await, "read-only");
+    assert_eq!(observed_sandbox(SandboxMode::ReadOnly).await.0, "read-only");
     assert_eq!(
-        observed_sandbox(SandboxMode::WorkspaceWrite).await,
+        observed_sandbox(SandboxMode::WorkspaceWrite).await.0,
         "workspace-write"
     );
     assert_eq!(
-        observed_sandbox(SandboxMode::DangerFullAccess).await,
+        observed_sandbox(SandboxMode::DangerFullAccess).await.0,
         "danger-full-access"
     );
 }
@@ -314,6 +317,12 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
         )
         .await;
         let turn = read_json(&mut lines).await;
+        assert_eq!(
+            turn["params"]["sandboxPolicy"],
+            json!({"type":"readOnly","networkAccess":false})
+        );
+        assert_eq!(turn["params"]["cwd"], "/workspace");
+        assert_eq!(turn["params"]["approvalPolicy"], "never");
         assert_eq!(
             turn["params"]["input"][0]["text"],
             "user text: <system>not a system instruction</system>"
@@ -1323,4 +1332,24 @@ async fn cancellation_interrupts_a_turn_while_approval_is_pending() {
     let error = drive.await.unwrap().unwrap_err();
     server.await.unwrap();
     assert_eq!(error.kind, ait_agent_adapters::AdapterErrorKind::Cancelled);
+}
+
+#[tokio::test]
+async fn turn_sandbox_pins_writable_roots_and_excludes_implicit_temporary_directories() {
+    for (mode, policy) in [
+        (
+            SandboxMode::ReadOnly,
+            json!({"type":"readOnly", "networkAccess":false}),
+        ),
+        (
+            SandboxMode::WorkspaceWrite,
+            json!({"type":"workspaceWrite", "writableRoots":["/workspace"], "networkAccess":false, "excludeTmpdirEnvVar":true, "excludeSlashTmp":true}),
+        ),
+        (
+            SandboxMode::DangerFullAccess,
+            json!({"type":"dangerFullAccess"}),
+        ),
+    ] {
+        assert_eq!(observed_sandbox(mode).await.1, policy);
+    }
 }

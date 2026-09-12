@@ -1352,6 +1352,10 @@ impl LocalControlService {
             checkpointed: AtomicBool::new(false),
         };
         let call = async {
+            // Queued Runs can outlive the daemon policy that admitted them.
+            // Keep their snapshot immutable, but recheck the current ceiling
+            // before invoking either provider after startup recovery.
+            validate_run_permission_ceiling(run.permission_profile, self.permission_limits)?;
             match run.provider.kind {
                 AgentMode::OpenAI | AgentMode::DeepSeek => self.invoke_provider(&state, &run).await,
                 AgentMode::Codex => {
@@ -2101,6 +2105,12 @@ impl LocalControlService {
             .find(|run| run.id == lease.run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         ensure_current_lease(run, lease)?;
+        if let Err(failure) =
+            validate_run_permission_ceiling(run.permission_profile, self.permission_limits)
+        {
+            let failure = error(failure.code, failure.message, false);
+            return self.interrupt_recovery_run(&lease.run_id, &failure).await;
+        }
         let journal = state
             .workspace_run_journals
             .get(&lease.run_id)
@@ -2850,10 +2860,10 @@ fn effective_permission_profile(
         Some("read_only" | "strict") => SandboxAccess::ReadOnly,
         Some("workspace_write") => SandboxAccess::WorkspaceWrite,
         Some("full_access") => SandboxAccess::FullAccess,
-        Some(value) => {
+        Some(_) => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                format!("unsupported Agent sandbox policy {value:?}"),
+                "unsupported Agent sandbox policy",
                 false,
             ));
         }
@@ -2895,10 +2905,10 @@ fn effective_permission_profile(
                 false,
             ));
         }
-        Some(value) => {
+        Some(_) => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                format!("unsupported Codex approval policy {value:?}"),
+                "unsupported Codex approval policy",
                 false,
             ));
         }
@@ -2911,6 +2921,19 @@ fn effective_permission_profile(
         }
     };
     Ok(RunPermissionProfile { sandbox, approval })
+}
+
+fn validate_run_permission_ceiling(
+    profile: RunPermissionProfile,
+    limits: PermissionPolicyLimits,
+) -> Result<(), DomainError> {
+    if profile.sandbox > limits.max_sandbox {
+        return Err(DomainError::invariant(
+            ErrorCode::InvalidConfiguration,
+            "Run permission snapshot exceeds the administrator sandbox ceiling",
+        ));
+    }
+    Ok(())
 }
 
 fn native_approval_record(
@@ -2962,14 +2985,13 @@ fn native_approval_record(
                 false,
             )
         })?;
-        let profile: NativePermissionProfile =
-            serde_json::from_value(value).map_err(|failure| {
-                error(
-                    ErrorCode::ToolApprovalRequired,
-                    format!("invalid Codex permission profile: {failure}"),
-                    false,
-                )
-            })?;
+        let profile: NativePermissionProfile = serde_json::from_value(value).map_err(|_| {
+            error(
+                ErrorCode::ToolApprovalRequired,
+                "invalid Codex permission profile",
+                false,
+            )
+        })?;
         validate_native_permission_profile(&profile)?;
         if serde_json::to_vec(&profile)
             .map_err(|_| {
@@ -4380,6 +4402,42 @@ fn validate_native_approval_grant(
             false,
         ));
     }
+    validate_native_approval_target(approval.kind, &approval.target)?;
+    match &approval.target {
+        // The current command approval contract cannot prove that an accepted
+        // shell command retains the filesystem sandbox. A cwd or redacted
+        // command preview is not a capability boundary.
+        NativeApprovalTarget::Command { .. }
+            if run_profile.sandbox != SandboxAccess::FullAccess =>
+        {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "command approval requires an explicitly selected full_access Run; sandbox confinement cannot be proven",
+                false,
+            ));
+        }
+        NativeApprovalTarget::FileChange {
+            grant_root,
+            changes,
+        } => {
+            if run_profile.sandbox == SandboxAccess::ReadOnly {
+                return Err(error(
+                    ErrorCode::InvalidConfiguration,
+                    "file approval exceeds the read_only Run sandbox",
+                    false,
+                ));
+            }
+            if run_profile.sandbox == SandboxAccess::WorkspaceWrite {
+                for path in grant_root
+                    .iter()
+                    .chain(changes.iter().map(|change| &change.path))
+                {
+                    ensure_permission_path_in_project(path, project_root)?;
+                }
+            }
+        }
+        _ => {}
+    }
     if approval.kind == NativeApprovalKind::Permissions {
         let permissions = approval.requested_permissions.as_ref().ok_or_else(|| {
             error(
@@ -4463,6 +4521,13 @@ fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<
 
     let root = lexical_absolute_path(project_root)?;
     let candidate = Path::new(path);
+    // Collapsing `symlink/..` lexically can hide an actual filesystem escape.
+    if candidate
+        .components()
+        .any(|part| part == Component::ParentDir)
+    {
+        return Err(project_boundary_error());
+    }
     let joined = if candidate.is_absolute() {
         candidate.to_path_buf()
     } else {
@@ -4487,8 +4552,14 @@ fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<
     }
     let canonical_root = std::fs::canonicalize(&root).map_err(|_| project_boundary_error())?;
     let mut existing = normalized.as_path();
-    while !existing.exists() {
-        existing = existing.parent().ok_or_else(project_boundary_error)?;
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+                existing = existing.parent().ok_or_else(project_boundary_error)?;
+            }
+            Err(_) => return Err(project_boundary_error()),
+        }
     }
     let canonical_existing =
         std::fs::canonicalize(existing).map_err(|_| project_boundary_error())?;

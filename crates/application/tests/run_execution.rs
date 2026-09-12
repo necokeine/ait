@@ -1182,3 +1182,54 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn recovery_rechecks_administrator_ceiling_without_changing_snapshot() {
+    for (phase, expected) in [("queued", "failed"), ("settling", "interrupted")] {
+        use ait_application::PermissionPolicyLimits;
+        use ait_domain::SandboxAccess;
+        let fixture = Fixture::new().await;
+        let mut settings = ait_contracts::default_settings();
+        settings.0.insert(
+            "permissions.sandbox".into(),
+            serde_json::json!("full_access"),
+        );
+        command(
+            &fixture.service,
+            Command::SaveSettings {
+                expected_revision: 1,
+                values: settings,
+            },
+        )
+        .await;
+        let completed = run(&fixture.service, send_message()).await;
+        rewind_completed_run(&fixture.store, &completed, phase).await;
+        let service =
+            LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone())
+                .with_permission_limits(PermissionPolicyLimits {
+                    max_sandbox: SandboxAccess::ReadOnly,
+                    allow_session_approvals: true,
+                });
+        let calls = fixture.agent.calls.load(Ordering::Relaxed);
+        let recoveries = fixture.agent.recoveries.load(Ordering::Relaxed);
+        let recovered = service.recover_interrupted_runs().await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].status, expected);
+        assert_eq!(
+            recovered[0].permission_profile.sandbox,
+            SandboxAccess::FullAccess
+        );
+        assert_eq!(
+            recovered[0].error.as_ref().unwrap().code,
+            if phase == "queued" {
+                ErrorCode::InvalidConfiguration
+            } else {
+                ErrorCode::RunRecoveryFailed
+            }
+        );
+        assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
+        assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), recoveries);
+        let state = workspace(&service).await;
+        assert!(state.sessions[0].active_run_id.is_none());
+    }
+}

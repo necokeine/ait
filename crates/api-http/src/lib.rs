@@ -21,7 +21,10 @@ use axum::{
     Json, Router,
     extract::{Query, State},
     http::StatusCode,
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        IntoResponse, Response as HttpResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -471,10 +474,27 @@ struct ResolveNativeApprovalRequest {
     scope: Option<ApprovalGrantScope>,
 }
 
+fn malformed_permission_request(status: StatusCode) -> HttpResponse {
+    // Serde diagnostics may quote invalid enum values or unknown keys verbatim.
+    (
+        status,
+        Json(Response::failure(ApiError {
+            code: ErrorCode::InvalidConfiguration,
+            message: "invalid permission or settings request".into(),
+            retryable: false,
+        })),
+    )
+        .into_response()
+}
+
 async fn resolve_native_approval(
     State(state): State<ApiState>,
-    Json(request): Json<ResolveNativeApprovalRequest>,
-) -> Json<Response> {
+    request: Result<Json<ResolveNativeApprovalRequest>, axum::extract::rejection::JsonRejection>,
+) -> HttpResponse {
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(failure) => return malformed_permission_request(failure.status()),
+    };
     execute_command(
         state,
         Command::ResolveNativeApproval {
@@ -485,6 +505,7 @@ async fn resolve_native_approval(
         },
     )
     .await
+    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -633,8 +654,12 @@ struct SaveSettingsRequest {
 
 async fn save_settings(
     State(state): State<ApiState>,
-    Json(request): Json<SaveSettingsRequest>,
-) -> Json<Response> {
+    request: Result<Json<SaveSettingsRequest>, axum::extract::rejection::JsonRejection>,
+) -> HttpResponse {
+    let Json(request) = match request {
+        Ok(request) => request,
+        Err(failure) => return malformed_permission_request(failure.status()),
+    };
     execute_command(
         state,
         Command::SaveSettings {
@@ -643,6 +668,7 @@ async fn save_settings(
         },
     )
     .await
+    .into_response()
 }
 
 async fn reset_settings(State(state): State<ApiState>) -> Json<Response> {

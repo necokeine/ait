@@ -241,6 +241,7 @@ impl CodexWorkspaceAgent {
 #[derive(Clone)]
 struct WorkspaceApprovalBridge {
     run_id: String,
+    sandbox: SandboxAccess,
     isolated_cwd: PathBuf,
     project_cwd: PathBuf,
     approvals: Arc<dyn WorkspaceApproval>,
@@ -252,6 +253,9 @@ impl ApprovalHandler for WorkspaceApprovalBridge {
         let Some(kind) = native_approval_kind(request.kind) else {
             return ApprovalDecision::Cancel;
         };
+        if !self.allows_execution_target(request) {
+            return ApprovalDecision::Decline;
+        }
         let decision = self
             .approvals
             .decide(WorkspaceApprovalRequest {
@@ -283,10 +287,28 @@ impl ApprovalHandler for WorkspaceApprovalBridge {
             Ok(WorkspaceApprovalDecision::Denied) => ApprovalDecision::Decline,
             Ok(WorkspaceApprovalDecision::Cancelled) | Err(_) => ApprovalDecision::Cancel,
             Ok(WorkspaceApprovalDecision::Approved { scope, permissions }) => {
+                // Recheck after a potentially long wait before sending a grant.
+                if !self.allows_execution_target(request) {
+                    return ApprovalDecision::Decline;
+                }
                 if request.kind == ApprovalKind::Permissions {
-                    let Some(permissions) = permissions else {
+                    let Some(mut permissions) = permissions else {
                         return ApprovalDecision::Cancel;
                     };
+                    // Durable/UI paths name the Project. The native grant must
+                    // name the original isolated execution paths, never the
+                    // primary worktree or a permission Codex did not request.
+                    let Some(original) = request.params.get("permissions") else {
+                        return ApprovalDecision::Cancel;
+                    };
+                    if !restore_permission_paths(
+                        &mut permissions,
+                        original,
+                        &self.isolated_cwd,
+                        &self.project_cwd,
+                    ) {
+                        return ApprovalDecision::Cancel;
+                    }
                     ApprovalDecision::Raw(json!({
                         "permissions": permissions,
                         "scope": match scope {
@@ -329,6 +351,123 @@ impl ApprovalHandler for WorkspaceApprovalBridge {
             })
             .await;
     }
+}
+
+impl WorkspaceApprovalBridge {
+    fn allows_execution_target(&self, request: &ApprovalRequest) -> bool {
+        if self.sandbox == SandboxAccess::FullAccess {
+            return true;
+        }
+        match &request.target {
+            NativeApprovalTarget::Command { .. } => false,
+            NativeApprovalTarget::Network { .. } => true,
+            NativeApprovalTarget::FileChange {
+                grant_root,
+                changes,
+            } => {
+                self.sandbox == SandboxAccess::WorkspaceWrite
+                    && grant_root
+                        .iter()
+                        .chain(changes.iter().map(|change| &change.path))
+                        .all(|path| approval_path_inside(path, &self.isolated_cwd))
+            }
+            NativeApprovalTarget::Permissions { cwd } => {
+                approval_path_inside(cwd, &self.isolated_cwd)
+                    && request
+                        .params
+                        .get("permissions")
+                        .and_then(|profile| profile.get("fileSystem"))
+                        .is_none_or(|filesystem| {
+                            approval_filesystem_inside(filesystem, &self.isolated_cwd)
+                        })
+            }
+        }
+    }
+}
+
+// Restore each granted value against its original request, not a global reverse
+// prefix substitution: full_access may explicitly request a primary-tree path.
+// Serde may omit null/default fields; extra grants or changed values fail closed.
+fn restore_permission_paths(
+    granted: &mut Value,
+    original: &Value,
+    isolated: &Path,
+    project: &Path,
+) -> bool {
+    match (granted, original) {
+        (Value::String(granted), Value::String(original)) => {
+            if *granted != rewrite_workspace_path(original.clone(), isolated, project) {
+                return false;
+            }
+            granted.clone_from(original);
+            true
+        }
+        (Value::Object(granted), Value::Object(original)) => {
+            granted.iter_mut().all(|(key, value)| {
+                original.get(key).is_some_and(|original| {
+                    restore_permission_paths(value, original, isolated, project)
+                })
+            })
+        }
+        (Value::Array(granted), Value::Array(original)) => {
+            granted.len() == original.len()
+                && granted.iter_mut().zip(original).all(|(value, original)| {
+                    restore_permission_paths(value, original, isolated, project)
+                })
+        }
+        (granted, original) => granted == original,
+    }
+}
+
+// The application validates the permission schema and the Project-facing grant.
+// Here all filesystem strings (including entry paths and special-root subpaths)
+// must also be safe in the actual isolated tree before any path projection.
+fn approval_filesystem_inside(value: &Value, root: &Path) -> bool {
+    match value {
+        Value::String(path) => approval_path_inside(path, root),
+        Value::Array(values) => values
+            .iter()
+            .all(|value| approval_filesystem_inside(value, root)),
+        Value::Object(values) => values
+            .values()
+            .all(|value| approval_filesystem_inside(value, root)),
+        _ => true,
+    }
+}
+
+fn approval_path_inside(value: &str, root: &Path) -> bool {
+    let path = Path::new(value);
+    if path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir)
+    {
+        return false;
+    }
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if !candidate.starts_with(root) {
+        return false;
+    }
+    let Ok(canonical_root) = fs::canonicalize(root) else {
+        return false;
+    };
+    let mut existing = candidate.as_path();
+    loop {
+        match fs::symlink_metadata(existing) {
+            Ok(_) => break,
+            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+                let Some(parent) = existing.parent() else {
+                    return false;
+                };
+                existing = parent;
+            }
+            Err(_) => return false,
+        }
+    }
+    fs::canonicalize(existing).is_ok_and(|path| path.starts_with(canonical_root))
 }
 
 const fn native_approval_kind(kind: ApprovalKind) -> Option<NativeApprovalKind> {
@@ -511,6 +650,7 @@ fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: &Path) -> AgentRun
         },
         approval_handler: Some(Arc::new(WorkspaceApprovalBridge {
             run_id: request.request_id.clone(),
+            sandbox: request.permission_profile.sandbox,
             isolated_cwd: cwd.to_path_buf(),
             project_cwd: request.cwd.clone(),
             approvals: Arc::clone(&request.approvals),
@@ -4345,6 +4485,21 @@ where
         "threadId": thread_id,
         "input": [{"type": "text", "text": request.prompt}],
         "clientUserMessageId": request.request_id,
+        "cwd": request.cwd,
+        "approvalPolicy": request.approval_policy.as_wire_value(),
+        // Explicitly replace native defaults, including user-configured write
+        // roots and implicit temporary-directory access, on every new/resumed turn.
+        "sandboxPolicy": match request.sandbox {
+            crate::SandboxMode::ReadOnly => json!({"type": "readOnly", "networkAccess": false}),
+            crate::SandboxMode::WorkspaceWrite => json!({
+                "type": "workspaceWrite",
+                "writableRoots": [request.cwd],
+                "networkAccess": false,
+                "excludeTmpdirEnvVar": true,
+                "excludeSlashTmp": true,
+            }),
+            crate::SandboxMode::DangerFullAccess => json!({"type": "dangerFullAccess"}),
+        },
     });
     if let Some(effort) = request.reasoning_effort {
         turn_params["effort"] = json!(effort);

@@ -332,6 +332,8 @@ pub(crate) enum SettingsCommand {
     /// Restore defaults: `read_only` sandbox and `on_request` approval.
     Reset,
     /// Replace the complete settings document using its observed revision.
+    /// Sandbox values: `read_only` (default), `workspace_write`, `full_access`; strict aliases `read_only`.
+    /// Permissions apply to new Runs and remain subject to the daemon ceiling.
     Set {
         #[arg(long)]
         expected_revision: u64,
