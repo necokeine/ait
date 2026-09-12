@@ -2,6 +2,9 @@
 
 ## 当前基线
 
+- `decisions/adr-013-session-worktrees.md`：每个 Session 使用固定的
+  `<Project>/.ait/<session-id>` linked worktree；Session-bound Run、工具、标题生成和恢复均以该目录为工作目录，Project 主检出保持干净。
+
 - `decisions/NEC-247/adr-001-api-provider-host-tool-loop.md`：公共 API Provider 复用 RunCoordinator 的持久化工具循环、固定权限与能力过滤；包括文件 worker drain、持久化取消与错误/panic 原子结算，WF-13 默认离线验收。
 
 - `decisions/NEC-192/adr-001-permission-integration.md`：三级权限跨入口集成核验、command/file

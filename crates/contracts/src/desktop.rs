@@ -55,6 +55,8 @@ pub struct DesktopSession {
     pub id: String,
     /// Owning Project.
     pub project_id: String,
+    /// Absolute manager-owned linked worktree used by this Session.
+    pub workdir: String,
     /// Optional member-authored name, empty when unset.
     pub name: String,
     /// Display title.
@@ -78,6 +80,7 @@ impl From<&Session> for DesktopSession {
         Self {
             id: session.id.as_str().to_owned(),
             project_id: session.project_id.as_str().to_owned(),
+            workdir: session.workdir.to_string_lossy().into_owned(),
             name: session.name.clone(),
             title: if session.name.trim().is_empty() {
                 session.title.clone().unwrap_or_else(|| {

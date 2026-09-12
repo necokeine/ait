@@ -4,7 +4,7 @@
 - **Message**：不可变的对话树节点，角色为 `system`、`user` 或 `assistant`。普通 human user Message 只在仓库干净时创建，并记录当时的 `git_commit`。
 - **SubMessage**：Message 内部的有序内容节点；ToolUse 是 assistant Message 中的一种 SubMessage。
 - **ToolResult**：承载工具结果的一种 user Message，并关联对应 ToolUse。
-- **Session**：指向 Message 树上当前节点的可移动引用，类似 Git branch。用户可从任意节点打开 Session；新增 Message 后，Session 指针向新叶子移动。
+- **Session**：指向 Message 树上当前节点的可移动引用，类似 Git branch，并固定使用 `<Project>/.ait/<session-id>` linked worktree 作为工作目录。用户可从任意节点打开 Session；新增 Message 后，Session 指针向新叶子移动。
 - **AgentProvider**：共享的连接、认证引用与模型能力目录。
 - **Agent**：引用 Provider 的版本化运行配置，包含 model 与 reasoning effort；可以是可复用命名预设，或单个 Session 的匿名配置。
 - **Run**：某个 Agent 基于 Session 当前 Message 发起的一次完整运行。只有重试、压缩恢复与新队列均无需继续处理时才结束。

@@ -400,6 +400,18 @@ async fn send(service: &LocalControlService, project_id: &str) -> RunView {
     run
 }
 
+async fn session_worktree(service: &LocalControlService, project_id: &str) -> PathBuf {
+    PathBuf::from(
+        workspace(service)
+            .await
+            .sessions
+            .into_iter()
+            .find(|session| session.id == format!("session-{project_id}"))
+            .unwrap()
+            .workdir,
+    )
+}
+
 fn git(path: &Path, arguments: &[&str]) -> String {
     let output = ProcessCommand::new("git")
         .arg("-C")
@@ -493,8 +505,9 @@ async fn post_gate_git_failures_never_turn_an_unpublished_result_into_completed(
         let agent = wrapped_agent(adapter, Arc::new(FaultGate { failures }));
         let service = LocalControlService::with_workspace_agent(store.clone(), agent);
         register_agent(&service).await;
-        let project = register_project(&service, temporary.path(), "project").await;
-        let baseline = git_head(&project);
+        register_project(&service, temporary.path(), "project").await;
+        let worktree = session_worktree(&service, "project").await;
+        let baseline = git_head(&worktree);
 
         let run = send(&service, "project").await;
         assert_eq!(run.status, "interrupted");
@@ -506,12 +519,12 @@ async fn post_gate_git_failures_never_turn_an_unpublished_result_into_completed(
                 .message
                 .contains("injected integration failure")
         );
-        assert_eq!(git_head(&project), baseline);
+        assert_eq!(git_head(&worktree), baseline);
         let view = workspace(&service).await;
         assert_eq!(assistant_count(&view, &run), 0);
         assert!(view.sessions[0].active_run_id.is_none());
 
-        let git_dir = PathBuf::from(git(&project, &["rev-parse", "--absolute-git-dir"]));
+        let git_dir = PathBuf::from(git(&worktree, &["rev-parse", "--absolute-git-dir"]));
         let rollback_root = git_dir.join("ait").join("integration-rollbacks");
         assert_eq!(rollback_root.exists(), expect_rollback_material);
     }
@@ -575,14 +588,15 @@ async fn ambiguous_git_recovery_interrupts_only_its_run_and_healthy_recovery_con
             Arc::new(production_agent(adapter.clone())),
         );
         register_agent(&initial).await;
-        let bad_project = register_project(&initial, temporary.path(), "bad").await;
+        register_project(&initial, temporary.path(), "bad").await;
         register_project(&initial, temporary.path(), "healthy").await;
+        let bad_worktree = session_worktree(&initial, "bad").await;
         let bad = send(&initial, "bad").await;
         let healthy = send(&initial, "healthy").await;
         let state = store.load().await.unwrap().value;
         let bad_commit = journal_commit(&state, &bad.id);
         rewind_completed_runs(&store, &[bad.clone(), healthy.clone()]).await;
-        inject_recovery_mismatch(mismatch, &bad_project, &bad, &bad_commit);
+        inject_recovery_mismatch(mismatch, &bad_worktree, &bad, &bad_commit);
         let calls = adapter.calls.load(Ordering::SeqCst);
         let recovery = LocalControlService::with_workspace_agent(
             store.clone(),
@@ -690,8 +704,9 @@ async fn startup_recovery_cannot_steal_a_live_publishers_lease() {
         wrapped_agent(adapter.clone(), pause.clone()),
     ));
     register_agent(&owner).await;
-    let project = register_project(&owner, temporary.path(), "project").await;
-    let baseline = git_head(&project);
+    register_project(&owner, temporary.path(), "project").await;
+    let worktree = session_worktree(&owner, "project").await;
+    let baseline = git_head(&worktree);
     let execution = {
         let owner = owner.clone();
         tokio::spawn(async move { send(&owner, "project").await })
@@ -724,7 +739,7 @@ async fn startup_recovery_cannot_steal_a_live_publishers_lease() {
     let finished = execution.await.unwrap();
     assert_eq!(finished.id, active);
     assert_eq!(finished.status, "completed");
-    assert_ne!(git_head(&project), baseline);
+    assert_ne!(git_head(&worktree), baseline);
     assert_eq!(adapter.calls.load(Ordering::SeqCst), 1);
     let view = workspace(&owner).await;
     assert_eq!(assistant_count(&view, &finished), 1);
@@ -746,8 +761,9 @@ async fn stale_result_sink_is_fenced_after_cancel_without_git_side_effects() {
         agent.clone(),
     ));
     register_agent(&service).await;
-    let project = register_project(&service, temporary.path(), "project").await;
-    let baseline = git_head(&project);
+    register_project(&service, temporary.path(), "project").await;
+    let worktree = session_worktree(&service, "project").await;
+    let baseline = git_head(&worktree);
     let execution = {
         let service = service.clone();
         tokio::spawn(async move { send(&service, "project").await })
@@ -766,7 +782,7 @@ async fn stale_result_sink_is_fenced_after_cancel_without_git_side_effects() {
     agent.release.add_permits(1);
     let terminal = execution.await.unwrap();
     assert_eq!(terminal.status, "cancelled");
-    assert_eq!(git_head(&project), baseline);
+    assert_eq!(git_head(&worktree), baseline);
     let view = workspace(&service).await;
     assert_eq!(assistant_count(&view, &active), 0);
     assert!(view.sessions[0].active_run_id.is_none());

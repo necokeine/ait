@@ -215,6 +215,9 @@ impl Fixture {
         };
         run
     }
+    fn worktree(&self) -> std::path::PathBuf {
+        self.project.path().join(".ait").join("session")
+    }
     async fn finish(self) {
         self.server.abort();
         let _ = self.server.await;
@@ -258,18 +261,18 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
         assert_eq!(execution.run.usage.tool_executions, 3);
         assert_eq!(execution.run.agent_snapshot.revision, run.agent_revision);
         assert_eq!(
-            std::fs::read_to_string(f.project.path().join("hello.py")).unwrap(),
+            std::fs::read_to_string(f.worktree().join("hello.py")).unwrap(),
             "print('hello')\n"
         );
         let git = std::process::Command::new("git")
             .args(["status", "--porcelain"])
-            .current_dir(f.project.path())
+            .current_dir(f.worktree())
             .output()
             .unwrap();
         assert!(git.status.success());
         assert_eq!(String::from_utf8(git.stdout).unwrap().trim(), "?? hello.py");
         let python = std::process::Command::new("python3")
-            .arg(f.project.path().join("hello.py"))
+            .arg(f.worktree().join("hello.py"))
             .output()
             .unwrap();
         assert!(python.status.success());
@@ -383,7 +386,7 @@ async fn denied_invalid_unknown_failed_and_approval_results_continue_without_sid
             .all(|t| t.status != ait_domain::ToolExecutionStatus::Succeeded)
     );
     assert_eq!(tools[4].status, ait_domain::ToolExecutionStatus::Denied);
-    assert!(!f.project.path().join("denied").exists());
+    assert!(!f.worktree().join("denied").exists());
     f.finish().await;
 }
 #[tokio::test]
@@ -407,7 +410,7 @@ async fn duplicate_calls_fail_before_dispatch_and_read_only_never_advertises_wri
         run.error.unwrap().code,
         ait_domain::ErrorCode::ToolCallDuplicate
     );
-    assert!(!f.project.path().join("bad").exists());
+    assert!(!f.worktree().join("bad").exists());
     let wire = f.requests.lock().unwrap()[0]["tools"].to_string();
     assert!(!wire.contains("\"write\""));
     f.finish().await;

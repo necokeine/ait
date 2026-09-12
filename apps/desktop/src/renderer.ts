@@ -192,7 +192,12 @@ function bindInteractions(): void {
   bindCodeBlockActions(conversation, showToast, async (reference) => {
     const project = currentProject();
     if (!project) throw new Error("No Project is selected.");
-    return window.ait.openProjectFile({ projectId: project.id, ...reference });
+    const session = currentSession();
+    return window.ait.openProjectFile({
+      projectId: project.id,
+      ...(session ? { sessionId: session.id } : {}),
+      ...reference,
+    });
   });
   conversation.addEventListener("click", (event) => {
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-approval-action]");

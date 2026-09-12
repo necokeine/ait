@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use ait_domain::{
     AgentId, Message, MessageId, MessageKind, MessageRole, MessageValidationError, ProjectId,
@@ -183,6 +183,7 @@ impl MessageService {
         &self,
         session_id: SessionId,
         project_id: ProjectId,
+        workdir: PathBuf,
         at_message_id: MessageId,
         agent_id: AgentId,
     ) -> Result<Session, MessageServiceError> {
@@ -192,6 +193,7 @@ impl MessageService {
             .create_session(Session::new(
                 session_id,
                 project_id,
+                workdir,
                 "",
                 at_message_id,
                 agent_id,
