@@ -19,14 +19,14 @@ mkdir -p "$WF_ROOT/imported-project"
 target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.0.1:17315
 ```
 
-该进程就绪后，在终端 A 指向目标 endpoint：
+该进程就绪后，在终端 A 指向目标主机和端口：
 
 ```bash
-"$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
+"$AIT_REPO/target/debug/ait-cli" --host 127.0.0.1 --port 17315 \
   project import --input "$WF_ROOT/project-archive.json" --workdir "$WF_ROOT/imported-project"
-"$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
+"$AIT_REPO/target/debug/ait-cli" --host 127.0.0.1 --port 17315 \
   session list --project-id p1
-"$AIT_REPO/target/debug/ait-cli" --endpoint http://127.0.0.1:17315 \
+"$AIT_REPO/target/debug/ait-cli" --host 127.0.0.1 --port 17315 \
   message list --project-id p1
 ```
 

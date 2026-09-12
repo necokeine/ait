@@ -50,9 +50,10 @@
 cargo build -p ait-cli -p ait-daemon -p ait-worker
 export AIT_REPO="$PWD"
 export WF_ROOT="$(mktemp -d)"
-export AIT_ENDPOINT="http://127.0.0.1:17315"
+export AIT_HOST="127.0.0.1"
+export AIT_PORT="17315"
 set -o pipefail
-ait() { "$AIT_REPO/target/debug/ait-cli" --endpoint "$AIT_ENDPOINT" "$@"; }
+ait() { "$AIT_REPO/target/debug/ait-cli" --host "$AIT_HOST" --port "$AIT_PORT" "$@"; }
 printf '演练目录：%s\n' "$WF_ROOT"
 ```
 
@@ -66,7 +67,7 @@ cd '演练目录'
 ```
 
 终端 A 依次执行下列命令，确认返回数组均为空。若端口占用，修改本次 `--listen` 和
-`AIT_ENDPOINT`，重新启动。
+`AIT_PORT`，重新启动。
 
 ```bash
 ait project list

@@ -34,6 +34,28 @@ pub(crate) fn url(value: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+pub(crate) fn host(value: &str) -> Result<String, String> {
+    let address = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(value);
+    if let Ok(address) = address.parse::<std::net::Ipv6Addr>() {
+        return Ok(format!("[{address}]"));
+    }
+    let error = "expected a hostname or IP address without a scheme, port, credentials or path";
+    if value.is_empty()
+        || value.chars().any(|character| {
+            character.is_whitespace() || character.is_control() || ":/\\?#@%[]".contains(character)
+        })
+    {
+        return Err(error.into());
+    }
+    reqwest::Url::parse(&format!("http://{value}"))
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .ok_or_else(|| error.into())
+}
+
 pub(crate) fn read(path: &Path, stdin: &mut dyn Read) -> Result<String, io::Error> {
     let mut text = String::new();
     if path == Path::new("-") {

@@ -14,6 +14,7 @@ use std::{
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
+    let endpoint = arguments.endpoint();
     let stdin = io::stdin();
     let source = if stdin.is_terminal() {
         input::StdinSource::Terminal
@@ -21,11 +22,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         input::StdinSource::Redirected
     };
     let action = arguments.command.into_action(&mut stdin.lock(), source)?;
-    let endpoint = arguments.endpoint.as_str().trim_end_matches('/');
     let client = reqwest::Client::new();
     match action {
         Action::Execute(command) => {
-            let response = send(&client, endpoint, &command)
+            let response = send(&client, &endpoint, &command)
                 .await
                 .map_err(|error| request_error(error, &command))?;
             print_response(&response, &command);
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             print!("{body}");
         }
         Action::Export { command, output } => {
-            let response = send(&client, endpoint, &command).await?;
+            let response = send(&client, &endpoint, &command).await?;
             match &response.result {
                 Some(CommandResult::ProjectExport(archive)) if response.ok => {
                     fs::write(output, serde_json::to_vec_pretty(archive)?)?;
@@ -66,7 +66,7 @@ fn request_error(error: reqwest::Error, command: &Command) -> Box<dyn std::error
     ) {
         // A malformed server response can make serde quote an unknown variant
         // containing the secret. Never render the underlying error on this path.
-        input::invalid("agent-provider request failed (transport, HTTP status or response decoding); check the connection and saved Provider state").into()
+        input::invalid("agent provider request failed (transport, HTTP status or response decoding); check the connection and saved Provider state").into()
     } else {
         error.into()
     }
