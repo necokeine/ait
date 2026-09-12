@@ -18,13 +18,12 @@ CREATE TABLE schema_migrations (
 
 -- Registry and upper-level Project metadata only. Message/Session/Run data is
 -- physically stored in <root_path>/.ait/project.sqlite3.
+-- The relative database path is a code constant, not a catalog field.
 CREATE TABLE projects (
   id                       TEXT PRIMARY KEY,
   name                     TEXT NOT NULL,
   description              TEXT NOT NULL DEFAULT '',
   root_path                TEXT NOT NULL UNIQUE,
-  project_db_relative_path TEXT NOT NULL DEFAULT '.ait/project.sqlite3'
-    CHECK (project_db_relative_path = '.ait/project.sqlite3'),
   git_initialized_by_manager INTEGER NOT NULL CHECK (git_initialized_by_manager IN (0, 1)),
   instruction_revision     INTEGER NOT NULL DEFAULT 1 CHECK (instruction_revision >= 1),
   instruction_digest       TEXT CHECK (instruction_digest IS NULL OR length(instruction_digest) = 64),

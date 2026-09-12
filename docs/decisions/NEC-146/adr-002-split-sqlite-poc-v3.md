@@ -63,7 +63,7 @@
 | 表 | 作用 |
 |---|---|
 | `schema_migrations` | 全局 schema version/checksum |
-| `projects` | Project ID、名称、描述、root path、状态和 `.ait` DB 相对路径 |
+| `projects` | Project ID、名称、描述、root path 和状态 |
 | `agents` | 全局 Agent identity/enabled |
 | `agent_revisions` | driver、connection name、model、capability、parameters、tool policy |
 | `project_agent_defaults` | Project 默认 Agent |
@@ -73,7 +73,7 @@
 
 这里不保存 Message、Session、Run 或 ToolExecution，也不保存任何 secret 值。
 
-`projects.project_db_relative_path` 在 POC 固定为 `.ait/project.sqlite3`。绝对 `root_path` 只用于当前机器定位；Project 移动后通过本地 `project_identity.project_id` 重新绑定 registry path。
+Project DB 相对路径固定为代码常量 `.ait/project.sqlite3`，不存入数据库，也不作为配置项；打开时由 `root_path` 拼接得到。绝对 `root_path` 只用于当前机器定位；Project 移动后通过本地 `project_identity.project_id` 重新绑定 registry path。
 
 ## 4. Project 级边界
 
@@ -174,7 +174,6 @@ Snapshot 严格使用字段 allowlist，不得包含 API key、token、header �
 # config.toml：可读的非秘密全局配置
 [storage]
 global_database = "metafab.sqlite3"
-project_database = ".ait/project.sqlite3"
 
 [backup]
 enabled = true

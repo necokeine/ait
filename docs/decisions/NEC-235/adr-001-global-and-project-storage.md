@@ -21,7 +21,8 @@ cursor、kind、entity ID、时间和 Project ID；Project/Agent/Provider/Cron/S
 公开 SSE cursor 连续且保持原有保留窗口；项目库的历史事件不自动 GC。
 凭据仍由现有凭据端口管理，SQLite 只保存 reference，不引入秘密值副本。
 
-项目存储目录统一为 Project 根目录下的 `.ait/`；`project.sqlite3` 与 ADR-013 规定的
+Project DB 相对路径固定为代码常量 `.ait/project.sqlite3`，不存入数据库，也不作为配置项；
+运行时由 Project 根目录拼接得到。项目存储目录统一为根目录下的 `.ait/`；`project.sqlite3` 与 ADR-013 规定的
 `<session-id>/` 工作树共用此目录。数据库名及其 `-wal`、`-shm`、`-journal` 文件名保留，
 不能用作 Session ID，以免工作树占用存储路径。本次目录更名不提供旧目录探测、搬迁或兼容回退。
 
