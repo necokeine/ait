@@ -177,11 +177,11 @@ async fn failed_effect_is_settled(fault: u8) {
             .is_none()
     );
     assert_eq!(
-        std::fs::read_to_string(f.project.path().join("once")).unwrap(),
+        std::fs::read_to_string(f.worktree().join("once")).unwrap(),
         "one effect"
     );
     // Replace the effect externally; an unsafe replay would overwrite this marker.
-    std::fs::write(f.project.path().join("once"), "external marker").unwrap();
+    std::fs::write(f.worktree().join("once"), "external marker").unwrap();
     let restarted = LocalControlService::new(Arc::new(
         SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
     ));
@@ -198,7 +198,7 @@ async fn failed_effect_is_settled(fault: u8) {
     };
     assert_eq!(saved, run);
     assert_eq!(
-        std::fs::read_to_string(f.project.path().join("once")).unwrap(),
+        std::fs::read_to_string(f.worktree().join("once")).unwrap(),
         "external marker"
     );
     assert_eq!(f.requests.lock().unwrap().len(), 1);
@@ -523,8 +523,8 @@ async fn cancelling_a_blocked_host_write_keeps_session_until_worker_cleanup() {
         during.sessions[0].active_run_id.as_deref(),
         Some(initial.id.as_str())
     );
-    assert!(!f.project.path().join("late").exists());
-    assert!(std::fs::read_dir(f.project.path()).unwrap().all(|p| {
+    assert!(!f.worktree().join("late").exists());
+    assert!(std::fs::read_dir(f.worktree()).unwrap().all(|p| {
         !p.unwrap()
             .file_name()
             .to_string_lossy()

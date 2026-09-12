@@ -23,6 +23,7 @@ const messages = [
 const session = (id: string, currentMessageId: string, updatedAt = 0): DesktopSession => ({
   id,
   projectId: "p1",
+  workdir: `/p1/.ait/${id}`,
   title: id,
   currentMessageId,
   agentId: "agent",

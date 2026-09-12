@@ -1,9 +1,9 @@
 //! Public control-store adapter for the existing provider-neutral `RunCoordinator`.
 use super::{
     AgentProviderGateway, ApiError, Arc, ControlFilter, ControlStoreError, Digest, DomainError,
-    ErrorCode, LocalControlService, MessageView, Mutex, Path, RunView, Sha256, Uuid, Value,
-    WorkingSet, error, is_terminal_workspace_status, json, now, pending, recovery_error,
-    release_session, validate_run_permission_ceiling,
+    ErrorCode, LocalControlService, MessageView, Mutex, RunView, Sha256, Uuid, Value, WorkingSet,
+    error, is_terminal_workspace_status, json, now, pending, recovery_error, release_session,
+    validate_run_permission_ceiling,
 };
 use ait_contracts::ApiRunExecution;
 use ait_domain::{
@@ -137,11 +137,7 @@ impl LocalControlService {
         if let Some(dispatcher) = &self.run_dispatcher {
             validate_run_permission_ceiling(view.permission_profile, self.permission_limits)
                 .map_err(api_domain_error_reverse)?;
-            let project = state
-                .projects
-                .iter()
-                .find(|p| p.id == view.project_id)
-                .ok_or_else(|| recovery_error("Run Project is missing"))?;
+            let workdir = super::run_workdir(&state, view)?;
             let reference = state
                 .run_credentials
                 .get(&view.id)
@@ -156,7 +152,7 @@ impl LocalControlService {
             dispatcher
                 .dispatch(ait_ports::ApiRunDispatch {
                     run_id: RunId::new(&view.id),
-                    workdir: Path::new(&project.workdir).to_path_buf(),
+                    workdir,
                     permission: view.permission_profile,
                     maximum_sandbox: self.permission_limits.max_sandbox,
                     provider: view.provider.clone(),
@@ -220,17 +216,16 @@ impl LocalControlService {
         state: &WorkingSet,
     ) -> Result<(Arc<dyn RunTool>, ProviderAgent), DomainError> {
         validate_run_permission_ceiling(view.permission_profile, self.permission_limits)?;
-        let project = state
-            .projects
-            .iter()
-            .find(|p| p.id == view.project_id)
-            .ok_or_else(|| {
-                DomainError::invariant(ErrorCode::InvalidProject, "Run Project is missing")
-            })?;
+        let root = super::run_workdir(state, view).map_err(|failure| DomainError {
+            code: failure.code,
+            message: failure.message,
+            retryable: failure.retryable,
+            details: None,
+            cause_id: None,
+        })?;
         let tools = match &self.api_tools {
             Some(factory) => {
                 let factory = factory.clone();
-                let root = Path::new(&project.workdir).to_path_buf();
                 let profile = view.permission_profile;
                 tokio::task::spawn_blocking(move || factory.create(&root, profile))
                     .await

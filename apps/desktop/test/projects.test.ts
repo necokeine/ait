@@ -34,6 +34,7 @@ const project = (id: string): DesktopProject => ({
 const session = (id: string, projectId: string, updatedAt: number): DesktopSession => ({
   id,
   projectId,
+  workdir: `/${projectId}/.ait/${id}`,
   name: id,
   title: id,
   description: "",

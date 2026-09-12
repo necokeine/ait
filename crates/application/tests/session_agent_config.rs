@@ -27,6 +27,7 @@ use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use std::{
     collections::{HashMap, VecDeque},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -251,17 +252,6 @@ fn git_index_tree(path: &std::path::Path) -> String {
         .arg("-C")
         .arg(path)
         .arg("write-tree")
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-fn git_commit_tree(path: &std::path::Path, commit: &str) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", &format!("{commit}^{{tree}}")])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -802,7 +792,7 @@ async fn canonical_path_aliases_share_the_same_process_wide_lease() {
 }
 
 #[tokio::test]
-async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() {
+async fn serialized_session_worktrees_keep_independent_baselines_and_commits() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(CommittingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
@@ -840,7 +830,7 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
     let commits = agent.commits.lock().unwrap().clone();
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].0, initial);
-    assert_eq!(commits[1].0, commits[0].1);
+    assert_eq!(commits[1].0, initial);
     assert_eq!(first_run.status, "completed");
     assert_eq!(second_run.status, "completed");
     assert_eq!(
@@ -853,11 +843,11 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
     );
     assert_eq!(
         second_run.workspace_base_commit.as_deref(),
-        Some(commits[0].1.as_str())
+        Some(initial.as_str())
     );
     assert_eq!(
         second_run.workspace_base_index_tree.as_deref(),
-        Some(git_commit_tree(directory.path(), &commits[0].1).as_str())
+        Some(initial_tree.as_str())
     );
     assert_ne!(first_run.id, second_run.id);
     for (baseline, commit, file) in &commits {
@@ -882,8 +872,37 @@ async fn serialized_sessions_capture_new_baselines_and_own_only_their_commits() 
             .unwrap()
     };
     assert_eq!(message_commit(&first_run.base_message_id), initial);
-    assert_eq!(message_commit(&second_run.base_message_id), commits[0].1);
-    assert_eq!(git_head(directory.path()), commits[1].1);
+    assert_eq!(message_commit(&second_run.base_message_id), initial);
+    assert_eq!(git_head(directory.path()), initial);
+    let session = |id: &str| {
+        workspace
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .unwrap()
+    };
+    assert_eq!(git_head(Path::new(&session("one").workdir)), commits[0].1);
+    assert_eq!(git_head(Path::new(&session("two").workdir)), commits[1].1);
+    assert!(
+        Path::new(&session("one").workdir)
+            .join("first.txt")
+            .exists()
+    );
+    assert!(
+        !Path::new(&session("one").workdir)
+            .join("second.txt")
+            .exists()
+    );
+    assert!(
+        Path::new(&session("two").workdir)
+            .join("second.txt")
+            .exists()
+    );
+    assert!(
+        !Path::new(&session("two").workdir)
+            .join("first.txt")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -2010,6 +2029,11 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
         assert_eq!(
             native.0.lock().unwrap()[0].permission_profile,
             expected_profile
+        );
+        let session_workdir = view(&service).await.sessions[0].workdir.clone();
+        assert_eq!(
+            native.0.lock().unwrap()[0].cwd,
+            PathBuf::from(session_workdir)
         );
 
         let mut changed = default_settings();

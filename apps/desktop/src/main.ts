@@ -47,7 +47,7 @@ interface DaemonData {
   providers: AgentProvider[];
   sessions: Array<{
     id: string; project_id: string; name?: string; title?: string | null; description?: string;
-    title_generation_started?: boolean; agent_id: string; current_message_id: string;
+    workdir: string; title_generation_started?: boolean; agent_id: string; current_message_id: string;
     active_run_id: string | null; version: number;
   }>;
   messages: WorkspaceMessage[];
@@ -136,7 +136,16 @@ class DaemonClient {
       const projects = await this.get("/v1/project/list", "projects") as DaemonData["projects"];
       const project = projects.find((candidate) => candidate.id === projectId);
       if (!project) throw new Error("Project not found.");
-      const path = await resolveProjectPath(project.workdir, reference);
+      let root = project.workdir;
+      if (typeof params.sessionId === "string") {
+        const [sessionsPath] = projectReadPaths(projectId);
+        const sessions = await this.get(sessionsPath, "sessions") as DaemonData["sessions"];
+        const session = sessions.find((candidate) =>
+          candidate.id === params.sessionId && candidate.project_id === projectId);
+        if (!session) throw new Error("Session not found.");
+        root = session.workdir;
+      }
+      const path = await resolveProjectPath(root, reference);
       const line = positiveInteger(params.line);
       const column = positiveInteger(params.column) ?? 1;
       if (line) {
@@ -488,6 +497,7 @@ class DaemonClient {
       projectId,
       sessions: sessions.map((session) => ({
         id: session.id, projectId: session.project_id, name: session.name ?? "",
+        workdir: session.workdir,
         title: sessionDisplayTitle(session), description: session.description ?? "",
         titleGenerationStarted: session.title_generation_started ?? false,
         currentMessageId: session.current_message_id, agentId: session.agent_id,

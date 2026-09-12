@@ -2,6 +2,8 @@
 
 mod support;
 
+use std::path::PathBuf;
+
 use serde_json::{Value, json};
 use support::{Workspace, entity, events, failure, success};
 
@@ -153,7 +155,12 @@ async fn wf02_send_message_and_inspect_agent_reply() {
         )
         .await;
     assert_eq!(workspace.view().await, before);
-    let dirty = workspace.path("project/untracked.txt");
+    let dirty = PathBuf::from(
+        entity(&before, "sessions", &json!("main"))["workdir"]
+            .as_str()
+            .unwrap(),
+    )
+    .join("untracked.txt");
     std::fs::write(&dirty, "unsaved work").unwrap();
     workspace
         .reject(
@@ -571,7 +578,18 @@ async fn wf07_export_and_import_project_archive() {
     assert_eq!(imported["default_agent_id"], "portable");
     let restored = target.view().await;
     assert_eq!(restored["messages"], archive["messages"]);
-    assert_eq!(restored["sessions"], archive["sessions"]);
+    let mut expected_sessions = archive["sessions"].clone();
+    for session in expected_sessions.as_array_mut().unwrap() {
+        assert_eq!(session["workdir"], "");
+        let worktree = imported_dir
+            .canonicalize()
+            .unwrap()
+            .join(".ait")
+            .join(session["id"].as_str().unwrap());
+        assert!(worktree.join(".git").is_file());
+        session["workdir"] = json!(worktree.to_str().unwrap());
+    }
+    assert_eq!(restored["sessions"], expected_sessions);
     assert_eq!(restored["agents"], archive["agents"]);
     assert_eq!(restored["runs"], json!([]));
     assert_eq!(restored["crons"], json!([]));

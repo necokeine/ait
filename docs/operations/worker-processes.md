@@ -5,6 +5,9 @@
 `RunDispatcher` 注入，Codex 经该对象实现的 `WorkspaceAgent` 注入。HTTP/SSE、设置、
 审批、SQLite 和 outbox 留在 daemon；worker 的正常依赖图不包含 storage-sqlite。
 模型目录发现、Session 标题生成仍是 daemon 的辅助操作，不属于 Run 执行。
+遵循 ADR-013：有 Session 的 bootstrap cwd 来自经过校验的 `<Project>/.ait/<session-id>`，
+API 工具与 Codex 结算都在该固定 worktree 中执行；无 Session 的 Cron 才使用 Project
+主工作区。不同 Session 的文件/HEAD 不互相推进，Project 主检出保持成员所有。
 
 ## 构建与启动
 

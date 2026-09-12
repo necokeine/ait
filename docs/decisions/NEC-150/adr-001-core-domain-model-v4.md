@@ -1,7 +1,7 @@
 ## ADR-001：本地多 Agent 管理器核心领域模型
 
 - 状态：Accepted，待实现验证
-- 修订：v4；经 NEC-161 ADR-003 修订 Message ID、Project description 与 Session-Agent 绑定
+- 修订：v4；经 NEC-161 ADR-003 修订 Message ID、Project description 与 Session-Agent 绑定；经 ADR-013 增加 Session worktree
 - 日期：2026-09-02
 - 替代：NEC-150 v3 附件
 - 基线：NEC-144 的 `core-domain-model.md` 与 NEC-150 产品确认
@@ -90,6 +90,7 @@ Session 是持有当前 Agent、指向 Project 某个 Message 的可移动命名
 ```text
 Session {
   id, project_id, name, title?, description,
+  workdir,                       // <Project workdir>/.ait/<session-id>
   current_message_id,
   active_run_id?,
   agent_id,
@@ -106,7 +107,7 @@ Session {
 点击任意 Message 并“打开 Session”时，必须选择 Agent 并创建一个新 Session；其 `current_message_id` 指向该 Message，不复制 Message，也不移动其他 Session。若要让同一节点由不同 Agent 并排推进，应打开另一个 Session；若只需继续同一 Session，可在空闲时显式重绑。常规交互流程为：
 
 1. Session 当前指向 `M0`。
-2. 用户提交内容，系统先确认 Project Git index、worktree（含未跟踪文件）均干净，并稳定读取完整 HEAD；然后创建 `U1(parent=M0, role=user, git_commit=HEAD)`，再以 Session `version` 做 compare-and-swap，将指针从 `M0` 推进到 `U1`。检查失败时不得写 Message、Run 或移动 Session。
+2. 用户提交内容，系统先确认 Session linked worktree 的 Git index、worktree（含未跟踪文件）均干净，并稳定读取完整 HEAD；然后创建 `U1(parent=M0, role=user, git_commit=HEAD)`，再以 Session `version` 做 compare-and-swap，将指针从 `M0` 推进到 `U1`。检查失败时不得写 Message、Run 或移动 Session。
 3. 系统以 `U1 + Session.agent_id` 创建 Run，解析并固定 Agent revision，并把该 Session 绑定为 `follow_session_id`。
 4. Run 每持久化一个新 Message，就把 Session 指针从上一个 Message CAS 推进到新 Message；Session 因而随着生成过程逐步向下移动。
 5. Run 通过终止屏障后清除 `active_run_id`，Session 留在本次 Run 的最后一个 Message。
@@ -293,10 +294,10 @@ Message.role = user | system | assistant
 
 1. Project 创建结束后，`workdir` 等于 Git top-level，`base_commit` 是注册时冻结的有效完整 HEAD；若创建前不是 Git root，必须先在该目录成功执行 `git init`，若 HEAD 尚未出生则创建空初始提交。规范化路径在系统内唯一。
 2. 一个 Message 只属于一个 Project；其 parent 必须属于同一 Project；Message 图必须无环。每个连通树恰有一个根，根必须是 `role=system` 的 Message。
-3. 一个 Session 只属于一个 Project、持有一个当前 Agent，并且只指向该 Project 的一个 Message。Message 不属于 Session；多个 Session 可以指向同一个 Message。只有 `active_run_id` 为空时才能以 version CAS 重绑 Agent。
+3. 一个 Session 只属于一个 Project、持有一个当前 Agent，并且只指向该 Project 的一个 Message；其 `workdir` 必须是 `<Project workdir>/.ait/<session-id>` 的 manager-owned linked worktree。Message 不属于 Session；多个 Session 可以指向同一个 Message，但文件状态由各自 worktree 隔离。只有 `active_run_id` 为空时才能以 version CAS 重绑 Agent。
 4. Message 创建后不可变。编辑旧 Message 会以旧 Message 的 parent 为基点创建替代分支；重新生成会以旧 assistant Message 的 parent 为 `base_message_id` 启动新 Run。查看或继续历史节点时创建新的 Session 引用，不复制历史。
 5. Message role 严格限制为 `user | system | assistant`。ToolUse 只能是 assistant Message 内的 sub-message；ToolResult 必须是 `role=user, message_kind=tool_result` 的 Message。
-6. `role=user, message_kind=standard, origin=human` 的 Message 必须携带有效完整 `git_commit`，且追加前 Project Git index/worktree（含未跟踪文件）必须干净；Git 检查失败时不得产生任何领域写入。该字段不得出现在其他 Message 上。
+6. `role=user, message_kind=standard, origin=human` 的 Message 必须携带有效完整 `git_commit`，且追加前对应 Session linked worktree 的 Git index/worktree（含未跟踪文件）必须干净；Git 检查失败时不得产生任何领域写入。该字段不得出现在其他 Message 上。
 7. Run 创建后固定 `base_message_id`、Agent 与 Agent revision。首个输出 Message 以 `base_message_id` 为 parent；后续输出以前一个 Run 输出 Message 为 parent；`run_seq` 从 1 连续递增。并发 Run 因而自然形成分支。
 8. ToolResult Message 必须引用同一 Run 当前路径上尚未完成的 ToolUse；每个 `call_id` 在 Run 内唯一，且最多有一个最终 ToolResult Message。
 9. 每个 Agent 输出 Message 必须先持久化，才能开始下一模型或工具步骤；重试、压缩恢复和崩溃恢复只能从最后一个已提交 Message/检查点继续，并沿用同一 `run_id`。
@@ -336,7 +337,7 @@ Agent 产生最终 assistant Message 且没有待处理 ToolUse 时，只能进�
 createProject(workdir, repo_url?, metadata) // 必要时 git init 并创建空初始提交
 updateProjectMetadata(project_id, patch)
 createMessageRoot(project_id, system_sub_messages)
-openSession(project_id, at_message_id, agent_id, name?)
+openSession(project_id, at_message_id, agent_id, name?) // 创建固定 Session linked worktree
 setSessionAgent(session_id, agent_id, expected_version)
 getSessionView(session_id)
 getMessagePath(message_id)

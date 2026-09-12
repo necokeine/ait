@@ -329,6 +329,8 @@ pub struct Session {
     pub id: SessionId,
     /// Owning project.
     pub project_id: ProjectId,
+    /// Manager-owned linked worktree used for every interactive execution.
+    pub workdir: PathBuf,
     /// Human-readable reference name.
     #[serde(default)]
     pub name: String,
@@ -361,6 +363,7 @@ impl Session {
     pub fn new(
         id: SessionId,
         project_id: ProjectId,
+        workdir: PathBuf,
         name: impl Into<String>,
         current_message_id: MessageId,
         agent_id: AgentId,
@@ -369,6 +372,7 @@ impl Session {
         Self {
             id,
             project_id,
+            workdir,
             name: name.into(),
             title: None,
             description: String::new(),
@@ -392,6 +396,7 @@ impl Session {
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.id.as_str().is_empty()
             || self.project_id.as_str().is_empty()
+            || !self.workdir.is_absolute()
             || self.current_message_id.as_uuid().is_nil()
             || self.agent_id.as_str().is_empty()
             || self.version == 0
@@ -454,6 +459,7 @@ mod tests {
         let mut session = Session::new(
             SessionId::new("session-1"),
             ProjectId::new("project-1"),
+            PathBuf::from("/project/.ait/session-1"),
             "main",
             MessageId::from_u128(1),
             AgentId::new("agent-1"),
@@ -472,6 +478,7 @@ mod tests {
         let session = Session::new(
             SessionId::new("session-1"),
             ProjectId::new("project-1"),
+            PathBuf::from("/project/.ait/session-1"),
             "main",
             MessageId::from_u128(1),
             AgentId::new("agent-1"),
@@ -496,6 +503,7 @@ mod tests {
         let session = Session::new(
             SessionId::new("session-1"),
             ProjectId::new("project-1"),
+            PathBuf::from("/project/.ait/session-1"),
             "",
             MessageId::from_u128(1),
             AgentId::new("agent-1"),

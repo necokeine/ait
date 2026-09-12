@@ -181,7 +181,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         },
     )
     .await;
-    run(
+    let session = run(
         &service,
         Command::CreateSession {
             id: "git-session".into(),
@@ -191,8 +191,32 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         },
     )
     .await;
+    let CommandResult::Session(session) = session else {
+        panic!("expected Session")
+    };
+    assert_eq!(
+        std::path::Path::new(&session.workdir),
+        project_dir
+            .canonicalize()
+            .unwrap()
+            .join(".ait")
+            .join("git-session")
+    );
+    assert!(
+        std::path::Path::new(&session.workdir)
+            .join(".git")
+            .is_file()
+    );
+    let primary_status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&project_dir)
+        .args(["status", "--porcelain=v1"])
+        .output()
+        .unwrap();
+    assert!(primary_status.status.success());
+    assert!(primary_status.stdout.is_empty());
 
-    let dirty_path = project_dir.join("dirty.txt");
+    let dirty_path = std::path::Path::new(&session.workdir).join("dirty.txt");
     std::fs::write(&dirty_path, "dirty").unwrap();
     let rejected = service
         .execute(Command::SendMessage {
@@ -824,6 +848,73 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     assert!(workspace.runs.iter().all(|run| run.status == "completed"));
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn session_worktree_paths_reject_traversal_and_symbolic_link_parents() {
+    use std::os::unix::fs::symlink;
+
+    let temporary = TempDir::new().unwrap();
+    let project_dir = temporary.path().join("project");
+    let outside = temporary.path().join("outside");
+    std::fs::create_dir(&project_dir).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let service = fixture_service(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    run(
+        &service,
+        Command::RegisterProject {
+            id: "safe-project".into(),
+            name: "Safe Project".into(),
+            workdir: Some(project_dir.display().to_string()),
+            repo_url: None,
+        },
+    )
+    .await;
+    run(
+        &service,
+        Command::RegisterAgent {
+            id: "safe-agent".into(),
+            name: "Safe Agent".into(),
+            config: config(),
+        },
+    )
+    .await;
+
+    let traversal = service
+        .execute(Command::CreateSession {
+            id: "../escape".into(),
+            project_id: "safe-project".into(),
+            agent_id: "safe-agent".into(),
+            at_message_id: None,
+        })
+        .await;
+    assert_eq!(traversal.error.unwrap().code, ErrorCode::InvalidSession);
+    assert!(!temporary.path().join("escape").exists());
+
+    symlink(&outside, project_dir.join(".ait")).unwrap();
+    let linked_parent = service
+        .execute(Command::CreateSession {
+            id: "safe-session".into(),
+            project_id: "safe-project".into(),
+            agent_id: "safe-agent".into(),
+            at_message_id: None,
+        })
+        .await;
+    assert_eq!(linked_parent.error.unwrap().code, ErrorCode::InvalidSession);
+    assert!(!outside.join("safe-session").exists());
+
+    let CommandResult::Sessions(sessions) = run(
+        &service,
+        Command::ListSessions {
+            project_id: "safe-project".into(),
+        },
+    )
+    .await
+    else {
+        panic!("expected Sessions")
+    };
+    assert!(sessions.is_empty());
+}
+
 #[tokio::test]
 async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persisted() {
     let temporary = TempDir::new().unwrap();
@@ -1014,6 +1105,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     );
     assert_eq!(archive.sessions[0].version, 4);
     assert!(archive.sessions[0].active_run_id.is_none());
+    assert!(archive.sessions[0].workdir.is_empty());
     assert_eq!(archive.messages.len(), 3);
     assert!(
         archive
@@ -1039,6 +1131,19 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     );
     assert_eq!(workspace.agents[0].revision, archive.agents[0].revision);
     assert_eq!(workspace.sessions[0].version, archive.sessions[0].version);
+    assert_eq!(
+        std::path::Path::new(&workspace.sessions[0].workdir),
+        imported_dir
+            .canonicalize()
+            .unwrap()
+            .join(".ait")
+            .join("portable-session")
+    );
+    assert!(
+        std::path::Path::new(&workspace.sessions[0].workdir)
+            .join(".git")
+            .is_file()
+    );
     assert_eq!(
         workspace.sessions[0].current_message_id,
         archive.sessions[0].current_message_id

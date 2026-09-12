@@ -141,7 +141,10 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
             ] {
                 ok(&service, command).await;
             }
-            let baseline = git(&project, &["rev-parse", "HEAD"]);
+            let workspace =
+                std::path::PathBuf::from(&support::workspace(&service).await.sessions[0].workdir);
+            let baseline = git(&workspace, &["rev-parse", "HEAD"]);
+            let primary_baseline = git(&project, &["rev-parse", "HEAD"]);
             let CommandResult::Run(run) = ok(
                 &service,
                 Command::SendMessage {
@@ -153,13 +156,22 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
             else {
                 panic!()
             };
+            assert_eq!(
+                git(&project, &["rev-parse", "HEAD"]),
+                primary_baseline,
+                "worker moved Project HEAD"
+            );
+            assert!(
+                !project.join("native-effect.txt").exists(),
+                "worker wrote into Project main checkout"
+            );
             if method == "cost_ceiling" {
                 assert_eq!(run.status, "failed");
                 assert!(
                     !root.path().join("invocations").exists(),
                     "unpriced native Provider was started"
                 );
-                assert!(!project.join("native-effect.txt").exists());
+                assert!(!workspace.join("native-effect.txt").exists());
                 let view = support::workspace(&service).await;
                 assert!(view.sessions[0].active_run_id.is_none());
                 assert!(
@@ -194,7 +206,7 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
                 .collect::<Vec<_>>();
             assert_eq!(
                 git(
-                    &project,
+                    &workspace,
                     &["rev-list", "--all", "--count", &format!("{baseline}..")]
                 ),
                 "1",
@@ -210,7 +222,7 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
                 assert_eq!(run.status, "completed", "{method} {boundary:?}: {run:?}");
                 assert_eq!(messages.len(), 1);
                 assert_eq!(
-                    std::fs::read_to_string(project.join("native-effect.txt")).unwrap(),
+                    std::fs::read_to_string(workspace.join("native-effect.txt")).unwrap(),
                     "exactly once\n"
                 );
                 assert!(

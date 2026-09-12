@@ -210,6 +210,9 @@ pub struct AgentView {
 pub struct SessionView {
     pub id: String,
     pub project_id: String,
+    /// Absolute manager-owned linked worktree used by this Session.
+    #[serde(default)]
+    pub workdir: String,
     #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

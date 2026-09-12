@@ -87,6 +87,7 @@ async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
 struct Fixture {
     directory: tempfile::TempDir,
     project: tempfile::TempDir,
+    workdir: std::path::PathBuf,
     service: LocalControlService,
     requests: Arc<Mutex<Vec<Value>>>,
     server: tokio::task::JoinHandle<()>,
@@ -184,9 +185,12 @@ impl Fixture {
             },
         )
         .await;
+        let workdir =
+            std::path::PathBuf::from(&support::workspace(&service).await.sessions[0].workdir);
         Self {
             directory,
             project,
+            workdir,
             service,
             requests,
             server,
@@ -250,18 +254,18 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
         assert_eq!(execution.run.usage.tool_executions, 3);
         assert_eq!(execution.run.agent_snapshot.revision, run.agent_revision);
         assert_eq!(
-            std::fs::read_to_string(f.project.path().join("hello.py")).unwrap(),
+            std::fs::read_to_string(f.workdir.join("hello.py")).unwrap(),
             "print('hello')\n"
         );
         let git = std::process::Command::new("git")
             .args(["status", "--porcelain"])
-            .current_dir(f.project.path())
+            .current_dir(&f.workdir)
             .output()
             .unwrap();
         assert!(git.status.success());
         assert_eq!(String::from_utf8(git.stdout).unwrap().trim(), "?? hello.py");
         let python = std::process::Command::new("python3")
-            .arg(f.project.path().join("hello.py"))
+            .arg(f.workdir.join("hello.py"))
             .output()
             .unwrap();
         assert!(python.status.success());
@@ -319,6 +323,17 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
             vec!["edit", "grep", "read", "write"]
         };
         assert_eq!(names, expected);
+        assert!(
+            !f.project.path().join("hello.py").exists(),
+            "worker wrote into Project main checkout"
+        );
+        let primary = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(f.project.path())
+            .output()
+            .unwrap();
+        assert!(primary.status.success());
+        assert!(primary.stdout.is_empty(), "Project main checkout is dirty");
         let result_ids = if kind == ProviderKind::OpenAI {
             requests[2]["input"]
                 .as_array()
@@ -532,7 +547,7 @@ async fn kill_matrix_preserves_acknowledged_messages_results_and_side_effect_int
                     "lost an acknowledged result at {method} {boundary:?}"
                 );
                 assert_eq!(
-                    std::fs::read_to_string(f.project.path().join("effect.txt")).unwrap(),
+                    std::fs::read_to_string(f.workdir.join("effect.txt")).unwrap(),
                     "one effect"
                 );
             }
@@ -666,7 +681,7 @@ async fn credential_echo_never_reaches_database_checkpoint_events_or_export() {
     let f = Fixture::new(ProviderKind::OpenAI, vec![reply; 3], "workspace_write").await;
     let run = f.run().await;
     assert!(matches!(run.status.as_str(), "failed" | "interrupted"));
-    assert!(!f.project.path().join("leak.txt").exists());
+    assert!(!f.workdir.join("leak.txt").exists());
     let view = support::workspace(&f.service).await;
     assert!(view.sessions[0].active_run_id.is_none());
     assert!(!format!("{view:?}").contains(secret));
