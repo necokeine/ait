@@ -7,8 +7,13 @@
 
 ## 存储边界
 
-daemon 使用 `SplitSqliteControlStore`。`--database` 及 Desktop 现有全局路径保持兼容，
-现在只定位全局 catalog；本次不同时迁移用户的全局目录位置或凭据后端。
+daemon 使用 `SplitSqliteControlStore`。全局数据库默认文件名统一为 `ait.sqlite3`：
+daemon 默认使用当前工作目录下的 `ait.sqlite3`，可通过 `--database` 指定路径；
+正式 Desktop 使用 `<Electron userData>/ait.sqlite3`。开发版 Desktop 使用独立的
+`ait-development.sqlite3`，保持开发 Mock 数据与正式数据隔离。
+这些路径现在只定位全局 catalog；本次不迁移用户的全局目录位置或凭据后端。
+NEC-146 POC 中的 `<Documents>/ait/`、`config.toml/secrets.toml` 布局仍是设计提案，
+不是当前 daemon/Desktop 的默认目录或凭据后端。
 原单文件 adapter 保留给内存测试和旧格式迁移测试，不用于 daemon 的持久化路径。
 
 | 位置 | 持久化内容 |

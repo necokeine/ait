@@ -10,7 +10,7 @@ INSERT INTO projects(
   id, name, root_path, git_initialized_by_manager, instruction_revision,
   instruction_digest, created_at_ms, updated_at_ms
 ) VALUES (
-  'p1', 'Split POC', '/tmp/metafab-poc-project', 1, 1,
+  'p1', 'Split POC', '/tmp/ait-poc-project', 1, 1,
   lower(hex(zeroblob(32))), 1, 1
 );
 INSERT INTO agents(id, name, created_at_ms, updated_at_ms)
@@ -147,7 +147,7 @@ UPDATE cron_fires SET state = 'started', local_run_id = 'r-cron-1', updated_at_m
 CREATE TEMP TABLE smoke_assertion(ok INTEGER NOT NULL CHECK (ok = 1));
 INSERT INTO smoke_assertion(ok)
 SELECT (SELECT project_id FROM project_runtime.project_identity WHERE singleton = 1) = 'p1'
-   AND (SELECT root_path FROM projects WHERE id = 'p1') = '/tmp/metafab-poc-project'
+   AND (SELECT root_path FROM projects WHERE id = 'p1') = '/tmp/ait-poc-project'
    AND EXISTS (SELECT 1 FROM project_runtime.messages WHERE id = '00000000-0000-0000-0000-000000000004')
    AND (SELECT current_message_id FROM project_runtime.sessions WHERE id = 's1') = '00000000-0000-0000-0000-000000000004'
    AND (SELECT data FROM project_runtime.attachments WHERE id = 'att1') = x'6e6f7465'

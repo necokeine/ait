@@ -2,7 +2,7 @@
 
 ## 当前基线
 
-- `decisions/NEC-235/adr-001-global-and-project-storage.md`：全局 catalog 与每 Project `.ait/project.sqlite3` 的物理拆分、可恢复提交、旧库迁移和独立备份。
+- `decisions/NEC-235/adr-001-global-and-project-storage.md`：全局 `ait.sqlite3` catalog 与每 Project `.ait/project.sqlite3` 的物理拆分、实际运行路径、可恢复提交、旧库迁移和独立备份。
 
 - `decisions/adr-013-session-worktrees.md`：每个 Session 使用固定的
   `<Project>/.ait/<session-id>` linked worktree；Session-bound Run、工具、标题生成和恢复均以该目录为工作目录，Project 主检出保持干净。

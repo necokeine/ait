@@ -9,21 +9,26 @@
 - 来源：NEC-146
 - 配套验证：`schema-split-poc-v3-smoke.sql`
 
+命名按 NEC-235 统一为 AIT：全局文件名 `ait.sqlite3`，本 POC 的系统目录为
+`<Documents>/ait/`，项目目录为 `<project-root>/.ait/`。本文的 Documents 布局与
+`config.toml/secrets.toml` 是设计提案；当前运行时路径及凭据边界以
+[NEC-235 实现约定](../NEC-235/adr-001-global-and-project-storage.md) 为准。
+
 ## 1. 决策摘要
 
 1. POC 不再使用一个 SQLite，而是一个系统级 SQLite + 每个 Project 一个 SQLite。
-2. 系统级目录固定为用户 Documents 下的 `metafab`，保存 Project registry、Agent/revision、Cron/fire 和全局 config/secrets。
+2. 系统级目录固定为用户 Documents 下的 `ait`，保存 Project registry、Agent/revision、Cron/fire 和全局 config/secrets。
 3. 每个 Project 根目录下创建 `.ait/project.sqlite3`，保存该 Project 的 Message、Session、Run、ToolExecution、附件、checkpoint 和事件。
 4. Project DB 不依赖系统 DB 才能读取历史：它保存 `project_identity` 和每个 Run 的非秘密 Agent revision snapshot。
 5. 跨 SQLite 没有外键，也不尝试用一次跨库事务伪造强一致。Cron → Project Run 使用可重试、幂等的 saga；崩溃后可以确定性补偿。
-6. 全局连接 secrets 存在 `Documents/metafab/secrets.toml`，不进入任一 SQLite。目录权限为 `0700`，secret 文件为 `0600`。
+6. 全局连接 secrets 存在 `Documents/ait/secrets.toml`，不进入任一 SQLite。目录权限为 `0700`，secret 文件为 `0600`。
 7. POC 仍不做任何数据/备份 GC。两个层级分别用 SQLite Online Backup API 生成单文件快照。
 
 ## 2. 文件布局
 
 ```text
-<Documents>/metafab/
-  metafab.sqlite3                 # 全局 catalog/config state
+<Documents>/ait/
+  ait.sqlite3                     # 全局 catalog/config state
   config.toml                     # 全局非秘密 config
   secrets.toml                    # Agent/provider connection secrets
   backups/
@@ -45,7 +50,7 @@
 1. 保证 Project root 是 Git top-level；必要时 `git init`。
 2. 创建 `.ait`，权限默认 `0700`。
 3. 创建 `.ait/project.sqlite3` 并写唯一 `project_identity`。
-4. 在系统 `metafab.sqlite3.projects` 注册 `project_id + root_path`。
+4. 在系统 `ait.sqlite3.projects` 注册 `project_id + root_path`。
 5. 将 `/.ait/` 写入 `.git/info/exclude`，默认不污染 Project tracked files，也不把频繁变化的 SQLite 提交进 Git。
 
 普通文件系统复制 Project root 时 `.ait` 随目录一起移动，历史仍在；Git clone 默认不带 `.ait`，会得到一个没有旧 Session 历史的新本地 Project 实例。这两个语义需要在 UI 中明确区分。
@@ -55,7 +60,7 @@
 系统数据库位置：
 
 ```text
-<Documents>/metafab/metafab.sqlite3
+<Documents>/ait/ait.sqlite3
 ```
 
 表：
@@ -164,8 +169,8 @@ Snapshot 严格使用字段 allowlist，不得包含 API key、token、header �
 系统级 config 都放在：
 
 ```text
-<Documents>/metafab/config.toml
-<Documents>/metafab/secrets.toml
+<Documents>/ait/config.toml
+<Documents>/ait/secrets.toml
 ```
 
 建议内容：
@@ -173,7 +178,7 @@ Snapshot 严格使用字段 allowlist，不得包含 API key、token、header �
 ```toml
 # config.toml：可读的非秘密全局配置
 [storage]
-global_database = "metafab.sqlite3"
+global_database = "ait.sqlite3"
 
 [backup]
 enabled = true
@@ -196,11 +201,11 @@ api_key = "replace-with-real-secret"
 
 安全规则：
 
-- `Documents/metafab` 创建后立即设为仅当前用户访问；POSIX 为目录 `0700`、`secrets.toml` 为 `0600`。
+- `Documents/ait` 创建后立即设为仅当前用户访问；POSIX 为目录 `0700`、`secrets.toml` 为 `0600`。
 - `config.toml` 可以备份或同步；`secrets.toml` 默认不进入普通 SQLite 备份、不随 Project 分享。
-- 若用户要备份整个系统 Metafab 目录，必须明确提示其中含 secrets；推荐生成加密 archive，而不是明文复制到云盘。
+- 若用户要备份整个系统 AIT 目录，必须明确提示其中含 secrets；推荐生成加密 archive，而不是明文复制到云盘。
 - 日志、Agent snapshot、错误、Run event 和 crash dump 都不能序列化 secret。
-- 允许 secrets 值改用 `${ENV_VAR}`，但 config 文件仍留在同一个 Metafab 目录。
+- 允许 secrets 值改用 `${ENV_VAR}`，但 config 文件仍留在同一个 AIT 目录。
 
 ## 8. 跨数据库一致性
 
@@ -263,8 +268,8 @@ read global Agent revision
 
 ```text
 每天 03:00
-  <Documents>/metafab/metafab.sqlite3
-    -> <Documents>/metafab/backups/global-YYYY-MM-DD.sqlite3
+  <Documents>/ait/ait.sqlite3
+    -> <Documents>/ait/backups/global-YYYY-MM-DD.sqlite3
 
   每个已注册且可访问的 <project>/.ait/project.sqlite3
     -> <project>/.ait/backups/project-YYYY-MM-DD.sqlite3
@@ -295,7 +300,7 @@ Project 历史恢复只需恢复对应 Project snapshot；其 Agent snapshot 足
 
 ### 配置备份
 
-每日 SQLite backup 不包含 `config.toml/secrets.toml`。`config.toml` 可普通复制；`secrets.toml` 如果要备份，使用单独的加密 archive。复制整个 `<Documents>/metafab` 目录会包含 secrets，UI/CLI 必须明确警告。
+每日 SQLite backup 不包含 `config.toml/secrets.toml`。`config.toml` 可普通复制；`secrets.toml` 如果要备份，使用单独的加密 archive。复制整个 `<Documents>/ait` 目录会包含 secrets，UI/CLI 必须明确警告。
 
 ## 10. 可移植性与分享语义
 
@@ -318,7 +323,7 @@ Project 历史恢复只需恢复对应 Project snapshot；其 Agent snapshot 足
 
 ### 分享系统目录
 
-`metafab.sqlite3` 本身没有 secrets，但缺少 Project DB 时只能看到 registry/Agent/Cron 上层信息。整个 `<Documents>/metafab` 目录包含 secrets.toml，不应作为普通可分享数据包。
+`ait.sqlite3` 本身没有 secrets，但缺少 Project DB 时只能看到 registry/Agent/Cron 上层信息。整个 `<Documents>/ait` 目录包含 secrets.toml，不应作为普通可分享数据包。
 
 与之前一样，“没有系统凭证”不代表 Message 内容公开安全：用户输入、工具结果、附件、路径仍可能敏感，分享前需要内容确认或 secret scan。
 
@@ -330,6 +335,9 @@ Project 历史恢复只需恢复对应 Project snapshot；其 Agent snapshot 足
 Global:  "MFG1" / schema-global migrations
 Project: "MFP1" / schema-project migrations
 ```
+
+这里保留历史 POC 的文件格式标识，避免把不同 schema 当作同一种文件格式；
+当前 NEC-235 实现使用 `AIG1` / `AIP1`。目录和文件更名不改写数据库格式标识。
 
 两套 `user_version + schema_migrations` 独立向前迁移：
 
@@ -369,6 +377,6 @@ Project: "MFP1" / schema-project migrations
 
 - 系统级数据与 Project 历史物理分离，符合“上层 catalog 全局、运行历史随 Project 走”。
 - 牺牲跨库外键/原子事务，换取 Project 可复制性；用 identity、snapshot、dedupe 和 reconciliation 补足。
-- secrets 放用户指定的 Metafab config 目录，部署简单，但比 OS keychain 更依赖文件权限和加密备份；POC 明确接受并记录这一风险。
+- secrets 放用户指定的 AIT config 目录，部署简单，但比 OS keychain 更依赖文件权限和加密备份；POC 明确接受并记录这一风险。
 - `.ait` 默认 Git-excluded，但普通目录复制会保留；Git clone 与目录复制的历史语义不同。
 - POC 不引入 GC、FTS 或外置附件库，先验证基本产品模型。

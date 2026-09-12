@@ -1,6 +1,6 @@
 -- NEC-146 POC v3: global catalog database.
 -- Preserved from the accepted design work in NEC-146.
--- Location: <Documents>/metafab/metafab.sqlite3
+-- Location: <Documents>/ait/ait.sqlite3
 
 PRAGMA application_id = 0x4d464731; -- "MFG1"
 PRAGMA user_version = 3;
@@ -43,7 +43,7 @@ CREATE TABLE agents (
 ) STRICT;
 
 -- connection_name selects a non-secret connection block in config.toml.
--- Authentication fields live only in <Documents>/metafab/secrets.toml.
+-- Authentication fields live only in <Documents>/ait/secrets.toml.
 CREATE TABLE agent_revisions (
   agent_id                TEXT NOT NULL,
   revision                INTEGER NOT NULL CHECK (revision >= 1),
