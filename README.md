@@ -28,6 +28,11 @@ cargo run -p ait-cli -- session create --id main --project-id demo --agent-id co
 cargo run -p ait-cli -- session send --session-id main --text-stdin < /path/to/prompt.txt
 ```
 
+`--database` 指定全局目录数据库；对话、Session、Run 和进度保存在各项目的
+`.metafab/project.sqlite3`，并自动通过 Git `info/exclude` 排除。旧单文件库首次打开时
+先生成 `*.pre-split.sqlite3` 备份再迁移，迁移时所有已注册项目目录必须可访问。
+备份需要同时考虑全局库和项目库，详见 [存储与迁移约定](docs/decisions/NEC-235/adr-001-global-and-project-storage.md)。
+
 daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/register`、
 `POST /v1/session/create`；可按 cursor 续读的 SSE 位于 `GET /v1/event/list`。CLI 通过
 同一组 API 调用 application service。完整路由表见

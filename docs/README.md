@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-235/adr-001-global-and-project-storage.md`：全局 catalog 与每 Project `.metafab/project.sqlite3` 的物理拆分、可恢复提交、旧库迁移和独立备份。
+
 - `decisions/NEC-195/adr-001-name-only-project-creation.md`：省略工作目录时在当前用户 Documents
   独占创建同名目录；沿用 Git/原子注册流程，明确冲突拒绝、CAS 重试与失败目录保留语义。
 

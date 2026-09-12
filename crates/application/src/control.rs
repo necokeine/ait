@@ -139,9 +139,16 @@ enum WorkspaceRecoveryClaim {
 /// supervisor acquires the matching Project workspace lease.
 pub struct StartupRecoveryPlan {
     run_ids: Vec<String>,
+    unavailable_projects: Vec<(String, String)>,
 }
 
 impl StartupRecoveryPlan {
+    /// Project-specific scan failures; these histories remain untouched.
+    #[must_use]
+    pub fn unavailable_projects(&self) -> &[(String, String)] {
+        &self.unavailable_projects
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.run_ids.len()
@@ -1873,20 +1880,39 @@ impl LocalControlService {
     ///
     /// # Errors
     ///
-    /// Returns a persistence error when the Run index cannot be read.
+    /// Returns a persistence error when the global Project catalog cannot be read.
+    /// Project-specific failures are reported in the plan without changing their Runs.
     pub async fn prepare_startup_recovery(&self) -> Result<StartupRecoveryPlan, ApiError> {
-        let state = self
-            .read_records(vec![ControlFilter::all(ControlRecordKind::Run)])
+        let catalog = self
+            .read_records(vec![ControlFilter::all(ControlRecordKind::Project)])
             .await?
             .original;
-        Ok(StartupRecoveryPlan {
-            run_ids: state
-                .runs
-                .iter()
-                .filter(|run| !is_terminal_workspace_status(&run.status))
-                .map(|run| run.id.clone())
-                .collect(),
-        })
+        let mut plan = StartupRecoveryPlan {
+            run_ids: Vec::new(),
+            unavailable_projects: Vec::new(),
+        };
+        for project in catalog.projects {
+            match self
+                .read_records(vec![ControlFilter::project(
+                    ControlRecordKind::Run,
+                    &project.id,
+                )])
+                .await
+            {
+                Ok(state) => plan.run_ids.extend(
+                    state
+                        .original
+                        .runs
+                        .into_iter()
+                        .filter(|run| !is_terminal_workspace_status(&run.status))
+                        .map(|run| run.id),
+                ),
+                Err(failure) => plan
+                    .unavailable_projects
+                    .push((project.id, failure.message)),
+            }
+        }
+        Ok(plan)
     }
 
     /// Executes a previously claimed startup plan after the daemon listener is
