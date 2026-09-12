@@ -1,25 +1,32 @@
 //! Public control-store adapter for the existing provider-neutral `RunCoordinator`.
-use super::{
-    AgentProviderGateway, ApiError, Arc, ControlFilter, ControlStoreError, Digest, DomainError,
-    ErrorCode, LocalControlService, MessageView, Mutex, RunView, Sha256, Uuid, Value, WorkingSet,
-    error, is_terminal_workspace_status, json, now, pending, recovery_error, release_session,
-    validate_run_permission_ceiling,
-};
+use crate::control::LocalControlService;
+use crate::control::conversation::release_session;
+use crate::control::errors::{error, recovery_error};
+use crate::control::events::{now, pending};
+use crate::control::permissions::validate_run_permission_ceiling;
+use crate::control::project::worktrees::run_workdir;
+use crate::control::runs::is_terminal_workspace_status;
+use crate::control::state::WorkingSet;
 use ait_contracts::{
-    ApiRunExecution,
+    ApiError, ApiRunExecution, MessageView, RunView,
     sensitive::{validate_serialized_tool_arguments, validate_tool_argument_value},
 };
 use ait_domain::{
-    Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectedMessage, Run, RunAttempt,
-    RunId, RunStatus, SubMessage, ToolExecution,
+    DomainError, ErrorCode, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
+    ProjectedMessage, Run, RunAttempt, RunId, RunStatus, SubMessage, ToolExecution,
 };
 use ait_ports::{
-    AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent,
-    RunApproval, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome, ToolRecovery,
+    AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, ApprovalRequest,
+    CompletionResult, ControlFilter, ControlStoreError, RunAgent, RunApproval, RunStore,
+    RunStoreError, RunTool, ToolInvocation, ToolOutcome, ToolRecovery,
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
 use futures_util::FutureExt;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
 fn store_failure(_: impl std::fmt::Debug) -> RunStoreError {
     RunStoreError::Other("host Run persistence failed".into())
@@ -109,7 +116,7 @@ impl LocalControlService {
         clippy::too_many_lines,
         reason = "execution and failure settlement remain a single guarded lifecycle"
     )]
-    pub(super) async fn execute_api_run(
+    pub(in crate::control) async fn execute_api_run(
         &self,
         view: &RunView,
         cancellation: tokio_util::sync::CancellationToken,
@@ -155,7 +162,7 @@ impl LocalControlService {
         if let Some(dispatcher) = &self.run_dispatcher {
             validate_run_permission_ceiling(view.permission_profile, self.permission_limits)
                 .map_err(api_domain_error_reverse)?;
-            let workdir = super::run_workdir(&state, view)?;
+            let workdir = run_workdir(&state, view)?;
             let reference = state
                 .run_credentials
                 .get(&view.id)
@@ -234,7 +241,7 @@ impl LocalControlService {
         state: &WorkingSet,
     ) -> Result<(Arc<dyn RunTool>, ProviderAgent), DomainError> {
         validate_run_permission_ceiling(view.permission_profile, self.permission_limits)?;
-        let root = super::run_workdir(state, view).map_err(|failure| DomainError {
+        let root = run_workdir(state, view).map_err(|failure| DomainError {
             code: failure.code,
             message: failure.message,
             retryable: failure.retryable,
@@ -999,7 +1006,7 @@ fn validate_tool_child(
 }
 
 /// Keep the public projection and canonical aggregate consistent on policy-driven recovery stops.
-pub(super) fn interrupt(view: &mut RunView) {
+pub(in crate::control) fn interrupt(view: &mut RunView) {
     if view.status == "completed" && !needs_terminal_repair(view) {
         return;
     }
@@ -1074,7 +1081,7 @@ pub(super) fn interrupt(view: &mut RunView) {
     view.phase = Some("terminal".into());
 }
 
-pub(super) fn needs_terminal_repair(view: &RunView) -> bool {
+pub(in crate::control) fn needs_terminal_repair(view: &RunView) -> bool {
     is_terminal_workspace_status(&view.status)
         && view.execution.as_ref().is_some_and(|execution| {
             !execution.run.status.is_terminal()
@@ -1089,7 +1096,7 @@ pub(super) fn needs_terminal_repair(view: &RunView) -> bool {
 
 /// Complete already known/abandoned results in the same terminal CAS. Never
 /// execute or reconcile an effect here, and never modify an existing Message.
-pub(super) fn append_terminal_results(
+pub(in crate::control) fn append_terminal_results(
     state: &mut WorkingSet,
     view: &mut RunView,
 ) -> Result<(), RunStoreError> {

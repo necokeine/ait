@@ -72,6 +72,8 @@
 
 ## 配套设计
 
+- `refactors/NEC-251-control-modules.md`：Control facade、use-case/record 模块和七个测试套件的机械迁移对应及兼容性边界。
+
 - `decisions/adr-012-codex-native-tool-set.md`：仅 Codex Provider 使用 core 原生工具、app-server 分层提示词，以及两轮 Python Hello World 真机验收。
 
 - `decisions/adr-011-default-api-tool-set.md`：默认 System Prompt、参考 DeepSeek Harness 的工具定义、模型覆盖与 API 请求组装；工具执行仍归宿主。
