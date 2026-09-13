@@ -1,6 +1,6 @@
-# Ait desktop 发布操作指南
+# Ait 发布操作指南
 
-GitHub Release 是 Ait desktop 的唯一正式发布入口。推送语义化版本标签后，
+GitHub Release 是 Ait 的唯一正式发布入口。推送语义化版本标签后，
 `.github/workflows/release.yml` 在原生 GitHub-hosted runner 上分别构建 Rust daemon 与
 Electron 桌面外壳，所有平台成功后才创建 Release。
 
@@ -8,10 +8,10 @@ Electron 桌面外壳，所有平台成功后才创建 Release。
 
 | 平台 | 架构 | 文件 | 用途 |
 | --- | --- | --- | --- |
-| Linux | x86_64 | `Ait-desktop-VERSION-linux-x86_64.AppImage` | 免安装运行包 |
-| Linux | x86_64 | `Ait-desktop-VERSION-linux-x86_64.tar.gz` | 解压运行包 |
-| macOS | Apple Silicon (arm64) | `Ait-desktop-VERSION-macos-arm64.dmg` | 图形化安装镜像 |
-| macOS | Apple Silicon (arm64) | `Ait-desktop-VERSION-macos-arm64.zip` | 压缩应用包 |
+| Linux | x86_64 | `Ait-VERSION-linux-x86_64.AppImage` | 免安装运行包 |
+| Linux | x86_64 | `Ait-VERSION-linux-x86_64.tar.gz` | 解压运行包 |
+| macOS | Apple Silicon (arm64) | `Ait-VERSION-macos-arm64.dmg` | 图形化安装镜像 |
+| macOS | Apple Silicon (arm64) | `Ait-VERSION-macos-arm64.zip` | 压缩应用包 |
 | 全部 | — | `SHA256SUMS` | 上述四个文件的 SHA-256 校验值 |
 
 GitHub 还会自动提供当前标签的源码 ZIP 与 tarball。Release Note 根据合并的 PR 自动生成；
@@ -47,11 +47,11 @@ node apps/desktop/scripts/verify-release-version.mjs v0.0.2
 ```bash
 git switch main
 git pull --ff-only
-git tag -a v0.0.2 -m "Ait desktop v0.0.2"
+git tag -a v0.0.2 -m "Ait v0.0.2"
 git push origin v0.0.2
 ```
 
-`Release Ait desktop` 工作流会执行以下门禁：
+`Release Ait` 工作流会执行以下门禁：
 
 1. 标签与 Rust、desktop 版本完全一致；
 2. 用 `Cargo.lock` 构建 release 模式的 `ait-daemon`；
@@ -59,7 +59,7 @@ git push origin v0.0.2
 4. 生成四个预期包并确认没有缺失；
 5. 写出 `SHA256SUMS`，用 GitHub 自动生成的 Release Note 发布全部文件。
 
-工作流也支持手动重跑：在 Actions → **Release Ait desktop** → **Run workflow** 输入已经存在的
+工作流也支持手动重跑：在 Actions → **Release Ait** → **Run workflow** 输入已经存在的
 标签。手动运行不会创建标签；它检出该标签并重建产物。如果 Release 已存在，工作流会保留
 Release Note，并用本次构建覆盖同名产物。
 

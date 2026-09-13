@@ -1,4 +1,4 @@
-# Ait Desktop
+# Ait
 
 Electron desktop shell for the Ait daemon. The renderer is sandboxed and can only call the narrow preload API; Electron main translates those calls to the daemon's loopback HTTP API.
 
@@ -59,6 +59,20 @@ separately from Run failure, and the final immutable Message replaces the
 transient projection after Ait has finished saving it.
 
 ## Packaging
+
+The application name is **Ait**. The editable brand source is `logo.svg` at the
+repository root; `logo.png` is its committed 512×512 export. After editing the
+SVG, run `npm run generate:icons` in this directory and commit both files. The
+generator uses the icon toolset from the pinned electron-builder version (it
+downloads the toolset on first use). Ordinary builds copy the committed assets
+to `dist`; electron-builder converts the SVG to a macOS ICNS (up to 1024×1024)
+and uses the PNG for Linux packaging.
+
+The npm package name `@ait/desktop` and app ID `dev.ait.desktop` remain stable.
+Main resolves and pins the existing Electron `userData` and `sessionData` paths
+before setting the display name, so the rename retains existing catalogs,
+settings, and browser storage. Development and packaged database filenames
+remain separate as described above.
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
 

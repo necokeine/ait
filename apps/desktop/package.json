@@ -7,6 +7,7 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
+    "generate:icons": "node scripts/generate-icons.mjs",
     "build": "tsc -p tsconfig.json && node scripts/copy-static.mjs",
     "dev": "npm run build && electron dist/main.js",
     "package:linux": "npm run build && electron-builder --linux --x64",

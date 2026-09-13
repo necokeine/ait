@@ -1,5 +1,5 @@
 appId: dev.ait.desktop
-productName: Ait desktop
+productName: Ait
 asar: true
 
 directories:
@@ -16,17 +16,19 @@ extraResources:
     to: bin/ait-worker
 
 mac:
+  icon: ../../logo.svg
   category: public.app-category.developer-tools
-  artifactName: Ait-desktop-${version}-macos-arm64.${ext}
+  artifactName: Ait-${version}-macos-arm64.${ext}
   target:
     - dmg
     - zip
 
 linux:
+  icon: ../../logo.png
   category: Development
   executableName: ait-desktop
   synopsis: Local-first multi-agent desktop workspace
-  artifactName: Ait-desktop-${version}-linux-x86_64.${ext}
+  artifactName: Ait-${version}-linux-x86_64.${ext}
   target:
     - AppImage
     - tar.gz

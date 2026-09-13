@@ -20,8 +20,11 @@ import { approvalAction, approvalScope } from "./approval-ui.js";
 import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
 import { registerDesktopProject, type ProjectCreationInput } from "./projects.js";
 import { projectReadPaths } from "./desktop-slices.js";
+import { configureDesktopIdentity } from "./branding.js";
 
+configureDesktopIdentity(app);
 const here = dirname(fileURLToPath(import.meta.url));
+const appIcon = join(here, "logo.png");
 const daemonRuntime = desktopDaemonRuntime(app.isPackaged);
 const endpoint = daemonRuntime.endpoint;
 const allowedMethods = new Set([
@@ -568,6 +571,7 @@ const daemon = new DaemonClient();
 
 function createWindow(): void {
   const window = new BrowserWindow({
+    title: "Ait", icon: appIcon,
     width: 1480, height: 920, minWidth: 920, minHeight: 620,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     backgroundColor: "#111210", show: false,
@@ -585,6 +589,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(appIcon);
   void daemon.ensureStarted();
   ipcMain.handle("ait:request", (_event, method: unknown, params: unknown) => {
     if (typeof method !== "string") throw new Error("Unsupported desktop operation.");
