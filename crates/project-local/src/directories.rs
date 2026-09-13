@@ -1,11 +1,13 @@
 use std::{fs, io::ErrorKind, path::PathBuf, sync::Arc};
 
+use crate::workspace::blocking::{BlockingContext, Operation, OperationOptions};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::ProjectDirectoryCreator;
 
 /// Creates named Project directories beneath the current host user's Documents.
 #[derive(Clone)]
 pub struct DocumentsProjectDirectory {
+    pub(crate) options: OperationOptions,
     resolve: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>,
 }
 
@@ -21,6 +23,7 @@ impl DocumentsProjectDirectory {
     #[must_use]
     pub fn with_resolver(resolve: impl Fn() -> Option<PathBuf> + Send + Sync + 'static) -> Self {
         Self {
+            options: OperationOptions::default(),
             resolve: Arc::new(resolve),
         }
     }
@@ -29,8 +32,11 @@ impl DocumentsProjectDirectory {
 #[async_trait::async_trait]
 impl ProjectDirectoryCreator for DocumentsProjectDirectory {
     async fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectDirectoryCreationFailed);
         let (creator, name) = (self.clone(), name.to_owned());
-        crate::workspace::blocking::run(move |_| creator.create_workdir(&name)).await
+        operation
+            .run(move |ctx| creator.create_workdir_with_context(&name, Some(ctx)))
+            .await
     }
 }
 
@@ -40,6 +46,16 @@ impl DocumentsProjectDirectory {
     /// # Errors
     /// Invalid names, unavailable Documents, existing targets, or mkdir failures.
     pub fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
+        self.create_workdir_with_context(name, None)
+    }
+
+    fn create_workdir_with_context(
+        &self,
+        name: &str,
+        context: Option<&BlockingContext>,
+    ) -> Result<PathBuf, DomainError> {
+        let check = || context.map_or(Ok(()), BlockingContext::check);
+        check()?;
         validate_directory_name(name)?;
         let unavailable = |message| {
             DomainError::invariant(ErrorCode::ProjectDefaultDirectoryUnavailable, message)
@@ -47,6 +63,7 @@ impl DocumentsProjectDirectory {
         let documents = (self.resolve)().filter(|path| path.is_absolute()).ok_or_else(|| {
             unavailable("The current user's Documents directory is unavailable; choose an existing directory explicitly.".to_owned())
         })?;
+        check()?;
         let documents = documents.canonicalize().map_err(|failure| unavailable(format!(
             "Cannot access Documents directory {}: {failure}; choose an existing directory explicitly.", documents.display(),
         )))?;
@@ -57,9 +74,14 @@ impl DocumentsProjectDirectory {
             )));
         }
         let target = documents.join(name);
+        check()?;
+        if let Some(ctx) = context {
+            ctx.retain(&target, "directory_creation_started");
+        }
         // mkdir is the exclusive allocation boundary, including for dangling
         // symlinks. Never precheck then create_dir_all, reuse, or clean up a target.
         fs::create_dir(&target).map_err(|failure| {
+            if let Some(ctx) = context { ctx.forget_retained(&target); }
             if failure.kind() == ErrorKind::AlreadyExists {
                 DomainError::invariant(ErrorCode::ProjectPathAlreadyExists, format!(
                     "Project directory already exists: {}. Choose another name or explicitly select the existing directory.", target.display(),
@@ -70,6 +92,10 @@ impl DocumentsProjectDirectory {
                 ))
             }
         })?;
+        if let Some(ctx) = context {
+            ctx.retain(&target, "directory_created");
+            ctx.point("directory_created");
+        }
         Ok(target)
     }
 }

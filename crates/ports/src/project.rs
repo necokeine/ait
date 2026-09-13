@@ -14,6 +14,10 @@ pub trait ProjectDirectoryCreator: Send + Sync {
     /// Existing entries (including files and symlinks) must fail without mutation.
     /// No parent directories may be implicitly created. Once returned, the path
     /// is retained even if Git preparation or registration subsequently fails.
+    /// Async admission and filesystem phases consume one deadline. A timed-out
+    /// creation returns `ProjectDirectoryCreationFailed` with `reason = "timeout"`.
+    /// If mkdir completed across that deadline, the error includes its retained
+    /// path/state in both details and message, and is not automatically retryable.
     ///
     /// # Errors
     ///

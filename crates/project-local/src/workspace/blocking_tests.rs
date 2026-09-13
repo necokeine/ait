@@ -27,6 +27,9 @@ fn head_and_index_races_after_status_are_rejected() {
         let mut context = BlockingContext {
             cancellation: CancellationToken::new(),
             deadline: Instant::now() + DEADLINE,
+            failure_code: ErrorCode::ProjectGitHeadUnavailable,
+            options: OperationOptions::default(),
+            retained: Mutex::default(),
             after_git: None,
         };
         context.prepare_git_root(root.path()).unwrap();
@@ -76,6 +79,9 @@ fn deadline_kills_and_reaps_a_stalled_git_process_group() {
     let context = BlockingContext {
         cancellation: CancellationToken::new(),
         deadline: Instant::now() + Duration::from_millis(80),
+        failure_code: ErrorCode::ProjectGitHeadUnavailable,
+        options: OperationOptions::default(),
+        retained: Mutex::default(),
         after_git: None,
     };
     let start = Instant::now();
@@ -99,15 +105,23 @@ async fn dropped_future_retains_the_lease_until_started_blocking_io_drains() {
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(run(move |context| {
-        let held_lease = lease;
-        started_tx.send(()).unwrap();
-        release_rx.recv().unwrap();
-        let cancelled = context.check().unwrap_err().code == ErrorCode::RunCancelled;
-        drop(held_lease);
-        finished_tx.send(cancelled).unwrap();
-        Ok(())
-    }));
+    let task = tokio::spawn(async move {
+        let operation = Operation::new(
+            &OperationOptions::default(),
+            ErrorCode::ProjectGitInitFailed,
+        );
+        operation
+            .run(move |context| {
+                let held_lease = lease;
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                let cancelled = context.check().unwrap_err().code == ErrorCode::RunCancelled;
+                drop(held_lease);
+                finished_tx.send(cancelled).unwrap();
+                Ok(())
+            })
+            .await
+    });
     started_rx.await.unwrap();
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());

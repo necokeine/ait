@@ -33,14 +33,11 @@ impl BlockingContext {
         self.ensure_session_worktree_parent(parent)?;
         self.validate_session_baseline(primary, baseline)?;
         self.add_session_worktree(primary, worktree, baseline)?;
-        if let Err(mut failure) = self.git_stdout(worktree, &["reset", "--hard", baseline]) {
-            failure.message = format!(
-                "{}; partial Session worktree retained at {}",
-                failure.message,
-                worktree.display()
-            );
-            return Err(failure);
-        }
+        self.check()?;
+        self.retain(worktree, "worktree_population_started");
+        self.git_stdout(worktree, &["reset", "--hard", baseline])?;
+        self.retain(worktree, "worktree_populated");
+        self.point("worktree_populated");
         Ok(true)
     }
     fn validate_session_worktree_parent(&self, parent: &Path) -> Result<bool, DomainError> {
@@ -62,6 +59,7 @@ impl BlockingContext {
     }
 
     fn validate_existing_session_worktree(&self, worktree: &Path) -> Result<bool, DomainError> {
+        self.check()?;
         let metadata = match std::fs::symlink_metadata(worktree) {
             Ok(metadata) => metadata,
             Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -109,9 +107,15 @@ impl BlockingContext {
         if self.validate_session_worktree_parent(parent)? {
             return Ok(());
         }
+        self.check()?;
+        self.retain(parent, "directory_creation_started");
         match std::fs::create_dir(parent) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.retain(parent, "directory_created");
+                Ok(())
+            }
             Err(failure) if failure.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.forget_retained(parent);
                 self.validate_session_worktree_parent(parent).map(|_| ())
             }
             Err(failure) => Err(error(
@@ -142,6 +146,8 @@ impl BlockingContext {
         baseline: &str,
     ) -> Result<(), DomainError> {
         let worktree_text = super::path_text(worktree)?.to_owned();
+        self.check()?;
+        self.retain(worktree, "worktree_creation_started");
         self.git_stdout(
             primary,
             &[
@@ -153,6 +159,8 @@ impl BlockingContext {
                 baseline,
             ],
         )?;
+        self.retain(worktree, "worktree_created");
+        self.point("worktree_created");
         Ok(())
     }
 
@@ -165,6 +173,10 @@ impl BlockingContext {
             primary.join(common)
         };
         let info = common.join("info");
+        self.check()?;
+        if !info.exists() {
+            self.retain(&info, "directory_creation_started");
+        }
         std::fs::create_dir_all(&info).map_err(|failure| {
             error(
                 ErrorCode::ProjectGitInitFailed,
@@ -172,11 +184,14 @@ impl BlockingContext {
                 false,
             )
         })?;
+        self.check()?;
         let exclude = info.join("exclude");
         let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
         if existing.lines().any(|line| line.trim() == "/.ait/") {
             return Ok(());
         }
+        self.check()?;
+        self.retain(&exclude, "git_exclude_update_started");
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -203,6 +218,8 @@ impl BlockingContext {
                 format!("cannot update Git info/exclude: {failure}"),
                 false,
             )
-        })
+        })?;
+        self.retain(&exclude, "git_exclude_updated");
+        Ok(())
     }
 }

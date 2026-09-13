@@ -47,8 +47,24 @@ Git 对账歧义仍仅中断所属 Run，不猜测用户工作区状态。
 
 - 所有新异步 Project 操作在 project-local 的 `spawn_blocking` 边界运行；进程级
   semaphore 最多允许 4 个已接纳操作，独立 adapter 实例共享该预算。
-- 单次操作从排队起计算 30 秒 deadline。workspace 同进程队列也有 30 秒上限；
-  跨进程 file lock 使用 `try_lock`，竞争立即返回可重试 `PROJECT_WORKSPACE_BUSY`。
+- 每次 public port 调用进入时创建一个 absolute deadline（30 秒），贯穿 capacity
+  queue、canonicalize、同进程 lease queue、file lock 和全部 Git/文件子阶段。
+  `ensure_session_worktree` 隐式获取 lease 也复用这个 deadline；每次等待只消费剩余
+  预算，不重新计时。跨进程 file lock 使用 `try_lock`，竞争立即返回可重试
+  `PROJECT_WORKSPACE_BUSY`。此预算限定单次 port 调用，不是整个 application 事务。
+- 超时返回 `details.reason = "timeout"`，按 public 操作映射稳定错误：root/worktree
+  创建为 `PROJECT_GIT_INIT_FAILED`，HEAD/baseline/branch/Git dir 为
+  `PROJECT_GIT_HEAD_UNAVAILABLE`，lease 为 `PROJECT_WORKSPACE_BUSY`，path facts 为
+  `PROJECT_PATH_NOT_FOUND`，Documents mkdir 为 `PROJECT_DIRECTORY_CREATION_FAILED`。
+  未开始业务 mutation 的超时可重试；取消使用 `RUN_CANCELLED` 且不可重试。
+- 创建前记录路径与 intent，成功后更新确认状态。任何后续失败（包括返回前跨越
+  deadline）附加 `details.retained_paths = [{path, state}]` 并设 `retryable = false`。
+  `*_started` 表示可能留下部分状态，不能宣称已完成；`directory_created`、
+  `git_initialized`、`initial_commit_created`、`worktree_created`（尚未填充）、
+  `worktree_populated` 表示对应阶段已成功。`.ait` 和 Git exclude 的修改也记录。
+  可读 message 同时包含路径/状态，让未传递 DomainError details 的 API 仍能提示
+  用户检查。已明确失败的独占 mkdir 不归因为本次创建；可安全复用的 lease 锁文件
+  不属于业务 retained artifact。不会自动清理、复用或重置部分 worktree。
 - Future drop 取消排队或标记已启动操作；worker 在启动/每条 Git/轮询/返回前检查。
   已启动 worker 保留 permit 与 lease 到实际退出。不可中断的 OS 文件 syscall 无法
   承诺硬性墙钟上限，因此不以 async timeout 提前释放资源。
@@ -67,6 +83,10 @@ Git 对账歧义仍仅中断所属 Run，不猜测用户工作区状态。
 - project-local 验证 unborn/staged/dirty、既有 worktree 保留、canonical alias、真实
   子进程竞争、dangling/non-UTF-8 路径、HEAD/index 确定性竞态、Git deadline 和
   future drop 后 lease 持续到阻塞调用排空。
+- public port 测试验证全部操作的 timeout code/retryable、跨子阶段累计预算、实际
+  capacity/lease queue 等待、隐式 lease 预算复用、运行中 Git 超时；通过仅测试可用
+  的时钟偏移和边界注入，验证实际 mkdir/init/commit/worktree 落盘后跨 deadline 的
+  retained path/state。application 集成断言保留路径可见且没有注册记录。
 - application 使用 fake facts 验证授权上限、canonical/lexical escape、CAS 重新取事实
   和 baseline 拒绝前后的持久化顺序；原 lease/recovery/approval 故障注入继续保留。
 - 交付检查：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、

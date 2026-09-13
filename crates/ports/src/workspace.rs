@@ -39,6 +39,12 @@ pub trait WorkspaceLease: Send + Sync {
 /// calls retain their permits and any supplied lease until they stop. Filesystem
 /// syscalls cannot be forcibly interrupted. Partial initialization/worktrees are
 /// retained for inspection, never automatically reset/cleaned or rolled back.
+/// Each public call shares one deadline across admission and nested phases (including
+/// implicit lease acquisition). A timeout uses the operation's Project error code
+/// and `details.reason = "timeout"`. If a business mutation may have started, errors
+/// include `details.retained_paths` entries with `path` and `state`, repeat them in
+/// the message for API callers, and disable blind retries (`retryable = false`).
+/// A `*_started` state denotes an uncertain partial result, not confirmed success.
 /// No method grants permission, moves a Session, publishes a Run, or writes storage.
 #[async_trait::async_trait]
 pub trait ProjectWorkspace: Send + Sync {

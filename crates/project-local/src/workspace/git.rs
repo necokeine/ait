@@ -72,6 +72,7 @@ impl BlockingContext {
                 false,
             ));
         }
+        self.check()?;
         if !path.is_dir() {
             return Err(error(
                 ErrorCode::ProjectPathNotDirectory,
@@ -79,9 +80,12 @@ impl BlockingContext {
                 false,
             ));
         }
+        self.check()?;
         let canonical = canonical_path(path)?;
         let top = self.git_top_level(&canonical)?;
         if top.as_deref() != Some(canonical.as_path()) {
+            self.check()?;
+            self.retain(&canonical, "git_initialization_started");
             let output = self
                 .command()
                 .arg("-C")
@@ -98,6 +102,8 @@ impl BlockingContext {
                     false,
                 ));
             }
+            self.retain(&canonical, "git_initialized");
+            self.point("git_initialized");
         }
         if self.git_top_level(&canonical)?.as_deref() != Some(canonical.as_path()) {
             return Err(error(
@@ -133,6 +139,8 @@ impl BlockingContext {
                 false,
             ));
         }
+        self.check()?;
+        self.retain(path, "initial_commit_started");
         let output = self
             .command()
             .arg("-C")
@@ -165,6 +173,8 @@ impl BlockingContext {
                 false,
             ));
         }
+        self.retain(path, "initial_commit_created");
+        self.point("initial_commit_created");
         self.git_head(path)?.ok_or_else(|| {
             error(
                 ErrorCode::ProjectGitHeadUnavailable,

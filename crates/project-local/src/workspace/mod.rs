@@ -5,6 +5,7 @@ mod worktrees;
 
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
+use blocking::{Operation, OperationOptions};
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
@@ -15,6 +16,7 @@ use std::{
 /// Native Project adapter with bounded blocking I/O and canonical workspace leases.
 #[derive(Clone, Default)]
 pub struct LocalProjectWorkspace {
+    options: OperationOptions,
     leases: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
 }
 
@@ -81,39 +83,142 @@ impl WorkspaceLease for LocalLease {
 #[async_trait::async_trait]
 impl ProjectWorkspace for LocalProjectWorkspace {
     async fn prepare_git_root(&self, path: &Path) -> Result<PathBuf, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitInitFailed);
         path_text(path)?;
         let path = path.to_owned();
-        blocking::run(move |ctx| ctx.prepare_git_root(&path)).await
+        operation.run(move |ctx| ctx.prepare_git_root(&path)).await
     }
     async fn ensure_git_head(&self, path: &Path) -> Result<String, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
         path_text(path)?;
         let path = path.to_owned();
-        blocking::run(move |ctx| ctx.ensure_git_head(&path)).await
+        operation.run(move |ctx| ctx.ensure_git_head(&path)).await
     }
     async fn git_head(&self, path: &Path) -> Result<Option<String>, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
         path_text(path)?;
         let path = path.to_owned();
-        blocking::run(move |ctx| ctx.git_head(&path)).await
+        operation.run(move |ctx| ctx.git_head(&path)).await
     }
     async fn clean_baseline(&self, path: &Path) -> Result<GitBaseline, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
         path_text(path)?;
         let path = path.to_owned();
-        blocking::run(move |ctx| ctx.clean_git_baseline(&path)).await
+        operation
+            .run(move |ctx| ctx.clean_git_baseline(&path))
+            .await
     }
     async fn symbolic_head(&self, path: &Path) -> Result<Option<String>, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
         path_text(path)?;
         let path = path.to_owned();
-        blocking::run(move |ctx| ctx.git_symbolic_head(&path)).await
+        operation.run(move |ctx| ctx.git_symbolic_head(&path)).await
     }
     async fn git_dir(&self, path: &Path) -> Result<PathBuf, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
         path_text(path)?;
         let path = path.to_owned();
-        blocking::run(move |ctx| ctx.absolute_git_dir(&path)).await
+        operation.run(move |ctx| ctx.absolute_git_dir(&path)).await
     }
     async fn acquire_lease(&self, path: &Path) -> Result<Arc<dyn WorkspaceLease>, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectWorkspaceBusy);
+        self.acquire_lease_with_operation(path, &operation).await
+    }
+    async fn ensure_session_worktree(
+        &self,
+        primary: &Path,
+        worktree: &Path,
+        baseline: &str,
+        lease: Option<Arc<dyn WorkspaceLease>>,
+    ) -> Result<bool, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitInitFailed);
+        let lease = match lease {
+            Some(lease) => lease,
+            None => {
+                self.acquire_lease_with_operation(primary, &operation)
+                    .await?
+            }
+        };
+        let (primary, worktree, baseline) =
+            (primary.to_owned(), worktree.to_owned(), baseline.to_owned());
+        operation
+            .run(move |ctx| {
+                let held_lease = lease;
+                if canonical_path(&primary)? != held_lease.canonical_root() {
+                    return Err(error(
+                        ErrorCode::ProjectWorkspaceBusy,
+                        "workspace lease belongs to another Project",
+                        false,
+                    ));
+                }
+                ctx.point("before_worktree");
+                ctx.check()?;
+                ctx.ensure_session_worktree(&primary, &worktree, &baseline)
+            })
+            .await
+    }
+    async fn path_facts(
+        &self,
+        root: &Path,
+        destination: &Path,
+    ) -> Result<WorkspacePathFacts, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectPathNotFound);
+        let (root, destination) = (root.to_owned(), destination.to_owned());
+        operation
+            .run(move |ctx| {
+                path_text(&destination)?;
+                let canonical_root = canonical_path(&root)?;
+                ctx.check()?;
+                if !canonical_root.is_dir() {
+                    return Err(error(
+                        ErrorCode::ProjectPathNotDirectory,
+                        "Project root must be a directory",
+                        false,
+                    ));
+                }
+                let mut existing = destination.as_path();
+                loop {
+                    ctx.check()?;
+                    match fs::symlink_metadata(existing) {
+                        Ok(_) => break,
+                        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+                            existing = existing.parent().ok_or_else(|| {
+                                error(
+                                    ErrorCode::ProjectPathNotFound,
+                                    "cannot resolve destination ancestor",
+                                    false,
+                                )
+                            })?;
+                        }
+                        Err(failure) => {
+                            return Err(error(
+                                ErrorCode::ProjectPathNotFound,
+                                failure.to_string(),
+                                false,
+                            ));
+                        }
+                    }
+                }
+                Ok(WorkspacePathFacts {
+                    canonical_root,
+                    canonical_existing: canonical_path(existing)?,
+                })
+            })
+            .await
+    }
+}
+
+impl LocalProjectWorkspace {
+    async fn acquire_lease_with_operation(
+        &self,
+        path: &Path,
+        operation: &Operation,
+    ) -> Result<Arc<dyn WorkspaceLease>, DomainError> {
         path_text(path)?;
         let path = path.to_owned();
-        let canonical = blocking::run(move |_| canonical_path(&path)).await?;
+        let canonical = operation.run(move |_| canonical_path(&path)).await?;
+        operation.context().point("after_canonicalize");
+        operation.context().check()?;
         let queue = {
             let mut leases = self.leases.lock().map_err(|_| {
                 error(
@@ -131,122 +236,52 @@ impl ProjectWorkspace for LocalProjectWorkspace {
                 queue
             }
         };
-        let guard = tokio::time::timeout(std::time::Duration::from_secs(30), queue.lock_owned())
-            .await
-            .map_err(|_| {
-                error(
-                    ErrorCode::ProjectWorkspaceBusy,
-                    "workspace lease admission timed out",
-                    true,
-                )
-            })?;
-        blocking::run(move |ctx| {
-            let git_dir = ctx.absolute_git_dir(&canonical)?;
-            let lock_dir = git_dir.join("ait").join("locks");
-            fs::create_dir_all(&lock_dir).map_err(|failure| {
-                error(
-                    ErrorCode::ProjectWorkspaceBusy,
-                    format!("cannot create workspace lease directory: {failure}"),
-                    true,
-                )
-            })?;
-            let file = OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .read(true)
-                .write(true)
-                .open(lock_dir.join("workspace-write.lock"))
-                .map_err(|failure| {
+        let guard = operation.wait(queue.lock_owned()).await?;
+        operation.context().point("after_lease_queue");
+        operation
+            .run(move |ctx| {
+                let git_dir = ctx.absolute_git_dir(&canonical)?;
+                ctx.check()?;
+                let lock_dir = git_dir.join("ait").join("locks");
+                fs::create_dir_all(&lock_dir).map_err(|failure| {
                     error(
                         ErrorCode::ProjectWorkspaceBusy,
-                        format!("cannot open workspace write lease: {failure}"),
+                        format!("cannot create workspace lease directory: {failure}"),
                         true,
                     )
                 })?;
-            file.try_lock().map_err(|failure| {
-                error(
-                    ErrorCode::ProjectWorkspaceBusy,
-                    format!("cannot acquire Project workspace write lease: {failure}"),
-                    true,
-                )
-            })?;
-            Ok(Arc::new(LocalLease {
-                canonical,
-                _queue: guard,
-                _file: file,
-            }) as Arc<dyn WorkspaceLease>)
-        })
-        .await
-    }
-    async fn ensure_session_worktree(
-        &self,
-        primary: &Path,
-        worktree: &Path,
-        baseline: &str,
-        lease: Option<Arc<dyn WorkspaceLease>>,
-    ) -> Result<bool, DomainError> {
-        let lease = match lease {
-            Some(lease) => lease,
-            None => self.acquire_lease(primary).await?,
-        };
-        let (primary, worktree, baseline) =
-            (primary.to_owned(), worktree.to_owned(), baseline.to_owned());
-        blocking::run(move |ctx| {
-            let held_lease = lease;
-            if canonical_path(&primary)? != held_lease.canonical_root() {
-                return Err(error(
-                    ErrorCode::ProjectWorkspaceBusy,
-                    "workspace lease belongs to another Project",
-                    false,
-                ));
-            }
-            ctx.ensure_session_worktree(&primary, &worktree, &baseline)
-        })
-        .await
-    }
-    async fn path_facts(
-        &self,
-        root: &Path,
-        destination: &Path,
-    ) -> Result<WorkspacePathFacts, DomainError> {
-        let (root, destination) = (root.to_owned(), destination.to_owned());
-        blocking::run(move |_| {
-            path_text(&destination)?;
-            let canonical_root = canonical_path(&root)?;
-            if !canonical_root.is_dir() {
-                return Err(error(
-                    ErrorCode::ProjectPathNotDirectory,
-                    "Project root must be a directory",
-                    false,
-                ));
-            }
-            let mut existing = destination.as_path();
-            loop {
-                match fs::symlink_metadata(existing) {
-                    Ok(_) => break,
-                    Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
-                        existing = existing.parent().ok_or_else(|| {
-                            error(
-                                ErrorCode::ProjectPathNotFound,
-                                "cannot resolve destination ancestor",
-                                false,
-                            )
-                        })?;
-                    }
-                    Err(failure) => {
-                        return Err(error(
-                            ErrorCode::ProjectPathNotFound,
-                            failure.to_string(),
-                            false,
-                        ));
-                    }
-                }
-            }
-            Ok(WorkspacePathFacts {
-                canonical_root,
-                canonical_existing: canonical_path(existing)?,
+                ctx.check()?;
+                let file = OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .read(true)
+                    .write(true)
+                    .open(lock_dir.join("workspace-write.lock"))
+                    .map_err(|failure| {
+                        error(
+                            ErrorCode::ProjectWorkspaceBusy,
+                            format!("cannot open workspace write lease: {failure}"),
+                            true,
+                        )
+                    })?;
+                ctx.check()?;
+                file.try_lock().map_err(|failure| {
+                    error(
+                        ErrorCode::ProjectWorkspaceBusy,
+                        format!("cannot acquire Project workspace write lease: {failure}"),
+                        true,
+                    )
+                })?;
+                ctx.point("lease_acquired");
+                Ok(Arc::new(LocalLease {
+                    canonical,
+                    _queue: guard,
+                    _file: file,
+                }) as Arc<dyn WorkspaceLease>)
             })
-        })
-        .await
+            .await
     }
 }
+
+#[cfg(test)]
+mod deadline_tests;

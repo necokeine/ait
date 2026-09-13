@@ -1,11 +1,15 @@
 //! Bounded admission; started workers own permits/resources until cancellation drains.
 use super::error;
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{DomainError, DomainMetadata, ErrorCode};
 use std::{
     ffi::OsStr,
     io::{self, Read, Seek},
+    path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
@@ -13,40 +17,188 @@ use tokio_util::sync::CancellationToken;
 
 const DEADLINE: Duration = Duration::from_secs(30);
 const OUTPUT_LIMIT: u64 = 1024 * 1024;
+const QUEUED: u8 = 0;
+const STARTED: u8 = 1;
+const CANCELLED: u8 = 2;
+
+/// Configuration is shared by adapter clones; every public call starts a new scope.
+#[derive(Clone)]
+pub(crate) struct OperationOptions {
+    pub(crate) timeout: Duration,
+    #[cfg(test)]
+    pub(crate) probe: Option<Probe>,
+    #[cfg(test)]
+    pub(crate) elapsed_ms: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(test)]
+    pub(crate) permits: Option<Arc<Semaphore>>,
+    #[cfg(test)]
+    pub(crate) git_program: Option<PathBuf>,
+}
+
+impl Default for OperationOptions {
+    fn default() -> Self {
+        Self {
+            timeout: DEADLINE,
+            #[cfg(test)]
+            probe: None,
+            #[cfg(test)]
+            elapsed_ms: Arc::default(),
+            #[cfg(test)]
+            permits: None,
+            #[cfg(test)]
+            git_program: None,
+        }
+    }
+}
+
+impl OperationOptions {
+    // Instance state is used by deterministic test clock/admission probes.
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    fn now(&self) -> Instant {
+        let now = Instant::now();
+        #[cfg(test)]
+        let now =
+            now + Duration::from_millis(self.elapsed_ms.load(std::sync::atomic::Ordering::SeqCst));
+        now
+    }
+
+    // Instance state is used by deterministic test clock/admission probes.
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    fn permits(&self) -> Arc<Semaphore> {
+        static PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+        #[cfg(test)]
+        if let Some(permits) = &self.permits {
+            return permits.clone();
+        }
+        PERMITS.get_or_init(|| Arc::new(Semaphore::new(4))).clone()
+    }
+}
+
+/// A single cancellation/deadline owner spanning all queues and blocking phases.
+pub(crate) struct Operation {
+    context: Arc<BlockingContext>,
+    _cancel_on_drop: tokio_util::sync::DropGuard,
+}
 
 pub(crate) struct BlockingContext {
     cancellation: CancellationToken,
     deadline: Instant,
+    failure_code: ErrorCode,
+    options: OperationOptions,
+    retained: Mutex<Vec<RetainedPath>>,
     #[cfg(test)]
     after_git: Option<GitObserver>,
 }
 
+struct RetainedPath {
+    path: PathBuf,
+    state: &'static str,
+}
+
 #[cfg(test)]
 type GitObserver = Box<dyn Fn(&Command) + Send + Sync>;
+#[cfg(test)]
+pub(crate) type Probe = Arc<dyn Fn(&str, &BlockingContext) + Send + Sync>;
 
 impl BlockingContext {
-    pub(super) fn check(&self) -> Result<(), DomainError> {
+    pub(crate) fn check(&self) -> Result<(), DomainError> {
         if self.cancellation.is_cancelled() {
             Err(error(
                 ErrorCode::RunCancelled,
-                "Project operation cancelled; partial filesystem work is retained",
+                "Project operation cancelled",
                 false,
             ))
-        } else if Instant::now() >= self.deadline {
-            Err(error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                "Project operation timed out; inspect retained filesystem state before retrying",
-                true,
-            ))
+        } else if self.options.now() >= self.deadline {
+            Err(self.timeout_error())
         } else {
             Ok(())
         }
     }
 
+    fn timeout_error(&self) -> DomainError {
+        error(self.failure_code, "Project operation timed out", true).with_details(DomainMetadata(
+            [("reason".into(), serde_json::json!("timeout"))].into(),
+        ))
+    }
+
+    pub(crate) fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(self.options.now())
+    }
+
+    /// Record intent before a mutation, then replace it with the confirmed outcome.
+    /// This survives a later failed verification, deadline, or worker panic.
+    pub(crate) fn retain(&self, path: &Path, state: &'static str) {
+        let mut retained = self
+            .retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = retained.iter_mut().find(|item| item.path == path) {
+            existing.state = state;
+        } else {
+            retained.push(RetainedPath {
+                path: path.to_owned(),
+                state,
+            });
+        }
+    }
+
+    pub(crate) fn forget_retained(&self, path: &Path) {
+        self.retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|item| item.path != path);
+    }
+
+    fn report_retained(&self, mut failure: DomainError) -> DomainError {
+        let retained = self
+            .retained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !retained.is_empty() {
+            failure.retryable = false;
+            let paths = retained
+                .iter()
+                .map(|item| format!("{} ({})", item.path.display(), item.state))
+                .collect::<Vec<_>>()
+                .join(", ");
+            failure.message = format!(
+                "{}; retained filesystem state at {paths}. Inspect it before retrying.",
+                failure.message
+            );
+            failure
+                .details
+                .get_or_insert_with(DomainMetadata::default)
+                .0
+                .insert(
+                    "retained_paths".into(),
+                    serde_json::json!(
+                        retained
+                            .iter()
+                            .map(|item| serde_json::json!({"path": item.path, "state": item.state}))
+                            .collect::<Vec<_>>()
+                    ),
+                );
+        }
+        failure
+    }
+
+    // Instance state is used by deterministic test clock/admission probes.
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    pub(crate) fn point(&self, name: &str) {
+        #[cfg(test)]
+        if let Some(probe) = &self.options.probe {
+            probe(name, self);
+        }
+        #[cfg(not(test))]
+        let _ = name;
+    }
+
     pub(super) fn command(&self) -> GitCommand<'_> {
-        let mut command = Command::new("git");
+        let program = Path::new("git");
+        #[cfg(test)]
+        let program = self.options.git_program.as_deref().unwrap_or(program);
+        let mut command = Command::new(program);
         command.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null());
-        // No manager operation needs user hooks or a filesystem monitor process.
         command.args(["-c", "core.hooksPath=", "-c", "core.fsmonitor=false"]);
         #[cfg(unix)]
         {
@@ -60,56 +212,104 @@ impl BlockingContext {
     }
 }
 
-pub(crate) async fn run<T: Send + 'static>(
-    operation: impl FnOnce(&BlockingContext) -> Result<T, DomainError> + Send + 'static,
-) -> Result<T, DomainError> {
-    static PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    let deadline = Instant::now() + DEADLINE;
-    let permit = tokio::time::timeout(
-        DEADLINE,
-        PERMITS
-            .get_or_init(|| Arc::new(Semaphore::new(4)))
-            .clone()
-            .acquire_owned(),
-    )
-    .await
-    .map_err(|_| {
-        error(
-            ErrorCode::ProjectWorkspaceBusy,
-            "Project I/O capacity timed out",
-            true,
-        )
-    })?
-    .map_err(|_| {
-        error(
-            ErrorCode::ProjectWorkspaceBusy,
-            "Project I/O capacity unavailable",
-            true,
-        )
-    })?;
-    let cancellation = CancellationToken::new();
-    let _cancel_on_drop = cancellation.clone().drop_guard();
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let context = BlockingContext {
-            cancellation,
-            deadline,
-            #[cfg(test)]
-            after_git: None,
-        };
-        context.check()?;
-        let result = operation(&context);
-        context.check()?;
-        result
-    })
-    .await
-    .map_err(|_| {
-        error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "Project I/O worker failed",
-            false,
-        )
-    })?
+impl Operation {
+    pub(crate) fn new(options: &OperationOptions, failure_code: ErrorCode) -> Self {
+        let cancellation = CancellationToken::new();
+        Self {
+            _cancel_on_drop: cancellation.clone().drop_guard(),
+            context: Arc::new(BlockingContext {
+                deadline: options.now() + options.timeout,
+                cancellation,
+                failure_code,
+                options: options.clone(),
+                retained: Mutex::default(),
+                #[cfg(test)]
+                after_git: None,
+            }),
+        }
+    }
+
+    pub(crate) fn context(&self) -> &BlockingContext {
+        &self.context
+    }
+
+    /// Queues consume the same remaining budget, never a freshly allocated timeout.
+    pub(crate) async fn wait<T>(
+        &self,
+        future: impl std::future::Future<Output = T>,
+    ) -> Result<T, DomainError> {
+        self.context
+            .check()
+            .map_err(|error| self.context.report_retained(error))?;
+        let result = tokio::time::timeout(self.context.remaining(), future)
+            .await
+            .map_err(|_| self.context.report_retained(self.context.timeout_error()))?;
+        self.context
+            .check()
+            .map_err(|error| self.context.report_retained(error))?;
+        Ok(result)
+    }
+
+    pub(crate) async fn run<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&BlockingContext) -> Result<T, DomainError> + Send + 'static,
+    ) -> Result<T, DomainError> {
+        let permit = self
+            .wait(self.context.options.permits().acquire_owned())
+            .await?
+            .map_err(|_| {
+                error(
+                    self.context.failure_code,
+                    "Project I/O capacity unavailable",
+                    true,
+                )
+            })?;
+        let context = self.context.clone();
+        let phase = Arc::new(AtomicU8::new(QUEUED));
+        let worker_phase = phase.clone();
+        let mut worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            if worker_phase
+                .compare_exchange(QUEUED, STARTED, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err(context.timeout_error());
+            }
+            context.point("before_blocking");
+            context.check()?;
+            let result = operation(&context);
+            // A late mutation may still have succeeded: its recorded path/state
+            // accompanies this error, even when no normal return value is delivered.
+            context.check()?;
+            result
+        });
+        // Tokio has its own blocking queue. Abort a still-queued job at the same
+        // deadline; an already-started syscall must drain before reporting its
+        // retained state and releasing resources.
+        let result =
+            if let Ok(joined) = tokio::time::timeout(self.context.remaining(), &mut worker).await {
+                joined.unwrap_or_else(|_| {
+                    Err(error(
+                        self.context.failure_code,
+                        "Project I/O worker failed",
+                        false,
+                    ))
+                })
+            } else {
+                let queued = phase
+                    .compare_exchange(QUEUED, CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok();
+                worker.abort();
+                // A cancelled queued closure cannot start I/O, even if Tokio only
+                // drops it once a blocking thread becomes available. Started work
+                // must finish before its complete retained-state report is returned.
+                if !queued {
+                    let _ = worker.await;
+                }
+                Err(self.context.timeout_error())
+            };
+        result.map_err(|error| self.context.report_retained(error))
+    }
 }
 
 pub(super) struct GitCommand<'a> {

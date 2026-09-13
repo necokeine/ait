@@ -231,6 +231,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "nix",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
