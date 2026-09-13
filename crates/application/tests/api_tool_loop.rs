@@ -329,9 +329,9 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             })
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
-            vec!["bash", "edit", "grep", "read", "write"]
+            vec!["bash", "edit", "glob", "grep", "read", "write"]
         } else {
-            vec!["edit", "grep", "read", "write"]
+            vec!["edit", "glob", "grep", "read", "write"]
         };
         assert_eq!(names, expected);
         let result_ids = if kind == ProviderKind::OpenAI {
@@ -564,4 +564,62 @@ async fn archive_and_events_omit_tool_payloads_while_queries_retain_them() {
             .contains("private-payload-marker")
     );
     f.finish().await;
+}
+
+#[tokio::test]
+async fn api_provider_receives_scoped_count_schema_and_persisted_result_with_selected_permission() {
+    for kind in [ProviderKind::DeepSeek, ProviderKind::OpenAI] {
+        let fixture = Fixture::new(kind, vec![
+            response(kind, &[("write", "write", json!({"file_path":"sample.rs","content":"first\nsecond\nthird\n","sandbox_permissions":"workspace-write"}))]),
+            response(kind, &[("count", "grep", json!({"pattern":"^","path":"sample.rs","include":"*.rs","output_mode":"count"}))]),
+            response(kind, &[]),
+        ], "workspace_write").await;
+        let run = fixture.run().await;
+        assert_eq!(run.status, "completed");
+        assert_eq!(
+            run.permission_profile.sandbox,
+            ait_domain::SandboxAccess::WorkspaceWrite
+        );
+        let executions = &run.execution.as_ref().unwrap().tools;
+        assert!(
+            executions
+                .iter()
+                .all(|execution| execution.status == ait_domain::ToolExecutionStatus::Succeeded)
+        );
+        let count = executions
+            .iter()
+            .find(|execution| execution.call_id == "count")
+            .unwrap();
+        assert_eq!(count.result.as_ref().unwrap()["total_count"], 3);
+        assert_eq!(count.result.as_ref().unwrap()["count_complete"], true);
+        let requests = fixture.requests.lock().unwrap().clone();
+        let tools = requests[0]["tools"].as_array().unwrap();
+        let definition = tools
+            .iter()
+            .map(|value| {
+                if kind == ProviderKind::OpenAI {
+                    value
+                } else {
+                    &value["function"]
+                }
+            })
+            .find(|tool| tool["name"] == "grep")
+            .unwrap();
+        assert!(
+            definition["parameters"]["properties"]["output_mode"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("count"))
+        );
+        assert!(definition["parameters"]["properties"]["path"].is_object());
+        assert!(requests[2].to_string().contains("total_count"));
+        let persisted = support::workspace(&fixture.service).await;
+        assert!(persisted.messages.iter().any(|message| {
+            message
+                .data
+                .as_ref()
+                .is_some_and(|data| data["native_message"]["tool_result"]["call_id"] == "count")
+        }));
+        fixture.finish().await;
+    }
 }

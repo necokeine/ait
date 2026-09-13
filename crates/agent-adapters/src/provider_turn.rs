@@ -35,8 +35,17 @@ pub async fn complete_turn(
         if let Some(schema) = ait_tools::host::parameters(&tool.name) {
             tool.parameters = schema;
         }
+        if tool.name == "read" {
+            tool.description = "Read a UTF-8 file by 1-based line offset/limit, or list a directory by entry offset/limit. Paths are workspace-relative; hidden paths, target and node_modules are excluded. Results are bounded and report truncation.".into();
+        }
+        if tool.name == "glob" {
+            tool.description = "Find workspace files under path (default .) by glob. A pattern without a slash matches basenames recursively. Hidden paths, target and node_modules are excluded. Use offset/limit for pagination; truncated reports incomplete results.".into();
+        }
+        if tool.name == "grep" {
+            tool.description = "Search UTF-8 files with a regex, restricted by path (file or directory) and include glob. output_mode=count returns matching line counts per file and total_count without file contents. Hidden paths, target and node_modules are excluded. offset/limit paginate bounded results; truncated, scan_truncated and skipped_files report incomplete scans.".into();
+        }
         if tool.name == "bash" {
-            tool.description = "Run a controlled command: echo, printf or sleep (0-30 seconds). No shell expansion, redirection, filesystem access, background jobs or escalation. Output is bounded to 64 KiB.".into();
+            tool.description = "Run a bash command in the session workspace (or workdir). Supports pipelines, repository inspection and installed utilities. Readonly forbids filesystem writes; Workspace Write allows writes only in the session workspace; both block network. Full Access runs without OS sandbox restrictions. The fixed Run permission and administrator ceiling apply. Returns stdout, stderr, exit_status and truncation flags; no background jobs. Default timeout 10 seconds, maximum 120 seconds.".into();
         }
     }
     if let Some(effort) = &config.reasoning_effort {

@@ -16,7 +16,8 @@ cap-std = "4.0"
 cap-fs-ext = "4.0"
 libc = "0.2"
 regex = "1"
-shlex = "1"
+globset = "0.4"
+process-wrap = { version = "10", features = ["tokio1"] }
 tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 

@@ -184,3 +184,34 @@ test("does not invent dates for missing or invalid historical timestamps", () =>
     assert.ok(!html.includes("datetime="));
   }
 });
+
+test("projects native API tool results as collapsed records without exposing their storage envelope", () => {
+  for (const status of ["succeeded", "denied", "failed", "cancelled"]) {
+    const message = projectMessage({
+      id: "result", project_id: "project", parent_message_id: "call", role: "user", kind: "tool_result", text: null,
+      data: { agent_revision: 9, native_message: { tool_result: { call_id: "call", status, output: '{"stdout":"<script>output</script>"}', error: status === "denied" ? "Permission denied" : null } } },
+    }, null);
+    const html = renderMessage(message, []);
+    assert.ok(html.includes('<details class="operation-record">'));
+    assert.ok(!html.includes('class="operation-record" open'));
+    assert.ok(html.includes("ToolUse result"));
+    assert.ok(html.includes(status));
+    assert.ok(!html.includes("agent_revision"));
+    assert.ok(!html.includes("<script>output"));
+    assert.ok(!html.includes("<strong>You</strong>"));
+  }
+});
+
+test("preserves ordered API assistant text and tool uses from native submessages", () => {
+  const message = projectMessage({
+    id: "call", project_id: "project", parent_message_id: "input", role: "assistant", kind: "standard", text: "Inspecting",
+    data: { native_message: { sub_messages: [
+      { type: "text", text: "Inspecting" },
+      { type: "tool_use", call_id: "call-1", tool_name: "grep", arguments: '{"pattern":"^"}' },
+    ] } },
+  }, null);
+  assert.deepEqual(message.parts.map((part) => part.type), ["text", "tool_use"]);
+  const html = renderMessage(message, []);
+  assert.ok(html.includes("Inspecting"));
+  assert.ok(html.includes("grep"));
+});

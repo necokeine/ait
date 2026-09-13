@@ -24,6 +24,7 @@ export type MessagePart =
     paths: string[];
   }
   | { type: "structured"; media_type: string; value: string }
+  | { type: "tool_result"; call_id: string; status: string; output: string | null; error: string | null }
   | { type: "redacted" };
 
 export interface DesktopMessage {
