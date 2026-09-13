@@ -3,7 +3,7 @@ use crate::control::LocalControlService;
 use crate::control::admission::ensure_idle;
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasAgents, HasProviders, HasSessions};
 use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView, ApiError,
     CommandResult, ProviderModel,
@@ -17,11 +17,11 @@ pub(in crate::control) mod migration;
 pub(in crate::control) mod providers;
 
 pub(in crate::control) fn require_agent<'a>(
-    state: &'a WorkingSet,
+    state: &'a impl HasAgents,
     id: &str,
 ) -> Result<&'a AgentView, ApiError> {
     state
-        .agents
+        .agents()
         .iter()
         .find(|agent| agent.id == id && agent.enabled)
         .ok_or_else(|| error(ErrorCode::AgentNotFound, "enabled agent not found", false))
@@ -105,11 +105,11 @@ pub(in crate::control) fn validate_provider(provider: &AgentProvider) -> Result<
 }
 
 pub(in crate::control) fn validate_config<'a>(
-    state: &'a WorkingSet,
+    state: &'a impl HasProviders,
     config: &AgentConfiguration,
 ) -> Result<&'a AgentProvider, ApiError> {
     let provider = state
-        .providers
+        .providers()
         .iter()
         .find(|p| p.provider.id == config.provider_id)
         .map(|p| &p.provider)
@@ -158,7 +158,7 @@ pub(in crate::control) fn preserve_unadvertised_reasoning_efforts(
 }
 
 pub(in crate::control) fn require_named_agent<'a>(
-    state: &'a WorkingSet,
+    state: &'a impl HasAgents,
     id: &str,
 ) -> Result<&'a AgentView, ApiError> {
     let agent = require_agent(state, id)?;
@@ -169,12 +169,12 @@ pub(in crate::control) fn require_named_agent<'a>(
 }
 
 pub(in crate::control) fn register_agent(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasProviders),
     id: String,
     name: String,
     config: AgentConfiguration,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if id.trim().is_empty() || name.trim().is_empty() || state.agents.iter().any(|a| a.id == id) {
+    if id.trim().is_empty() || name.trim().is_empty() || state.agents().iter().any(|a| a.id == id) {
         return Err(invalid("Agent id and name are required; id must be unique"));
     }
     validate_config(state, &config)?;
@@ -186,7 +186,7 @@ pub(in crate::control) fn register_agent(
         revision: 1,
         enabled: true,
     };
-    state.agents.push(agent.clone());
+    state.agents_mut().push(agent.clone());
     Ok((
         CommandResult::Agent(agent.clone()),
         vec![pending("agent.registered", Some(id), &agent)],
@@ -194,7 +194,7 @@ pub(in crate::control) fn register_agent(
 }
 
 pub(in crate::control) fn update_agent(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasProviders),
     id: &str,
     name: String,
     config: AgentConfiguration,
@@ -205,7 +205,7 @@ pub(in crate::control) fn update_agent(
     }
     validate_config(state, &config)?;
     let agent = state
-        .agents
+        .agents_mut()
         .iter_mut()
         .find(|a| a.id == id)
         .expect("validated Agent");
@@ -219,7 +219,7 @@ pub(in crate::control) fn update_agent(
 }
 
 pub(in crate::control) fn agent_for_session(
-    state: &mut WorkingSet,
+    state: &mut impl HasAgents,
     agent_id: &str,
     session_id: &str,
 ) -> Result<String, ApiError> {
@@ -236,26 +236,26 @@ pub(in crate::control) fn agent_for_session(
     copy.owner_session_id = Some(session_id.into());
     copy.revision = 1;
     let id = copy.id.clone();
-    state.agents.push(copy);
+    state.agents_mut().push(copy);
     Ok(id)
 }
 
 pub(in crate::control) fn set_session_config(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasProviders + HasSessions),
     session_id: &str,
     config: AgentConfiguration,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_config(state, &config)?;
     let index = state
-        .sessions
+        .sessions()
         .iter()
         .position(|s| s.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-    ensure_idle(&state.sessions[index])?;
-    let current = require_agent(state, &state.sessions[index].agent_id)?.clone();
+    ensure_idle(&state.sessions()[index])?;
+    let current = require_agent(state, &state.sessions()[index].agent_id)?.clone();
     let agent = if current.owner_session_id.as_deref() == Some(session_id) {
         let target = state
-            .agents
+            .agents_mut()
             .iter_mut()
             .find(|a| a.id == current.id)
             .expect("current Agent");
@@ -271,12 +271,12 @@ pub(in crate::control) fn set_session_config(
             revision: 1,
             enabled: true,
         };
-        state.agents.push(agent.clone());
+        state.agents_mut().push(agent.clone());
         agent
     };
-    state.sessions[index].agent_id.clone_from(&agent.id);
-    state.sessions[index].version += 1;
-    let session = &state.sessions[index];
+    state.sessions_mut()[index].agent_id.clone_from(&agent.id);
+    state.sessions_mut()[index].version += 1;
+    let session = &state.sessions()[index];
     Ok((
         CommandResult::Session(session.clone()),
         vec![

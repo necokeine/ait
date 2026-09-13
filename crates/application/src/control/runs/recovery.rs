@@ -13,11 +13,13 @@ use crate::control::runs::journal::{
 };
 use crate::control::runs::workspace::workspace_invocation;
 use crate::control::runs::{api_run, is_terminal_workspace_status};
-use crate::control::state::WorkingSet;
+use crate::control::state::{
+    HasMessages, HasRuns, HasSessions, HasSettings, HasWorkspaceRunJournals,
+};
 use ait_contracts::{ApiError, RunView};
 use ait_domain::{ErrorCode, NativeApprovalStatus};
+use ait_ports::ControlStoreError;
 use ait_ports::WorkspaceIntegrationGate;
-use ait_ports::{ControlFilter, ControlRecordKind, ControlStoreError};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -61,9 +63,9 @@ impl StartupRecoveryPlan {
     }
 }
 
-fn recovery_policy(state: &WorkingSet) -> RecoveryPolicy {
+fn recovery_policy(state: &impl HasSettings) -> RecoveryPolicy {
     match state
-        .settings
+        .settings()
         .0
         .get("runtime.recovery")
         .and_then(Value::as_str)
@@ -90,14 +92,14 @@ fn is_local_recovery_failure(code: ErrorCode) -> bool {
 }
 
 fn settle_recovered_run(
-    state: &mut WorkingSet,
+    state: &mut (impl HasMessages + HasRuns + HasSessions + HasWorkspaceRunJournals),
     index: usize,
     status: &str,
     message: &str,
 ) -> Result<(), ApiError> {
-    let mut run = state.runs[index].clone();
+    let mut run = state.runs()[index].clone();
     run.lease_epoch = run.lease_epoch.saturating_add(1);
-    if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
+    if let Some(journal) = state.workspace_run_journals_mut().get_mut(&run.id) {
         journal.lease_epoch = run.lease_epoch;
     }
     run.status = status.into();
@@ -116,7 +118,7 @@ fn settle_recovered_run(
         .map_err(|_| recovery_error("could not settle recovered API children"))?;
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
     release_session(state, &run);
-    state.runs[index] = run;
+    state.runs_mut()[index] = run;
     Ok(())
 }
 
@@ -132,22 +134,13 @@ impl LocalControlService {
     pub async fn prepare_startup_recovery(
         &self,
     ) -> Result<crate::control::StartupRecoveryPlan, ApiError> {
-        let catalog = self
-            .read_records(vec![ControlFilter::all(ControlRecordKind::Project)])
-            .await?
-            .original;
+        let catalog = self.records().read_project_catalog().await?.original;
         let mut plan = StartupRecoveryPlan {
             run_ids: Vec::new(),
             unavailable_projects: Vec::new(),
         };
         for project in catalog.projects {
-            match self
-                .read_records(vec![ControlFilter::project(
-                    ControlRecordKind::Run,
-                    &project.id,
-                )])
-                .await
-            {
+            match self.records().read_project_run_records(&project.id).await {
                 Ok(state) => plan.run_ids.extend(
                     state
                         .original

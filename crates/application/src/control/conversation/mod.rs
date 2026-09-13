@@ -7,7 +7,10 @@ use crate::control::execution::CommandOutcome;
 use crate::control::permissions::PermissionPolicyLimits;
 use crate::control::project::git::GitBaseline;
 use crate::control::project::worktrees::{session_worktree_path, validate_session_path_component};
-use crate::control::state::WorkingSet;
+use crate::control::state::{
+    HasAgents, HasMessages, HasProjects, HasProviderCredentials, HasProviders, HasRunCredentials,
+    HasRuns, HasSessions, HasSettings,
+};
 use ait_contracts::{ApiError, CommandResult, RunView, SessionView};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
@@ -24,7 +27,17 @@ pub(in crate::control) struct ForkSessionInput {
 }
 
 pub(in crate::control) fn fork_session(
-    state: &mut WorkingSet,
+    state: &mut (
+             impl HasAgents
+             + HasMessages
+             + HasProjects
+             + HasProviderCredentials
+             + HasProviders
+             + HasRunCredentials
+             + HasRuns
+             + HasSessions
+             + HasSettings
+         ),
     input: ForkSessionInput,
     git_baseline: &GitBaseline,
     permission_limits: PermissionPolicyLimits,
@@ -43,7 +56,17 @@ pub(in crate::control) fn fork_session(
 }
 
 pub(in crate::control) fn derive_session(
-    state: &mut WorkingSet,
+    state: &mut (
+             impl HasAgents
+             + HasMessages
+             + HasProjects
+             + HasProviderCredentials
+             + HasProviders
+             + HasRunCredentials
+             + HasRuns
+             + HasSessions
+             + HasSettings
+         ),
     input: ForkSessionInput,
     source_session_id: &str,
     source_locked: bool,
@@ -57,7 +80,12 @@ pub(in crate::control) fn derive_session(
             false,
         ));
     }
-    if input.id.trim().is_empty() || state.sessions.iter().any(|session| session.id == input.id) {
+    if input.id.trim().is_empty()
+        || state
+            .sessions()
+            .iter()
+            .any(|session| session.id == input.id)
+    {
         return Err(error(
             ErrorCode::InvalidSession,
             "session id is empty or already exists",
@@ -65,7 +93,7 @@ pub(in crate::control) fn derive_session(
         ));
     }
     if !state
-        .projects
+        .projects()
         .iter()
         .any(|project| project.id == input.project_id)
     {
@@ -73,7 +101,7 @@ pub(in crate::control) fn derive_session(
     }
     require_agent(state, &input.agent_id)?;
     let source_message = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == input.at_message_id)
         .ok_or_else(|| {
@@ -91,7 +119,7 @@ pub(in crate::control) fn derive_session(
         ));
     }
     let source_session = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == source_session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?
@@ -126,14 +154,14 @@ pub(in crate::control) fn derive_session(
 }
 
 pub(in crate::control) fn create_session(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasMessages + HasProjects + HasSessions),
     id: String,
     project_id: String,
     agent_id: &str,
     at_message_id: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_session_path_component(&id)?;
-    if state.sessions.iter().any(|session| session.id == id) {
+    if state.sessions().iter().any(|session| session.id == id) {
         return Err(error(
             ErrorCode::InvalidSession,
             "session id is empty or already exists",
@@ -141,7 +169,7 @@ pub(in crate::control) fn create_session(
         ));
     }
     let project = state
-        .projects
+        .projects()
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
@@ -149,7 +177,7 @@ pub(in crate::control) fn create_session(
     require_agent(state, agent_id)?;
     let head = at_message_id.unwrap_or_else(|| project.root_message_id.clone());
     let target = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == head)
         .ok_or_else(|| {
@@ -181,7 +209,7 @@ pub(in crate::control) fn create_session(
         active_run_id: None,
         version: 1,
     };
-    state.sessions.push(session.clone());
+    state.sessions_mut().push(session.clone());
     Ok((
         CommandResult::Session(session.clone()),
         vec![pending("session.created", Some(id), &session)],
@@ -189,7 +217,7 @@ pub(in crate::control) fn create_session(
 }
 
 pub(in crate::control) fn derive_reuses_source(
-    state: &WorkingSet,
+    state: &impl HasMessages,
     _requested_id: &str,
     project_id: &str,
     source: &SessionView,
@@ -201,13 +229,13 @@ pub(in crate::control) fn derive_reuses_source(
         && source.current_message_id == at_message_id
         && source.agent_id == agent_id
         && !state
-            .messages
+            .messages()
             .iter()
             .any(|message| message.parent_message_id.as_deref() == Some(at_message_id))
 }
 
 pub(in crate::control) fn rename_session(
-    state: &mut WorkingSet,
+    state: &mut impl HasSessions,
     session_id: &str,
     name: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -220,7 +248,7 @@ pub(in crate::control) fn rename_session(
         ));
     }
     let session = state
-        .sessions
+        .sessions_mut()
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
@@ -237,13 +265,13 @@ pub(in crate::control) fn rename_session(
 }
 
 pub(in crate::control) fn set_session_agent(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasSessions),
     session_id: &str,
     agent_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let agent_id = agent_for_session(state, agent_id, session_id)?;
     let session = state
-        .sessions
+        .sessions_mut()
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
@@ -270,9 +298,9 @@ pub(in crate::control) fn set_session_agent(
     ))
 }
 
-pub(in crate::control) fn release_session(state: &mut WorkingSet, run: &RunView) {
+pub(in crate::control) fn release_session(state: &mut impl HasSessions, run: &RunView) {
     if let Some(session_id) = &run.session_id
-        && let Some(session) = state.sessions.iter_mut().find(|session| {
+        && let Some(session) = state.sessions_mut().iter_mut().find(|session| {
             &session.id == session_id && session.active_run_id.as_deref() == Some(run.id.as_str())
         })
     {

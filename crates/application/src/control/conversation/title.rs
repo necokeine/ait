@@ -2,7 +2,7 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
 use crate::control::events::pending;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasMessages, HasRuns, HasSessions};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
 use ait_contracts::{ApiError, CommandResult, Response, SessionView};
@@ -11,7 +11,7 @@ use ait_ports::{ControlStoreError, PendingEvent, SessionTitleRequest};
 use uuid::Uuid;
 
 pub(in crate::control) fn set_session_title(
-    state: &mut WorkingSet,
+    state: &mut impl HasSessions,
     session_id: &str,
     title: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -24,7 +24,7 @@ pub(in crate::control) fn set_session_title(
         ));
     }
     let session = state
-        .sessions
+        .sessions_mut()
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
@@ -42,15 +42,18 @@ pub(in crate::control) fn set_session_title(
     ))
 }
 
-fn is_first_completed_interaction(state: &WorkingSet, session: &SessionView) -> bool {
+fn is_first_completed_interaction(
+    state: &(impl HasMessages + HasRuns),
+    session: &SessionView,
+) -> bool {
     let head_is_assistant = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == session.current_message_id)
         .is_some_and(|message| message.role == "assistant");
     head_is_assistant
         && state
-            .runs
+            .runs()
             .iter()
             .filter(|run| run.session_id.as_deref() == Some(session.id.as_str()))
             .count()
@@ -204,7 +207,7 @@ impl LocalControlService {
         description: String,
     ) -> Result<SessionView, ApiError> {
         for _ in 0..4 {
-            let loaded = self.read_session_records(session_id).await?;
+            let loaded = self.records().read_session_record(session_id).await?;
             let mut state = loaded.original.clone();
             let session = state
                 .sessions

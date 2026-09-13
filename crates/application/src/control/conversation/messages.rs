@@ -5,7 +5,10 @@ use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
 use crate::control::project::git::{GitBaseline, is_git_commit};
-use crate::control::state::WorkingSet;
+use crate::control::state::{
+    HasAgents, HasMessages, HasProviderCredentials, HasProviders, HasRunCredentials, HasRuns,
+    HasSessions, HasSettings,
+};
 use ait_contracts::{ApiError, MessageView, ProjectView, RunView};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
@@ -15,7 +18,16 @@ use std::fmt::Write as _;
 use uuid::Uuid;
 
 pub(in crate::control) fn send_message(
-    state: &mut WorkingSet,
+    state: &mut (
+             impl HasAgents
+             + HasMessages
+             + HasProviderCredentials
+             + HasProviders
+             + HasRunCredentials
+             + HasRuns
+             + HasSessions
+             + HasSettings
+         ),
     session_id: String,
     text: String,
     git_baseline: &GitBaseline,
@@ -29,11 +41,11 @@ pub(in crate::control) fn send_message(
         ));
     }
     let index = state
-        .sessions
+        .sessions()
         .iter()
         .position(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-    let session = state.sessions[index].clone();
+    let session = state.sessions()[index].clone();
     if session.active_run_id.is_some() {
         return Err(error(
             ErrorCode::SessionBusy,
@@ -44,7 +56,7 @@ pub(in crate::control) fn send_message(
     let agent = require_agent(state, &session.agent_id)?.clone();
     let provider = validate_config(state, &agent.config)?.clone();
     let permission_profile =
-        effective_permission_profile(&state.settings, &provider, permission_limits)?;
+        effective_permission_profile(state.settings(), &provider, permission_limits)?;
     let user = message(
         &session.project_id,
         Some(&session.current_message_id),
@@ -54,13 +66,13 @@ pub(in crate::control) fn send_message(
         Some(&git_baseline.commit),
         None,
     );
-    state.messages.push(user.clone());
+    state.messages_mut().push(user.clone());
     let run_id = Uuid::new_v4().to_string();
-    state.sessions[index]
+    state.sessions_mut()[index]
         .current_message_id
         .clone_from(&user.id);
-    state.sessions[index].version += 1;
-    state.sessions[index].active_run_id = Some(run_id.clone());
+    state.sessions_mut()[index].version += 1;
+    state.sessions_mut()[index].active_run_id = Some(run_id.clone());
     let workspace_base_commit = Some(git_baseline.commit.clone());
     let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
     let run = RunView {
@@ -87,26 +99,38 @@ pub(in crate::control) fn send_message(
         lease_epoch: 0,
         error: None,
     };
-    if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
+    if let Some(reference) = state
+        .provider_credentials()
+        .get(&agent.config.provider_id)
+        .cloned()
+    {
         state
-            .run_credentials
+            .run_credentials_mut()
             .insert(run_id.clone(), reference.clone());
     }
-    state.runs.push(run);
-    let run = state.runs.last().expect("new run exists").clone();
+    state.runs_mut().push(run);
+    let run = state.runs().last().expect("new run exists").clone();
     let event = pending("run.updated", Some(run_id), &run);
     Ok((CommandOutcome::for_new_run(run), vec![event]))
 }
 
 pub(in crate::control) fn codex_prompt(
-    state: &WorkingSet,
+    state: &impl HasMessages,
     head_id: &str,
 ) -> Result<(Option<String>, String), ApiError> {
     let mut path = Vec::new();
+    let mut seen = HashSet::new();
     let mut current = Some(head_id);
     while let Some(id) = current {
+        if !seen.insert(id) {
+            return Err(error(
+                ErrorCode::InvalidMessageId,
+                "message path contains a cycle",
+                false,
+            ));
+        }
         let message = state
-            .messages
+            .messages()
             .iter()
             .find(|message| message.id == id)
             .ok_or_else(|| {
@@ -138,21 +162,21 @@ pub(in crate::control) fn codex_prompt(
 }
 
 pub(in crate::control) fn append_output(
-    state: &mut WorkingSet,
+    state: &mut (impl HasMessages + HasSessions),
     run: &mut RunView,
     output: MessageView,
 ) {
     run.last_message_id = Some(output.id.clone());
     if let Some(session_id) = &run.session_id
         && let Some(session) = state
-            .sessions
+            .sessions_mut()
             .iter_mut()
             .find(|session| &session.id == session_id)
     {
         session.current_message_id.clone_from(&output.id);
         session.version += 1;
     }
-    state.messages.push(output);
+    state.messages_mut().push(output);
 }
 
 pub(in crate::control) fn message(
@@ -189,12 +213,12 @@ pub(in crate::control) fn validate_message_text(text: &str) -> Result<(), ApiErr
 }
 
 pub(in crate::control) fn validate_session_message(
-    state: &WorkingSet,
+    state: &impl HasMessages,
     project_id: &str,
     message_id: &str,
 ) -> Result<(), ApiError> {
     let message = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == message_id)
         .ok_or_else(|| {
@@ -215,7 +239,7 @@ pub(in crate::control) fn validate_session_message(
 }
 
 pub(in crate::control) fn message_workspace_commit(
-    state: &WorkingSet,
+    state: &impl HasMessages,
     project: &ProjectView,
     message_id: &str,
 ) -> Result<String, ApiError> {
@@ -230,7 +254,7 @@ pub(in crate::control) fn message_workspace_commit(
             ));
         }
         let message = state
-            .messages
+            .messages()
             .iter()
             .find(|message| message.id == id)
             .ok_or_else(|| {

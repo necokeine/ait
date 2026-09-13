@@ -4,7 +4,7 @@ use crate::control::errors::{api_domain_error, error, store_error};
 use crate::control::events::{now, pending};
 use crate::control::permissions::{PermissionPolicyLimits, validate_native_permission_profile};
 use crate::control::runs::{cancel_run, is_terminal_workspace_status};
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasProjects, HasRuns, HasSessions, HasWorkspaceRunJournals};
 use ait_contracts::{
     ApiError, CommandResult, NativeApprovalAction, NativeApprovalView, NativePermissionProfile,
     ProtocolRequestId, RunView,
@@ -328,7 +328,7 @@ fn approval_decision(approval: &NativeApprovalView) -> Option<WorkspaceApprovalD
 }
 
 pub(in crate::control) fn resolve_native_approval(
-    state: &mut WorkingSet,
+    state: &mut (impl HasProjects + HasRuns + HasSessions + HasWorkspaceRunJournals),
     run_id: &str,
     approval_id: &str,
     action: NativeApprovalAction,
@@ -336,11 +336,11 @@ pub(in crate::control) fn resolve_native_approval(
     limits: PermissionPolicyLimits,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let run_index = state
-        .runs
+        .runs()
         .iter()
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-    let run = &state.runs[run_index];
+    let run = &state.runs()[run_index];
     if is_terminal_workspace_status(&run.status) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
@@ -377,13 +377,13 @@ pub(in crate::control) fn resolve_native_approval(
         return cancel_run(state, run_id);
     }
     let project_root = state
-        .projects
+        .projects()
         .iter()
         .find(|project| project.id == run.project_id)
         .map(|project| PathBuf::from(&project.workdir))
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
     let run_profile = run.permission_profile;
-    let approval = &mut state.runs[run_index].native_approvals[approval_index];
+    let approval = &mut state.runs_mut()[run_index].native_approvals[approval_index];
     match action {
         NativeApprovalAction::Approve => {
             let scope = scope.ok_or_else(|| {
@@ -413,7 +413,7 @@ pub(in crate::control) fn resolve_native_approval(
         NativeApprovalAction::Cancel => unreachable!("handled as Run cancellation above"),
     }
     approval.decided_at = Some(now());
-    let run = &mut state.runs[run_index];
+    let run = &mut state.runs_mut()[run_index];
     if !run
         .native_approvals
         .iter()

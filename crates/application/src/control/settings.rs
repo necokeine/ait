@@ -1,7 +1,7 @@
 //! Settings validation, revision checks and reset reducers.
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasSettings, HasSettingsRevision};
 use ait_contracts::{
     ApiError, CommandResult, SettingKind, SettingsDocument, SettingsView, default_settings,
     settings_schema,
@@ -10,20 +10,22 @@ use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
 use std::collections::HashSet;
 
-pub(in crate::control) fn settings_view(state: &WorkingSet) -> SettingsView {
+pub(in crate::control) fn settings_view(
+    state: &(impl HasSettings + HasSettingsRevision),
+) -> SettingsView {
     SettingsView {
         schema: settings_schema(),
-        values: state.settings.clone(),
-        revision: state.settings_revision,
+        values: state.settings().clone(),
+        revision: *state.settings_revision(),
     }
 }
 
 pub(in crate::control) fn save_settings(
-    state: &mut WorkingSet,
+    state: &mut (impl HasSettings + HasSettingsRevision),
     expected_revision: u64,
     values: SettingsDocument,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if state.settings_revision != expected_revision {
+    if *state.settings_revision() != expected_revision {
         return Err(error(
             ErrorCode::InvalidConfiguration,
             "settings changed in another client; reload and try again",
@@ -31,8 +33,8 @@ pub(in crate::control) fn save_settings(
         ));
     }
     validate_settings(&values)?;
-    state.settings = values;
-    state.settings_revision = state.settings_revision.saturating_add(1);
+    *state.settings_mut() = values;
+    *state.settings_revision_mut() = state.settings_revision().saturating_add(1);
     let view = settings_view(state);
     Ok((
         CommandResult::Settings(view.clone()),
@@ -41,10 +43,10 @@ pub(in crate::control) fn save_settings(
 }
 
 pub(in crate::control) fn reset_settings(
-    state: &mut WorkingSet,
+    state: &mut (impl HasSettings + HasSettingsRevision),
 ) -> (CommandResult, Vec<PendingEvent>) {
-    state.settings = default_settings();
-    state.settings_revision = state.settings_revision.saturating_add(1);
+    *state.settings_mut() = default_settings();
+    *state.settings_revision_mut() = state.settings_revision().saturating_add(1);
     let view = settings_view(state);
     (
         CommandResult::Settings(view.clone()),

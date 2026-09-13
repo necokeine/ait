@@ -1,16 +1,15 @@
-//! Record encoding, decoding, hydration and change calculation.
+//! Record codec and compatibility hydration, independent from use-case reducers.
 use crate::control::catalog::builtin_providers;
 use crate::control::catalog::migration::migrate_state;
 use crate::control::errors::{error, serialization_error};
 use crate::control::project::worktrees::session_worktree_path;
-use crate::control::state::{LoadedWorkingSet, WorkingSet, default_settings_revision};
-use ait_contracts::{ApiError, default_settings};
+use crate::control::state::transaction::{RecordContext, RecordTransaction, TypedChange};
+use ait_contracts::{ApiError, ProjectView, SessionView, default_settings};
 use ait_domain::ErrorCode;
-use ait_ports::{ControlChange, ControlRead, ControlRecord, ControlRecordKind};
+use ait_ports::{ControlChange, ControlRead, ControlRecord, ControlRecordKind, ControlStoreError};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::Path;
-
 pub(in crate::control) fn record_value<'a>(
     read: &'a ControlRead,
     kind: ControlRecordKind,
@@ -61,63 +60,66 @@ pub(in crate::control) fn agent_provider_id(agent: &Value) -> Result<String, Api
         })
 }
 
-pub(in crate::control) fn decode_records(read: ControlRead) -> Result<LoadedWorkingSet, ApiError> {
-    let mut value = json!({
-        "projects": [],
-        "agents": [],
-        "providers": [],
-        "provider_credentials": {},
-        "run_credentials": {},
-        "sessions": [],
-        "messages": [],
-        "runs": [],
-        "workspace_run_journals": {},
-        "crons": [],
-        "settings": default_settings(),
-        "settings_revision": default_settings_revision(),
+pub(in crate::control) fn decode_records<C: RecordContext>(
+    read: &ControlRead,
+) -> Result<RecordTransaction<C>, ApiError> {
+    let mut value = json!({});
+    for (field, kind) in C::FIELDS {
+        value[*field] = match kind {
+            ControlRecordKind::ProviderCredential
+            | ControlRecordKind::RunCredential
+            | ControlRecordKind::WorkspaceRunJournal => json!({}),
+            ControlRecordKind::Settings => {
+                serde_json::to_value(default_settings()).map_err(serialization_error)?
+            }
+            _ => json!([]),
+        };
+    }
+    value["settings_revision"] = json!(1);
+    let legacy_run = read.records.iter().any(|record| {
+        record.kind == ControlRecordKind::Run && record.value.get("config").is_none()
     });
-    for record in read.records {
+    for record in &read.records {
+        let field = C::FIELDS
+            .iter()
+            .find(|(_, kind)| *kind == record.kind)
+            .map(|(field, _)| *field);
+        // Legacy Run migration can read its Agent as a codec-only dependency.
+        let field = field.or_else(|| {
+            (record.kind == ControlRecordKind::Agent && legacy_run).then_some("agents")
+        });
+        let field = field.ok_or_else(|| {
+            error(
+                ErrorCode::RunRecoveryFailed,
+                "record read includes an undeclared context family",
+                false,
+            )
+        })?;
         match record.kind {
-            ControlRecordKind::Project => value["projects"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
-            ControlRecordKind::Agent => value["agents"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
-            ControlRecordKind::Provider => value["providers"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
-            ControlRecordKind::ProviderCredential => {
-                value["provider_credentials"][record.id] = record.value;
+            ControlRecordKind::ProviderCredential
+            | ControlRecordKind::RunCredential
+            | ControlRecordKind::WorkspaceRunJournal => {
+                value[field][&record.id] = record.value.clone();
             }
-            ControlRecordKind::RunCredential => {
-                value["run_credentials"][record.id] = record.value;
-            }
-            ControlRecordKind::Session => value["sessions"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
-            ControlRecordKind::Message => value["messages"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
-            ControlRecordKind::Run => value["runs"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
-            ControlRecordKind::WorkspaceRunJournal => {
-                value["workspace_run_journals"][record.id] = record.value;
-            }
-            ControlRecordKind::Cron => value["crons"]
-                .as_array_mut()
-                .expect("record array")
-                .push(record.value),
             ControlRecordKind::Settings => {
                 value["settings"] = record.value["values"].clone();
                 value["settings_revision"] = record.value["revision"].clone();
+            }
+            _ => {
+                if record.value.get("id").and_then(Value::as_str) != Some(record.id.as_str()) {
+                    return Err(error(
+                        ErrorCode::RunRecoveryFailed,
+                        "control record identity does not match its payload",
+                        false,
+                    ));
+                }
+                if value.get(field).is_none() {
+                    value[field] = json!([]);
+                }
+                value[field]
+                    .as_array_mut()
+                    .expect("record array")
+                    .push(record.value.clone());
             }
         }
     }
@@ -131,175 +133,147 @@ pub(in crate::control) fn decode_records(read: ControlRead) -> Result<LoadedWork
             .as_object_mut()
             .expect("record object")
             .remove("providers");
+    } else if value.get("providers").is_none() {
+        value["providers"] = json!([]);
     }
     value = migrate_state(value)?;
-    let mut state: WorkingSet = serde_json::from_value(value).map_err(serialization_error)?;
-    hydrate_session_workdirs(&mut state)?;
-    for provider in builtin_providers() {
-        if !state
-            .providers
-            .iter()
-            .any(|existing| existing.provider.id == provider.provider.id)
-        {
-            state.providers.push(provider);
+    if C::FIELDS
+        .iter()
+        .any(|(_, kind)| *kind == ControlRecordKind::Provider)
+    {
+        let providers = value["providers"].as_array_mut().expect("providers array");
+        for provider in builtin_providers() {
+            if !providers.iter().any(|p| p["id"] == provider.provider.id) {
+                providers.push(serde_json::to_value(provider).map_err(serialization_error)?);
+            }
         }
     }
-    state.settings.0.retain(|id, _| !id.starts_with("models."));
-    Ok(LoadedWorkingSet {
-        revision: read.revision,
-        original: state,
-    })
+    if let Some(settings) = value["settings"].as_object_mut() {
+        settings.retain(|id, _| !id.starts_with("models."));
+    }
+    hydrate_session_workdirs(&mut value)?;
+    let original = serde_json::from_value(value).map_err(serialization_error)?;
+    Ok(RecordTransaction::new(
+        read.revision,
+        original,
+        &read.records,
+    ))
 }
 
-fn hydrate_session_workdirs(state: &mut WorkingSet) -> Result<(), ApiError> {
-    for session in &mut state.sessions {
-        let Some(project) = state
-            .projects
-            .iter()
-            .find(|project| project.id == session.project_id)
-        else {
-            continue;
-        };
-        let expected = session_worktree_path(&project.workdir, &session.id)?;
-        if session.workdir.is_empty() {
-            session.workdir = expected.to_string_lossy().into_owned();
-        } else if Path::new(&session.workdir) != expected {
-            return Err(error(
-                ErrorCode::InvalidSession,
-                "Session workdir does not match its Project and id",
-                false,
-            ));
+fn hydrate_session_workdirs(value: &mut Value) -> Result<(), ApiError> {
+    let projects: Vec<ProjectView> =
+        serde_json::from_value(value.get("projects").cloned().unwrap_or(json!([])))
+            .map_err(serialization_error)?;
+    if let Some(sessions) = value["sessions"].as_array_mut() {
+        for raw in sessions {
+            let mut session: SessionView =
+                serde_json::from_value(raw.clone()).map_err(serialization_error)?;
+            let Some(project) = projects
+                .iter()
+                .find(|project| project.id == session.project_id)
+            else {
+                continue;
+            };
+            let expected = session_worktree_path(&project.workdir, &session.id)?;
+            if session.workdir.is_empty() {
+                session.workdir = expected.to_string_lossy().into_owned();
+            } else if Path::new(&session.workdir) != expected {
+                return Err(error(
+                    ErrorCode::InvalidSession,
+                    "Session workdir does not match its Project and id",
+                    false,
+                ));
+            }
+            *raw = serde_json::to_value(session).map_err(serialization_error)?;
         }
     }
     Ok(())
 }
 
-pub(in crate::control) fn record_changes(
-    original: &WorkingSet,
-    updated: &WorkingSet,
-) -> Result<Vec<ControlChange>, ApiError> {
-    let original = encode_records(original)?;
-    let updated = encode_records(updated)?;
-    let mut changes = Vec::new();
-    for (key, record) in &updated {
-        if original.get(key) != Some(record) {
-            changes.push(ControlChange::Put(record.clone()));
+pub(in crate::control) fn encode_change(
+    change: TypedChange,
+    projects: &BTreeMap<(ControlRecordKind, String), Option<String>>,
+) -> Result<ControlChange, ControlStoreError> {
+    use ControlRecordKind as Kind;
+    let (kind, id, project_id, value) = match change {
+        TypedChange::Project(v) => (
+            Kind::Project,
+            v.id.clone(),
+            Some(v.id.clone()),
+            serde_json::to_value(v),
+        ),
+        TypedChange::Agent(v) => (Kind::Agent, v.id.clone(), None, serde_json::to_value(v)),
+        TypedChange::Provider(v) => (
+            Kind::Provider,
+            v.provider.id.clone(),
+            None,
+            serde_json::to_value(v),
+        ),
+        TypedChange::Session(v) => (
+            Kind::Session,
+            v.id.clone(),
+            Some(v.project_id.clone()),
+            serde_json::to_value(v),
+        ),
+        TypedChange::Message(v) => (
+            Kind::Message,
+            v.id.clone(),
+            Some(v.project_id.clone()),
+            serde_json::to_value(v),
+        ),
+        TypedChange::Run(v) => (
+            Kind::Run,
+            v.id.clone(),
+            Some(v.project_id.clone()),
+            serde_json::to_value(v),
+        ),
+        TypedChange::Cron(v) => (
+            Kind::Cron,
+            v.id.clone(),
+            Some(v.project_id.clone()),
+            serde_json::to_value(v),
+        ),
+
+        TypedChange::ProviderCredential(id, v) => {
+            (Kind::ProviderCredential, id, None, serde_json::to_value(v))
         }
-    }
-    for ((kind, id), _) in original {
-        if !updated.contains_key(&(kind, id.clone())) {
-            changes.push(ControlChange::Delete { kind, id });
-        }
-    }
-    Ok(changes)
+        TypedChange::RunCredential(id, v) => (
+            Kind::RunCredential,
+            id.clone(),
+            run_project(&id, projects)?,
+            serde_json::to_value(v),
+        ),
+        TypedChange::WorkspaceRunJournal(id, v) => (
+            Kind::WorkspaceRunJournal,
+            id.clone(),
+            run_project(&id, projects)?,
+            serde_json::to_value(v),
+        ),
+        TypedChange::Settings(values, revision) => (
+            Kind::Settings,
+            "settings".into(),
+            None,
+            Ok(json!({"values": values, "revision": revision})),
+        ),
+        TypedChange::Delete(kind, id) => return Ok(ControlChange::Delete { kind, id }),
+    };
+    Ok(ControlChange::Put(ControlRecord {
+        kind,
+        id,
+        project_id,
+        value: value.map_err(|e| ControlStoreError::Other(e.to_string()))?,
+    }))
 }
 
-#[allow(clippy::too_many_lines)]
-fn encode_records(
-    state: &WorkingSet,
-) -> Result<BTreeMap<(ControlRecordKind, String), ControlRecord>, ApiError> {
-    let mut records = BTreeMap::new();
-    let mut insert = |kind, id: String, project_id: Option<String>, value| {
-        records.insert(
-            (kind, id.clone()),
-            ControlRecord {
-                kind,
-                id,
-                project_id,
-                value,
-            },
-        );
-    };
-    for project in &state.projects {
-        insert(
-            ControlRecordKind::Project,
-            project.id.clone(),
-            Some(project.id.clone()),
-            serde_json::to_value(project).map_err(serialization_error)?,
-        );
-    }
-    for agent in &state.agents {
-        insert(
-            ControlRecordKind::Agent,
-            agent.id.clone(),
-            None,
-            serde_json::to_value(agent).map_err(serialization_error)?,
-        );
-    }
-    for provider in &state.providers {
-        insert(
-            ControlRecordKind::Provider,
-            provider.provider.id.clone(),
-            None,
-            serde_json::to_value(provider).map_err(serialization_error)?,
-        );
-    }
-    for (id, reference) in &state.provider_credentials {
-        insert(
-            ControlRecordKind::ProviderCredential,
-            id.clone(),
-            None,
-            json!(reference),
-        );
-    }
-    let run_projects = state
-        .runs
-        .iter()
-        .map(|run| (run.id.as_str(), run.project_id.as_str()))
-        .collect::<HashMap<_, _>>();
-    for (id, reference) in &state.run_credentials {
-        insert(
-            ControlRecordKind::RunCredential,
-            id.clone(),
-            run_projects.get(id.as_str()).map(|id| (*id).to_owned()),
-            json!(reference),
-        );
-    }
-    for session in &state.sessions {
-        insert(
-            ControlRecordKind::Session,
-            session.id.clone(),
-            Some(session.project_id.clone()),
-            serde_json::to_value(session).map_err(serialization_error)?,
-        );
-    }
-    for message in &state.messages {
-        insert(
-            ControlRecordKind::Message,
-            message.id.clone(),
-            Some(message.project_id.clone()),
-            serde_json::to_value(message).map_err(serialization_error)?,
-        );
-    }
-    for run in &state.runs {
-        insert(
-            ControlRecordKind::Run,
-            run.id.clone(),
-            Some(run.project_id.clone()),
-            serde_json::to_value(run).map_err(serialization_error)?,
-        );
-    }
-    for (id, journal) in &state.workspace_run_journals {
-        insert(
-            ControlRecordKind::WorkspaceRunJournal,
-            id.clone(),
-            run_projects.get(id.as_str()).map(|id| (*id).to_owned()),
-            serde_json::to_value(journal).map_err(serialization_error)?,
-        );
-    }
-    for cron in &state.crons {
-        insert(
-            ControlRecordKind::Cron,
-            cron.id.clone(),
-            Some(cron.project_id.clone()),
-            serde_json::to_value(cron).map_err(serialization_error)?,
-        );
-    }
-    insert(
-        ControlRecordKind::Settings,
-        "settings".into(),
-        None,
-        json!({"values": state.settings, "revision": state.settings_revision}),
-    );
-    Ok(records)
+fn run_project(
+    id: &str,
+    projects: &BTreeMap<(ControlRecordKind, String), Option<String>>,
+) -> Result<Option<String>, ControlStoreError> {
+    projects
+        .get(&(ControlRecordKind::Run, id.to_owned()))
+        .cloned()
+        .filter(Option::is_some)
+        .ok_or_else(|| {
+            ControlStoreError::Other("Run-scoped change has no loaded or newly created Run".into())
+        })
 }

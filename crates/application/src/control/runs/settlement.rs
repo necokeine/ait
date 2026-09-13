@@ -9,7 +9,7 @@ use crate::control::runs::journal::{
     WorkspaceExecutionLease, ensure_current_lease, ensure_journal_lease,
 };
 use crate::control::runs::{api_run, is_terminal_workspace_status};
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasMessages, HasSessions};
 use ait_contracts::{ApiError, RunView};
 use ait_domain::{DomainError, ErrorCode, NativeApprovalStatus};
 use ait_ports::{ControlStoreError, WorkspaceAgentResponse, WorkspaceOutputItem};
@@ -23,7 +23,7 @@ async fn wait_for_workspace_terminal_persistence(failures: &mut u32) {
 }
 
 fn apply_workspace_terminal_result(
-    state: &mut WorkingSet,
+    state: &mut (impl HasMessages + HasSessions),
     run: &mut RunView,
     result: &Result<WorkspaceAgentResponse, DomainError>,
 ) {

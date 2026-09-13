@@ -2,12 +2,11 @@
 use crate::control::catalog::require_named_agent;
 use crate::control::errors::error;
 use crate::control::events::{now, pending};
-use crate::control::project::git::{ensure_git_head, prepare_git_root};
-use crate::control::state::WorkingSet;
+use crate::control::project::git::PreparedProject;
+use crate::control::state::{HasAgents, HasMessages, HasProjects};
 use ait_contracts::{ApiError, CommandResult, MessageView, ProjectView};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
-use std::path::Path;
 use uuid::Uuid;
 
 pub(in crate::control) mod archive;
@@ -15,13 +14,13 @@ pub(in crate::control) mod git;
 pub(in crate::control) mod worktrees;
 
 pub(in crate::control) fn set_project_default_agent(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasProjects),
     project_id: &str,
     agent_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     require_named_agent(state, agent_id)?;
     let project = state
-        .projects
+        .projects_mut()
         .iter_mut()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
@@ -39,7 +38,7 @@ pub(in crate::control) fn set_project_default_agent(
 }
 
 pub(in crate::control) fn validate_project_registration(
-    state: &WorkingSet,
+    state: &impl HasProjects,
     id: &str,
     name: &str,
     repo_url: &mut Option<String>,
@@ -51,7 +50,7 @@ pub(in crate::control) fn validate_project_registration(
             false,
         ));
     }
-    if state.projects.iter().any(|project| project.id == id) {
+    if state.projects().iter().any(|project| project.id == id) {
         return Err(error(
             ErrorCode::InvalidProject,
             "project id already exists",
@@ -72,27 +71,16 @@ pub(in crate::control) fn validate_project_registration(
 }
 
 pub(in crate::control) fn register_project(
-    state: &mut WorkingSet,
+    state: &mut (impl HasMessages + HasProjects),
     id: String,
     name: String,
-    workdir: &str,
+    prepared: &PreparedProject,
     mut repo_url: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_project_registration(state, &id, &name, &mut repo_url)?;
-    let canonical = prepare_git_root(Path::new(&workdir))?;
-    let base_commit = ensure_git_head(&canonical)?;
-    let canonical_text = canonical.to_string_lossy().into_owned();
-    if state
-        .projects
-        .iter()
-        .any(|project| project.workdir == canonical_text)
-    {
-        return Err(error(
-            ErrorCode::ProjectPathAlreadyRegistered,
-            "project path is already registered",
-            false,
-        ));
-    }
+    let base_commit = prepared.base_commit.clone();
+    let canonical_text = prepared.workdir.clone();
+    validate_project_workdir(state, &canonical_text)?;
     let root_id = Uuid::new_v4().to_string();
     let project = ProjectView {
         id: id.clone(),
@@ -104,7 +92,7 @@ pub(in crate::control) fn register_project(
         default_agent_id: None,
         revision: 1,
     };
-    state.messages.push(MessageView {
+    state.messages_mut().push(MessageView {
         id: root_id,
         project_id: id.clone(),
         parent_message_id: None,
@@ -115,19 +103,37 @@ pub(in crate::control) fn register_project(
         git_commit: None,
         data: None,
     });
-    state.projects.push(project.clone());
+    state.projects_mut().push(project.clone());
     Ok((
         CommandResult::Project(project.clone()),
         vec![pending("project.registered", Some(id), &project)],
     ))
 }
 
+pub(in crate::control) fn validate_project_workdir(
+    state: &impl HasProjects,
+    canonical_workdir: &str,
+) -> Result<(), ApiError> {
+    if state
+        .projects()
+        .iter()
+        .any(|project| project.workdir == canonical_workdir)
+    {
+        return Err(error(
+            ErrorCode::ProjectPathAlreadyRegistered,
+            "project path is already registered",
+            false,
+        ));
+    }
+    Ok(())
+}
+
 pub(in crate::control) fn require_project_view<'a>(
-    state: &'a WorkingSet,
+    state: &'a impl HasProjects,
     project_id: &str,
 ) -> Result<&'a ProjectView, ApiError> {
     state
-        .projects
+        .projects()
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))

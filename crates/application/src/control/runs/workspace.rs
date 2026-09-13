@@ -10,7 +10,7 @@ use crate::control::runs::finalization::{
 use crate::control::runs::journal::WorkspaceExecutionLease;
 use crate::control::runs::progress::ProgressPump;
 use crate::control::runs::recovery::WorkspaceRecoveryClaim;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasMessages, HasProjects, HasSessions};
 use ait_contracts::{AgentMode, ApiError, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
@@ -58,19 +58,19 @@ impl WorkspaceResultSink for DurableWorkspaceResultSink {
 }
 
 pub(in crate::control) fn workspace_invocation(
-    state: &WorkingSet,
+    state: &(impl HasMessages + HasProjects + HasSessions),
     run: &RunView,
     control: Arc<WorkspaceRunControl>,
     approvals: Arc<dyn WorkspaceApproval>,
 ) -> Result<WorkspaceAgentInvocation, DomainError> {
     let user_text = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == run.base_message_id)
         .and_then(|message| message.text.clone())
         .ok_or_else(|| DomainError::invariant(ErrorCode::MessageNotFound, "run input not found"))?;
     let message_baseline = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == run.base_message_id)
         .and_then(|message| message.git_commit.clone());
@@ -270,7 +270,7 @@ impl LocalControlService {
     )]
     async fn invoke_codex_workspace_checkpointed(
         &self,
-        state: &WorkingSet,
+        state: &(impl HasMessages + HasProjects + HasSessions),
         run: &RunView,
         control: Arc<WorkspaceRunControl>,
         progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,

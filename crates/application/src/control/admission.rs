@@ -5,7 +5,9 @@ use crate::control::errors::error;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
 use crate::control::project::git::absolute_git_dir;
 use crate::control::project::require_project_view;
-use crate::control::state::WorkingSet;
+use crate::control::state::{
+    HasAgents, HasCrons, HasProjects, HasProviders, HasRuns, HasSessions, HasSettings,
+};
 use ait_contracts::{AgentMode, ApiError, Command, SessionView};
 use ait_domain::ErrorCode;
 use std::fs::{File, OpenOptions};
@@ -20,14 +22,22 @@ pub(in crate::control) struct WorkspaceWriteLease {
 }
 
 pub(in crate::control) fn workspace_write_path(
-    state: &WorkingSet,
+    state: &(impl HasProjects + HasSessions),
     command: &Command,
-    permission_limits: PermissionPolicyLimits,
+    _permission_limits: PermissionPolicyLimits,
 ) -> Result<Option<PathBuf>, ApiError> {
     if let Some(project_id) = session_command_project_id(state, command)? {
         let project = require_project_view(state, project_id)?;
         return Ok(Some(PathBuf::from(&project.workdir)));
     }
+    Ok(None)
+}
+
+pub(in crate::control) fn cron_workspace_write_path(
+    state: &(impl HasAgents + HasCrons + HasProjects + HasProviders + HasRuns + HasSettings),
+    command: &Command,
+    permission_limits: PermissionPolicyLimits,
+) -> Result<Option<PathBuf>, ApiError> {
     let Command::TriggerCron {
         cron_id,
         scheduled_at,
@@ -35,13 +45,13 @@ pub(in crate::control) fn workspace_write_path(
     else {
         return Ok(None);
     };
-    if state.runs.iter().any(|run| {
+    if state.runs().iter().any(|run| {
         run.cron_id.as_deref() == Some(cron_id.as_str()) && run.scheduled_at == Some(*scheduled_at)
     }) {
         return Ok(None);
     }
     let Some(cron) = state
-        .crons
+        .crons()
         .iter()
         .find(|cron| cron.id == *cron_id && cron.enabled)
     else {
@@ -49,7 +59,7 @@ pub(in crate::control) fn workspace_write_path(
     };
     let agent = require_agent(state, &cron.agent_id)?;
     let provider = validate_config(state, &agent.config)?;
-    let _ = effective_permission_profile(&state.settings, provider, permission_limits)?;
+    let _ = effective_permission_profile(state.settings(), provider, permission_limits)?;
     if !matches!(
         provider.kind,
         AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
@@ -61,7 +71,7 @@ pub(in crate::control) fn workspace_write_path(
 }
 
 fn session_command_project_id<'a>(
-    state: &'a WorkingSet,
+    state: &'a impl HasSessions,
     command: &'a Command,
 ) -> Result<Option<&'a str>, ApiError> {
     match command {
@@ -74,14 +84,14 @@ fn session_command_project_id<'a>(
             ..
         } => {
             state
-                .sessions
+                .sessions()
                 .iter()
                 .find(|session| session.id == *source_session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
             Ok(Some(project_id))
         }
         Command::SendMessage { session_id, .. } => state
-            .sessions
+            .sessions()
             .iter()
             .find(|session| session.id == *session_id)
             .map(|session| Some(session.project_id.as_str()))
@@ -134,11 +144,11 @@ pub(in crate::control) fn ensure_idle(session: &SessionView) -> Result<(), ApiEr
 }
 
 pub(in crate::control) fn check_session_admission(
-    state: &WorkingSet,
+    state: &impl HasSessions,
     command: &Command,
 ) -> Result<(), ApiError> {
     if let Some(id) = command_session(command)
-        && let Some(session) = state.sessions.iter().find(|s| s.id == id)
+        && let Some(session) = state.sessions().iter().find(|s| s.id == id)
     {
         ensure_idle(session)?;
     }
@@ -150,9 +160,9 @@ impl LocalControlService {
         &self,
         command: &Command,
     ) -> Result<Option<WorkspaceWriteLease>, ApiError> {
-        let state = self.read_command_records(command).await?.original;
-        check_session_admission(&state, command)?;
-        let Some(workdir) = workspace_write_path(&state, command, self.permission_limits)? else {
+        let state = self.read_command_records(command).await?;
+        state.check_admission(command)?;
+        let Some(workdir) = state.workspace_path(command, self.permission_limits)? else {
             return Ok(None);
         };
         self.acquire_workspace_path(&workdir).await.map(Some)
