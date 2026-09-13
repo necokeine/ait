@@ -57,7 +57,7 @@ deny/cancel 不接受 scope；回复仍属于同一 Run，不产生伪造的 Too
 
 自动化：[`wf04_observe_injected_provider_failure_and_continue`](../bins/cli/tests/workflows.rs)
 通过 `WorkspaceAgent` test fake 覆盖持久化 Provider 失败、Session 释放和后续交互；
-`crates/application/tests/session_agent_config.rs::cancelling_an_active_call_releases_the_session_and_discards_its_output`
+`crates/application/tests/session_configuration.rs::cancelling_an_active_call_releases_the_session_and_discards_its_output`
 使用 blocking executor 覆盖活动取消。两者都不向生产 Provider 目录注册测试模式。
 
 审批不会扩大 Run 创建时的 sandbox。`read_only` 拒绝文件授权；`workspace_write` 的文件授权

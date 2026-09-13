@@ -51,8 +51,10 @@ API 工具广告取精确 provider+model 目录与宿主可执行能力的交集
 - `crates/api-http/tests/permissions.rs`：真实 router → settings → durable Run →
   `CodexWorkspaceAgent` → native sandbox 参数；OpenAI/DeepSeek 权限快照 gateway fixture；三档/strict、
   发送/Cron、reset 后快照不变、未知设置/管理员上限拒绝、零新增 Message/Run 与零 provider 调用。
-- `crates/application/tests/session_agent_config.rs`：发送、Fork、Derive 的快照及 CAS 重读；
-  三档 command/file/legacy 审批矩阵、路径逃逸、symlink、拒绝不携带 scope/grant、秘密错误脱敏。
+- `crates/application/tests/permission_profiles.rs`：发送、Fork、Derive 的权限快照、CAS 重读，
+  以及无效权限档案和配置的错误脱敏。
+- `crates/application/tests/native_approvals.rs`：三档 command/file/legacy 审批矩阵、路径逃逸、
+  symlink、拒绝不携带 scope/grant，以及审批秘密值隔离。
 - `crates/application/tests/run_execution.rs`：queued/settling 恢复时上限重新核验。
 - `crates/application/tests/api_tool_loop.rs`：真实 OpenAI/DeepSeek HTTP fixture 与 HostTools、取消崩溃恢复及终态子记录结算。
 - `crates/agent-adapters/tests/codex_workspace.rs`、`codex_protocol.rs`：Run 快照到 wire 映射、
