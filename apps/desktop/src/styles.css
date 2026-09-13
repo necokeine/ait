@@ -34,6 +34,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .app-shell.sidebar-collapsed .sidebar { transform: translateX(-100%); }
 .titlebar { -webkit-app-region: drag; grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line-soft); background: rgba(16, 17, 15, 0.92); padding: 0 10px; }
 .traffic-spacer { width: 64px; flex: 0 0 64px; }
+.app-brand { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; margin-right: 4px; font-size: 12px; font-weight: 650; }
+.app-brand img { display: block; }
 .titlebar button, .titlebar .command-trigger { -webkit-app-region: no-drag; }
 .history-controls { display: flex; }
 .icon-button, .small-icon-button { border: 0; background: transparent; display: inline-grid; place-items: center; cursor: pointer; color: var(--text-soft); border-radius: 7px; }

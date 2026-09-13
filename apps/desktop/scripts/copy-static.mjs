@@ -9,4 +9,6 @@ await mkdir(resolve(root, "dist"), { recursive: true });
 await Promise.all([
   cp(resolve(root, "src/index.html"), resolve(root, "dist/index.html")),
   cp(resolve(root, "src/styles.css"), resolve(root, "dist/styles.css")),
+  cp(resolve(root, "../../logo.svg"), resolve(root, "dist/logo.svg")),
+  cp(resolve(root, "../../logo.png"), resolve(root, "dist/logo.png")),
 ]);
