@@ -827,8 +827,11 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     )
     .await;
 
+    // The agent cannot finish until this test releases its semaphore below.
+    // Returning a queued Run before that release proves submit does not await
+    // the turn; this timeout is only a deadlock guard, not a host-speed SLA.
     let accepted = tokio::time::timeout(
-        Duration::from_millis(500),
+        Duration::from_secs(5),
         service.submit(Command::SendMessage {
             session_id: "live-session".into(),
             text: "stream it".into(),
