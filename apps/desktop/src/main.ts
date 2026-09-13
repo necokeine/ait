@@ -80,9 +80,14 @@ class DaemonClient {
   private readonly deliveries = new Map<number, ReadyRunEventDelivery>();
 
   ensureStarted(): Promise<void> {
-    this.startup ??= this.start().then(() => this.ensureBuiltInAgents()).then(() => {
-      this.startEventStream();
-    });
+    if (!this.startup) {
+      this.startup = this.start().then(() => this.ensureBuiltInAgents()).then(() => {
+        this.startEventStream();
+      }).catch((error: unknown) => {
+        this.startup = undefined;
+        throw error;
+      });
+    }
     return this.startup;
   }
 
@@ -274,26 +279,51 @@ class DaemonClient {
 
   private async start(): Promise<void> {
     if (await this.isReady()) {
+      if (this.ownedProcess) return;
       throw new Error(`Ait refuses to reuse an unverified daemon already listening on ${daemonRuntime.listen}. Stop that daemon and try again.`);
     }
     const appRoot = resolve(here, "..");
     const workspaceRoot = resolve(appRoot, "../..");
+    const executableName = process.platform === "win32" ? "ait-daemon.exe" : "ait-daemon";
     const executable = app.isPackaged
-      ? join(process.resourcesPath, "bin", process.platform === "win32" ? "ait-daemon.exe" : "ait-daemon")
-      : "cargo";
+      ? join(process.resourcesPath, "bin", executableName)
+      : join(workspaceRoot, "target", "debug", executableName);
     const database = join(app.getPath("userData"), daemonRuntime.databaseFilename);
-    const args = app.isPackaged
-      ? ["--database", database, "--listen", daemonRuntime.listen]
-      : ["run", "--quiet", "-p", "ait-daemon", "--features", "dev-mock-provider", "--", "--database", database, "--listen", daemonRuntime.listen];
+    const args = ["--database", database, "--listen", daemonRuntime.listen];
+    let stderr = "";
     this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
+    const child = this.ownedProcess;
     this.ownedProcess.stderr?.on("data", (chunk: Buffer) => {
       const message = chunk.toString("utf8").trim();
-      if (message) console.error(`[ait-daemon] ${message}`);
+      if (message) {
+        stderr = `${stderr}\n${message}`.trim().slice(-4_096);
+        console.error(`[ait-daemon] ${message}`);
+      }
     });
-    this.ownedProcess.once("exit", () => { this.ownedProcess = undefined; });
+    const processFailure = new Promise<Error>((resolveFailure) => {
+      child.once("error", (error) => {
+        if (this.ownedProcess === child) this.ownedProcess = undefined;
+        resolveFailure(new Error(`Ait daemon could not be started: ${error.message}`));
+      });
+      child.once("exit", (code, signal) => {
+        if (this.ownedProcess === child) this.ownedProcess = undefined;
+        const reason = code === null ? `signal ${signal ?? "unknown"}` : `exit code ${code}`;
+        const detail = stderr ? `: ${stderr}` : "";
+        resolveFailure(new Error(`Ait daemon stopped before becoming ready (${reason})${detail}`));
+      });
+    });
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      if (await this.isReady()) return;
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+      const readiness = await Promise.race([
+        this.isReady().then((ready) => ready ? "ready" as const : "waiting" as const),
+        processFailure,
+      ]);
+      if (readiness === "ready") return;
+      if (readiness instanceof Error) throw readiness;
+      const delay = await Promise.race([
+        new Promise<undefined>((resolveDelay) => setTimeout(resolveDelay, 250)),
+        processFailure,
+      ]);
+      if (delay instanceof Error) throw delay;
     }
     this.stop();
     throw new Error("Ait daemon did not become ready in time.");
@@ -590,7 +620,9 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(appIcon);
-  void daemon.ensureStarted();
+  void daemon.ensureStarted().catch((error: unknown) => {
+    console.error(`[ait-daemon] ${error instanceof Error ? error.message : String(error)}`);
+  });
   ipcMain.handle("ait:request", (_event, method: unknown, params: unknown) => {
     if (typeof method !== "string") throw new Error("Unsupported desktop operation.");
     return daemon.request(method, params ?? {});

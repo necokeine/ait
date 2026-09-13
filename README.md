@@ -14,8 +14,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 cd apps/desktop
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 ## 本地 API 与 CLI

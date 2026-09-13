@@ -5,11 +5,15 @@ Electron desktop shell for the Ait daemon. The renderer is sandboxed and can onl
 ## Development
 
 ```sh
-npm ci
-npm run typecheck
-npm test
-npm run dev
+pnpm install
+pnpm run typecheck
+pnpm test
+pnpm run dev
 ```
+
+`pnpm run dev` builds both `ait-daemon` and `ait-worker` before opening Electron,
+then Electron launches the resulting debug daemon directly. This keeps a first
+Rust build from being mistaken for a daemon startup timeout.
 
 Main owns the daemon it starts and refuses to reuse an unverified process already listening on its
 configured loopback port. Stop the process occupying that port before reopening Ait. Only the daemon
