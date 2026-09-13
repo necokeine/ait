@@ -26,6 +26,10 @@ never fold pre-existing user changes into the generated commit.
 Codex authentication remains owned by the local Codex installation. The
 adapter does not accept, persist, or log an API key or ChatGPT token.
 
+`CodexSessionTitleGenerator` starts its short metadata turn with `ephemeral: true`
+so Codex does not save it in session history. `AgentRunRequest::ephemeral` controls
+new threads only; workspace runs use `false`, and resume requests omit the field.
+
 Codex alone uses `ait_tools::codex::CodexToolSet`. The installed core provides
 native tools and their executors. Start and resume send Ait instructions plus
 the Project system snapshot in `developerInstructions`, leaving the base prompt
@@ -131,6 +135,7 @@ let stream = adapter.run(AgentRunRequest {
     prompt: "Inspect this project and summarize its architecture.".into(),
     cwd: PathBuf::from("/absolute/path/to/project"),
     resume_thread_id: None,
+    ephemeral: false, // set true for short operations that should not save Codex history
     sandbox: SandboxMode::ReadOnly,
     approval_policy: ApprovalPolicy::Never,
     approval_handler: None, // direct calls use the configured fail-closed handler

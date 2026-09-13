@@ -26,6 +26,7 @@ async fn turn(
         prompt: prompt.into(),
         cwd: cwd.to_path_buf(),
         resume_thread_id: thread,
+        ephemeral: false,
         sandbox: SandboxMode::WorkspaceWrite,
         approval_policy: ApprovalPolicy::Never,
         output_schema: None,

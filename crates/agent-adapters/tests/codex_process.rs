@@ -39,6 +39,7 @@ async fn cancellation_during_handshake_reaps_the_owned_child() {
             prompt: "hello".into(),
             cwd: cwd.clone(),
             resume_thread_id: None,
+            ephemeral: false,
             sandbox: SandboxMode::ReadOnly,
             approval_policy: ApprovalPolicy::Never,
             output_schema: None,

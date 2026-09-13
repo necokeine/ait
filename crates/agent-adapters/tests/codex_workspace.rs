@@ -102,6 +102,10 @@ impl AgentAdapter for PolicyCapturingAdapter {
     }
 
     async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        assert!(
+            !request.ephemeral,
+            "workspace runs must retain Codex history"
+        );
         self.0.lock().unwrap().push((
             request.sandbox,
             request.approval_policy,
@@ -1131,6 +1135,11 @@ impl AgentAdapter for TitleAdapter {
     }
 
     async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
+        assert!(
+            request.ephemeral,
+            "title generation must not save Codex history"
+        );
+        assert!(request.resume_thread_id.is_none());
         assert_eq!(request.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(request.sandbox, SandboxMode::ReadOnly);

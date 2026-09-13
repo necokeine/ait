@@ -59,6 +59,9 @@ pub struct AgentRunRequest {
     pub prompt: String,
     pub cwd: PathBuf,
     pub resume_thread_id: Option<String>,
+    /// Keep a new Codex thread in memory without saving its session history.
+    /// Only applies when `resume_thread_id` is `None`.
+    pub ephemeral: bool,
     pub sandbox: SandboxMode,
     pub approval_policy: ApprovalPolicy,
     /// Optional Run-scoped approval handler. Production workspace Runs always supply one.
@@ -78,6 +81,7 @@ impl std::fmt::Debug for AgentRunRequest {
             .field("prompt", &self.prompt)
             .field("cwd", &self.cwd)
             .field("resume_thread_id", &self.resume_thread_id)
+            .field("ephemeral", &self.ephemeral)
             .field("sandbox", &self.sandbox)
             .field("approval_policy", &self.approval_policy)
             .field(
