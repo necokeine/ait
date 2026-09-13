@@ -355,9 +355,9 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
             })
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
-            vec!["bash", "edit", "grep", "read", "write"]
+            vec!["bash", "edit", "glob", "grep", "read", "write"]
         } else {
-            vec!["edit", "grep", "read", "write"]
+            vec!["edit", "glob", "grep", "read", "write"]
         };
         assert_eq!(names, expected);
         assert!(
