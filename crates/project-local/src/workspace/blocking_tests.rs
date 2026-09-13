@@ -32,7 +32,7 @@ fn head_and_index_races_after_status_are_rejected() {
             retained: Mutex::default(),
             after_git: None,
         };
-        context.prepare_git_root(root.path()).unwrap();
+        context.prepare_git_root(root.path(), None).unwrap();
         context.ensure_git_head(root.path()).unwrap();
         let path = root.path().to_owned();
         let changed = AtomicBool::new(false);
@@ -99,7 +99,7 @@ fn deadline_kills_and_reaps_a_stalled_git_process_group() {
 async fn dropped_future_retains_the_lease_until_started_blocking_io_drains() {
     let root = tempfile::tempdir().unwrap();
     let adapter = LocalProjectWorkspace::default();
-    adapter.prepare_git_root(root.path()).await.unwrap();
+    adapter.prepare_git_root(root.path(), None).await.unwrap();
     adapter.ensure_git_head(root.path()).await.unwrap();
     let lease = adapter.acquire_lease(root.path()).await.unwrap();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();

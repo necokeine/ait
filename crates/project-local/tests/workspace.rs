@@ -33,10 +33,82 @@ async fn shared_port_contract() {
 }
 
 #[tokio::test]
+async fn baseline_revalidation_never_refreshes_or_rewrites_the_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let adapter = LocalProjectWorkspace::default();
+    let root = adapter.prepare_git_root(temp.path(), None).await.unwrap();
+    std::fs::write(root.join("tracked"), "same contents").unwrap();
+    git(&root, &["add", "tracked"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@localhost",
+            "commit",
+            "-m",
+            "seed",
+        ],
+    );
+    // Invalidate the index tree cache and working-file stat cache without
+    // changing HEAD or index content. write-tree/status must not refresh them.
+    git(&root, &["update-index", "--force-remove", "tracked"]);
+    git(&root, &["add", "tracked"]);
+    std::fs::write(root.join("tracked"), "same contents").unwrap();
+    let index = root.join(".git/index");
+    let before = (
+        std::fs::read(&index).unwrap(),
+        index.metadata().unwrap().modified().unwrap(),
+    );
+    let baseline = adapter.clean_baseline(&root).await.unwrap();
+    assert_eq!(adapter.clean_baseline(&root).await.unwrap(), baseline);
+    assert_eq!(
+        (
+            std::fs::read(&index).unwrap(),
+            index.metadata().unwrap().modified().unwrap()
+        ),
+        before
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rebound_checked_target_is_rejected_before_initialization() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path().canonicalize().unwrap();
+    let expected = parent.join("checked");
+    let retained = parent.join("retained");
+    let unchecked = parent.join("unchecked");
+    std::fs::create_dir(&expected).unwrap();
+    std::fs::create_dir(&unchecked).unwrap();
+    let adapter = LocalProjectWorkspace::default();
+    assert_eq!(
+        adapter
+            .path_facts(&expected, &expected)
+            .await
+            .unwrap()
+            .canonical_root,
+        expected
+    );
+    std::fs::rename(&expected, &retained).unwrap();
+    std::os::unix::fs::symlink(&unchecked, &expected).unwrap();
+    let failure = adapter
+        .prepare_git_root(&expected, Some(&expected))
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::RunQueueConflict);
+    assert!(failure.retryable);
+    assert!(adapter.verify_git_root(&expected).await.is_err());
+    assert!(!unchecked.join(".git").exists());
+    assert!(!retained.join(".git").exists());
+}
+
+#[tokio::test]
 async fn dirty_index_untracked_and_existing_worktree_are_preserved() {
     let root = tempfile::tempdir().unwrap();
     let adapter = LocalProjectWorkspace::default();
-    let primary = adapter.prepare_git_root(root.path()).await.unwrap();
+    let primary = adapter.prepare_git_root(root.path(), None).await.unwrap();
     std::fs::write(primary.join("staged"), "keep staged").unwrap();
     git(&primary, &["add", "staged"]);
     assert_eq!(
@@ -105,7 +177,7 @@ async fn lease_child_process() {
 async fn leases_exclude_an_independent_process_and_cancelled_waiters_release() {
     let root = tempfile::tempdir().unwrap();
     let adapter = Arc::new(LocalProjectWorkspace::default());
-    adapter.prepare_git_root(root.path()).await.unwrap();
+    adapter.prepare_git_root(root.path(), None).await.unwrap();
     adapter.ensure_git_head(root.path()).await.unwrap();
     let lease = adapter.acquire_lease(root.path()).await.unwrap();
     let child = Command::new(std::env::current_exe().unwrap())
@@ -140,7 +212,7 @@ async fn aliases_share_locks_and_path_facts_fail_closed_for_dangling_and_non_utf
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     let adapter = LocalProjectWorkspace::default();
-    let primary = adapter.prepare_git_root(root.path()).await.unwrap();
+    let primary = adapter.prepare_git_root(root.path(), None).await.unwrap();
     adapter.ensure_git_head(&primary).await.unwrap();
     let alias = outside.path().join("alias");
     symlink(&primary, &alias).unwrap();
@@ -174,7 +246,7 @@ async fn aliases_share_locks_and_path_facts_fail_closed_for_dangling_and_non_utf
             .is_err()
     );
     let invalid = primary.join(OsString::from_vec(vec![0xff]));
-    assert!(adapter.prepare_git_root(&invalid).await.is_err());
+    assert!(adapter.prepare_git_root(&invalid, None).await.is_err());
     assert!(
         adapter
             .path_facts(&primary, &invalid.join("new"))

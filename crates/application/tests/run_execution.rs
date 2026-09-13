@@ -1,5 +1,7 @@
 //! Command execution, durable checkpoints, and read-only Run queries.
 
+#[path = "support/immediate_workspace.rs"]
+mod immediate_workspace;
 mod support;
 
 use std::{
@@ -790,7 +792,7 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         release: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(immediate_workspace::ImmediateWorkspace),
         store.clone(),
         agent.clone(),
     ));
@@ -827,11 +829,13 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     )
     .await;
 
-    // The agent cannot finish until this test releases its semaphore below.
-    // Returning a queued Run before that release proves submit does not await
-    // the turn; this timeout is only a deadlock guard, not a host-speed SLA.
+    // NEC-205 requires admission within 500ms. Ready workspace facts isolate
+    // this application contract from unrelated Git processes in parallel tests.
+    // The agent remains blocked until the test releases it, so waiting for turn
+    // completion must fail this bound regardless of host speed.
+    let submitted_at = std::time::Instant::now();
     let accepted = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_millis(500),
         service.submit(Command::SendMessage {
             session_id: "live-session".into(),
             text: "stream it".into(),
@@ -839,6 +843,11 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     )
     .await
     .expect("submission must not wait for the turn");
+    assert!(
+        submitted_at.elapsed() < Duration::from_millis(500),
+        "NEC-205 admission exceeded 500ms: {:?}",
+        submitted_at.elapsed()
+    );
     let CommandResult::Run(run) = accepted.result.unwrap() else {
         panic!("expected accepted run")
     };

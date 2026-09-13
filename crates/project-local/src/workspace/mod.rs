@@ -17,6 +17,8 @@ use std::{
 #[derive(Clone, Default)]
 pub struct LocalProjectWorkspace {
     options: OperationOptions,
+    #[cfg(test)]
+    lease_duplicate: Option<Arc<Mutex<Option<File>>>>,
     leases: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
 }
 
@@ -72,7 +74,15 @@ fn canonical_path(path: &Path) -> Result<PathBuf, DomainError> {
 struct LocalLease {
     canonical: PathBuf,
     _queue: tokio::sync::OwnedMutexGuard<()>,
-    _file: File,
+    file: File,
+}
+impl Drop for LocalLease {
+    fn drop(&mut self) {
+        // Closing this descriptor alone need not release a lock while a forked
+        // child still has the same open file description. Unlock before the
+        // in-process queue guard admits another writer; close remains a fallback.
+        let _ = self.file.unlock();
+    }
 }
 impl WorkspaceLease for LocalLease {
     fn canonical_root(&self) -> &Path {
@@ -82,11 +92,26 @@ impl WorkspaceLease for LocalLease {
 
 #[async_trait::async_trait]
 impl ProjectWorkspace for LocalProjectWorkspace {
-    async fn prepare_git_root(&self, path: &Path) -> Result<PathBuf, DomainError> {
+    async fn prepare_git_root(
+        &self,
+        path: &Path,
+        expected_root: Option<&Path>,
+    ) -> Result<PathBuf, DomainError> {
         let operation = Operation::new(&self.options, ErrorCode::ProjectGitInitFailed);
         path_text(path)?;
         let path = path.to_owned();
-        operation.run(move |ctx| ctx.prepare_git_root(&path)).await
+        let expected_root = expected_root.map(Path::to_owned);
+        operation
+            .run(move |ctx| ctx.prepare_git_root(&path, expected_root.as_deref()))
+            .await
+    }
+    async fn verify_git_root(&self, expected_root: &Path) -> Result<(), DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitInitFailed);
+        path_text(expected_root)?;
+        let expected_root = expected_root.to_owned();
+        operation
+            .run(move |ctx| ctx.verify_git_root(&expected_root))
+            .await
     }
     async fn ensure_git_head(&self, path: &Path) -> Result<String, DomainError> {
         let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
@@ -238,6 +263,8 @@ impl LocalProjectWorkspace {
         };
         let guard = operation.wait(queue.lock_owned()).await?;
         operation.context().point("after_lease_queue");
+        #[cfg(test)]
+        let lease_duplicate = self.lease_duplicate.clone();
         operation
             .run(move |ctx| {
                 let git_dir = ctx.absolute_git_dir(&canonical)?;
@@ -272,11 +299,17 @@ impl LocalProjectWorkspace {
                         true,
                     )
                 })?;
+                #[cfg(test)]
+                if let Some(duplicate) = lease_duplicate {
+                    // A duplicated descriptor shares the open file description,
+                    // just like one inherited by a concurrent child at fork.
+                    *duplicate.lock().unwrap() = Some(file.try_clone().unwrap());
+                }
                 ctx.point("lease_acquired");
                 Ok(Arc::new(LocalLease {
                     canonical,
                     _queue: guard,
-                    _file: file,
+                    file,
                 }) as Arc<dyn WorkspaceLease>)
             })
             .await

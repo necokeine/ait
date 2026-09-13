@@ -44,7 +44,7 @@ fn assert_retained(failure: &DomainError, path: &Path, state: &str) {
 async fn repository() -> (tempfile::TempDir, PathBuf, String) {
     let temp = tempfile::tempdir().unwrap();
     let adapter = LocalProjectWorkspace::default();
-    let root = adapter.prepare_git_root(temp.path()).await.unwrap();
+    let root = adapter.prepare_git_root(temp.path(), None).await.unwrap();
     let head = adapter.ensure_git_head(&root).await.unwrap();
     (temp, root, head)
 }
@@ -65,7 +65,11 @@ async fn every_public_operation_maps_admission_timeout_to_its_own_responsibility
     let target = root.join(".ait/session");
     for (failure, expected) in [
         (
-            workspace.prepare_git_root(root).await.unwrap_err(),
+            workspace.prepare_git_root(root, None).await.unwrap_err(),
+            ErrorCode::ProjectGitInitFailed,
+        ),
+        (
+            workspace.verify_git_root(root).await.unwrap_err(),
             ErrorCode::ProjectGitInitFailed,
         ),
         (
@@ -303,7 +307,7 @@ async fn git_initialization_and_commit_crossing_deadline_report_retained_state()
         options: expire_at("git_initialized"),
         ..LocalProjectWorkspace::default()
     };
-    let failure = adapter.prepare_git_root(&root).await.unwrap_err();
+    let failure = adapter.prepare_git_root(&root, None).await.unwrap_err();
     assert_timeout(&failure, ErrorCode::ProjectGitInitFailed, false);
     assert_retained(&failure, &root, "git_initialized");
     assert!(root.join(".git").is_dir());
@@ -521,7 +525,7 @@ fn saturated_tokio_blocking_queue_cannot_extend_public_deadline_or_start_late_io
         // Bound the assertion too, so a broken adapter cannot hang the test.
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            adapter.prepare_git_root(temp.path()),
+            adapter.prepare_git_root(temp.path(), None),
         )
         .await;
         assert_eq!(
@@ -544,6 +548,43 @@ fn saturated_tokio_blocking_queue_cannot_extend_public_deadline_or_start_late_io
 }
 
 #[test]
+fn workspace_lock_probe_process() {
+    let Some(path) = std::env::var_os("AIT_QUEUED_LEASE_PROBE_PATH") else {
+        return;
+    };
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    assert_eq!(
+        file.try_lock().is_ok(),
+        std::env::var("AIT_QUEUED_LEASE_PROBE_FREE").unwrap() == "true"
+    );
+}
+
+fn assert_process_lock_available(root: &Path, available: bool) {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "workspace::deadline_tests::workspace_lock_probe_process",
+        ])
+        .env(
+            "AIT_QUEUED_LEASE_PROBE_PATH",
+            root.join(".git/ait/locks/workspace-write.lock"),
+        )
+        .env("AIT_QUEUED_LEASE_PROBE_FREE", available.to_string())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "independent lock probe failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn dropping_a_queued_public_worktree_future_releases_resources_before_pool_unblocks() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -552,7 +593,11 @@ fn dropping_a_queued_public_worktree_future_releases_resources_before_pool_unblo
         .unwrap();
     runtime.block_on(async {
         let (_temp, root, head) = repository().await;
-        let mut adapter = LocalProjectWorkspace::default();
+        let duplicate = Arc::new(Mutex::new(None));
+        let mut adapter = LocalProjectWorkspace {
+            lease_duplicate: Some(duplicate.clone()),
+            ..LocalProjectWorkspace::default()
+        };
         let lease = adapter.acquire_lease(&root).await.unwrap();
         let weak_lease = Arc::downgrade(&lease);
         let permits = Arc::new(tokio::sync::Semaphore::new(1));
@@ -593,6 +638,7 @@ fn dropping_a_queued_public_worktree_future_releases_resources_before_pool_unblo
         );
         drop(lease);
         assert_eq!(weak_lease.strong_count(), 1);
+        assert_process_lock_available(&root, false);
         drop(future);
 
         assert!(
@@ -609,6 +655,10 @@ fn dropping_a_queued_public_worktree_future_releases_resources_before_pool_unblo
             1,
             "dropping queued work must return admission immediately"
         );
+        assert!(
+            duplicate.lock().unwrap().is_some(),
+            "a concurrent process can still hold the inherited file description"
+        );
         // Check the actual advisory file lock without using the saturated pool.
         let file = fs::OpenOptions::new()
             .read(true)
@@ -617,7 +667,9 @@ fn dropping_a_queued_public_worktree_future_releases_resources_before_pool_unblo
             .unwrap();
         file.try_lock()
             .expect("cancelled queued work must no longer exclude another lock owner");
+        file.unlock().unwrap();
         drop(file);
+        assert_process_lock_available(&root, true);
         assert!(!target.exists());
 
         release_tx.send(()).unwrap();

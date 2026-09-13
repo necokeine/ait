@@ -1,13 +1,10 @@
 //! Command admission and CAS commits; execution continuations run only after persistence.
-use crate::control::admission::{check_session_admission, workspace_write_path};
+use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
-use crate::control::project::git::command_git_baseline;
-use crate::control::project::validate_project_registration;
-use crate::control::project::worktrees::prepare_command_session_worktrees;
+use crate::control::project::git::{canonical_project_path, prepare_project};
 use crate::control::runs::finalization::{
     InvocationGuard, WorkspaceRunControl, WorkspaceRunControlGuard,
 };
-use crate::control::{LocalControlService, apply_command, read_command};
 use ait_contracts::{ApiError, Command, CommandResult, RunView};
 use ait_domain::ErrorCode;
 use ait_ports::ControlStoreError;
@@ -102,7 +99,7 @@ impl LocalControlService {
                 | Command::ListCrons
         ) {
             let loaded = self.read_command_records(&command).await?;
-            return read_command(loaded.original, loaded.revision, command);
+            return loaded.read(command);
         }
 
         // A Session request never waits behind a running turn: reject it immediately.
@@ -181,6 +178,7 @@ impl LocalControlService {
     ) -> Result<CommandOutcome, ApiError> {
         let mut created_workdir = None;
         let mut created_session_worktrees = Vec::new();
+        let importing_project = matches!(&command, Command::ImportProject { .. });
         self.commit_command_inner(
             command,
             workspace_lease,
@@ -206,12 +204,18 @@ impl LocalControlService {
                         "{} Session worktree retained at {retained}; inspect it before retrying.",
                         failure.message
                     );
-                    failure.retryable = false;
+                    // Import can be prepared again after inspection; never reset
+                    // or overwrite a retained worktree automatically.
+                    failure.retryable &= importing_project && failure.code == ErrorCode::RunQueueConflict;
                 }
                 failure
             })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep one-time preparation and read-only CAS retries together"
+    )]
     async fn commit_command_inner(
         &self,
         mut command: Command,
@@ -220,52 +224,68 @@ impl LocalControlService {
         created_workdir: &mut Option<PathBuf>,
         created_session_worktrees: &mut Vec<PathBuf>,
     ) -> Result<CommandOutcome, ApiError> {
-        for _ in 0..4 {
-            let loaded = self.read_command_records(&command).await?;
-            let mut state = loaded.original.clone();
-            if let Command::RegisterProject {
-                id,
-                name,
-                workdir,
-                repo_url,
-            } = &mut command
-            {
-                validate_project_registration(&state, id, name, repo_url)?;
-                if workdir.is_none() {
-                    let creator = self.project_directory_creator.as_ref().ok_or_else(|| error(
-                        ErrorCode::ProjectDefaultDirectoryUnavailable,
-                        "The host has no default Project directory configured; specify a workdir.", false,
-                    ))?;
-                    let path = creator.create_workdir(name).await.map_err(|failure| {
-                        error(failure.code, failure.message, failure.retryable)
-                    })?;
-                    *created_workdir = Some(path.clone());
-                    *workdir = Some(
-                        path.to_str()
-                            .ok_or_else(|| {
-                                error(
-                                    ErrorCode::InvalidProject,
-                                    "Project directory must have a UTF-8 path",
-                                    false,
-                                )
-                            })?
-                            .to_owned(),
-                    );
-                    // Keep this allocated path across CAS retries. Another request
-                    // still has to allocate independently and will fail at mkdir.
-                }
+        let initial = self.read_command_records(&command).await?;
+        self.allocate_project_directory(&initial, &mut command, created_workdir)
+            .await?;
+        let project_workdir = match &mut command {
+            Command::RegisterProject { workdir, .. } => {
+                Some(workdir.as_mut().expect("allocated workdir"))
             }
-            check_session_admission(&state, &command)?;
-            prepare_command_session_worktrees(
+            Command::ImportProject { workdir, .. } => Some(workdir),
+            _ => None,
+        };
+        let canonical_workdir = if let Some(workdir) = project_workdir {
+            *workdir = canonical_project_path(
+                self.project_workspace.as_ref(),
+                std::path::Path::new(workdir),
+            )
+            .await?
+            .to_string_lossy()
+            .into_owned();
+            Some(workdir.clone())
+        } else {
+            None
+        };
+        let initial = match &canonical_workdir {
+            // Read and validate the canonical target before Git init or worktree creation.
+            Some(_) => self.read_command_records(&command).await?,
+            None => initial,
+        };
+        initial.check_admission(&command)?;
+        let prepared_project = if let Some(workdir) = canonical_workdir.as_deref() {
+            Some(prepare_project(self.project_workspace.as_ref(), workdir).await?)
+        } else {
+            None
+        };
+        initial
+            .prepare(
                 self.project_workspace.as_ref(),
                 workspace_lease.clone(),
-                &state,
                 &command,
+                prepared_project.as_ref(),
                 created_session_worktrees,
             )
             .await?;
+        let preparation_key = initial.preparation_key();
+        for attempt in 0..4 {
+            let loaded = if attempt == 0 {
+                None
+            } else {
+                Some(self.read_command_records(&command).await?)
+            };
+            let loaded = loaded.as_ref().unwrap_or(&initial);
+            loaded.check_admission(&command)?;
+            if loaded.preparation_key() != preparation_key {
+                return Err(error(
+                    ErrorCode::RunQueueConflict,
+                    "prepared command references changed; retry the request",
+                    true,
+                ));
+            }
             if workspace_lease.is_none()
-                && workspace_write_path(&state, &command, self.permission_limits)?.is_some()
+                && loaded
+                    .workspace_path(&command, self.permission_limits)?
+                    .is_some()
             {
                 return Err(error(
                     ErrorCode::ProjectWorkspaceBusy,
@@ -273,19 +293,30 @@ impl LocalControlService {
                     true,
                 ));
             }
-            let git_baseline =
-                command_git_baseline(self.project_workspace.as_ref(), &state, &command).await?;
-            let (result, events) = apply_command(
-                self.project_workspace.as_ref(),
-                &mut state,
-                command.clone(),
-                git_baseline.as_ref(),
-                self.permission_limits,
-                derive_source_locked,
-            )
-            .await?;
-            match self.persist_records(&loaded, &state, events).await {
-                Ok(()) => {
+            // Git observation is read-only; directory/worktree creation is above the retry loop.
+            let git_baseline = loaded
+                .git_baseline(self.project_workspace.as_ref(), &command)
+                .await?;
+            let commit = loaded
+                .reduce(
+                    self.project_workspace.as_ref(),
+                    command.clone(),
+                    git_baseline.as_ref(),
+                    self.permission_limits,
+                    derive_source_locked,
+                    prepared_project.as_ref(),
+                )
+                .await?;
+            if let Some(prepared) = &prepared_project {
+                prepared.verify(self.project_workspace.as_ref()).await?;
+            }
+            match self
+                .store
+                .apply(commit.revision, commit.changes, commit.events)
+                .await
+            {
+                Ok(_) => {
+                    let result = commit.outcome;
                     if matches!(
                         command,
                         Command::ResolveNativeApproval { .. } | Command::CancelRun { .. }
@@ -305,5 +336,50 @@ impl LocalControlService {
             "concurrent state update did not settle",
             true,
         ))
+    }
+    async fn allocate_project_directory(
+        &self,
+        initial: &crate::control::state::commands::CommandTransaction,
+        command: &mut Command,
+        created_workdir: &mut Option<PathBuf>,
+    ) -> Result<(), ApiError> {
+        if let Command::RegisterProject {
+            id,
+            name,
+            workdir,
+            repo_url,
+        } = command
+        {
+            initial.validate_registration(id, name, repo_url)?;
+            if workdir.is_none() {
+                let creator = self.project_directory_creator.as_ref().ok_or_else(|| {
+                    error(
+                        ErrorCode::ProjectDefaultDirectoryUnavailable,
+                        "The host has no default Project directory configured; specify a workdir.",
+                        false,
+                    )
+                })?;
+                let path = creator
+                    .create_workdir(name)
+                    .await
+                    .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
+                *created_workdir = Some(path.clone());
+                *workdir = Some(
+                    path.to_str()
+                        .ok_or_else(|| {
+                            error(
+                                ErrorCode::InvalidProject,
+                                "Project directory must have a UTF-8 path",
+                                false,
+                            )
+                        })?
+                        .to_owned(),
+                );
+                // Keep this allocated path across CAS retries. Another request
+                // still has to allocate independently and will fail at mkdir.
+            }
+        }
+
+        Ok(())
     }
 }

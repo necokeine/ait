@@ -4,7 +4,7 @@ use crate::control::approvals::expire_pending_native_approvals;
 use crate::control::conversation::release_session;
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasRuns, HasSessions, HasWorkspaceRunJournals};
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::{ErrorCode, NativeApprovalStatus};
 use ait_ports::PendingEvent;
@@ -26,39 +26,39 @@ pub(in crate::control) fn is_terminal_workspace_status(status: &str) -> bool {
 }
 
 pub(in crate::control) fn cancel_run(
-    state: &mut WorkingSet,
+    state: &mut (impl HasRuns + HasSessions + HasWorkspaceRunJournals),
     run_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let index = state
-        .runs
+        .runs()
         .iter()
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-    if is_terminal_workspace_status(&state.runs[index].status) {
+    if is_terminal_workspace_status(&state.runs()[index].status) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
             "run is already terminal",
             false,
         ));
     }
-    if state.runs[index].phase.as_deref() == Some("integrating") {
+    if state.runs()[index].phase.as_deref() == Some("integrating") {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
             "workspace integration has started; cancellation cannot replace its durable result",
             false,
         ));
     }
-    let mut run = state.runs[index].clone();
+    let mut run = state.runs()[index].clone();
     if run.execution.is_some() {
         run.status = "cancelling".into();
-        state.runs[index] = run.clone();
+        state.runs_mut()[index] = run.clone();
         return Ok((
             CommandResult::Run(run.clone()),
             vec![pending("run.updated", Some(run.id.clone()), &run)],
         ));
     }
     run.lease_epoch = run.lease_epoch.saturating_add(1);
-    if let Some(journal) = state.workspace_run_journals.get_mut(&run.id) {
+    if let Some(journal) = state.workspace_run_journals_mut().get_mut(&run.id) {
         journal.lease_epoch = run.lease_epoch;
     }
     run.status = "cancelled".into();
@@ -66,7 +66,7 @@ pub(in crate::control) fn cancel_run(
     run.error = Some(error(ErrorCode::RunCancelled, "run was cancelled", false));
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Cancelled);
     release_session(state, &run);
-    state.runs[index] = run.clone();
+    state.runs_mut()[index] = run.clone();
     Ok((
         CommandResult::Run(run.clone()),
         // Terminal Run transitions share one event contract so every client

@@ -64,7 +64,11 @@ impl BlockingContext {
         }
     }
 
-    pub(super) fn prepare_git_root(&self, path: &Path) -> Result<std::path::PathBuf, DomainError> {
+    pub(super) fn prepare_git_root(
+        &self,
+        path: &Path,
+        expected_root: Option<&Path>,
+    ) -> Result<std::path::PathBuf, DomainError> {
         if !path.exists() {
             return Err(error(
                 ErrorCode::ProjectPathNotFound,
@@ -82,6 +86,13 @@ impl BlockingContext {
         }
         self.check()?;
         let canonical = canonical_path(path)?;
+        if expected_root.is_some_and(|expected| expected != canonical) {
+            return Err(error(
+                ErrorCode::RunQueueConflict,
+                "canonical Project target changed before preparation; retry the request",
+                true,
+            ));
+        }
         let top = self.git_top_level(&canonical)?;
         if top.as_deref() != Some(canonical.as_path()) {
             self.check()?;
@@ -113,6 +124,19 @@ impl BlockingContext {
             ));
         }
         Ok(canonical)
+    }
+
+    pub(super) fn verify_git_root(&self, expected_root: &Path) -> Result<(), DomainError> {
+        if canonical_path(expected_root)? != expected_root
+            || self.git_top_level(expected_root)?.as_deref() != Some(expected_root)
+        {
+            return Err(error(
+                ErrorCode::ProjectGitInitFailed,
+                "Project Git root changed",
+                false,
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn ensure_git_head(&self, path: &Path) -> Result<String, DomainError> {
@@ -216,7 +240,7 @@ impl BlockingContext {
                 false,
             )
         })?;
-        let index_before = self.git_index_tree(path)?;
+        let index_before = self.git_index_tree(path, false)?;
         let status = self
             .command()
             .arg("-C")
@@ -258,7 +282,7 @@ impl BlockingContext {
                 true,
             ));
         }
-        let index_after = self.git_index_tree(path)?;
+        let index_after = self.git_index_tree(path, true)?;
         if index_before != index_after {
             return Err(error(
                 ErrorCode::ProjectGitDirty,
@@ -280,12 +304,12 @@ impl BlockingContext {
         })
     }
 
-    fn git_index_tree(&self, path: &Path) -> Result<String, DomainError> {
+    fn git_index_tree(&self, path: &Path, rechecking: bool) -> Result<String, DomainError> {
         let output = self
             .command()
             .arg("-C")
             .arg(path)
-            .arg("write-tree")
+            .args(["diff-index", "--cached", "--quiet", "HEAD", "--"])
             .output()
             .map_err(|failure| {
                 error(
@@ -297,11 +321,11 @@ impl BlockingContext {
         if !output.status.success() {
             return Err(error(
                 ErrorCode::ProjectGitDirty,
-                String::from_utf8_lossy(&output.stderr).trim(),
-                false,
+                "Project Git index must match HEAD before adding a user message",
+                rechecking,
             ));
         }
-        Ok(git_line(&output.stdout)?.to_owned())
+        self.git_commit_tree(path, "HEAD")
     }
 
     fn git_commit_tree(&self, path: &Path, commit: &str) -> Result<String, DomainError> {

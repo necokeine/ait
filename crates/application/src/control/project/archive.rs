@@ -1,11 +1,11 @@
 //! Project archive import, export and validation.
 use crate::control::catalog::validate_provider;
 use crate::control::errors::error;
-use crate::control::errors::project_error;
 use crate::control::events::pending;
-use crate::control::project::git::is_git_commit;
+use crate::control::project::git::{PreparedProject, is_git_commit};
+use crate::control::project::validate_project_workdir;
 use crate::control::project::worktrees::session_worktree_path;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
 use ait_contracts::{
@@ -13,24 +13,22 @@ use ait_contracts::{
 };
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
-use ait_ports::ProjectWorkspace;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use uuid::Uuid;
 
 pub(in crate::control) fn export_project(
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     source_revision: u64,
     project_id: &str,
 ) -> Result<ProjectExport, ApiError> {
     let project = state
-        .projects
+        .projects()
         .iter()
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
     let messages = state
-        .messages
+        .messages()
         .iter()
         .filter(|message| message.project_id == project_id)
         .cloned()
@@ -49,7 +47,7 @@ pub(in crate::control) fn export_project(
         })
         .collect::<Vec<_>>();
     let sessions = state
-        .sessions
+        .sessions()
         .iter()
         .filter(|session| session.project_id == project_id)
         .cloned()
@@ -71,13 +69,13 @@ pub(in crate::control) fn export_project(
         referenced_agents.insert(default_agent_id);
     }
     let agents: Vec<_> = state
-        .agents
+        .agents()
         .iter()
         .filter(|agent| referenced_agents.contains(agent.id.as_str()))
         .cloned()
         .collect();
     let providers = state
-        .providers
+        .providers()
         .iter()
         .filter(|p| agents.iter().any(|a| a.config.provider_id == p.provider.id))
         .map(|p| p.provider.clone())
@@ -95,36 +93,18 @@ pub(in crate::control) fn export_project(
     Ok(archive)
 }
 
-pub(in crate::control) async fn import_project(
-    workspace: &dyn ProjectWorkspace,
-    state: &mut WorkingSet,
+pub(in crate::control) fn import_project(
+    state: &mut (impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     archive: ProjectExport,
-    workdir: &str,
+    prepared: &PreparedProject,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_project_export(&archive)?;
     validate_import_conflicts(state, &archive)?;
-    let canonical = workspace
-        .prepare_git_root(Path::new(workdir))
-        .await
-        .map_err(project_error)?;
-    let canonical_text = canonical.to_string_lossy().into_owned();
-    if state
-        .projects
-        .iter()
-        .any(|project| project.workdir == canonical_text)
-    {
-        return Err(error(
-            ErrorCode::ProjectPathAlreadyRegistered,
-            "project path is already registered",
-            false,
-        ));
-    }
+    let canonical_text = prepared.workdir.clone();
+    validate_project_workdir(state, &canonical_text)?;
     let mut project = archive.project;
     project.workdir = canonical_text;
-    project.base_commit = workspace
-        .ensure_git_head(&canonical)
-        .await
-        .map_err(project_error)?;
+    project.base_commit.clone_from(&prepared.base_commit);
     let mut sessions = archive.sessions;
     for session in &mut sessions {
         session.workdir = session_worktree_path(&project.workdir, &session.id)?
@@ -132,21 +112,29 @@ pub(in crate::control) async fn import_project(
             .into_owned();
     }
     for agent in archive.agents {
-        if !state.agents.iter().any(|existing| existing.id == agent.id) {
-            state.agents.push(agent);
+        if !state
+            .agents()
+            .iter()
+            .any(|existing| existing.id == agent.id)
+        {
+            state.agents_mut().push(agent);
         }
     }
     for provider in archive.providers {
-        if !state.providers.iter().any(|p| p.provider.id == provider.id) {
-            state.providers.push(AgentProviderView {
+        if !state
+            .providers()
+            .iter()
+            .any(|p| p.provider.id == provider.id)
+        {
+            state.providers_mut().push(AgentProviderView {
                 provider,
                 has_secret: false,
             });
         }
     }
-    state.messages.extend(archive.messages);
-    state.sessions.extend(sessions);
-    state.projects.push(project.clone());
+    state.messages_mut().extend(archive.messages);
+    state.sessions_mut().extend(sessions);
+    state.projects_mut().push(project.clone());
     Ok((
         CommandResult::Project(project.clone()),
         vec![pending(
@@ -158,11 +146,11 @@ pub(in crate::control) async fn import_project(
 }
 
 pub(in crate::control) fn validate_import_conflicts(
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     archive: &ProjectExport,
 ) -> Result<(), ApiError> {
     if state
-        .projects
+        .projects()
         .iter()
         .any(|project| project.id == archive.project.id)
     {
@@ -174,12 +162,12 @@ pub(in crate::control) fn validate_import_conflicts(
     }
     if archive.messages.iter().any(|imported| {
         state
-            .messages
+            .messages()
             .iter()
             .any(|existing| existing.id == imported.id)
     }) || archive.sessions.iter().any(|imported| {
         state
-            .sessions
+            .sessions()
             .iter()
             .any(|existing| existing.id == imported.id)
     }) {
@@ -191,7 +179,7 @@ pub(in crate::control) fn validate_import_conflicts(
     }
     for imported in &archive.agents {
         if let Some(existing) = state
-            .agents
+            .agents()
             .iter()
             .find(|existing| existing.id == imported.id)
             && existing != imported
@@ -206,7 +194,7 @@ pub(in crate::control) fn validate_import_conflicts(
 
     for provider in &archive.providers {
         if let Some(existing) = state
-            .providers
+            .providers()
             .iter()
             .find(|p| p.provider.id == provider.id)
             && existing.provider != *provider

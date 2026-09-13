@@ -234,7 +234,10 @@ impl BlockingContext {
         #[cfg(test)]
         let program = self.options.git_program.as_deref().unwrap_or(program);
         let mut command = Command::new(program);
-        command.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null());
+        command
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(Stdio::null());
         command.args(["-c", "core.hooksPath=", "-c", "core.fsmonitor=false"]);
         #[cfg(unix)]
         {

@@ -14,8 +14,13 @@ pub async fn assert_workspace_contract(
     root: &Path,
     other: &Path,
 ) {
-    let root = first.prepare_git_root(root).await.unwrap();
-    let other = first.prepare_git_root(other).await.unwrap();
+    let root = first.prepare_git_root(root, None).await.unwrap();
+    let other = first.prepare_git_root(other, None).await.unwrap();
+    first.verify_git_root(&root).await.unwrap();
+    assert_eq!(
+        first.prepare_git_root(&root, Some(&root)).await.unwrap(),
+        root
+    );
     assert_eq!(first.git_head(&root).await.unwrap(), None);
     assert_eq!(
         first.clean_baseline(&root).await.unwrap_err().code,

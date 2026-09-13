@@ -7,8 +7,9 @@ use crate::control::conversation::messages::{
 use crate::control::errors::error;
 use crate::control::errors::project_error;
 use crate::control::project::archive::{validate_import_conflicts, validate_project_export};
-use crate::control::project::require_project_view;
-use crate::control::state::WorkingSet;
+use crate::control::project::git::PreparedProject;
+use crate::control::project::{require_project_view, validate_project_workdir};
+use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 use ait_contracts::{ApiError, Command, ProjectExport, ProjectView, RunView};
 use ait_domain::ErrorCode;
 use ait_ports::{ProjectWorkspace, WorkspaceLease};
@@ -59,11 +60,11 @@ pub(in crate::control) fn session_worktree_path(
 }
 
 pub(in crate::control) fn run_workdir(
-    state: &WorkingSet,
+    state: &(impl HasProjects + HasSessions),
     run: &RunView,
 ) -> Result<PathBuf, ApiError> {
     let project = state
-        .projects
+        .projects()
         .iter()
         .find(|project| project.id == run.project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
@@ -71,7 +72,7 @@ pub(in crate::control) fn run_workdir(
         return Ok(PathBuf::from(&project.workdir));
     };
     let session = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == session_id && session.project_id == run.project_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "run Session not found", false))?;
@@ -89,22 +90,11 @@ pub(in crate::control) fn run_workdir(
 pub(in crate::control) async fn prepare_command_session_worktrees(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     command: &Command,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     match command {
-        Command::ImportProject { archive, workdir } => {
-            prepare_import_session_worktrees(
-                workspace,
-                lease.clone(),
-                state,
-                archive,
-                workdir,
-                created,
-            )
-            .await
-        }
         Command::CreateSession {
             id,
             project_id,
@@ -177,26 +167,21 @@ pub(in crate::control) async fn prepare_command_session_worktrees(
     }
 }
 
-async fn prepare_import_session_worktrees(
+pub(in crate::control) async fn prepare_import_session_worktrees(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     archive: &ProjectExport,
-    workdir: &str,
+    prepared: &PreparedProject,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     validate_project_export(archive)?;
     validate_import_conflicts(state, archive)?;
-    let canonical = workspace
-        .prepare_git_root(Path::new(workdir))
-        .await
-        .map_err(project_error)?;
+    validate_project_workdir(state, &prepared.workdir)?;
+    prepared.verify(workspace).await?;
     let mut project = archive.project.clone();
-    project.workdir = canonical.to_string_lossy().into_owned();
-    project.base_commit = workspace
-        .ensure_git_head(&canonical)
-        .await
-        .map_err(project_error)?;
+    project.workdir.clone_from(&prepared.workdir);
+    project.base_commit.clone_from(&prepared.base_commit);
     for session in &archive.sessions {
         ensure_session_worktree(
             workspace,
@@ -207,18 +192,34 @@ async fn prepare_import_session_worktrees(
             created,
         )
         .await?;
+        // A new request may encounter a worktree retained after a failed CAS.
+        // Do not silently reuse its stale HEAD or reset potentially user-owned work.
+        let worktree = session_worktree_path(&project.workdir, &session.id)?;
+        if workspace
+            .git_head(&worktree)
+            .await
+            .map_err(project_error)?
+            .as_deref()
+            != Some(project.base_commit.as_str())
+        {
+            return Err(error(
+                ErrorCode::InvalidSession,
+                format!(
+                    "retained Session worktree at {} does not match the import HEAD; inspect it before retrying",
+                    worktree.display()
+                ),
+                false,
+            ));
+        }
     }
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Preserve Session selection inputs alongside the workspace lease"
-)]
-async fn prepare_new_session_worktree(
+#[allow(clippy::too_many_arguments)]
+pub(in crate::control) async fn prepare_new_session_worktree(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasSessions),
     id: &str,
     project_id: &str,
     agent_id: &str,
@@ -226,7 +227,7 @@ async fn prepare_new_session_worktree(
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     validate_session_path_component(id)?;
-    if state.sessions.iter().any(|session| session.id == id) {
+    if state.sessions().iter().any(|session| session.id == id) {
         return Err(error(
             ErrorCode::InvalidSession,
             "session id is already registered",
@@ -244,7 +245,7 @@ async fn prepare_new_session_worktree(
 async fn prepare_derived_session_worktree(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasSessions),
     id: &str,
     project_id: &str,
     source_session_id: &str,
@@ -256,7 +257,7 @@ async fn prepare_derived_session_worktree(
     validate_message_text(text)?;
     validate_session_path_component(id)?;
     let source = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == source_session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
@@ -289,12 +290,12 @@ async fn prepare_derived_session_worktree(
 async fn prepare_existing_session_worktree(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &WorkingSet,
+    state: &(impl HasProjects + HasSessions),
     session_id: &str,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     let session = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;

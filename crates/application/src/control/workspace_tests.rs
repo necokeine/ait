@@ -47,9 +47,17 @@ impl WorkspaceLease for FakeLease {
 
 #[async_trait]
 impl ProjectWorkspace for FakeWorkspace {
-    async fn prepare_git_root(&self, _: &Path) -> Result<PathBuf, DomainError> {
+    async fn prepare_git_root(
+        &self,
+        path: &Path,
+        _: Option<&Path>,
+    ) -> Result<PathBuf, DomainError> {
         self.trace.lock().unwrap().push("prepare");
-        Ok("/virtual/project".into())
+        Ok(path.to_owned())
+    }
+    async fn verify_git_root(&self, _: &Path) -> Result<(), DomainError> {
+        self.trace.lock().unwrap().push("verify");
+        Ok(())
     }
     async fn ensure_git_head(&self, _: &Path) -> Result<String, DomainError> {
         self.trace.lock().unwrap().push("head");
@@ -120,7 +128,9 @@ async fn registration_facts_are_verified_again_on_cas_conflict_before_persisting
     assert!(result.ok, "{:?}", result.error);
     assert_eq!(
         *workspace.trace.lock().unwrap(),
-        ["prepare", "head", "persist", "prepare", "head", "persist"]
+        [
+            "facts", "prepare", "head", "verify", "persist", "verify", "persist"
+        ]
     );
     workspace.trace.lock().unwrap().clear();
     assert!(!service.execute(registration()).await.ok);

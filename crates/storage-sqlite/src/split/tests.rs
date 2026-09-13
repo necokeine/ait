@@ -6,6 +6,37 @@ use tempfile::TempDir;
 use super::*;
 
 #[tokio::test]
+async fn project_path_lookup_uses_only_the_global_catalog() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("a");
+    git_project(&root);
+    let store = SplitSqliteControlStore::open(temp.path().join("global.sqlite3")).unwrap();
+    store
+        .apply(0, project_records(&root, "a"), Vec::new())
+        .await
+        .unwrap();
+    let read = store
+        .read(&[ControlFilter::ProjectWorkdir {
+            workdir: root.to_string_lossy().into_owned(),
+        }])
+        .await
+        .unwrap();
+    assert_eq!(read.records.len(), 1);
+    assert_eq!(read.records[0].id, "a");
+    assert_eq!(read.records[0].kind, ControlRecordKind::Project);
+    assert!(
+        store
+            .read(&[ControlFilter::ProjectWorkdir {
+                workdir: "missing".into()
+            }])
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn legacy_blob_migrates_directly_to_project_files() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("a");

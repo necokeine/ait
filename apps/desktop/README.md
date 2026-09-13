@@ -1,15 +1,19 @@
-# Ait Desktop
+# Ait
 
 Electron desktop shell for the Ait daemon. The renderer is sandboxed and can only call the narrow preload API; Electron main translates those calls to the daemon's loopback HTTP API.
 
 ## Development
 
 ```sh
-npm ci
-npm run typecheck
-npm test
-npm run dev
+pnpm install
+pnpm run typecheck
+pnpm test
+pnpm run dev
 ```
+
+`pnpm run dev` builds both `ait-daemon` and `ait-worker` before opening Electron,
+then Electron launches the resulting debug daemon directly. This keeps a first
+Rust build from being mistaken for a daemon startup timeout.
 
 Main owns the daemon it starts and refuses to reuse an unverified process already listening on its
 configured loopback port. Stop the process occupying that port before reopening Ait. Only the daemon
@@ -60,7 +64,31 @@ transient projection after Ait has finished saving it.
 
 ## Packaging
 
+The application name is **Ait**. The editable brand source is `logo.svg` at the
+repository root; `logo.png` is its committed 512×512 export. After editing the
+SVG, run `npm run generate:icons` in this directory and commit both files. The
+generator uses the icon toolset from the pinned electron-builder version (it
+downloads the toolset on first use). Ordinary builds copy the committed assets
+to `dist`; electron-builder converts the SVG to a macOS ICNS (up to 1024×1024)
+and uses the PNG for Linux packaging.
+
+The npm package name `@ait/desktop` and app ID `dev.ait.desktop` remain stable.
+Main resolves and pins the existing Electron `userData` and `sessionData` paths
+before setting the display name, so the rename retains existing catalogs,
+settings, and browser storage. Development and packaged database filenames
+remain separate as described above.
+
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
+
+macOS direct-distribution builds are signed with the personal `Developer ID
+Application: Dong Shan (SVS7GV79T9)` identity, use Hardened Runtime, and sign
+the bundled daemon and worker before notarization. Local builds discover that
+identity in the login keychain. The GitHub Actions release job imports the
+certificate and notarizes with repository secrets; configure
+`MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_BUILD_APP_SECRET` (mapped to `APPLE_APP_SPECIFIC_PASSWORD`), and
+`APPLE_TEAM_ID` (`SVS7GV79T9`). Never add
+the `.p12`, its password, or an Apple app-specific password to the repository.
 
 ## Providers and Agent presets
 

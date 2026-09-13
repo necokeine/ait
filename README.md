@@ -1,6 +1,8 @@
-# AIT
+# Ait
 
-AIT 是一个本地优先的多 Agent 管理器，目标是统一在线协作平台、本地 Agent 运行时和面向任务的管理界面。
+<img src="logo.svg" alt="Ait logo" width="96" height="96" />
+
+Ait 是一个本地优先的多 Agent 管理器，目标是统一在线协作平台、本地 Agent 运行时和面向任务的管理界面。
 
 当前仓库处于工程初始化阶段，实现语言固定为 Rust。核心概念与边界以 `docs/README.md` 中列出的 ADR 为准。
 
@@ -12,8 +14,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 cd apps/desktop
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 ## 本地 API 与 CLI
@@ -58,7 +60,7 @@ Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命�
 CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md) 与
 [NEC-257 修订](docs/decisions/NEC-257/adr-001-cli-command-and-address-simplification.md)。
 
-GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait desktop** 的桌面产物；
+GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait** 的桌面产物；
 版本准备、打标签、产物校验和故障恢复见 [发布操作指南](docs/operations/releasing.md)。
 
 Project 的无凭证 JSON 归档使用 `ait-cli project export` / `ait-cli project import`；结构化指标位于

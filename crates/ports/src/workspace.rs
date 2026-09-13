@@ -50,9 +50,19 @@ pub trait WorkspaceLease: Send + Sync {
 #[async_trait::async_trait]
 pub trait ProjectWorkspace: Send + Sync {
     /// Prepare and verify an exact canonical Git root (nested roots are allowed).
+    /// If supplied, `expected_root` must still be the canonical target before mutation.
     /// # Errors
-    /// Stable Project path/init errors; non-UTF-8 paths fail closed.
-    async fn prepare_git_root(&self, path: &Path) -> Result<PathBuf, DomainError>;
+    /// Stable Project path/init errors; non-UTF-8 paths fail closed. A rebound
+    /// expected target returns retryable `RunQueueConflict` before mutation.
+    async fn prepare_git_root(
+        &self,
+        path: &Path,
+        expected_root: Option<&Path>,
+    ) -> Result<PathBuf, DomainError>;
+    /// Verify an unchanged canonical exact Git root without initialization or repair.
+    /// # Errors
+    /// Stable Project path/init errors when the root is missing, rebound or nested.
+    async fn verify_git_root(&self, expected_root: &Path) -> Result<(), DomainError>;
     /// Read HEAD, creating only an empty initial commit for an unstaged unborn repo.
     /// # Errors
     /// Stable HEAD errors, including a staged unborn index.

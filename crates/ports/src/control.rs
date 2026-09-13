@@ -32,6 +32,10 @@ pub enum ControlFilter {
         kind: ControlRecordKind,
         project_id: String,
     },
+    /// Indexed canonical-path uniqueness lookup used by registration/import.
+    ProjectWorkdir {
+        workdir: String,
+    },
     MessageAncestors {
         head_id: String,
     },
