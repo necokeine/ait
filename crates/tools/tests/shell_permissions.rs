@@ -124,6 +124,24 @@ async fn applies_all_three_profiles_to_real_commands_and_explicit_requests() {
             listener.accept().is_ok(),
             sandbox == SandboxAccess::FullAccess
         );
+        let socket_path = outside.path().join("host.sock");
+        let socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let script = format!(
+            "import socket; s=socket.socket(socket.AF_UNIX); s.connect({}); s.close()",
+            serde_json::to_string(socket_path.to_str().unwrap()).unwrap()
+        );
+        let command = format!("python3 -c '{}'", script.replace('\'', "'\\''"));
+        let result = tools.execute(call(command)).await.unwrap().output;
+        assert_eq!(
+            result["exit_status"] == 0,
+            sandbox == SandboxAccess::FullAccess,
+            "{result}"
+        );
+        assert_eq!(
+            socket.accept().is_ok(),
+            sandbox == SandboxAccess::FullAccess
+        );
     }
 }
 

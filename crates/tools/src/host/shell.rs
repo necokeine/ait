@@ -80,6 +80,7 @@ impl HostTools {
                         }
                     }
                 }
+                builder.args(["--seccomp", "0"]);
                 builder.arg("--chdir").arg(cwd).arg("--");
             }
             builder.arg("/bin/bash");
@@ -97,6 +98,12 @@ impl HostTools {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(target_os = "linux")]
+        if self.profile.sandbox != SandboxAccess::FullAccess {
+            // Network namespaces alone do not isolate pathname Unix sockets.
+            // No sockets/rings are inherited; block their creation as well.
+            builder.stdin(Stdio::from(network_filter()?));
+        }
         command.wrap(KillOnDrop);
         #[cfg(unix)]
         command.wrap(process_wrap::tokio::ProcessGroup::leader());
@@ -161,9 +168,18 @@ impl HostTools {
 fn sandbox_binary() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let candidates = ["/usr/bin/sandbox-exec"];
-    #[cfg(target_os = "linux")]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     let candidates = ["/usr/bin/bwrap", "/bin/bwrap"];
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )))]
     let candidates: [&str; 0] = [];
     candidates
         .into_iter()
@@ -204,3 +220,40 @@ const MACOS_POLICY: &str = r#"
     (allow file-write* (subpath (param "WORKSPACE"))))
 (deny file-write* (subpath (param "GIT_METADATA")) (subpath (param "AIT_METADATA")))
 "#;
+
+// Classic BPF, passed to bubblewrap via an anonymous file on stdin. A restricted
+// child gets only stdin/stdout/stderr, never an inherited host socket or io_uring.
+#[cfg(target_os = "linux")]
+fn network_filter() -> Result<std::fs::File, DomainError> {
+    use std::io::{Seek, Write};
+    #[cfg(target_arch = "x86_64")]
+    let architecture = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
+    let architecture = 0xc000_00b7;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let architecture = 0; // Such hosts never advertise restricted Bash.
+    let mut instructions: Vec<(u16, u8, u8, u32)> = vec![
+        (0x20, 0, 0, 4), // Load seccomp_data.arch.
+        (0x15, 1, 0, architecture),
+        (0x06, 0, 0, 0x8000_0000), // Kill unknown/compat ABIs.
+        (0x20, 0, 0, 0),           // Load seccomp_data.nr.
+        (0x54, 0, 0, 0xbfff_ffff), // Strip the x32 syscall bit before comparison.
+    ];
+    for number in [
+        libc::SYS_socket,
+        libc::SYS_socketpair,
+        libc::SYS_io_uring_setup,
+    ] {
+        instructions.push((0x15, 0, 1, u32::try_from(number).map_err(|_| denied())?));
+        instructions.push((0x06, 0, 0, 0x0005_0001)); // EPERM.
+    }
+    instructions.push((0x06, 0, 0, 0x7fff_0000)); // Allow other syscalls.
+    let mut file = tempfile::tempfile().map_err(|_| failed())?;
+    for (code, yes, no, value) in instructions {
+        file.write_all(&code.to_ne_bytes()).map_err(|_| failed())?;
+        file.write_all(&[yes, no]).map_err(|_| failed())?;
+        file.write_all(&value.to_ne_bytes()).map_err(|_| failed())?;
+    }
+    file.rewind().map_err(|_| failed())?;
+    Ok(file)
+}

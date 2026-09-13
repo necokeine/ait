@@ -20,9 +20,13 @@ Send/Fork/Derive/Cron 的快照和管理员上限沿用现有 application 规则
 | --- | --- |
 | macOS Readonly | Seatbelt 默认拒绝；允许读文件、启动受继承策略约束的子进程；禁止写文件和联网 |
 | macOS Workspace Write | 同上，仅增加 Session workdir 写权限，保护 `.git`、`.ait` |
-| Linux 受限档位 | 需要系统 `bwrap`，独立 PID/network/IPC namespace，宿主只读挂载；Workspace Write 增加工作区可写挂载并将根下已有 `.git`、`.ait` 挂回只读 |
+| Linux 受限档位 | x86_64/aarch64 需要系统 `bwrap`，独立 PID/network/IPC namespace 与 seccomp socket/io_uring 限制，宿主只读挂载；Workspace Write 增加工作区可写挂载并将根下已有 `.git`、`.ait` 挂回只读 |
 | Unix Full Access | 直接运行 Bash，不施加 OS 文件/网络沙箱，仍受 Run/管理员权限上限和资源限制 |
 | 缺少所需后端、Windows | 不广告 Bash，不降级成未隔离命令；read/grep/glob 仍可用于仓库浏览和统计 |
+
+Linux 受限进程的 seccomp 策略禁止创建 socket、socketpair 和 io_uring，并拒绝兼容 ABI，
+避免通过宿主路径 Unix socket 绕过 network namespace。策略经匿名文件传给 bubblewrap，
+不继承宿主 socket 或 ring 句柄。
 
 受限 Shell 不通过字符串解析判断读写性；系统策略作用于整个命令与子进程。默认 cwd 为
 Session workdir，显式 workdir 规范化后检查范围。环境仅保留 PATH、工作区 HOME 和语言设置，
@@ -63,4 +67,4 @@ Linux 挂载/namespace 行为需要具备 bubblewrap 和用户 namespace 的主�
 Windows 当前没有安全 Bash 后端。本轮不调用付费模型，也不将离线测试等同于跨平台真机验收。
 
 实现依据：[Seatbelt 基础策略](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)、
-[bubblewrap](https://github.com/containers/bubblewrap)，查阅日期 2026-09-13。
+[bubblewrap](https://github.com/containers/bubblewrap)、[Linux seccomp](https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html)，查阅日期 2026-09-13。
