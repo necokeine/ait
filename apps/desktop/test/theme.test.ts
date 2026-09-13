@@ -14,6 +14,6 @@ test("conversation messages use a chat layout instead of an event chain", async 
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
   assert.match(styles, /\.message\.user-input \.message-body \{[^}]*align-items: flex-end;/);
-  assert.match(styles, /\.message\.assistant \.message-avatar/);
+  assert.doesNotMatch(styles, /\.message-avatar/);
   assert.doesNotMatch(styles, /\.message::before/);
 });

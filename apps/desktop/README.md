@@ -43,7 +43,12 @@ active Session remains locked to the Agent revision already pinned by its Run.
 Conversation code fences render as rounded cards with a language label, a wrap
 toggle, and a copy button that copies the code itself. User input stays literal
 inside a single right-aligned bubble. Messages show their persisted creation
-date and time in the local timezone, including system and tool messages. Older
+date and time in the local timezone. The initial system messages are hidden from
+the conversation, while remaining available in the Message tree. Reasoning, tool
+calls and tool results use one collapsed disclosure per consecutive group, even
+across Message boundaries; expand a group to see its details and timestamps. Live
+process output also starts collapsed and preserves manually opened groups during
+streaming updates. Message rows have no leading avatars. Older
 records that never stored a timestamp display `Time unavailable`; loading them
 does not invent or rewrite historical times.
 
