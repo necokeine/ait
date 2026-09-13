@@ -1,6 +1,6 @@
 {
   "name": "@ait/desktop",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Local-first multi-agent desktop workspace",
   "author": "Ait contributors",
   "private": true,

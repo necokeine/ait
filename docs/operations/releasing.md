@@ -18,8 +18,10 @@ GitHub 还会自动提供当前标签的源码 ZIP 与 tarball。Release Note �
 `.github/release.yml` 按 breaking change、feature、fix 和其他变更分组，带
 `skip-changelog` 标签的 PR 不进入说明。
 
-当前 macOS 产物**没有签名或公证**。首次打开时 macOS 会显示开发者身份警告；在项目接入
-Apple Developer 证书与 notarization 凭据之前，这些文件只适合内部测试分发。
+macOS 发布构建启用 Hardened Runtime，并对应用、内置 daemon 和 worker 签名后进行 Apple
+公证。GitHub Actions 需要配置 `MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD`、`APPLE_ID`、
+`APPLE_BUILD_APP_SECRET` 和 `APPLE_TEAM_ID`；凭据缺失或签名、公证失败时不会发布 Release。
+历史版本 v0.0.1 的 macOS 产物未签名或公证。
 
 ## 准备版本
 
@@ -54,9 +56,9 @@ git push origin v0.0.2
 `Release Ait` 工作流会执行以下门禁：
 
 1. 标签与 Rust、desktop 版本完全一致；
-2. 用 `Cargo.lock` 构建 release 模式的 `ait-daemon`；
-3. 把对应架构的 daemon 放入应用的 `resources/bin/ait-daemon`；
-4. 生成四个预期包并确认没有缺失；
+2. 用 `Cargo.lock` 构建 release 模式的 `ait-daemon` 与 `ait-worker`；
+3. 把对应架构的 daemon 和 worker 放入应用的 `resources/bin/`；
+4. 完成 macOS 签名和公证，生成四个预期包并确认没有缺失；
 5. 写出 `SHA256SUMS`，用 GitHub 自动生成的 Release Note 发布全部文件。
 
 工作流也支持手动重跑：在 Actions → **Release Ait** → **Run workflow** 输入已经存在的
