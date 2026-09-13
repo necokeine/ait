@@ -412,6 +412,7 @@ async fn reject_permission_write_for_read_only_run(max_sandbox: SandboxAccess) {
         }),
     );
     let _directory = setup(&service, config("high")).await;
+    save_permission_settings(&service, "read_only", "on_request").await;
     let running = {
         let service = service.clone();
         tokio::spawn(async move { service.execute(send("one")).await })

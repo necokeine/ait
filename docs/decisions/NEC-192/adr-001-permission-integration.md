@@ -18,7 +18,8 @@ Run 生命周期、Agent revision 或领域依赖。
 | Codex native sandbox | `read-only` | `workspace-write` | `danger-full-access` |
 | OpenAI/DeepSeek HostTools（NEC-247） | Project 读取/搜索、受控命令，禁止写入 | 增加 Project 根内 write/edit | 首版仍限制 Project 根，并受管理员上限约束 |
 
-新建/重置 settings 默认 `read_only + on_request`；`strict` 仅为历史 `read_only` 别名。
+新建/重置 settings 的默认值由 [NEC-269](../NEC-269/adr-001-composer-permission-default.md)
+修订为 `workspace_write + on_request`；`strict` 仅为历史 `read_only` 别名。
 `full-access` 是 daemon 默认允许的最高上限，不会替成员选择 `full_access`。Send/Fork/Derive/Cron
 均在新 Run 准入时固定权限；旧 Run 不读取后续 settings。普通 API Provider 的 approval
 仍按 NEC-234 固定为 `on_request`；Codex 的未知值、缺失值和 `always` 均拒绝准入。

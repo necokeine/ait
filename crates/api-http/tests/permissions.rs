@@ -178,20 +178,27 @@ async fn settings(app: &Router, sandbox: &str) -> Value {
 async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() {
     for kind in ["codex", "openai", "deepseek"] {
         for (setting, snapshot, wire) in [
-            ("read_only", "read_only", SandboxMode::ReadOnly),
-            ("strict", "read_only", SandboxMode::ReadOnly),
+            (None, "workspace_write", SandboxMode::WorkspaceWrite),
+            (Some("read_only"), "read_only", SandboxMode::ReadOnly),
+            (Some("strict"), "read_only", SandboxMode::ReadOnly),
             (
-                "workspace_write",
+                Some("workspace_write"),
                 "workspace_write",
                 SandboxMode::WorkspaceWrite,
             ),
-            ("full_access", "full_access", SandboxMode::DangerFullAccess),
+            (
+                Some("full_access"),
+                "full_access",
+                SandboxMode::DangerFullAccess,
+            ),
         ] {
             let fixture = fixture(kind, SandboxAccess::FullAccess).await;
             let initial = ok(&fixture.app, "/v1/settings", None).await;
-            assert_eq!(initial["values"]["permissions.sandbox"], "read_only");
+            assert_eq!(initial["values"]["permissions.sandbox"], "workspace_write");
             assert_eq!(initial["values"]["permissions.approval"], "on_request");
-            assert_eq!(settings(&fixture.app, setting).await["ok"], true);
+            if let Some(setting) = setting {
+                assert_eq!(settings(&fixture.app, setting).await["ok"], true);
+            }
             let run = ok(
                 &fixture.app,
                 "/v1/session/send-message",
@@ -219,7 +226,8 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
                 assert!(fixture.native.0.lock().unwrap().is_empty());
                 assert_eq!(fixture.text.0.load(Ordering::Relaxed), 2);
             }
-            ok(&fixture.app, "/v1/settings/reset", Some(json!({}))).await;
+            let reset = ok(&fixture.app, "/v1/settings/reset", Some(json!({}))).await;
+            assert_eq!(reset["values"]["permissions.sandbox"], "workspace_write");
             let persisted = ok(
                 &fixture.app,
                 "/v1/run/get",

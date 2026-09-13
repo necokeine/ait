@@ -94,9 +94,10 @@ Send/Fork/Derive 复用原同步 HTTP 路由；操作成功返回 Run 不代表 
 turn/session；session grant 受管理员策略限制。CLI 固定枚举对应领域 `OneShot/Turn/Session`，
 实际 scope、Run 权限快照和授权目标约束仍由 daemon 验证。deny/cancel 不接受 scope。
 
-默认 settings 为 `permissions.sandbox=read_only`、`permissions.approval=on_request`。
-代码写入前先 `settings get`，保留完整 values 和最新 revision，将 sandbox 改为 `workspace_write`，
-再 `settings set --expected-revision <revision> --input <values文件>`，之后才能发起新的 Run。
+新建/重置 settings 的默认值由 [NEC-269](../NEC-269/adr-001-composer-permission-default.md)
+修订为 `permissions.sandbox=workspace_write`、`permissions.approval=on_request`。
+已有设置保留原选择；修改时先 `settings get`，保留完整 values 和最新 revision，再
+`settings set --expected-revision <revision> --input <values文件>`，然后发起新的 Run。
 权限在 Run 准入时固定，受管理员上限约束；`strict` 是 read_only 别名，旧 approval=always
 会使 Codex 准入失败。NEC-247 为普通 API Provider 接入宿主工具循环：工具表取精确 provider+model 与执行器能力的交集；API 首版 full_access 仍受 Project 根与管理员上限约束。
 

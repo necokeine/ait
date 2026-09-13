@@ -115,8 +115,9 @@ HTTP 映射见 [实体操作 API](../docs/decisions/NEC-166/entity-operation-htt
 发送后检查 `result.value.status` 和 `result.value.error`，不能用 `ok=true` 代替 Run 完成判断。
 动态 Message/Run ID、Session version、settings revision 和 event cursor 都从返回值读取，不能手填猜测。
 
-默认权限是 `read_only` / `on_request`。让 Codex 写代码前，按 [WF-08](08-settings.md#在代码写入前设置权限)
-读取并保存完整 settings，将 sandbox 改为 `workspace_write`，再发送输入；[WF-10](10-create-project-with-codex.md) 已包含这一步。
+新建和重置设置的默认权限是 `workspace_write` / `on_request`，已有选择会保留。
+若已有设置为 Readonly，让 Codex 写代码前按 [WF-08](08-settings.md#设置新-run-的权限)
+读取并保存完整 settings，将 sandbox 改为 `workspace_write`；[WF-10](10-create-project-with-codex.md) 已包含这一步。
 
 ## 后续校正清单
 

@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-269/adr-001-composer-permission-default.md`：Prompt 移除无功能加号、权限选择器置首，新建/重置设置默认 Workspace Write，保留已存权限与 Run 快照。
+
 - `decisions/NEC-263/adr-001-shell-and-prompt-permissions.md`：Prompt 三级权限选择、API Shell 的系统隔离与能力过滤、流式仓库浏览/计数及默认折叠工具结果。
 
 - `decisions/NEC-250/adr-001-application-domain-state.md`：application 领域状态权威、边界投影、统一 Run lifecycle 与旧 Service 收敛。

@@ -51,9 +51,9 @@ Provider 操作位于 `agent provider`。CLI 使用全局 `--host` / `--port` �
 Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命令行。
 `session send` 返回后必须检查 Run 的 `status` 与 `error`，`ok=true` 不代表执行完成。
 
-权限默认是 `permissions.sandbox=read_only`、`permissions.approval=on_request`。Agent 写代码前应按
-[WF-08](workflows/08-settings.md#在代码写入前设置权限) 读取 settings 的最新 revision，用
-`settings set --expected-revision <revision> --input <完整values文件>` 保存 `workspace_write`，然后发送输入。
+新建和重置设置默认是 `permissions.sandbox=workspace_write`、`permissions.approval=on_request`。
+已有权限选择会保留；需要修改时按 [WF-08](workflows/08-settings.md#设置新-run-的权限)
+读取 settings 的最新 revision，用 `settings set --expected-revision <revision> --input <完整values文件>` 保存。
 新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek 使用
 宿主工具循环，按精确 provider+model 目录与 HostTools 可执行能力求交。API 首版文件操作始终
 限制在 Project 根内，`full_access` 也不能越出此边界；执行范围见 [WF-13](workflows/13-api-provider-tool-loop.md)。

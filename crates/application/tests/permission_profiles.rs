@@ -297,7 +297,21 @@ async fn save_rejected_sandbox(
     sandbox: Option<&str>,
 ) {
     if let Some(sandbox @ ("workspace_write" | "full_access")) = sandbox {
-        save_permission_settings(service, sandbox, "on_request").await;
+        let CommandResult::Settings(mut settings) = ok(service, Command::GetSettings).await else {
+            panic!("expected Settings")
+        };
+        settings
+            .values
+            .0
+            .insert("permissions.sandbox".into(), serde_json::json!(sandbox));
+        ok(
+            service,
+            Command::SaveSettings {
+                expected_revision: settings.revision,
+                values: settings.values,
+            },
+        )
+        .await;
         return;
     }
     // Invalid values cannot be saved through SaveSettings; simulate persisted corruption.
@@ -349,6 +363,7 @@ async fn api_provider_branch_rechecks_permissions_after_a_commit_conflict() {
                     }),
                 );
                 let _directory = setup_api_provider(&service, kind).await;
+                save_permission_settings(&service, "read_only", "on_request").await;
                 let command = branch.command(&service).await;
                 let before = view(&service).await;
                 let pending = {
@@ -557,7 +572,8 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
 }
 
 #[tokio::test]
-async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_restart() {
+async fn fresh_and_reset_settings_allow_workspace_write_while_explicit_read_only_survives_restart()
+{
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let native = Arc::new(CapturingWorkspaceAgent::default());
     let service = LocalControlService::with_workspace_agent(
@@ -569,8 +585,11 @@ async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_re
     let CommandResult::Run(fresh) = ok(&service, send("one")).await else {
         panic!("expected Run")
     };
-    assert_eq!(fresh.permission_profile.sandbox, SandboxAccess::ReadOnly);
-    save_permission_settings(&service, "workspace_write", "on_request").await;
+    assert_eq!(
+        fresh.permission_profile.sandbox,
+        SandboxAccess::WorkspaceWrite
+    );
+    save_permission_settings(&service, "read_only", "on_request").await;
     drop(service);
 
     let restarted = LocalControlService::with_workspace_agent(
@@ -581,15 +600,15 @@ async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_re
     let CommandResult::Run(explicit) = ok(&restarted, send("two")).await else {
         panic!("expected Run")
     };
-    assert_eq!(
-        explicit.permission_profile.sandbox,
-        SandboxAccess::WorkspaceWrite
-    );
+    assert_eq!(explicit.permission_profile.sandbox, SandboxAccess::ReadOnly);
     let _ = ok(&restarted, Command::ResetSettings).await;
     let CommandResult::Run(reset) = ok(&restarted, send("one")).await else {
         panic!("expected Run")
     };
-    assert_eq!(reset.permission_profile.sandbox, SandboxAccess::ReadOnly);
+    assert_eq!(
+        reset.permission_profile.sandbox,
+        SandboxAccess::WorkspaceWrite
+    );
     assert_eq!(
         native
             .0
@@ -599,9 +618,9 @@ async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_re
             .map(|call| call.permission_profile.sandbox)
             .collect::<Vec<_>>(),
         vec![
-            SandboxAccess::ReadOnly,
             SandboxAccess::WorkspaceWrite,
             SandboxAccess::ReadOnly,
+            SandboxAccess::WorkspaceWrite,
         ]
     );
 }
@@ -616,6 +635,7 @@ async fn read_only_protocol_write_attempt_fails_run_without_project_or_message_s
         workspace_agent,
     );
     let directory = setup(&service, config("high")).await;
+    save_permission_settings(&service, "read_only", "on_request").await;
     let baseline = git_head(directory.path());
     let baseline_index = git_index_tree(directory.path());
     let CommandResult::Run(run) = ok(&service, send("one")).await else {
