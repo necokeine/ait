@@ -80,6 +80,13 @@ remain separate as described above.
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
 
+On macOS, the Codex adapter launches through `/bin/zsh -lic`, so model discovery,
+title generation, and Runs use the environment from `.zprofile` and `.zshrc` even
+when Ait opens from Finder or the Dock. Codex must be installed and authenticated
+locally. Shell startup files must leave stdout quiet for the app-server JSONL
+protocol. This also applies to development launches; other platforms launch Codex
+directly.
+
 macOS direct-distribution builds are signed with the personal `Developer ID
 Application: Dong Shan (SVS7GV79T9)` identity, use Hardened Runtime, and sign
 the bundled daemon and worker before notarization. Local builds discover that

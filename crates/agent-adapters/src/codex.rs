@@ -115,6 +115,17 @@ impl CodexAppServerAdapter {
     }
 
     fn spawn_process(&self, cwd: &std::path::Path) -> Result<Child, AdapterError> {
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            // Finder/Dock launches lack the user's shell PATH. Use argv rather
+            // than interpolating paths/arguments, and exec so we still own Codex.
+            let mut command = Command::new("/bin/zsh");
+            command
+                .args(["-lic", "exec \"$@\"", "--"])
+                .arg(&self.config.codex_binary);
+            command
+        };
+        #[cfg(not(target_os = "macos"))]
         let mut command = Command::new(&self.config.codex_binary);
         command
             .arg("app-server")

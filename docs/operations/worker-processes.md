@@ -21,6 +21,12 @@ target/debug/ait-daemon --database ./ait.sqlite3 --listen 127.0.0.1:7314
 stage 和打包二者；缺少 worker 时 staging 直接失败。不要手工将 worker 连接到终端；
 stdout 的任何普通文本都会被判为协议污染。
 
+macOS 的 Codex adapter 直接通过 `/bin/zsh -lic 'exec "$@"' -- codex app-server
+--listen stdio://` 启动，模型发现、标题生成和 worker Run 共用此入口。zsh 加载
+`.zprofile`、`.zshrc`，Codex 及其解释器/工具继承 shell 环境；daemon 不探测或转发 PATH。
+可执行文件和额外参数作为独立 argv 传递，`exec` 让受管子进程直接成为 Codex。
+shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使用此方式，其他平台直接启动。
+
 ## 提交与恢复
 
 - v1 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
@@ -131,4 +137,6 @@ npm test
   慢消费者和 argv/env/stderr 脱敏。
 - `bins/daemon/tests/codex_http.rs`：生产 HTTP → dispatcher → worker → fake Codex，4000 个
   delta 的 cursor replay、启动恢复期间可用的 readiness 和唯一执行。
+  macOS 还覆盖精简 GUI PATH 下，登录 shell 提供的含空格安装路径、PATH 解释器、
+  daemon 模型发现和完整 worker Run。
   既有 runtime、host tools、审批及 NEC-212 的故障/取消/Git settlement 测试继续执行。
