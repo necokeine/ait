@@ -35,7 +35,8 @@ pub trait WorkspaceLease: Send + Sync {
 /// Async infrastructure boundary for control-plane Project operations.
 ///
 /// Implementations bound blocking concurrency and Git duration. Dropping a future
-/// cancels queued work and requests cancellation of started work; started blocking
+/// cancels queued work and releases its captured leases/permits without waiting
+/// for a blocking thread, and requests cancellation of started work; started blocking
 /// calls retain their permits and any supplied lease until they stop. Filesystem
 /// syscalls cannot be forcibly interrupted. Partial initialization/worktrees are
 /// retained for inspection, never automatically reset/cleaned or rolled back.

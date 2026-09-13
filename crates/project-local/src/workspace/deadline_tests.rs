@@ -509,10 +509,11 @@ fn saturated_tokio_blocking_queue_cannot_extend_public_deadline_or_start_late_io
             release_rx.recv().unwrap();
         });
         started_rx.await.unwrap();
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
         let adapter = LocalProjectWorkspace {
             options: OperationOptions {
                 timeout: Duration::from_millis(50),
-                permits: Some(Arc::new(tokio::sync::Semaphore::new(1))),
+                permits: Some(permits.clone()),
                 ..OperationOptions::default()
             },
             ..LocalProjectWorkspace::default()
@@ -523,6 +524,11 @@ fn saturated_tokio_blocking_queue_cannot_extend_public_deadline_or_start_late_io
             adapter.prepare_git_root(temp.path()),
         )
         .await;
+        assert_eq!(
+            permits.available_permits(),
+            1,
+            "timeout must release queued capacity before the pool unblocks"
+        );
         release_tx.send(()).unwrap();
         blocker.await.unwrap();
         tokio::task::spawn_blocking(|| {}).await.unwrap();
@@ -534,5 +540,93 @@ fn saturated_tokio_blocking_queue_cannot_extend_public_deadline_or_start_late_io
             !temp.path().join(".git").exists(),
             "a timed-out queued job must never start mutation"
         );
+    });
+}
+
+#[test]
+fn dropping_a_queued_public_worktree_future_releases_resources_before_pool_unblocks() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (_temp, root, head) = repository().await;
+        let mut adapter = LocalProjectWorkspace::default();
+        let lease = adapter.acquire_lease(&root).await.unwrap();
+        let weak_lease = Arc::downgrade(&lease);
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = queued.clone();
+        adapter.options.permits = Some(permits.clone());
+        adapter.options.probe = Some(Arc::new(move |point, _| {
+            if point == "worker_queued" {
+                observed.store(true, Ordering::SeqCst);
+            }
+        }));
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            // Dropping the sender also releases this on assertion failure.
+            let _ = release_rx.recv();
+        });
+        started_rx.await.unwrap();
+        let target = root.join(".ait/session");
+        let mut future =
+            adapter.ensure_session_worktree(&root, &target, &head, Some(lease.clone()));
+        std::future::poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert!(
+            queued.load(Ordering::SeqCst),
+            "the public worker must already be in Tokio's queue"
+        );
+        assert_eq!(permits.available_permits(), 0);
+        assert_eq!(
+            Arc::strong_count(&lease),
+            2,
+            "the queued closure owns a lease clone"
+        );
+        drop(lease);
+        assert_eq!(weak_lease.strong_count(), 1);
+        drop(future);
+
+        assert!(
+            !blocker.is_finished(),
+            "the unrelated syscall is still blocking the pool"
+        );
+        assert_eq!(
+            weak_lease.strong_count(),
+            0,
+            "dropping queued work must release its lease immediately"
+        );
+        assert_eq!(
+            permits.available_permits(),
+            1,
+            "dropping queued work must return admission immediately"
+        );
+        // Check the actual advisory file lock without using the saturated pool.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(".git/ait/locks/workspace-write.lock"))
+            .unwrap();
+        file.try_lock()
+            .expect("cancelled queued work must no longer exclude another lock owner");
+        drop(file);
+        assert!(!target.exists());
+
+        release_tx.send(()).unwrap();
+        blocker.await.unwrap();
+        tokio::task::spawn_blocking(|| {}).await.unwrap();
+        assert!(
+            !target.exists(),
+            "cancelled queued work must never perform late I/O"
+        );
+        let _next = adapter.acquire_lease(&root).await.unwrap();
     });
 }

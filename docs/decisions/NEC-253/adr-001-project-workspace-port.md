@@ -65,7 +65,11 @@ Git 对账歧义仍仅中断所属 Run，不猜测用户工作区状态。
   可读 message 同时包含路径/状态，让未传递 DomainError details 的 API 仍能提示
   用户检查。已明确失败的独占 mkdir 不归因为本次创建；可安全复用的 lease 锁文件
   不属于业务 retained artifact。不会自动清理、复用或重置部分 worktree。
-- Future drop 取消排队或标记已启动操作；worker 在启动/每条 Git/轮询/返回前检查。
+- Future drop 和 deadline 共用 RAII 取消路径：对 `QUEUED` 原子置为 `CANCELLED`
+  并 abort Tokio task，同时从共享槽位取出待执行 closure，立即释放其 lease/permit。
+  不能只依赖 token 或 detached JoinHandle，也不能等待饱和 blocking pool 销毁 closure。
+  `STARTED` 赢得资源所有权后由 worker 独占，future drop 只请求 cooperative cancellation；
+  worker 在启动/每条 Git/轮询/返回前检查。
   已启动 worker 保留 permit 与 lease 到实际退出。不可中断的 OS 文件 syscall 无法
   承诺硬性墙钟上限，因此不以 async timeout 提前释放资源。
 - Git 禁用交互输入、hooks 和 fsmonitor。stdout/stderr 使用文件捕获，轮询大小，
@@ -82,7 +86,9 @@ Git 对账歧义仍仅中断所属 Run，不猜测用户工作区状态。
 - ports 的 `contract-tests` feature 提供可复用 contract kit，由真实临时 Git adapter 运行。
 - project-local 验证 unborn/staged/dirty、既有 worktree 保留、canonical alias、真实
   子进程竞争、dangling/non-UTF-8 路径、HEAD/index 确定性竞态、Git deadline 和
-  future drop 后 lease 持续到阻塞调用排空。
+  future drop 后已启动 worker 的 lease 持续到阻塞调用排空；`max_blocking_threads(1)`
+  饱和队列测试验证 public future drop 在不释放 blocker 前就归还 queued closure 的
+  lease clone、真实文件锁和自定义 permit，最终排空后没有迟到写盘。
 - public port 测试验证全部操作的 timeout code/retryable、跨子阶段累计预算、实际
   capacity/lease queue 等待、隐式 lease 预算复用、运行中 Git 超时；通过仅测试可用
   的时钟偏移和边界注入，验证实际 mkdir/init/commit/worktree 落盘后跨 deadline 的

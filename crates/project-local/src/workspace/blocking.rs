@@ -21,6 +21,42 @@ const QUEUED: u8 = 0;
 const STARTED: u8 = 1;
 const CANCELLED: u8 = 2;
 
+/// The async owner can take back unstarted work without waiting for Tokio to
+/// dequeue/drop its cancelled task. Once STARTED wins, only the worker owns it.
+struct QueuedWorker<T> {
+    phase: Arc<AtomicU8>,
+    payload: Arc<Mutex<Option<T>>>,
+    abort: tokio::task::AbortHandle,
+}
+
+impl<T> QueuedWorker<T> {
+    fn cancel_queued(&self) -> bool {
+        if self
+            .phase
+            .compare_exchange(QUEUED, CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return false;
+        }
+        let payload = self
+            .payload
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        self.abort.abort();
+        // Release captured leases and the capacity permit now, even if Tokio's
+        // blocking pool cannot yet dequeue the aborted task. Drop outside the lock.
+        drop(payload);
+        true
+    }
+}
+
+impl<T> Drop for QueuedWorker<T> {
+    fn drop(&mut self) {
+        self.cancel_queued();
+    }
+}
+
 /// Configuration is shared by adapter clones; every public call starts a new scope.
 #[derive(Clone)]
 pub(crate) struct OperationOptions {
@@ -267,14 +303,21 @@ impl Operation {
         let context = self.context.clone();
         let phase = Arc::new(AtomicU8::new(QUEUED));
         let worker_phase = phase.clone();
+        let payload = Arc::new(Mutex::new(Some((permit, operation))));
+        let worker_payload = payload.clone();
         let mut worker = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
             if worker_phase
                 .compare_exchange(QUEUED, STARTED, Ordering::SeqCst, Ordering::SeqCst)
                 .is_err()
             {
                 return Err(context.timeout_error());
             }
+            let (permit, operation) = worker_payload
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("STARTED worker exclusively owns its queued payload");
+            let _permit = permit;
             context.point("before_blocking");
             context.check()?;
             let result = operation(&context);
@@ -283,6 +326,12 @@ impl Operation {
             context.check()?;
             result
         });
+        let queued_worker = QueuedWorker {
+            phase,
+            payload,
+            abort: worker.abort_handle(),
+        };
+        self.context.point("worker_queued");
         // Tokio has its own blocking queue. Abort a still-queued job at the same
         // deadline; an already-started syscall must drain before reporting its
         // retained state and releasing resources.
@@ -296,14 +345,9 @@ impl Operation {
                     ))
                 })
             } else {
-                let queued = phase
-                    .compare_exchange(QUEUED, CANCELLED, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok();
-                worker.abort();
-                // A cancelled queued closure cannot start I/O, even if Tokio only
-                // drops it once a blocking thread becomes available. Started work
-                // must finish before its complete retained-state report is returned.
-                if !queued {
+                // The same RAII cancellation path handles deadline and future
+                // drop. Started work still drains before reporting retained state.
+                if !queued_worker.cancel_queued() {
                     let _ = worker.await;
                 }
                 Err(self.context.timeout_error())
