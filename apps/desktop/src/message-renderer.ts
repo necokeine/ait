@@ -358,13 +358,13 @@ function messageSections(parts: DesktopMessage["parts"], key: string, message?: 
   return sections;
 }
 
-// Group presentation sections without changing the immutable Message path. In
-// particular, adjacent ToolResult Messages still have separate ids and times.
+// All consecutive activity kinds share one Events disclosure. Visible content
+// ends the group; the immutable Message path, ids and times remain unchanged.
 function renderSections(sections: MessageSection[], agents: AgentSummary[], selectedId?: string): string {
   const groups: MessageSection[][] = [];
   for (const section of sections) {
     const previous = groups.at(-1);
-    if (section.kind && previous?.[0]?.kind === section.kind) previous.push(section);
+    if (section.kind && previous?.[0]?.kind) previous.push(section);
     else groups.push([section]);
   }
   return groups.map((group) => {
@@ -372,10 +372,14 @@ function renderSections(sections: MessageSection[], agents: AgentSummary[], sele
     const content = group.map((section) => {
       const isInput = section.message?.role === "user" && section.message.kind !== "tool_result";
       const html = section.parts.map((part) => renderPart(part, isInput)).join("");
-      return section.message ? renderMessageShell(section.message, agents, html, section.message.id === selectedId) : html;
+      const labeled = section.kind
+        ? `<section class="message-event"><div class="message-event-kind">${section.kind}</div>${html}</section>`
+        : html;
+      return section.message ? renderMessageShell(section.message, agents, labeled, section.message.id === selectedId) : labeled;
     }).join("");
+    const eventCount = group.reduce((count, section) => count + section.parts.length, 0);
     return first.kind
-      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>${first.kind}</span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
+      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>Events</span><span class="message-event-count">${eventCount}</span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
       : content;
   }).join("");
 }

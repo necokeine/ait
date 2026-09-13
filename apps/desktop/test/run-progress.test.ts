@@ -70,7 +70,7 @@ test("renders live process, partial final answer, and disconnected state separat
     ],
   });
   const html = renderRunProgress(progress, "Codex", false);
-  assert.ok(html.includes('<summary><span>Tool call</span>'));
+  assert.ok(html.includes('<summary><span>Events</span>'));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(html.includes("Read file"));
   assert.ok(html.includes("Partial answer"));
@@ -80,7 +80,7 @@ test("renders live process, partial final answer, and disconnected state separat
   assert.ok(html.indexOf("</details>") < html.indexOf("Partial answer"));
 });
 
-test("keeps commentary-only live output in Process until an explicit final phase arrives", () => {
+test("keeps commentary-only live output in Events until an explicit final phase arrives", () => {
   const progress = progressFromCheckpoint({
     ...base,
     seq: 1,
@@ -90,9 +90,33 @@ test("keeps commentary-only live output in Process until an explicit final phase
     items: [{ type: "message", id: "commentary", phase: "commentary", text: "Still inspecting." }],
   });
   const html = renderRunProgress(progress, "Codex", true);
-  assert.ok(html.includes('<summary><span>Process</span>'));
+  assert.ok(html.includes('<summary><span>Events</span>'));
+  assert.ok(html.includes('class="message-event-kind">Process</div>'));
   assert.ok(html.includes("Still inspecting."));
   assert.ok(!html.includes("data-codex-final-answer"));
+  assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
+});
+
+test("mixed live events keep one stable disclosure while new kinds and final output arrive", () => {
+  let progress = applyProgressEvent(undefined, {
+    ...base, seq: 1, type: "message_started", item_id: "commentary", phase: "commentary", text: "Inspecting",
+  });
+  const initial = renderRunProgress(progress, "Codex", true);
+  for (const [index, kind] of ["reasoning", "read", "tool_result"].entries()) {
+    progress = applyProgressEvent(progress, {
+      ...base, seq: index + 2, type: "operation_started", item_id: kind,
+      operation: { id: kind, kind, status: "inProgress", title: kind, paths: [] },
+    });
+  }
+  progress = applyProgressEvent(progress, {
+    ...base, seq: 5, type: "message_started", item_id: "answer", phase: "final_answer", text: "Final response",
+  });
+  const html = renderRunProgress(progress, "Codex", true);
+  assert.equal(html.match(/<details /g)?.length, 1);
+  assert.ok(html.includes('class="message-event-count">4</span>'));
+  assert.equal(/data-disclosure-id="([^"]+)"/.exec(html)?.[1], /data-disclosure-id="([^"]+)"/.exec(initial)?.[1]);
+  for (const kind of ["Process", "Reasoning", "Tool call", "Tool result"]) assert.ok(html.includes(`class="message-event-kind">${kind}</div>`));
+  assert.ok(html.indexOf("</details>") < html.indexOf("Final response"));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
 });
 
