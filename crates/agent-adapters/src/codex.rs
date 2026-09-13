@@ -650,6 +650,7 @@ fn codex_run_request(request: &WorkspaceAgentInvocation, cwd: &Path) -> AgentRun
         prompt: request.prompt.clone(),
         cwd: cwd.to_path_buf(),
         resume_thread_id: None,
+        ephemeral: false,
         sandbox: match request.permission_profile.sandbox {
             SandboxAccess::ReadOnly => crate::SandboxMode::ReadOnly,
             SandboxAccess::WorkspaceWrite => crate::SandboxMode::WorkspaceWrite,
@@ -1836,6 +1837,7 @@ impl SessionTitleGenerator for CodexSessionTitleGenerator {
                 prompt,
                 cwd: request.cwd,
                 resume_thread_id: None,
+                ephemeral: true,
                 sandbox: crate::SandboxMode::ReadOnly,
                 approval_policy: crate::ApprovalPolicy::Never,
                 reasoning_effort: Some("low".into()),
@@ -4470,7 +4472,7 @@ where
         thread_params["threadId"] = json!(thread_id);
     } else {
         thread_method = "thread/start";
-        thread_params["ephemeral"] = json!(false);
+        thread_params["ephemeral"] = json!(request.ephemeral);
     }
     write_message(
         &mut writer,
