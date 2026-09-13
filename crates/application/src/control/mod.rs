@@ -8,7 +8,6 @@ use ait_ports::{
     SessionTitleGenerator, WorkspaceAgent, WorkspaceApprovalDecision,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -35,7 +34,7 @@ pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
     project_directory_creator: Option<Arc<dyn ProjectDirectoryCreator>>,
     session_leases: Arc<Mutex<HashMap<String, Weak<()>>>>,
-    workspace_leases: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
+    project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
     cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     workspace_run_controls: Arc<Mutex<HashMap<String, Weak<WorkspaceRunControl>>>>,
     approval_waiters:
@@ -53,12 +52,15 @@ pub struct LocalControlService {
 
 impl LocalControlService {
     #[must_use]
-    pub fn new(store: Arc<dyn ControlStore>) -> Self {
+    pub fn new(
+        project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
+        store: Arc<dyn ControlStore>,
+    ) -> Self {
         Self {
             store,
             project_directory_creator: None,
             session_leases: Arc::new(Mutex::new(HashMap::new())),
-            workspace_leases: Arc::new(Mutex::new(HashMap::new())),
+            project_workspace,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -77,6 +79,7 @@ impl LocalControlService {
     /// Creates a service that can execute real workspace-scoped coding Agents.
     #[must_use]
     pub fn with_workspace_agent(
+        project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
         store: Arc<dyn ControlStore>,
         workspace_agent: Arc<dyn WorkspaceAgent>,
     ) -> Self {
@@ -84,7 +87,7 @@ impl LocalControlService {
             store,
             project_directory_creator: None,
             session_leases: Arc::new(Mutex::new(HashMap::new())),
-            workspace_leases: Arc::new(Mutex::new(HashMap::new())),
+            project_workspace,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -175,3 +178,6 @@ impl LocalControlService {
         }
     }
 }
+
+#[cfg(test)]
+mod workspace_tests;

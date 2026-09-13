@@ -582,3 +582,9 @@ P0 全部通过才开始完整 UI。任何 spike 若改变 ADR-001 领域边界�
 - future remote machine 的身份、租约、离线语义与端到端加密。
 - SQLite schema/索引/GC 的最终 DDL，由持久化 ADR 决定，但必须满足本 ADR 的 transaction/outbox contract。
 - Provider 统一协议的完整字段与 capability matrix，由 Provider Adapter ADR 决定。
+
+## NEC-253 实现补充
+
+控制面的 Git、Session worktree、canonical/symlink 事实与 advisory lease 已迁至
+`ait-project-local`，通过 `ait-ports::ProjectWorkspace` 显式注入 application。
+阻塞预算、取消排空与稳定错误映射见 [NEC-253 ADR](../NEC-253/adr-001-project-workspace-port.md)。

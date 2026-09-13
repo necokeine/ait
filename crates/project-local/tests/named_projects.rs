@@ -74,8 +74,11 @@ fn failure(response: Response, expected: ErrorCode) -> String {
 async fn name_only_creates_git_head_and_atomic_project_root_and_rejects_duplicates() {
     let root = TempDir::new().unwrap();
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::new(store.clone())
-        .with_project_directory_creator(Arc::new(creator(root.path())));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .with_project_directory_creator(Arc::new(creator(root.path())));
     let response = service
         .execute(registration("p", "中文 project", None))
         .await;
@@ -121,10 +124,13 @@ async fn name_only_creates_git_head_and_atomic_project_root_and_rejects_duplicat
 #[tokio::test]
 async fn explicit_workdirs_keep_existing_semantics_and_never_resolve_documents() {
     let root = TempDir::new().unwrap();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()))
-        .with_project_directory_creator(Arc::new(DocumentsProjectDirectory::with_resolver(|| {
-            panic!("explicit path resolved Documents")
-        })));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )
+    .with_project_directory_creator(Arc::new(DocumentsProjectDirectory::with_resolver(|| {
+        panic!("explicit path resolved Documents")
+    })));
     fs::write(root.path().join("keep"), "existing content").unwrap();
     let response = service
         .execute(registration(
@@ -162,8 +168,11 @@ async fn explicit_workdirs_keep_existing_semantics_and_never_resolve_documents()
 async fn invalid_registration_and_unavailable_documents_do_not_write_state() {
     let root = TempDir::new().unwrap();
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::new(store.clone())
-        .with_project_directory_creator(Arc::new(creator(root.path())));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .with_project_directory_creator(Arc::new(creator(root.path())));
     let before = records(store.as_ref()).await;
     for (id, name) in [
         ("", "valid"),
@@ -188,9 +197,11 @@ async fn invalid_registration_and_unavailable_documents_do_not_write_state() {
             .await,
         ErrorCode::InvalidProject,
     );
-    let unavailable = LocalControlService::new(store.clone()).with_project_directory_creator(
-        Arc::new(DocumentsProjectDirectory::with_resolver(|| None)),
-    );
+    let unavailable = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .with_project_directory_creator(Arc::new(DocumentsProjectDirectory::with_resolver(|| None)));
     failure(
         unavailable.execute(registration("p", "valid", None)).await,
         ErrorCode::ProjectDefaultDirectoryUnavailable,
@@ -205,8 +216,9 @@ struct GitFailure {
     fail_head: bool,
 }
 
+#[async_trait::async_trait]
 impl ProjectDirectoryCreator for GitFailure {
-    fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
+    async fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
         let path = self.directory.create_workdir(name)?;
         if self.fail_head {
             git(&path, &["init", "--quiet"]);
@@ -224,12 +236,14 @@ async fn git_init_and_head_failures_preserve_files_without_registering() {
     for fail_head in [false, true] {
         let root = TempDir::new().unwrap();
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-        let service = LocalControlService::new(store.clone()).with_project_directory_creator(
-            Arc::new(GitFailure {
-                directory: creator(root.path()),
-                fail_head,
-            }),
-        );
+        let service = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        )
+        .with_project_directory_creator(Arc::new(GitFailure {
+            directory: creator(root.path()),
+            fail_head,
+        }));
         let before = records(store.as_ref()).await;
         let code = if fail_head {
             ErrorCode::ProjectGitHeadUnavailable
@@ -324,8 +338,11 @@ async fn cas_retry_reuses_only_this_requests_allocation() {
         conflicts: AtomicUsize::new(1),
         fail: false,
     });
-    let service = LocalControlService::new(store.clone())
-        .with_project_directory_creator(Arc::new(creator(root.path())));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .with_project_directory_creator(Arc::new(creator(root.path())));
     let response = service.execute(registration("p", "retried", None)).await;
     assert!(response.ok, "{response:?}");
     assert_eq!(
@@ -355,8 +372,11 @@ async fn persistence_failure_and_exhausted_cas_retain_git_without_half_registrat
             fail: true,
         });
         let before = records(store.as_ref()).await;
-        let service = LocalControlService::new(store.clone())
-            .with_project_directory_creator(Arc::new(creator(root.path())));
+        let service = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        )
+        .with_project_directory_creator(Arc::new(creator(root.path())));
         let response = service.execute(registration("p", "retained", None)).await;
         let error = response.error.unwrap();
         assert!(!error.retryable);

@@ -126,9 +126,12 @@ impl Fixture {
         let store = Arc::new(api_tool_faults::InjectedStore::new(
             SqliteControlStore::open(directory.path().join("ait.db")).unwrap(),
         ));
-        let service = LocalControlService::new(store.clone())
-            .with_provider_gateway(Arc::new(Gateway(LLMClient::new(config).unwrap())))
-            .with_api_tools(Arc::new(ait_tools::host::HostToolFactory));
+        let service = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        )
+        .with_provider_gateway(Arc::new(Gateway(LLMClient::new(config).unwrap())))
+        .with_api_tools(Arc::new(ait_tools::host::HostToolFactory));
         let mut settings = default_settings();
         settings
             .0
@@ -277,9 +280,10 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             .unwrap();
         assert!(python.status.success());
         assert_eq!(python.stdout, b"hello\n");
-        let reopened = LocalControlService::new(Arc::new(
-            SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
-        ));
+        let reopened = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
+        );
         let after = support::workspace(&reopened).await;
         assert_eq!(after.runs[0], run);
         assert_eq!(

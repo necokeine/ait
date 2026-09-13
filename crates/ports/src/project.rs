@@ -7,18 +7,23 @@ use ait_domain::{
 
 /// Allocates a new workdir for a Project whose caller supplied only a name.
 /// Platform default-directory resolution and filename rules belong to the adapter.
+#[async_trait::async_trait]
 pub trait ProjectDirectoryCreator: Send + Sync {
     /// Creates exactly one new directory and returns its absolute path.
     ///
     /// Existing entries (including files and symlinks) must fail without mutation.
     /// No parent directories may be implicitly created. Once returned, the path
     /// is retained even if Git preparation or registration subsequently fails.
+    /// Async admission and filesystem phases consume one deadline. A timed-out
+    /// creation returns `ProjectDirectoryCreationFailed` with `reason = "timeout"`.
+    /// If mkdir completed across that deadline, the error includes its retained
+    /// path/state in both details and message, and is not automatically retryable.
     ///
     /// # Errors
     ///
     /// Returns a stable Project failure for invalid names, unavailable default
     /// directories, existing targets, or failed directory creation.
-    fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError>;
+    async fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError>;
 }
 
 /// Captured Project-instruction component before a store assigns its revision.

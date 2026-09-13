@@ -184,7 +184,7 @@ impl LocalControlService {
     pub(in crate::control) async fn commit_with_finalization_gate(
         &self,
         command: Command,
-        has_workspace_lease: bool,
+        workspace_lease: Option<crate::control::admission::WorkspaceWriteLease>,
         derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
         let interactive = matches!(
@@ -219,7 +219,7 @@ impl LocalControlService {
         });
         let Some(control) = control else {
             let outcome = self
-                .commit_command(command, has_workspace_lease, derive_source_locked)
+                .commit_command(command, workspace_lease.clone(), derive_source_locked)
                 .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
@@ -244,7 +244,7 @@ impl LocalControlService {
             ));
         }
         let outcome = self
-            .commit_command(command, has_workspace_lease, derive_source_locked)
+            .commit_command(command, workspace_lease.clone(), derive_source_locked)
             .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()

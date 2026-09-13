@@ -399,7 +399,10 @@ async fn unrelated_corrupt_records_do_not_block_typed_session_commit() {
         )
         .await
         .unwrap();
-    let service = crate::control::LocalControlService::new(store.clone());
+    let service = crate::control::LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
     let result = service
         .execute(Command::RenameSession {
             session_id: "s".into(),
@@ -458,7 +461,10 @@ async fn get_run_reads_only_run_even_with_corrupt_related_records() {
         panic!("expected Run")
     };
     assert_eq!(found.id, "r");
-    let service = crate::control::LocalControlService::new(store.clone());
+    let service = crate::control::LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
     let response = service.execute(command).await;
     assert!(response.ok, "{:?}", response.error);
     assert_eq!(

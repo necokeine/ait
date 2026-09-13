@@ -2,80 +2,17 @@
 use crate::control::catalog::{require_agent, validate_config};
 use crate::control::conversation::derive_reuses_source;
 use crate::control::errors::error;
+use crate::control::errors::project_error;
 use crate::control::project::worktrees::session_worktree_path;
 use crate::control::state::{
     HasAgents, HasCrons, HasMessages, HasProjects, HasProviders, HasRuns, HasSessions,
 };
 use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
+use ait_ports::ProjectWorkspace;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::control) struct GitBaseline {
-    pub(in crate::control) commit: String,
-    pub(in crate::control) index_tree: String,
-}
-
-pub(in crate::control) fn absolute_git_dir(workdir: &Path) -> Result<PathBuf, ApiError> {
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(workdir)
-        .args(["rev-parse", "--absolute-git-dir"])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot locate Project Git directory: {failure}"),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            false,
-        ));
-    }
-    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    if !path.is_absolute() {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "Git returned a non-absolute metadata directory",
-            false,
-        ));
-    }
-    Ok(path)
-}
-
-pub(in crate::control) fn git_symbolic_head(workdir: &Path) -> Result<Option<String>, ApiError> {
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(workdir)
-        .args(["symbolic-ref", "--quiet", "HEAD"])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot inspect Project branch identity: {failure}"),
-                false,
-            )
-        })?;
-    if output.status.success() {
-        return Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        ));
-    }
-    if output.status.code() == Some(1) {
-        Ok(None)
-    } else {
-        Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            false,
-        ))
-    }
-}
+pub(in crate::control) use ait_ports::GitBaseline;
 
 pub(in crate::control) fn require_user_git_baseline(
     baseline: Option<&GitBaseline>,
@@ -89,152 +26,20 @@ pub(in crate::control) fn require_user_git_baseline(
     })
 }
 
-/// Resolve the target without initializing Git or changing the filesystem.
-pub(in crate::control) fn canonical_project_path(path: &Path) -> Result<PathBuf, ApiError> {
-    if !path.exists() {
-        return Err(error(
-            ErrorCode::ProjectPathNotFound,
-            "project path does not exist",
-            false,
-        ));
-    }
-    if !path.is_dir() {
-        return Err(error(
-            ErrorCode::ProjectPathNotDirectory,
-            "project path is not a directory",
-            false,
-        ));
-    }
-    path.canonicalize()
-        .map_err(|failure| error(ErrorCode::ProjectPathNotFound, failure.to_string(), false))
+/// Resolve the target before the canonical uniqueness read, without changing it.
+pub(in crate::control) async fn canonical_project_path(
+    workspace: &dyn ProjectWorkspace,
+    path: &Path,
+) -> Result<PathBuf, ApiError> {
+    workspace
+        .path_facts(path, path)
+        .await
+        .map(|facts| facts.canonical_root)
+        .map_err(project_error)
 }
 
-fn prepare_git_root(path: &Path) -> Result<PathBuf, ApiError> {
-    let canonical = canonical_project_path(path)?;
-    // The caller has already checked uniqueness for this canonical path.
-    // Rebinding it must not redirect preparation to an unchecked target.
-    if canonical != path {
-        return Err(error(
-            ErrorCode::RunQueueConflict,
-            "canonical Project target changed before preparation; retry the request",
-            true,
-        ));
-    }
-    let top = git_top_level(&canonical);
-    if top.as_deref() != Some(canonical.as_path()) {
-        let output = ProcessCommand::new("git")
-            .arg("-C")
-            .arg(&canonical)
-            .arg("init")
-            .output()
-            .map_err(|failure| {
-                error(ErrorCode::ProjectGitInitFailed, failure.to_string(), false)
-            })?;
-        if !output.status.success() {
-            return Err(error(
-                ErrorCode::ProjectGitInitFailed,
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-                false,
-            ));
-        }
-    }
-    if git_top_level(&canonical).as_deref() != Some(canonical.as_path()) {
-        return Err(error(
-            ErrorCode::ProjectGitInitFailed,
-            "git root verification failed",
-            false,
-        ));
-    }
-    Ok(canonical)
-}
-
-pub(in crate::control) fn ensure_git_head(path: &Path) -> Result<String, ApiError> {
-    if let Some(head) = git_head(path)? {
-        return Ok(head);
-    }
-    let staged = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["diff", "--cached", "--quiet", "--exit-code"])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                failure.to_string(),
-                false,
-            )
-        })?;
-    if !staged.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "cannot create an empty initial commit while the index contains staged changes",
-            false,
-        ));
-    }
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(path)
-        .args([
-            "-c",
-            "user.name=AIT",
-            "-c",
-            "user.email=ait@localhost",
-            "commit",
-            "--allow-empty",
-            "--no-gpg-sign",
-            "--no-verify",
-            "--quiet",
-            "-m",
-            "Initialize AIT project",
-        ])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                failure.to_string(),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            false,
-        ));
-    }
-    git_head(path)?.ok_or_else(|| {
-        error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "initial commit succeeded but Git HEAD is unavailable",
-            false,
-        )
-    })
-}
-
-pub(in crate::control) fn git_stdout(cwd: &Path, arguments: &[&str]) -> Result<String, ApiError> {
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(arguments)
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot run Git for Session worktree: {failure}"),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitInitFailed,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            false,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-pub(in crate::control) fn command_git_baseline(
+pub(in crate::control) async fn command_git_baseline(
+    workspace: &dyn ProjectWorkspace,
     state: &(impl HasMessages + HasProjects + HasSessions),
     command: &Command,
 ) -> Result<Option<GitBaseline>, ApiError> {
@@ -284,158 +89,11 @@ pub(in crate::control) fn command_git_baseline(
     let Some(path) = path else {
         return Ok(None);
     };
-    clean_git_baseline(&path).map(Some)
-}
-
-fn clean_git_baseline(path: &Path) -> Result<GitBaseline, ApiError> {
-    let before = git_head(path)?.ok_or_else(|| {
-        error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "project repository has no HEAD commit",
-            false,
-        )
-    })?;
-    let index_before = git_index_tree(path)?;
-    let status = ProcessCommand::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(path)
-        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                failure.to_string(),
-                false,
-            )
-        })?;
-    if !status.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            String::from_utf8_lossy(&status.stderr).trim(),
-            false,
-        ));
-    }
-    if !status.stdout.is_empty() {
-        return Err(error(
-            ErrorCode::ProjectGitDirty,
-            "project Git worktree and index must be clean before adding a user message",
-            false,
-        ));
-    }
-    let after = git_head(path)?.ok_or_else(|| {
-        error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "project repository HEAD disappeared while adding a user message",
-            true,
-        )
-    })?;
-    if before != after {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "project repository HEAD changed while adding a user message; retry",
-            true,
-        ));
-    }
-    let index_after = git_index_tree(path)?;
-    if index_before != index_after {
-        return Err(error(
-            ErrorCode::ProjectGitDirty,
-            "project Git index changed while adding a user message; retry",
-            true,
-        ));
-    }
-    let head_tree = git_commit_tree(path, &after)?;
-    if index_after != head_tree {
-        return Err(error(
-            ErrorCode::ProjectGitDirty,
-            "project Git index does not match HEAD at write admission",
-            false,
-        ));
-    }
-    Ok(GitBaseline {
-        commit: after,
-        index_tree: index_after,
-    })
-}
-
-// A clean index already has HEAD's tree. Verify it without `write-tree`, so
-// CAS revalidation cannot create Git objects or refresh the index.
-fn git_index_tree(path: &Path) -> Result<String, ApiError> {
-    let output = ProcessCommand::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(path)
-        .args(["diff-index", "--cached", "--quiet", "HEAD", "--"])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot inspect Project Git index: {failure}"),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitDirty,
-            "Project Git index must match HEAD before adding a user message",
-            false,
-        ));
-    }
-    git_commit_tree(path, "HEAD")
-}
-
-fn git_commit_tree(path: &Path, commit: &str) -> Result<String, ApiError> {
-    let expression = format!("{commit}^{{tree}}");
-    let output = ProcessCommand::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--verify", &expression])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot resolve Project Git commit tree: {failure}"),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            String::from_utf8_lossy(&output.stderr).trim(),
-            false,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-pub(in crate::control) fn git_head(path: &Path) -> Result<Option<String>, ApiError> {
-    let output = ProcessCommand::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .output()
-        .map_err(|failure| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                failure.to_string(),
-                false,
-            )
-        })?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if is_git_commit(&head) {
-        Ok(Some(head))
-    } else {
-        Err(error(
-            ErrorCode::ProjectGitHeadUnavailable,
-            "Git returned an invalid full HEAD object id",
-            false,
-        ))
-    }
+    workspace
+        .clean_baseline(&path)
+        .await
+        .map(Some)
+        .map_err(project_error)
 }
 
 pub(in crate::control) fn is_git_commit(value: &str) -> bool {
@@ -445,23 +103,8 @@ pub(in crate::control) fn is_git_commit(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn git_top_level(path: &Path) -> Option<std::path::PathBuf> {
-    let output = ProcessCommand::new("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Path::new(String::from_utf8_lossy(&output.stdout).trim())
-        .canonicalize()
-        .ok()
-}
-
-pub(in crate::control) fn cron_git_baseline(
+pub(in crate::control) async fn cron_git_baseline(
+    workspace: &dyn ProjectWorkspace,
     state: &(impl HasAgents + HasCrons + HasProjects + HasProviders + HasRuns),
     command: &Command,
 ) -> Result<Option<GitBaseline>, ApiError> {
@@ -496,7 +139,14 @@ pub(in crate::control) fn cron_git_baseline(
         }
         _ => return Ok(None),
     };
-    path.map(|path| clean_git_baseline(&path)).transpose()
+    match path {
+        Some(path) => workspace
+            .clean_baseline(&path)
+            .await
+            .map(Some)
+            .map_err(project_error),
+        None => Ok(None),
+    }
 }
 
 #[derive(Clone)]
@@ -506,11 +156,14 @@ pub(in crate::control) struct PreparedProject {
 }
 impl PreparedProject {
     /// Revalidate the frozen preparation before each CAS, without repairing Git.
-    pub(in crate::control) fn verify(&self) -> Result<(), ApiError> {
+    pub(in crate::control) async fn verify(
+        &self,
+        workspace: &dyn ProjectWorkspace,
+    ) -> Result<(), ApiError> {
         let expected = Path::new(&self.workdir);
-        if expected.canonicalize().ok().as_deref() != Some(expected)
-            || git_top_level(expected).as_deref() != Some(expected)
-            || git_head(expected).ok().flatten().as_deref() != Some(self.base_commit.as_str())
+        if workspace.verify_git_root(expected).await.is_err()
+            || workspace.git_head(expected).await.ok().flatten().as_deref()
+                != Some(self.base_commit.as_str())
         {
             return Err(error(
                 ErrorCode::RunQueueConflict,
@@ -521,10 +174,20 @@ impl PreparedProject {
         Ok(())
     }
 }
-pub(in crate::control) fn prepare_project(workdir: &str) -> Result<PreparedProject, ApiError> {
-    let canonical = prepare_git_root(Path::new(workdir))?;
+pub(in crate::control) async fn prepare_project(
+    workspace: &dyn ProjectWorkspace,
+    workdir: &str,
+) -> Result<PreparedProject, ApiError> {
+    let expected = Path::new(workdir);
+    let canonical = workspace
+        .prepare_git_root(expected, Some(expected))
+        .await
+        .map_err(project_error)?;
     Ok(PreparedProject {
-        base_commit: ensure_git_head(&canonical)?,
+        base_commit: workspace
+            .ensure_git_head(&canonical)
+            .await
+            .map_err(project_error)?,
         workdir: canonical.to_string_lossy().into_owned(),
     })
 }

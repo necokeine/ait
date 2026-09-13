@@ -31,7 +31,8 @@ use crate::control::state::{
 };
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::ErrorCode;
-use ait_ports::{ControlChange, PendingEvent};
+use ait_ports::{ControlChange, PendingEvent, ProjectWorkspace, WorkspaceLease};
+use std::sync::Arc;
 
 pub(in crate::control) enum CommandTransaction {
     NewSession(RecordTransaction<NewSessionContext>),
@@ -133,8 +134,10 @@ impl CommandTransaction {
             _ => Ok(None),
         }
     }
-    pub(in crate::control) fn prepare(
+    pub(in crate::control) async fn prepare(
         &self,
+        workspace: &dyn ProjectWorkspace,
+        lease: Option<Arc<dyn WorkspaceLease>>,
         command: &Command,
         prepared_project: Option<&PreparedProject>,
         created: &mut Vec<std::path::PathBuf>,
@@ -142,21 +145,27 @@ impl CommandTransaction {
         match self {
             Self::Conversation(tx) => {
                 crate::control::project::worktrees::prepare_command_session_worktrees(
+                    workspace,
+                    lease,
                     &tx.original,
                     command,
                     created,
                 )
+                .await
             }
             Self::Archive(tx) => {
                 let Command::ImportProject { archive, .. } = command else {
                     unreachable!("import preparation")
                 };
                 crate::control::project::worktrees::prepare_import_session_worktrees(
+                    workspace,
+                    lease,
                     &tx.original,
                     archive,
                     prepared_project.expect("Project prepared before Session worktrees"),
                     created,
                 )
+                .await
             }
             Self::NewSession(tx) => {
                 let Command::CreateSession {
@@ -171,6 +180,8 @@ impl CommandTransaction {
                 let project =
                     crate::control::project::require_project_view(&tx.original, project_id)?;
                 crate::control::project::worktrees::prepare_new_session_worktree(
+                    workspace,
+                    lease,
                     &tx.original,
                     id,
                     project_id,
@@ -178,20 +189,24 @@ impl CommandTransaction {
                     at_message_id.as_deref().unwrap_or(&project.root_message_id),
                     created,
                 )
+                .await
             }
             _ => Ok(()),
         }
     }
-    pub(in crate::control) fn git_baseline(
+    pub(in crate::control) async fn git_baseline(
         &self,
+        workspace: &dyn ProjectWorkspace,
         command: &Command,
     ) -> Result<Option<GitBaseline>, ApiError> {
         match self {
             Self::Conversation(tx) => {
-                crate::control::project::git::command_git_baseline(&tx.original, command)
+                crate::control::project::git::command_git_baseline(workspace, &tx.original, command)
+                    .await
             }
             Self::CronTrigger(tx) => {
-                crate::control::project::git::cron_git_baseline(&tx.original, command)
+                crate::control::project::git::cron_git_baseline(workspace, &tx.original, command)
+                    .await
             }
             _ => Ok(None),
         }
@@ -250,8 +265,9 @@ impl CommandTransaction {
         }
     }
     #[allow(clippy::too_many_lines)]
-    pub(in crate::control) fn reduce(
+    pub(in crate::control) async fn reduce(
         &self,
+        workspace: &dyn ProjectWorkspace,
         command: Command,
         user_git_baseline: Option<&GitBaseline>,
         permission_limits: PermissionPolicyLimits,
@@ -441,14 +457,18 @@ impl CommandTransaction {
             ) => reduce!(
                 loaded,
                 state,
-                ready!(resolve_native_approval(
-                    &mut state,
-                    &run_id,
-                    &approval_id,
-                    action,
-                    scope,
-                    permission_limits,
-                ))
+                ready!(
+                    resolve_native_approval(
+                        workspace,
+                        &mut state,
+                        &run_id,
+                        &approval_id,
+                        action,
+                        scope,
+                        permission_limits,
+                    )
+                    .await
+                )
             ),
             (
                 Self::CronCreate(loaded),

@@ -3,23 +3,16 @@ use crate::control::LocalControlService;
 use crate::control::catalog::{require_agent, validate_config};
 use crate::control::errors::error;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
-use crate::control::project::git::absolute_git_dir;
 use crate::control::project::require_project_view;
 use crate::control::state::{
     HasAgents, HasCrons, HasProjects, HasProviders, HasRuns, HasSessions, HasSettings,
 };
 use ait_contracts::{AgentMode, ApiError, Command, SessionView};
 use ait_domain::ErrorCode;
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-/// Owns both the async in-process queue position and the process-wide advisory
-/// lock for one canonical Project Git worktree.
-pub(in crate::control) struct WorkspaceWriteLease {
-    _process_guard: tokio::sync::OwnedMutexGuard<()>,
-    _file: File,
-}
+pub(in crate::control) type WorkspaceWriteLease = Arc<dyn ait_ports::WorkspaceLease>;
 
 pub(in crate::control) fn workspace_write_path(
     state: &(impl HasProjects + HasSessions),
@@ -191,69 +184,10 @@ impl LocalControlService {
         &self,
         workdir: &Path,
     ) -> Result<WorkspaceWriteLease, ApiError> {
-        let canonical = workdir.canonicalize().map_err(|failure| {
-            error(
-                ErrorCode::ProjectPathNotFound,
-                format!("cannot resolve Project workdir for write admission: {failure}"),
-                false,
-            )
-        })?;
-        let process_lock = {
-            let mut leases = self.workspace_leases.lock().map_err(|_| {
-                error(
-                    ErrorCode::ProjectWorkspaceBusy,
-                    "workspace write lease registry is unavailable",
-                    true,
-                )
-            })?;
-            leases.retain(|_, lease| lease.strong_count() > 0);
-            if let Some(existing) = leases.get(&canonical).and_then(Weak::upgrade) {
-                existing
-            } else {
-                let lease = Arc::new(tokio::sync::Mutex::new(()));
-                leases.insert(canonical.clone(), Arc::downgrade(&lease));
-                lease
-            }
-        };
-        let process_guard = process_lock.lock_owned().await;
-        let git_dir = absolute_git_dir(&canonical)?;
-        let lock_dir = git_dir.join("ait").join("locks");
-        std::fs::create_dir_all(&lock_dir).map_err(|failure| {
-            error(
-                ErrorCode::ProjectWorkspaceBusy,
-                format!("cannot create workspace lease directory: {failure}"),
-                true,
-            )
-        })?;
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_dir.join("workspace-write.lock"))
-            .map_err(|failure| {
-                error(
-                    ErrorCode::ProjectWorkspaceBusy,
-                    format!("cannot open workspace write lease: {failure}"),
-                    true,
-                )
-            })?;
-        match file.try_lock() {
-            Ok(()) => Ok(WorkspaceWriteLease {
-                _process_guard: process_guard,
-                _file: file,
-            }),
-            Err(std::fs::TryLockError::WouldBlock) => Err(error(
-                ErrorCode::ProjectWorkspaceBusy,
-                "another Ait process owns this Project workspace write lease",
-                true,
-            )),
-            Err(std::fs::TryLockError::Error(failure)) => Err(error(
-                ErrorCode::ProjectWorkspaceBusy,
-                format!("cannot acquire Project workspace write lease: {failure}"),
-                true,
-            )),
-        }
+        self.project_workspace
+            .acquire_lease(workdir)
+            .await
+            .map_err(crate::control::errors::project_error)
     }
 
     pub(in crate::control) fn acquire_session(

@@ -1,5 +1,7 @@
 //! Command execution, durable checkpoints, and read-only Run queries.
 
+#[path = "support/immediate_workspace.rs"]
+mod immediate_workspace;
 mod support;
 
 use std::{
@@ -282,7 +284,11 @@ impl Fixture {
             recoveries: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
         });
-        let service = LocalControlService::with_workspace_agent(store.clone(), agent.clone());
+        let service = LocalControlService::with_workspace_agent(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+            agent.clone(),
+        );
         let CommandResult::Project(project) = command(
             &service,
             Command::RegisterProject {
@@ -510,8 +516,11 @@ async fn startup_recovery_executes_a_queued_run_once_without_query_side_effects(
     let fixture = Fixture::new().await;
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "queued").await;
-    let service =
-        LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+    let service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        fixture.store.clone(),
+        fixture.agent.clone(),
+    );
 
     let before = fixture.agent.calls.load(Ordering::Relaxed);
     let queried = run(
@@ -536,8 +545,11 @@ async fn startup_recovery_finalizes_a_checkpoint_without_reinvoking_the_agent() 
     let fixture = Fixture::new().await;
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "settling").await;
-    let service =
-        LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+    let service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        fixture.store.clone(),
+        fixture.agent.clone(),
+    );
     let calls = fixture.agent.calls.load(Ordering::Relaxed);
 
     let recovered = service.recover_interrupted_runs().await.unwrap();
@@ -565,8 +577,11 @@ async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_se
     let fixture = Fixture::new().await;
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "running").await;
-    let service =
-        LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+    let service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        fixture.store.clone(),
+        fixture.agent.clone(),
+    );
     let calls = fixture.agent.calls.load(Ordering::Relaxed);
 
     let recovered = service.recover_interrupted_runs().await.unwrap();
@@ -596,8 +611,11 @@ async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
             .await
             .unwrap();
         let calls = fixture.agent.calls.load(Ordering::Relaxed);
-        let service =
-            LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone());
+        let service = LocalControlService::with_workspace_agent(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            fixture.store.clone(),
+            fixture.agent.clone(),
+        );
 
         let recovered = service.recover_interrupted_runs().await.unwrap();
         assert_eq!(recovered.len(), 1);
@@ -774,6 +792,7 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         release: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::with_workspace_agent(
+        Arc::new(immediate_workspace::ImmediateWorkspace),
         store.clone(),
         agent.clone(),
     ));
@@ -810,6 +829,11 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     )
     .await;
 
+    // NEC-205 requires admission within 500ms. Ready workspace facts isolate
+    // this application contract from unrelated Git processes in parallel tests.
+    // The agent remains blocked until the test releases it, so waiting for turn
+    // completion must fail this bound regardless of host speed.
+    let submitted_at = std::time::Instant::now();
     let accepted = tokio::time::timeout(
         Duration::from_millis(500),
         service.submit(Command::SendMessage {
@@ -819,6 +843,11 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
     )
     .await
     .expect("submission must not wait for the turn");
+    assert!(
+        submitted_at.elapsed() < Duration::from_millis(500),
+        "NEC-205 admission exceeded 500ms: {:?}",
+        submitted_at.elapsed()
+    );
     let CommandResult::Run(run) = accepted.result.unwrap() else {
         panic!("expected accepted run")
     };
@@ -982,6 +1011,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         entered: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
@@ -1204,12 +1234,15 @@ async fn recovery_rechecks_administrator_ceiling_without_changing_snapshot() {
         .await;
         let completed = run(&fixture.service, send_message()).await;
         rewind_completed_run(&fixture.store, &completed, phase).await;
-        let service =
-            LocalControlService::with_workspace_agent(fixture.store.clone(), fixture.agent.clone())
-                .with_permission_limits(PermissionPolicyLimits {
-                    max_sandbox: SandboxAccess::ReadOnly,
-                    allow_session_approvals: true,
-                });
+        let service = LocalControlService::with_workspace_agent(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            fixture.store.clone(),
+            fixture.agent.clone(),
+        )
+        .with_permission_limits(PermissionPolicyLimits {
+            max_sandbox: SandboxAccess::ReadOnly,
+            allow_session_approvals: true,
+        });
         let calls = fixture.agent.calls.load(Ordering::Relaxed);
         let recoveries = fixture.agent.recoveries.load(Ordering::Relaxed);
         let recovered = service.recover_interrupted_runs().await.unwrap();

@@ -125,7 +125,10 @@ async fn cas_rechecks_project_head_without_repeating_preparation() {
             assert_ne!(git(&path, &["rev-parse", "HEAD"]), prepared_head);
             *observed.lock().unwrap() = Some(snapshot(&path));
         }));
-        let service = LocalControlService::new(store.clone());
+        let service = LocalControlService::new(
+            Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        );
         let request = command(target.path(), import);
         let response = service.execute(request.clone()).await;
         assert!(!response.ok, "stale preparation must not commit");
@@ -156,9 +159,12 @@ async fn cas_does_not_reinitialize_a_disappeared_git_root() {
     *store.conflict_once.lock().unwrap() = Some(Box::new(move || {
         std::fs::rename(path.join(".git"), path.join("retained-git")).unwrap();
     }));
-    let response = LocalControlService::new(store.clone())
-        .execute(command(target.path(), false))
-        .await;
+    let response = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .execute(command(target.path(), false))
+    .await;
     let error = response.error.unwrap();
     assert_eq!(error.code, ErrorCode::RunQueueConflict);
     assert!(error.retryable);
@@ -178,9 +184,12 @@ async fn unchanged_preparation_survives_cas_without_new_files_or_duplicate_event
     *store.conflict_once.lock().unwrap() = Some(Box::new(move || {
         *observed.lock().unwrap() = Some(snapshot(&path));
     }));
-    let response = LocalControlService::new(store.clone())
-        .execute(command(target.path(), true))
-        .await;
+    let response = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .execute(command(target.path(), true))
+    .await;
     assert!(response.ok, "{:?}", response.error);
     assert_eq!(store.apply_attempts.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -219,9 +228,12 @@ async fn cas_rechecks_canonical_target_even_when_head_is_unchanged() {
         std::os::unix::fs::symlink(&moved, &path).unwrap();
         assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
     }));
-    let response = LocalControlService::new(store.clone())
-        .execute(command(&target, false))
-        .await;
+    let response = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    )
+    .execute(command(&target, false))
+    .await;
     let error = response.error.unwrap();
     assert_eq!(error.code, ErrorCode::RunQueueConflict);
     assert!(error.retryable);
@@ -235,7 +247,10 @@ async fn cas_rechecks_canonical_target_even_when_head_is_unchanged() {
 
 async fn assert_alias_import_has_no_side_effects(target: &Path, alias: &Path) {
     let store = Probe::new(vec![]);
-    let service = LocalControlService::new(store.clone());
+    let service = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
     let existing = Command::RegisterProject {
         id: "existing".into(),
         name: "Existing".into(),

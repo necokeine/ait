@@ -184,8 +184,11 @@ async fn api_provider_branch_permission_settings_are_snapshotted_into_each_run()
             ] {
                 let store = Arc::new(SqliteControlStore::in_memory().unwrap());
                 let gateway = Arc::new(Gateway::default());
-                let service =
-                    LocalControlService::new(store).with_provider_gateway(gateway.clone());
+                let service = LocalControlService::new(
+                    std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                    store,
+                )
+                .with_provider_gateway(gateway.clone());
                 let _directory = setup_api_provider(&service, kind).await;
                 let command = branch.command(&service).await;
                 save_permission_settings(&service, setting, "untrusted_only").await;
@@ -248,14 +251,22 @@ async fn api_provider_branch_invalid_permissions_have_no_side_effects() {
                 for asynchronous in [false, true] {
                     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
                     let gateway = Arc::new(Gateway::default());
-                    let service = Arc::new(
-                        LocalControlService::new(store.clone())
+                    let service =
+                        Arc::new(
+                            LocalControlService::new(
+                                std::sync::Arc::new(
+                                    ait_project_local::LocalProjectWorkspace::default(),
+                                ),
+                                store.clone(),
+                            )
                             .with_provider_gateway(gateway.clone())
-                            .with_permission_limits(PermissionPolicyLimits {
-                                max_sandbox: SandboxAccess::ReadOnly,
-                                allow_session_approvals: true,
-                            }),
-                    );
+                            .with_permission_limits(
+                                PermissionPolicyLimits {
+                                    max_sandbox: SandboxAccess::ReadOnly,
+                                    allow_session_approvals: true,
+                                },
+                            ),
+                        );
                     let _directory = setup_api_provider(&service, kind).await;
                     let command = branch.command(&service).await;
                     save_rejected_sandbox(&service, store.as_ref(), sandbox).await;
@@ -327,12 +338,15 @@ async fn api_provider_branch_rechecks_permissions_after_a_commit_conflict() {
                 });
                 let gateway = Arc::new(Gateway::default());
                 let service = Arc::new(
-                    LocalControlService::new(store.clone())
-                        .with_provider_gateway(gateway.clone())
-                        .with_permission_limits(PermissionPolicyLimits {
-                            max_sandbox: SandboxAccess::ReadOnly,
-                            allow_session_approvals: true,
-                        }),
+                    LocalControlService::new(
+                        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                        store.clone(),
+                    )
+                    .with_provider_gateway(gateway.clone())
+                    .with_permission_limits(PermissionPolicyLimits {
+                        max_sandbox: SandboxAccess::ReadOnly,
+                        allow_session_approvals: true,
+                    }),
                 );
                 let _directory = setup_api_provider(&service, kind).await;
                 let command = branch.command(&service).await;
@@ -375,7 +389,11 @@ async fn api_provider_permission_settings_are_snapshotted_into_each_run() {
         ] {
             let store = Arc::new(SqliteControlStore::in_memory().unwrap());
             let gateway = Arc::new(Gateway::default());
-            let service = LocalControlService::new(store).with_provider_gateway(gateway.clone());
+            let service = LocalControlService::new(
+                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                store,
+            )
+            .with_provider_gateway(gateway.clone());
             let _directory = setup_api_provider(&service, kind).await;
             save_permission_settings(&service, setting, "untrusted_only").await;
 
@@ -414,12 +432,15 @@ async fn api_provider_permission_ceiling_fails_before_message_or_remote_call() {
     for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());
-        let service = LocalControlService::new(store)
-            .with_provider_gateway(gateway.clone())
-            .with_permission_limits(PermissionPolicyLimits {
-                max_sandbox: SandboxAccess::ReadOnly,
-                allow_session_approvals: true,
-            });
+        let service = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store,
+        )
+        .with_provider_gateway(gateway.clone())
+        .with_permission_limits(PermissionPolicyLimits {
+            max_sandbox: SandboxAccess::ReadOnly,
+            allow_session_approvals: true,
+        });
         let _directory = setup_api_provider(&service, kind).await;
         save_permission_settings(&service, "workspace_write", "on_request").await;
 
@@ -438,8 +459,11 @@ async fn api_provider_invalid_permission_setting_fails_before_message_or_remote_
     for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());
-        let service =
-            LocalControlService::new(store.clone()).with_provider_gateway(gateway.clone());
+        let service = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        )
+        .with_provider_gateway(gateway.clone());
         let _directory = setup_api_provider(&service, kind).await;
 
         let snapshot = store.load().await.unwrap();
@@ -485,7 +509,11 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
     ] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let native = Arc::new(CapturingWorkspaceAgent::default());
-        let service = LocalControlService::with_workspace_agent(store, native.clone());
+        let service = LocalControlService::with_workspace_agent(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store,
+            native.clone(),
+        );
         let _directory = setup(&service, config("high")).await;
         save_permission_settings(&service, setting, "untrusted_only").await;
         let CommandResult::Run(run) = ok(&service, send("one")).await else {
@@ -532,7 +560,11 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
 async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_restart() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let native = Arc::new(CapturingWorkspaceAgent::default());
-    let service = LocalControlService::with_workspace_agent(store.clone(), native.clone());
+    let service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+        native.clone(),
+    );
     let _directory = setup(&service, config("high")).await;
     let CommandResult::Run(fresh) = ok(&service, send("one")).await else {
         panic!("expected Run")
@@ -541,7 +573,11 @@ async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_re
     save_permission_settings(&service, "workspace_write", "on_request").await;
     drop(service);
 
-    let restarted = LocalControlService::with_workspace_agent(store, native.clone());
+    let restarted = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store,
+        native.clone(),
+    );
     let CommandResult::Run(explicit) = ok(&restarted, send("two")).await else {
         panic!("expected Run")
     };
@@ -574,7 +610,11 @@ async fn fresh_and_reset_settings_are_read_only_while_explicit_write_survives_re
 async fn read_only_protocol_write_attempt_fails_run_without_project_or_message_side_effects() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let workspace_agent = Arc::new(CodexWorkspaceAgent::new(Arc::new(ReadOnlyViolatingAdapter)));
-    let service = LocalControlService::with_workspace_agent(store, workspace_agent);
+    let service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store,
+        workspace_agent,
+    );
     let directory = setup(&service, config("high")).await;
     let baseline = git_head(directory.path());
     let baseline_index = git_index_tree(directory.path());
@@ -609,11 +649,15 @@ async fn read_only_protocol_write_attempt_fails_run_without_project_or_message_s
 async fn unsupported_or_administrator_conflicting_policies_fail_before_messages_or_agents() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let native = Arc::new(CapturingWorkspaceAgent::default());
-    let service = LocalControlService::with_workspace_agent(store.clone(), native.clone())
-        .with_permission_limits(PermissionPolicyLimits {
-            max_sandbox: SandboxAccess::ReadOnly,
-            allow_session_approvals: true,
-        });
+    let service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+        native.clone(),
+    )
+    .with_permission_limits(PermissionPolicyLimits {
+        max_sandbox: SandboxAccess::ReadOnly,
+        allow_session_approvals: true,
+    });
     let _directory = setup(&service, config("high")).await;
     save_permission_settings(&service, "full_access", "on_request").await;
     let rejected = service.execute(send("one")).await;
@@ -666,7 +710,10 @@ async fn unsupported_or_administrator_conflicting_policies_fail_before_messages_
 #[tokio::test]
 async fn invalid_permission_profiles_never_echo_input_in_errors() {
     use ait_ports::WorkspaceApproval as _;
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    );
     for permissions in [
         serde_json::json!({"network": {"enabled": "fixture-secret"}}),
         serde_json::json!({"fixture-secret": true}),
@@ -698,7 +745,11 @@ async fn corrupt_permission_settings_fail_closed_without_echoing_values() {
     for key in ["permissions.sandbox", "permissions.approval"] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let native = Arc::new(CapturingWorkspaceAgent::default());
-        let service = LocalControlService::with_workspace_agent(store.clone(), native.clone());
+        let service = LocalControlService::with_workspace_agent(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+            native.clone(),
+        );
         let _directory = setup(&service, config("high")).await;
         let snapshot = store.load().await.unwrap();
         let mut corrupted = snapshot.value;

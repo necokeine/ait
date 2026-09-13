@@ -308,3 +308,6 @@ mod tests;
 
 #[cfg(test)]
 mod directories_tests;
+
+mod workspace;
+pub use workspace::LocalProjectWorkspace;

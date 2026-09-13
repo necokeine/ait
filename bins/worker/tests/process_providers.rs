@@ -152,9 +152,12 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let store = Arc::new(SqliteControlStore::open(directory.path().join("ait.db")).unwrap());
-        let service = LocalControlService::new(store.clone())
-            .with_provider_gateway(Arc::new(Gateway))
-            .with_run_dispatcher(Arc::new(ait_ipc::supervisor::WorkerSupervisor::new(worker)));
+        let service = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        )
+        .with_provider_gateway(Arc::new(Gateway))
+        .with_run_dispatcher(Arc::new(ait_ipc::supervisor::WorkerSupervisor::new(worker)));
         let mut settings = default_settings();
         settings
             .0
@@ -303,9 +306,10 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
             .unwrap();
         assert!(python.status.success());
         assert_eq!(python.stdout, b"hello\n");
-        let reopened = LocalControlService::new(Arc::new(
-            SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
-        ));
+        let reopened = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
+        );
         let after = support::workspace(&reopened).await;
         assert_eq!(after.runs[0], run);
         assert_eq!(
@@ -683,9 +687,10 @@ async fn receipts_survive_sqlite_commit_and_reject_stale_or_changed_replays() {
             .await
             .is_err()
     );
-    let reopened = LocalControlService::new(Arc::new(
-        SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
-    ));
+    let reopened = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
+    );
     assert_eq!(support::workspace(&reopened).await.runs[0], view);
     for record in [
         serde_json::to_vec(&view).unwrap(),

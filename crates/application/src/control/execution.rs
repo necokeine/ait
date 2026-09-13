@@ -44,9 +44,8 @@ impl LocalControlService {
         let mut session_admission = self.acquire_session(&command)?;
         let derive_source_locked = session_admission.derive_source_locked();
         let workspace_lease = self.acquire_workspace_write(&command).await?;
-        let has_workspace_lease = workspace_lease.is_some();
         match self
-            .commit_with_finalization_gate(command, has_workspace_lease, derive_source_locked)
+            .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
             .await?
         {
             CommandOutcome::ExecuteWorkspaceRun(run) => {
@@ -120,11 +119,10 @@ impl LocalControlService {
         // the same Run permission profile but cannot require this lease until a
         // host-owned tool bridge gives them workspace side effects.
         let workspace_lease = self.acquire_workspace_write(&command).await?;
-        let has_workspace_lease = workspace_lease.is_some();
         // Commit retries may reapply state changes, but never repeat an external
         // Agent invocation. Only the command that created the Run can request it.
         let outcome = self
-            .commit_with_finalization_gate(command, has_workspace_lease, derive_source_locked)
+            .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
             .await?;
         match outcome {
             CommandOutcome::Ready(result) => Ok(*result),
@@ -175,7 +173,7 @@ impl LocalControlService {
     pub(in crate::control) async fn commit_command(
         &self,
         command: Command,
-        has_workspace_lease: bool,
+        workspace_lease: Option<crate::control::admission::WorkspaceWriteLease>,
         derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
         let mut created_workdir = None;
@@ -183,7 +181,7 @@ impl LocalControlService {
         let importing_project = matches!(&command, Command::ImportProject { .. });
         self.commit_command_inner(
             command,
-            has_workspace_lease,
+            workspace_lease,
             derive_source_locked,
             &mut created_workdir,
             &mut created_session_worktrees,
@@ -214,16 +212,21 @@ impl LocalControlService {
             })
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keep one-time preparation and read-only CAS retries together"
+    )]
     async fn commit_command_inner(
         &self,
         mut command: Command,
-        has_workspace_lease: bool,
+        workspace_lease: Option<crate::control::admission::WorkspaceWriteLease>,
         derive_source_locked: bool,
         created_workdir: &mut Option<PathBuf>,
         created_session_worktrees: &mut Vec<PathBuf>,
     ) -> Result<CommandOutcome, ApiError> {
         let initial = self.read_command_records(&command).await?;
-        self.allocate_project_directory(&initial, &mut command, created_workdir)?;
+        self.allocate_project_directory(&initial, &mut command, created_workdir)
+            .await?;
         let project_workdir = match &mut command {
             Command::RegisterProject { workdir, .. } => {
                 Some(workdir.as_mut().expect("allocated workdir"))
@@ -231,29 +234,38 @@ impl LocalControlService {
             Command::ImportProject { workdir, .. } => Some(workdir),
             _ => None,
         };
-        let canonical_workdir = project_workdir
-            .map(|workdir| {
-                *workdir = canonical_project_path(std::path::Path::new(workdir))?
-                    .to_string_lossy()
-                    .into_owned();
-                Ok::<_, ApiError>(workdir.clone())
-            })
-            .transpose()?;
+        let canonical_workdir = if let Some(workdir) = project_workdir {
+            *workdir = canonical_project_path(
+                self.project_workspace.as_ref(),
+                std::path::Path::new(workdir),
+            )
+            .await?
+            .to_string_lossy()
+            .into_owned();
+            Some(workdir.clone())
+        } else {
+            None
+        };
         let initial = match &canonical_workdir {
             // Read and validate the canonical target before Git init or worktree creation.
             Some(_) => self.read_command_records(&command).await?,
             None => initial,
         };
         initial.check_admission(&command)?;
-        let prepared_project = canonical_workdir
-            .as_deref()
-            .map(prepare_project)
-            .transpose()?;
-        initial.prepare(
-            &command,
-            prepared_project.as_ref(),
-            created_session_worktrees,
-        )?;
+        let prepared_project = if let Some(workdir) = canonical_workdir.as_deref() {
+            Some(prepare_project(self.project_workspace.as_ref(), workdir).await?)
+        } else {
+            None
+        };
+        initial
+            .prepare(
+                self.project_workspace.as_ref(),
+                workspace_lease.clone(),
+                &command,
+                prepared_project.as_ref(),
+                created_session_worktrees,
+            )
+            .await?;
         let preparation_key = initial.preparation_key();
         for attempt in 0..4 {
             let loaded = if attempt == 0 {
@@ -270,7 +282,7 @@ impl LocalControlService {
                     true,
                 ));
             }
-            if !has_workspace_lease
+            if workspace_lease.is_none()
                 && loaded
                     .workspace_path(&command, self.permission_limits)?
                     .is_some()
@@ -282,16 +294,21 @@ impl LocalControlService {
                 ));
             }
             // Git observation is read-only; directory/worktree creation is above the retry loop.
-            let git_baseline = loaded.git_baseline(&command)?;
-            let commit = loaded.reduce(
-                command.clone(),
-                git_baseline.as_ref(),
-                self.permission_limits,
-                derive_source_locked,
-                prepared_project.as_ref(),
-            )?;
+            let git_baseline = loaded
+                .git_baseline(self.project_workspace.as_ref(), &command)
+                .await?;
+            let commit = loaded
+                .reduce(
+                    self.project_workspace.as_ref(),
+                    command.clone(),
+                    git_baseline.as_ref(),
+                    self.permission_limits,
+                    derive_source_locked,
+                    prepared_project.as_ref(),
+                )
+                .await?;
             if let Some(prepared) = &prepared_project {
-                prepared.verify()?;
+                prepared.verify(self.project_workspace.as_ref()).await?;
             }
             match self
                 .store
@@ -320,7 +337,7 @@ impl LocalControlService {
             true,
         ))
     }
-    fn allocate_project_directory(
+    async fn allocate_project_directory(
         &self,
         initial: &crate::control::state::commands::CommandTransaction,
         command: &mut Command,
@@ -344,6 +361,7 @@ impl LocalControlService {
                 })?;
                 let path = creator
                     .create_workdir(name)
+                    .await
                     .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
                 *created_workdir = Some(path.clone());
                 *workdir = Some(

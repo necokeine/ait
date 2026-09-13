@@ -2,7 +2,6 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
-use crate::control::project::git::git_symbolic_head;
 use crate::control::project::worktrees::run_workdir;
 use crate::control::runs::is_terminal_workspace_status;
 use ait_contracts::{AgentMode, ApiError, RunView};
@@ -117,7 +116,10 @@ impl LocalControlService {
                 .map_or_else(|| format!("workspace-{run_id}"), str::to_owned);
             let lease_epoch = state.runs[index].lease_epoch.saturating_add(1);
             let baseline_ref = if state.runs[index].provider.kind == AgentMode::Codex {
-                git_symbolic_head(&run_workdir(&state, &state.runs[index])?)?
+                self.project_workspace
+                    .symbolic_head(&run_workdir(&state, &state.runs[index])?)
+                    .await
+                    .map_err(crate::control::errors::project_error)?
             } else {
                 None
             };

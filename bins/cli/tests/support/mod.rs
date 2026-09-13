@@ -74,13 +74,16 @@ impl Workspace {
         let store = SqliteControlStore::open(self.directory.path().join("ait.sqlite3")).unwrap();
         let documents = self.directory.path().join("Documents");
         std::fs::create_dir_all(&documents).unwrap();
-        let mut service =
-            LocalControlService::with_workspace_agent(Arc::new(store), Arc::new(FixtureCodex))
-                .with_project_directory_creator(Arc::new(
-                    ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
-                        Some(documents.clone())
-                    }),
-                ));
+        let mut service = LocalControlService::with_workspace_agent(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            Arc::new(store),
+            Arc::new(FixtureCodex),
+        )
+        .with_project_directory_creator(Arc::new(
+            ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
+                Some(documents.clone())
+            }),
+        ));
         if let Some(gateway) = &self.gateway {
             service = service.with_provider_gateway(gateway.clone());
         }

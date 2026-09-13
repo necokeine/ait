@@ -13,6 +13,7 @@ use ait_domain::{
     ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, NativeApprovalStatus,
     NativeApprovalTarget, RunPermissionProfile, SandboxAccess,
 };
+use ait_ports::ProjectWorkspace;
 use ait_ports::{
     ControlStoreError, PendingEvent, WorkspaceApproval, WorkspaceApprovalDecision,
     WorkspaceApprovalRequest,
@@ -327,7 +328,9 @@ fn approval_decision(approval: &NativeApprovalView) -> Option<WorkspaceApprovalD
     }
 }
 
-pub(in crate::control) fn resolve_native_approval(
+#[allow(clippy::too_many_lines)]
+pub(in crate::control) async fn resolve_native_approval(
+    workspace: &dyn ProjectWorkspace,
     state: &mut (impl HasProjects + HasRuns + HasSessions + HasWorkspaceRunJournals),
     run_id: &str,
     approval_id: &str,
@@ -393,7 +396,15 @@ pub(in crate::control) fn resolve_native_approval(
                     false,
                 )
             })?;
-            validate_native_approval_grant(approval, scope, limits, run_profile, &project_root)?;
+            validate_native_approval_grant(
+                workspace,
+                approval,
+                scope,
+                limits,
+                run_profile,
+                &project_root,
+            )
+            .await?;
             approval.status = NativeApprovalStatus::Approved;
             approval.granted_scope = Some(scope);
             approval
@@ -428,7 +439,8 @@ pub(in crate::control) fn resolve_native_approval(
     ))
 }
 
-fn validate_native_approval_grant(
+async fn validate_native_approval_grant(
+    workspace: &dyn ProjectWorkspace,
     approval: &NativeApprovalView,
     scope: ApprovalGrantScope,
     limits: PermissionPolicyLimits,
@@ -479,7 +491,7 @@ fn validate_native_approval_grant(
                     .iter()
                     .chain(changes.iter().map(|change| &change.path))
                 {
-                    ensure_permission_path_in_project(path, project_root)?;
+                    ensure_permission_path_in_project(workspace, path, project_root).await?;
                 }
             }
         }
@@ -500,7 +512,14 @@ fn validate_native_approval_grant(
                 false,
             ));
         }
-        validate_permission_grant_ceiling(permissions, run_profile, limits, project_root)?;
+        validate_permission_grant_ceiling(
+            workspace,
+            permissions,
+            run_profile,
+            limits,
+            project_root,
+        )
+        .await?;
     } else if scope == ApprovalGrantScope::Turn {
         return Err(error(
             ErrorCode::InvalidConfiguration,
@@ -511,7 +530,8 @@ fn validate_native_approval_grant(
     Ok(())
 }
 
-fn validate_permission_grant_ceiling(
+async fn validate_permission_grant_ceiling(
+    workspace: &dyn ProjectWorkspace,
     permissions: &NativePermissionProfile,
     run_profile: RunPermissionProfile,
     limits: PermissionPolicyLimits,
@@ -536,18 +556,18 @@ fn validate_permission_grant_ceiling(
         ));
     }
     for path in file_system.read.iter().chain(&file_system.write) {
-        ensure_permission_path_in_project(path, project_root)?;
+        ensure_permission_path_in_project(workspace, path, project_root).await?;
     }
     for entry in &file_system.entries {
         match &entry.path {
             ait_contracts::NativeFileSystemPath::Path { path } => {
-                ensure_permission_path_in_project(path, project_root)?;
+                ensure_permission_path_in_project(workspace, path, project_root).await?;
             }
             ait_contracts::NativeFileSystemPath::Special {
                 value: ait_contracts::NativeFileSystemSpecialPath::ProjectRoots { subpath },
             } => {
                 if let Some(subpath) = subpath {
-                    ensure_permission_path_in_project(subpath, project_root)?;
+                    ensure_permission_path_in_project(workspace, subpath, project_root).await?;
                 }
             }
             ait_contracts::NativeFileSystemPath::GlobPattern { .. }
@@ -563,7 +583,11 @@ fn validate_permission_grant_ceiling(
     Ok(())
 }
 
-fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<(), ApiError> {
+async fn ensure_permission_path_in_project(
+    workspace: &dyn ProjectWorkspace,
+    path: &str,
+    project_root: &Path,
+) -> Result<(), ApiError> {
     use std::path::Component;
 
     let root = lexical_absolute_path(project_root)?;
@@ -597,20 +621,16 @@ fn ensure_permission_path_in_project(path: &str, project_root: &Path) -> Result<
     if !normalized.starts_with(&root) {
         return Err(project_boundary_error());
     }
-    let canonical_root = std::fs::canonicalize(&root).map_err(|_| project_boundary_error())?;
-    let mut existing = normalized.as_path();
-    loop {
-        match std::fs::symlink_metadata(existing) {
-            Ok(_) => break,
-            Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
-                existing = existing.parent().ok_or_else(project_boundary_error)?;
-            }
-            Err(_) => return Err(project_boundary_error()),
-        }
-    }
-    let canonical_existing =
-        std::fs::canonicalize(existing).map_err(|_| project_boundary_error())?;
-    if !canonical_existing.starts_with(canonical_root) {
+    let facts = workspace
+        .path_facts(&root, &normalized)
+        .await
+        .map_err(|_| project_boundary_error())?;
+    if !facts.canonical_root.is_absolute()
+        || !facts.canonical_existing.is_absolute()
+        || facts.canonical_root.to_str().is_none()
+        || facts.canonical_existing.to_str().is_none()
+        || !facts.canonical_existing.starts_with(&facts.canonical_root)
+    {
         return Err(project_boundary_error());
     }
     Ok(())
@@ -731,5 +751,147 @@ impl LocalControlService {
             "native approval request did not settle",
             true,
         ))
+    }
+}
+
+#[cfg(test)]
+mod fact_tests {
+    use super::*;
+    use crate::control::workspace_tests::FakeWorkspace;
+
+    #[tokio::test]
+    async fn facts_cannot_raise_run_or_administrator_write_ceilings() {
+        let workspace = FakeWorkspace::default();
+        let permissions = NativePermissionProfile {
+            file_system: Some(ait_contracts::NativeFileSystemPermissions {
+                write: vec!["inside".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for (sandbox, maximum) in [
+            (SandboxAccess::ReadOnly, SandboxAccess::FullAccess),
+            (SandboxAccess::WorkspaceWrite, SandboxAccess::ReadOnly),
+        ] {
+            let run = RunPermissionProfile {
+                sandbox,
+                approval: ait_domain::ApprovalMode::OnRequest,
+            };
+            let limits = PermissionPolicyLimits {
+                max_sandbox: maximum,
+                allow_session_approvals: true,
+            };
+            assert!(
+                validate_permission_grant_ceiling(
+                    &workspace,
+                    &permissions,
+                    run,
+                    limits,
+                    Path::new(if cfg!(windows) {
+                        "C:/alias/project"
+                    } else {
+                        "/alias/project"
+                    })
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert!(workspace.trace.lock().unwrap().is_empty());
+        let run = RunPermissionProfile {
+            sandbox: SandboxAccess::WorkspaceWrite,
+            approval: ait_domain::ApprovalMode::OnRequest,
+        };
+        assert!(
+            validate_permission_grant_ceiling(
+                &workspace,
+                &permissions,
+                run,
+                PermissionPolicyLimits::default(),
+                Path::new(if cfg!(windows) {
+                    "C:/alias/project"
+                } else {
+                    "/alias/project"
+                })
+            )
+            .await
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn lexical_escape_is_rejected_before_facts_and_canonical_escape_after_facts() {
+        let workspace = FakeWorkspace::default();
+        for path in ["../escape", "symlink/../escape", "/elsewhere/file"] {
+            assert!(
+                ensure_permission_path_in_project(
+                    &workspace,
+                    path,
+                    Path::new(if cfg!(windows) {
+                        "C:/alias/project"
+                    } else {
+                        "/alias/project"
+                    })
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert!(workspace.trace.lock().unwrap().is_empty());
+        assert!(
+            ensure_permission_path_in_project(
+                &workspace,
+                "new/file",
+                Path::new(if cfg!(windows) {
+                    "C:/alias/project"
+                } else {
+                    "/alias/project"
+                })
+            )
+            .await
+            .is_ok()
+        );
+        workspace
+            .facts
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .canonical_existing = if cfg!(windows) {
+            "C:/outside"
+        } else {
+            "/outside"
+        }
+        .into();
+        assert!(
+            ensure_permission_path_in_project(
+                &workspace,
+                "new/file",
+                Path::new(if cfg!(windows) {
+                    "C:/alias/project"
+                } else {
+                    "/alias/project"
+                })
+            )
+            .await
+            .is_err()
+        );
+        *workspace.facts.lock().unwrap() = Err(DomainError::invariant(
+            ErrorCode::ProjectPathNotFound,
+            "unresolvable",
+        ));
+        assert!(
+            ensure_permission_path_in_project(
+                &workspace,
+                "dangling/file",
+                Path::new(if cfg!(windows) {
+                    "C:/alias/project"
+                } else {
+                    "/alias/project"
+                })
+            )
+            .await
+            .is_err()
+        );
     }
 }

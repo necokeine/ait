@@ -18,9 +18,10 @@ async fn entity_operations_and_cursor_event_replay_share_the_application_service
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    )));
+    let service = Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    ));
     let app = ait_api_http::router(service);
     let request = serde_json::json!({
         "id": "project-http",
@@ -72,9 +73,10 @@ async fn entity_operations_and_cursor_event_replay_share_the_application_service
 
 #[tokio::test]
 async fn every_application_use_case_has_a_distinct_entity_operation_route() {
-    let service = Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    )));
+    let service = Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    ));
     let app = ait_api_http::router(service);
     let post_routes = [
         "/v1/project/register",
@@ -161,9 +163,10 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
 
 #[tokio::test]
 async fn project_runtime_reads_require_an_explicit_project_id() {
-    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    ))));
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )));
     for route in [
         "/v1/session/list",
         "/v1/message/list",
@@ -184,9 +187,10 @@ async fn event_stream_replays_then_follows_an_event_committed_at_the_handoff() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("stream-project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    )));
+    let service = Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    ));
     let app = ait_api_http::router(service);
     let project = serde_json::json!({
         "id": "stream-project",
@@ -252,9 +256,10 @@ async fn event_stream_replays_then_follows_an_event_committed_at_the_handoff() {
 
 #[tokio::test]
 async fn removed_message_overrides_are_rejected_at_the_transport_boundary() {
-    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    ))));
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )));
     for extra in [
         serde_json::json!({"expected_version": 1}),
         serde_json::json!({"reasoning_effort": "high"}),
@@ -280,9 +285,10 @@ async fn removed_message_overrides_are_rejected_at_the_transport_boundary() {
 #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
 #[tokio::test]
 async fn production_http_contract_rejects_mock_provider_payloads() {
-    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    ))));
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )));
     let body = serde_json::json!({
         "provider": {
             "id": "builtin-mock",
@@ -308,12 +314,15 @@ async fn production_http_contract_rejects_mock_provider_payloads() {
 async fn name_only_http_request_accepts_null_and_returns_stable_conflict() {
     let temporary = TempDir::new().unwrap();
     let documents = temporary.path().to_path_buf();
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()))
-        .with_project_directory_creator(Arc::new(
-            ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
-                Some(documents.clone())
-            }),
-        ));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )
+    .with_project_directory_creator(Arc::new(
+        ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
+            Some(documents.clone())
+        }),
+    ));
     let app = ait_api_http::router(Arc::new(service));
     for (id, expected) in [
         ("first", None),
@@ -357,9 +366,10 @@ async fn name_only_http_request_accepts_null_and_returns_stable_conflict() {
 
 #[tokio::test]
 async fn malformed_approval_and_settings_requests_do_not_echo_secret_values() {
-    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    ))));
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )));
     for (path, body, status) in [
         (
             "/v1/run/approval/resolve",
@@ -433,9 +443,10 @@ async fn malformed_approval_and_settings_requests_do_not_echo_secret_values() {
 
 #[tokio::test]
 async fn valid_approval_json_preserves_application_error_response() {
-    let app = ait_api_http::router(Arc::new(LocalControlService::new(Arc::new(
-        SqliteControlStore::in_memory().unwrap(),
-    ))));
+    let app = ait_api_http::router(Arc::new(LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )));
     let response = app
         .oneshot(
             Request::post("/v1/run/approval/resolve")

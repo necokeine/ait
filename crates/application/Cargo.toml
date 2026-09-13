@@ -28,6 +28,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
+ait-project-local = { path = "../project-local" }
 ait-tools = { path = "../tools" }
 axum = "0.8"
 ait-agent-adapters = { path = "../agent-adapters" }

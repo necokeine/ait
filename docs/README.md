@@ -2,6 +2,7 @@
 
 ## 当前基线
 
+- `decisions/NEC-253/adr-001-project-workspace-port.md`：控制面 Git/文件系统/lease 的异步 port、本地阻塞预算、取消与授权事实边界。 各 public 调用共享 deadline，queued future drop 立即释放资源，创建失败报告 retained path/state。
 - `decisions/NEC-252/adr-001-typed-control-transactions.md`：命令专属 typed context、显式读取计划、按 typed record 生成变更的 transaction、Project 规范化查重与 CAS 前 Git 复核，以及 API Run bridge 的直接存储边界。
 
 - NEC-248 将生产 Run 接入受监督的独立 worker；协议、事务 receipt、恢复与平台限制见 `operations/worker-processes.md` 和 NEC-169 ADR。
