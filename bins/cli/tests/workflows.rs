@@ -623,11 +623,11 @@ async fn wf07_export_and_import_project_archive() {
 async fn wf08_save_reset_and_recover_settings() {
     let mut workspace = Workspace::new().await;
     let initial = workspace.call(&["settings", "get"]).await;
-    assert_eq!(initial["values"]["permissions.sandbox"], "read_only");
+    assert_eq!(initial["values"]["permissions.sandbox"], "workspace_write");
     assert_eq!(initial["values"]["permissions.approval"], "on_request");
     let mut values = initial["values"].clone();
     values["interface.theme"] = json!("dark");
-    values["permissions.sandbox"] = json!("workspace_write");
+    values["permissions.sandbox"] = json!("read_only");
     let revision = initial["revision"].to_string();
     let args = [
         "settings",
@@ -639,7 +639,7 @@ async fn wf08_save_reset_and_recover_settings() {
     ];
     let saved = success(&workspace.cli_stdin(&args, &values.to_string()).await);
     assert_eq!(saved["values"]["interface.theme"], "dark");
-    assert_eq!(saved["values"]["permissions.sandbox"], "workspace_write");
+    assert_eq!(saved["values"]["permissions.sandbox"], "read_only");
     assert_eq!(saved["revision"], initial["revision"].as_u64().unwrap() + 1);
     failure(
         &workspace.cli_stdin(&args, &values.to_string()).await,

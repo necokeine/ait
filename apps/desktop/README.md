@@ -40,6 +40,11 @@ The composer Agent selector is available for every idle Session. Selecting a
 different Agent immediately rebinds that Session with a version check; an
 active Session remains locked to the Agent revision already pinned by its Run.
 
+The composer toolbar starts with Run permissions, followed by Agent configuration
+and reasoning effort. New installations and Restore defaults use Workspace Write;
+saved permission choices are preserved. Permission changes apply to new Runs,
+while active Runs keep their original permission snapshot.
+
 Conversation code fences render as rounded cards with a language label, a wrap
 toggle, and a copy button that copies the code itself. User input stays literal
 inside a single right-aligned bubble. Messages show their persisted creation

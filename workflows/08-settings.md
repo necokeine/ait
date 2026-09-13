@@ -35,10 +35,10 @@ schema 中的 `restartRequired` 表示相应配置是否需要重启生效，保
 自动化：[`wf08_save_reset_and_recover_settings`](../bins/cli/tests/workflows.rs)，
 覆盖完整保存、旧 revision、缺 key、非法 theme，以及保存和重置后分别重开数据库。
 
-## 在代码写入前设置权限
+## 设置新 Run 的权限
 
-默认 `permissions.sandbox=read_only`、`permissions.approval=on_request`。
-需要 Codex 写代码时，在发送第一条输入前读取最新 settings 并保存：
+默认 `permissions.sandbox=workspace_write`、`permissions.approval=on_request`。
+已有设置保留原权限选择；例如要从 Readonly 切换到 Workspace Write，在发送输入前读取最新 settings 并保存：
 
 ```bash
 ait settings get > "$WF_ROOT/settings.json"
@@ -57,5 +57,6 @@ OpenAI/DeepSeek 使用 HostTools，按精确 provider+model 目录与真实可�
 
 管理员 `ait-daemon --max-sandbox` 使用 CLI 的连字符拼写：`read-only`、`workspace-write`、
 `full-access`（默认上限）。该上限对 Codex/OpenAI/DeepSeek 均生效，不等于新 Run 的默认权限；
-新建和重置 settings 始终为 `read_only`。收紧上限后，重启恢复也会在调用 provider 或发布
+新建和重置 settings 为 `workspace_write`；上限为 `read-only` 时需显式选择 Readonly 才能开始 Run。
+收紧上限后，重启恢复也会在调用 provider 或发布
 checkpoint 结果前重新检查，保留原 Run 权限快照。

@@ -112,7 +112,7 @@ ait agent create --id codex --name Codex --provider-id builtin-codex \
   --model "${AIT_WORKFLOW_MODEL:-gpt-5.6-sol}" --reasoning-effort high
 ait session create --id hello-world --project-id example-project --agent-id codex \
   | tee "$WF_ROOT/session.json"
-# 默认 read_only 不允许写代码；发送前用最新 revision 设置工作区写入权限
+# 新建设置默认 workspace_write；为兼容已保存的 Readonly，发送前显式设置工作区写入权限
 ait settings get > "$WF_ROOT/settings.json"
 REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
 jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request"}' \

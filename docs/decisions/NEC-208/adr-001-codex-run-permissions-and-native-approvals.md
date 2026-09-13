@@ -26,7 +26,8 @@ Codex 当前协议的通用 approval policy 只有 `untrusted`、`on-request`、
 2. `always` 在当前协议下不可忠实实现，Run 准入必须返回配置错误。未知设置值、缺失值、超过
    daemon `--max-sandbox` 上限及被 `--deny-session-approvals` 禁止的授权范围均 fail closed。
    这些检查在追加 user Message、创建 Run、取得写入租约或调用 Provider 前完成。
-   新建和重置设置的 sandbox 默认值为 `read_only`；已持久化的显式选择不因升级而重写。
+   新建和重置设置的 sandbox 默认值由 [NEC-269](../NEC-269/adr-001-composer-permission-default.md)
+   修订为 `workspace_write`；已持久化的显式选择不因升级而重写。
 3. 原生审批使用 domain 的 kind/status/scope 值对象、application-owned `WorkspaceApproval`
    port、Codex adapter bridge、daemon entity-operation HTTP API、context-isolated Electron IPC 与
    桌面审批卡。renderer 只能提交 `approve|deny|cancel`，批准还必须提交

@@ -19,7 +19,7 @@ Agent revision、单一 attempt、usage、唯一 ToolResult，以及重新打开
 退出后才确认 cancelled 并释放 Session，慢磁盘上的已开始系统调用可能延迟这一确认。
 API 文件变化保留在 Project 工作区供成员审阅，没有自动 Git 提交；确认后自行提交，再发送下一条需要干净 Git 基线的输入。
 
-默认 `read_only` 只广告读取、搜索与受控命令。创建/编辑需先通过设置选择 `workspace_write`。
+新建和重置设置默认 `workspace_write`，允许工作区内创建/编辑。显式选择 `read_only` 时只广告读取、搜索与受控命令。
 范围外路径、隐藏目录/文件、符号链接、未知工具、无效参数或审批升级均在副作用前拒绝。
 `full_access` 仍受管理员上限约束；首版文件能力仍限制在 Project 内。
 
