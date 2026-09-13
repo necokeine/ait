@@ -1,6 +1,6 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
-import { bindCodeBlockActions, renderMessage, renderMessageTime, renderRunProgress, renderRunTerminal } from "./message-renderer.js";
+import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
 import { pendingBranchResolution, type PendingBranch } from "./runs.js";
@@ -495,10 +495,10 @@ function renderConversation(): void {
     ? view.runs.find((run) => run.id === session.activeRunId)
     : undefined;
   const approvals = renderPendingApprovals(activeRun);
-  conversation.innerHTML = messages.map((message) => renderMessage(message, view!.agents, message.id === inspectedNodeId)).join("") + approvals + live + terminal;
+  replaceConversationContent(conversation, renderConversationMessages(messages, view.agents, inspectedNodeId ?? undefined) + approvals + live + terminal, sameSession);
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
-      if ((event.target as Element).closest("button, a") || window.getSelection()?.toString()) return;
+      if ((event.target as Element).closest("button, a, summary") || window.getSelection()?.toString()) return;
       inspectTreeNode(item.dataset.messageId, false);
     });
     item.addEventListener("keydown", (event) => {

@@ -325,15 +325,86 @@ export function renderMessageTime(timestamp: number): string {
   return `<time class="message-time" datetime="${date.toISOString()}" title="${escapeHtml(date.toLocaleString())}">${escapeHtml(label)}</time>`;
 }
 
+type DisclosureKind = "Reasoning" | "Tool call" | "Tool result" | "Process";
+interface MessageSection {
+  key: string;
+  kind: DisclosureKind | undefined;
+  parts: DesktopMessage["parts"];
+  message: DesktopMessage | undefined;
+}
+
+function disclosureKind(part: DesktopMessage["parts"][number]): DisclosureKind | undefined {
+  if (part.type === "structured" && part.media_type === "application/vnd.ait.provider-reasoning+json") return "Reasoning";
+  if (part.type === "tool_use") return "Tool call";
+  if (part.type === "tool_result") return "Tool result";
+  if (part.type === "operation") return part.kind === "reasoning" ? "Reasoning"
+    : part.kind === "tool_result" ? "Tool result" : "Tool call";
+  if (part.type === "codex_message" && part.phase !== "final_answer") return "Process";
+  return undefined;
+}
+
+function messageSections(parts: DesktopMessage["parts"], key: string, message?: DesktopMessage, live = false): MessageSection[] {
+  const sections: MessageSection[] = [];
+  const fallbackFinalIndex = live || parts.some((part) => part.type === "codex_message" && part.phase === "final_answer")
+    ? -1 : parts.findLastIndex((part) => part.type === "codex_message");
+  parts.forEach((source, index) => {
+    const part = source.type === "codex_message" && index === fallbackFinalIndex
+      ? { ...source, phase: "final_answer" } : source;
+    const kind = message?.role === "user" && message.kind !== "tool_result" ? undefined : disclosureKind(part);
+    const previous = sections.at(-1);
+    if (previous && previous.kind === kind) previous.parts.push(part);
+    else sections.push({ key: `${key}:${index}`, kind, parts: [part], message });
+  });
+  return sections;
+}
+
+// Group presentation sections without changing the immutable Message path. In
+// particular, adjacent ToolResult Messages still have separate ids and times.
+function renderSections(sections: MessageSection[], agents: AgentSummary[], selectedId?: string): string {
+  const groups: MessageSection[][] = [];
+  for (const section of sections) {
+    const previous = groups.at(-1);
+    if (section.kind && previous?.[0]?.kind === section.kind) previous.push(section);
+    else groups.push([section]);
+  }
+  return groups.map((group) => {
+    const first = group[0]!;
+    const content = group.map((section) => {
+      const isInput = section.message?.role === "user" && section.message.kind !== "tool_result";
+      const html = section.parts.map((part) => renderPart(part, isInput)).join("");
+      return section.message ? renderMessageShell(section.message, agents, html, section.message.id === selectedId) : html;
+    }).join("");
+    return first.kind
+      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>${first.kind}</span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
+      : content;
+  }).join("");
+}
+
+export function renderConversationMessages(messages: DesktopMessage[], agents: AgentSummary[], selectedId?: string): string {
+  const firstVisible = messages.findIndex((message) => message.role !== "system");
+  if (firstVisible < 0) return "";
+  return renderSections(messages.slice(firstVisible).flatMap((message) => messageSections(message.parts, message.id, message)), agents, selectedId);
+}
+
 export function renderMessage(message: DesktopMessage, agents: AgentSummary[], selected = false): string {
+  return renderSections(messageSections(message.parts, message.id, message), agents, selected ? message.id : undefined);
+}
+
+// Keep an explicitly opened disclosure open as streamed content is repainted.
+export function replaceConversationContent(container: Element, html: string, preserveOpen: boolean): void {
+  const openIds = new Set(preserveOpen
+    ? Array.from(container.querySelectorAll<HTMLDetailsElement>("details[data-disclosure-id][open]"), (element) => element.dataset.disclosureId)
+    : []);
+  container.innerHTML = html;
+  container.querySelectorAll<HTMLDetailsElement>("details[data-disclosure-id]").forEach((element) => {
+    element.open = openIds.has(element.dataset.disclosureId);
+  });
+}
+
+function renderMessageShell(message: DesktopMessage, agents: AgentSummary[], content: string, selected: boolean): string {
   const author = messageAuthor(message, agents);
   const isInput = message.role === "user" && message.kind !== "tool_result";
-  const avatar = message.role === "assistant" ? author.slice(0, 2).toUpperCase() : message.kind === "tool_result" ? "◇" : message.role === "user" ? "U" : "S";
-  const content = message.parts.some((part) => part.type === "codex_message")
-    ? renderCodexOutput(message.parts)
-    : message.parts.map((part) => renderPart(part, isInput)).join("");
   return `<article class="message ${message.role}${isInput ? " user-input" : ""}${selected ? " is-selected" : ""}" data-message-id="${escapeHtml(message.id)}" tabindex="0" aria-current="${selected}" aria-label="${escapeHtml(author)} message">
-    ${isInput ? "" : `<div class="message-avatar" aria-hidden="true">${escapeHtml(avatar)}</div>`}
     <div class="message-body"><div class="message-heading">${isInput ? "" : `<strong>${escapeHtml(author)}</strong>`}${renderMessageTime(message.createdAt)}</div>
       <div class="${isInput ? "user-input-bubble" : "message-parts"}">${content}</div>
     </div>
@@ -350,10 +421,9 @@ export function renderRunProgress(progress: RunProgress | undefined, author: str
         ? `${author} finished; Ait is saving the result…`
         : `${author} is working…`;
   const content = progress?.items.length
-    ? renderCodexOutput(progress.items, true)
+    ? renderSections(messageSections(progress.items, `run:${progress.runId}`, undefined, true), [])
     : `<div class="live-run-placeholder"><span class="live-run-spinner" aria-hidden="true"></span>Waiting for ${escapeHtml(author)} output</div>`;
   return `<article class="message assistant live-run" data-run-id="${escapeHtml(progress?.runId ?? "")}" aria-live="polite">
-    <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
     <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong><small class="live-run-status">${escapeHtml(status)}</small></div>
       <div class="message-parts">${content}</div>
     </div>
@@ -371,7 +441,6 @@ export function renderRunTerminal(
     ? "The Run was cancelled before a final answer was saved."
     : "The Run ended before a final answer was saved.");
   return `<article class="message assistant run-terminal status-${escapeHtml(status)}" aria-live="polite">
-    <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
     <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong></div>
       <div class="run-terminal-card"><strong>${escapeHtml(heading)}</strong><p>${escapeHtml(detail)}</p></div>
     </div>
@@ -383,37 +452,19 @@ function renderPart(part: DesktopMessage["parts"][number], isInput = false): str
     ? `<div class="message-content">${escapeHtml(part.text)}</div>`
     : renderMessageText(part.text);
   if (part.type === "codex_message") {
-    return `<section class="codex-output-message" data-codex-item-id="${escapeHtml(part.id)}" data-codex-phase="${escapeHtml(part.phase)}">${renderMessageText(part.text)}</section>`;
+    const final = part.phase === "final_answer";
+    return `<section class="${final ? "codex-final-answer" : "codex-output-message"}"${final ? " data-codex-final-answer" : ""} data-codex-item-id="${escapeHtml(part.id)}" data-codex-phase="${escapeHtml(part.phase)}">${renderMessageText(part.text)}</section>`;
   }
-  if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
+  if (part.type === "tool_use") return `<div class="tool-card"><header><strong>${escapeHtml(part.tool_name)}</strong></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
   if (part.type === "tool_result") return renderOperation({
     type: "operation", id: part.call_id, kind: "tool_result", status: part.status,
-    title: "ToolUse result", summary: part.status, paths: [],
+    title: "Tool result", paths: [],
     detail: [part.error, part.output === null ? undefined : prettyJson(part.output)].filter((value) => value !== undefined && value !== null).join("\n") || "No output",
   });
   if (part.type === "operation") return renderOperation(part);
-  if (part.type === "file") return `<div class="tool-card"><header><span>＋</span><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
-  if (part.type === "structured") return `<div class="tool-card"><header><span>{ }</span><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(part.value)}</pre></div>`;
+  if (part.type === "file") return `<div class="tool-card"><header><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
+  if (part.type === "structured") return `<div class="tool-card"><header><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(prettyJson(part.value))}</pre></div>`;
   return '<div class="message-content">Content redacted</div>';
-}
-
-function renderCodexOutput(parts: DesktopMessage["parts"], live = false): string {
-  const hasExplicitFinal = parts.some((part) =>
-    part.type === "codex_message" && part.phase === "final_answer");
-  const fallbackFinalIndex = hasExplicitFinal || live ? -1 : parts.findLastIndex((part) =>
-    part.type === "codex_message");
-  const isFinal = (part: DesktopMessage["parts"][number], index: number): boolean =>
-    part.type === "codex_message"
-      && (part.phase === "final_answer" || index === fallbackFinalIndex);
-  const process = parts.filter((part, index) => !isFinal(part, index));
-  const final = parts.filter(isFinal);
-  const processHtml = process.length > 0
-    ? `<details class="codex-process"${live ? " open" : ""}><summary><span class="codex-process-status" aria-hidden="true">${live ? "◉" : "◇"}</span><span><strong>Process</strong><small>${process.length} ${process.length === 1 ? "event" : "events"}</small></span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="codex-process-events">${process.map((part) => renderPart(part)).join("")}</div></details>`
-    : "";
-  const finalHtml = final.length > 0
-    ? `<section class="codex-final-answer" data-codex-final-answer>${final.map((part) => renderPart(part)).join("")}</section>`
-    : "";
-  return processHtml + finalHtml;
 }
 
 function renderOperation(part: Extract<DesktopMessage["parts"][number], { type: "operation" }>): string {
@@ -423,10 +474,8 @@ function renderOperation(part: Extract<DesktopMessage["parts"][number], { type: 
   }).join("");
   const status = part.status.replace(/[^a-z\d_-]/gi, "-").toLowerCase();
   const summary = [part.summary ? `<span>${escapeHtml(part.summary)}</span>` : "", paths ? `<span class="operation-paths">${paths}</span>` : ""].filter(Boolean).join("");
-  const heading = `<span class="operation-status status-${status}" aria-hidden="true"></span><span class="operation-copy"><strong>${escapeHtml(part.title)}</strong>${summary ? `<small>${summary}</small>` : ""}</span>`;
-  return part.detail
-    ? `<details class="operation-record"><summary>${heading}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><pre>${escapeHtml(part.detail)}</pre></details>`
-    : `<div class="operation-record operation-record-static">${heading}</div>`;
+  const heading = `<span class="operation-copy"><strong>${escapeHtml(part.title)}</strong>${summary ? `<small>${summary}</small>` : ""}</span><span class="operation-status status-${status}">${escapeHtml(part.status)}</span>`;
+  return `<div class="operation-record"><header>${heading}</header>${part.detail ? `<pre>${escapeHtml(part.detail)}</pre>` : ""}</div>`;
 }
 
 function prettyJson(value: string): string {

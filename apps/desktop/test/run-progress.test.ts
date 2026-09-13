@@ -70,11 +70,14 @@ test("renders live process, partial final answer, and disconnected state separat
     ],
   });
   const html = renderRunProgress(progress, "Codex", false);
-  assert.ok(html.includes('<details class="codex-process" open>'));
+  assert.ok(html.includes('<summary><span>Tool call</span>'));
+  assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(html.includes("Read file"));
   assert.ok(html.includes("Partial answer"));
   assert.ok(html.includes("Connection interrupted"));
   assert.ok(!html.includes("Run failed"));
+  assert.ok(!html.includes("message-avatar"));
+  assert.ok(html.indexOf("</details>") < html.indexOf("Partial answer"));
 });
 
 test("keeps commentary-only live output in Process until an explicit final phase arrives", () => {
@@ -87,18 +90,21 @@ test("keeps commentary-only live output in Process until an explicit final phase
     items: [{ type: "message", id: "commentary", phase: "commentary", text: "Still inspecting." }],
   });
   const html = renderRunProgress(progress, "Codex", true);
-  assert.ok(html.includes('class="codex-process"'));
+  assert.ok(html.includes('<summary><span>Process</span>'));
   assert.ok(html.includes("Still inspecting."));
   assert.ok(!html.includes("data-codex-final-answer"));
+  assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
 });
 
 test("renders failure and cancellation as terminal states rather than connection loss", () => {
   const failed = renderRunTerminal("failed", "Provider stopped.", "Codex");
   assert.ok(failed.includes("Run failed"));
   assert.ok(failed.includes("Provider stopped."));
+  assert.ok(!failed.includes("message-avatar"));
   assert.ok(!failed.includes("Connection interrupted"));
   const cancelled = renderRunTerminal("cancelled", undefined, "Codex");
   assert.ok(cancelled.includes("Run cancelled"));
+  assert.ok(!cancelled.includes("message-avatar"));
 });
 
 test("a cancellation event refreshes an active view into its cancelled terminal card", () => {

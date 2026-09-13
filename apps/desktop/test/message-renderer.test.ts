@@ -1,9 +1,83 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { messageTextBlocks, parseFileReference, renderMessage, renderMessageText, renderMessageTime } from "../src/message-renderer.js";
+import { messageTextBlocks, parseFileReference, renderConversationMessages, renderMessage, renderMessageText, renderMessageTime } from "../src/message-renderer.js";
 import { projectMessage, type WorkspaceMessage } from "../src/messages.js";
 import { messageText } from "../src/tree.js";
+import type { DesktopMessage, MessagePart } from "../src/types.js";
+
+const reasoning = (text: string): MessagePart => ({
+  type: "structured", media_type: "application/vnd.ait.provider-reasoning+json", value: JSON.stringify({ reasoning: text }),
+});
+const call = (id: string): MessagePart => ({ type: "tool_use", call_id: id, tool_name: id, arguments: '{"path":"src/main.rs"}' });
+const result = (id: string): MessagePart => ({ type: "tool_result", call_id: id, status: "succeeded", output: `output-${id}`, error: null });
+const transcriptMessage = (id: string, parts: MessagePart[], role: DesktopMessage["role"] = "assistant"): DesktopMessage => ({
+  id, parentMessageId: null, projectId: "project", role,
+  kind: parts[0]?.type === "tool_result" ? "tool_result" : "standard", parts, createdAt: 1_800_000_000_000,
+});
+const disclosureTitles = (html: string): string[] => Array.from(html.matchAll(/<summary><span>([^<]+)<\/span>/g), (match) => match[1]!);
+
+test("hides only leading system messages without changing history or later system notices", () => {
+  const messages = [
+    transcriptMessage("root", [{ type: "text", text: "Initial prompt" }], "system"),
+    transcriptMessage("context", [{ type: "text", text: "Initial context" }], "system"),
+    transcriptMessage("input", [{ type: "text", text: "Hello" }], "user"),
+    transcriptMessage("notice", [{ type: "text", text: "Later notice" }], "system"),
+  ];
+  const snapshot = structuredClone(messages);
+  const html = renderConversationMessages(messages, []);
+  assert.ok(!html.includes("Initial prompt"));
+  assert.ok(!html.includes("Initial context"));
+  assert.ok(html.includes("Hello"));
+  assert.ok(html.includes("Later notice"));
+  assert.deepEqual(messages, snapshot);
+  assert.equal(renderConversationMessages(messages.slice(0, 2), []), "");
+  assert.equal(renderConversationMessages([], []), "");
+});
+
+test("collapses consecutive reasoning, calls and results across message boundaries in order", () => {
+  const messages = [
+    transcriptMessage("thinking-a", [reasoning("Thought A"), reasoning("Thought B")]),
+    transcriptMessage("thinking-b", [reasoning("Thought C"), { type: "text", text: "Inspecting files" }, call("read-a"), call("read-b")]),
+    transcriptMessage("calls", [call("read-c")]),
+    transcriptMessage("result-a", [result("read-a")], "user"),
+    transcriptMessage("result-b", [result("read-b")], "user"),
+    transcriptMessage("answer", [{ type: "text", text: "Done" }, reasoning("Follow-up"), call("read-d")]),
+  ];
+  const snapshot = structuredClone(messages);
+  const html = renderConversationMessages(messages, [], "result-b");
+  assert.deepEqual(disclosureTitles(html), ["Reasoning", "Tool call", "Tool result", "Reasoning", "Tool call"]);
+  assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
+  assert.ok(!html.includes("message-avatar"));
+  for (const message of messages) assert.ok(html.includes(`data-message-id="${message.id}"`));
+  assert.match(html, /is-selected[^>]*data-message-id="result-b"/);
+  assert.ok(html.includes('datetime="2027-01-15T08:00:00.000Z"'));
+  const ordered = ["Thought A", "Thought B", "Thought C", "Inspecting files", "read-a", "read-b", "read-c", "output-read-a", "output-read-b", "Done", "Follow-up", "read-d"];
+  for (let index = 1; index < ordered.length; index += 1) assert.ok(html.indexOf(ordered[index - 1]!) < html.indexOf(ordered[index]!));
+  assert.deepEqual(messages, snapshot);
+});
+
+test("keeps separated groups separate and leaves unrelated structured content visible", () => {
+  const html = renderMessage(transcriptMessage("mixed", [
+    call("first"), { type: "text", text: "Between calls" }, call("second"),
+    { type: "structured", media_type: "application/json", value: '{"visible":true}' },
+  ]), []);
+  assert.deepEqual(disclosureTitles(html), ["Tool call", "Tool call"]);
+  assert.ok(html.indexOf("</details>") < html.indexOf("Between calls"));
+  assert.ok(html.lastIndexOf("</details>") < html.indexOf("application/json"));
+});
+
+test("collapses detail-free operations together without nesting disclosures", () => {
+  const html = renderMessage(transcriptMessage("operations", [
+    { type: "operation", id: "read", kind: "read", status: "completed", title: "Read file", paths: [] },
+    { type: "operation", id: "write", kind: "fileChange", status: "failed", title: "Write file", detail: "<script>failed</script>", paths: [] },
+    { type: "codex_message", id: "final", phase: "final_answer", text: "Final answer" },
+  ]), []);
+  assert.deepEqual(disclosureTitles(html), ["Tool call"]);
+  assert.equal(html.match(/<details /g)?.length, 1);
+  assert.ok(html.includes("&lt;script&gt;failed&lt;/script&gt;"));
+  assert.ok(html.indexOf("</details>") < html.indexOf("Final answer"));
+});
 
 test("separates prose and multiple code fences while preserving code whitespace", () => {
   assert.deepEqual(messageTextBlocks("Before\n```rust\nfn main() {\n\tprintln!(\"你好\");\n}\n```\nBetween\n~~~\nx < y\n~~~\nAfter"), [
@@ -120,7 +194,7 @@ test("projects and renders persisted Codex operation records with expandable det
   assert.equal(message.parts[0]?.type, "operation");
   assert.equal(message.parts[1]?.type, "codex_message");
   const html = renderMessage(message, []);
-  assert.ok(html.includes('<details class="codex-process">'));
+  assert.ok(html.includes('<summary><span>Tool call</span>'));
   assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
   assert.ok(html.indexOf("Read file") < html.indexOf("Done."));
   assert.ok(html.includes('class="operation-record"'));
@@ -153,8 +227,8 @@ test("renders ordered Codex progress collapsed before an independent final answe
   assert.deepEqual(message.parts.map((part) => part.type), ["codex_message", "operation", "codex_message"]);
   assert.equal(messageText(message), "Implemented and verified.");
   const html = renderMessage(message, []);
-  assert.ok(html.includes('<details class="codex-process">'));
-  assert.ok(!html.includes('<details class="codex-process" open'));
+  assert.ok(html.includes('<summary><span>Tool call</span>'));
+  assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
   assert.ok(html.indexOf("Inspecting the repository.") < html.indexOf("Read file"));
   assert.ok(html.indexOf("Read file") < html.indexOf("Implemented and verified."));
@@ -193,9 +267,9 @@ test("projects native API tool results as collapsed records without exposing the
       data: { agent_revision: 9, native_message: { tool_result: { call_id: "call", status, output: '{"stdout":"<script>output</script>"}', error: status === "denied" ? "Permission denied" : null } } },
     }, null);
     const html = renderMessage(message, []);
-    assert.ok(html.includes('<details class="operation-record">'));
-    assert.ok(!html.includes('class="operation-record" open'));
-    assert.ok(html.includes("ToolUse result"));
+    assert.ok(html.includes('<summary><span>Tool result</span>'));
+    assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
+    assert.ok(html.includes("Tool result"));
     assert.ok(html.includes(status));
     assert.ok(html.includes(`class="operation-status status-${status}"`));
     assert.ok(!html.includes("agent_revision"));
@@ -206,8 +280,8 @@ test("projects native API tool results as collapsed records without exposing the
 
 test("denied and cancelled tool results have danger and neutral status colors", async () => {
   const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
-  assert.match(styles, /\.operation-status\.status-denied\s*\{[^}]*background: var\(--danger\);/);
-  assert.match(styles, /\.operation-status\.status-cancelled\s*\{[^}]*background: var\(--text-muted\);[^}]*box-shadow: 0 0 0 3px var\(--surface-active\);/);
+  assert.match(styles, /\.operation-status\.status-denied\s*\{[^}]*color: var\(--danger\);/);
+  assert.match(styles, /\.operation-status\.status-cancelled\s*\{[^}]*color: var\(--text-muted\);/);
 });
 
 test("preserves ordered API assistant text and tool uses from native submessages", () => {
