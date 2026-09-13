@@ -75,18 +75,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let codex: Arc<dyn WorkspaceAgent> = supervisor.clone();
     let catalog: Arc<dyn HostProviderModelCatalog> = adapter.clone();
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
-    let mut service = LocalControlService::with_workspace_agent(store, codex)
-        .with_project_directory_creator(Arc::new(
-            ait_project_local::DocumentsProjectDirectory::default(),
-        ))
-        .with_permission_limits(PermissionPolicyLimits {
-            max_sandbox: arguments.max_sandbox.into(),
-            allow_session_approvals: !arguments.deny_session_approvals,
-        })
-        .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
-        .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
-        .with_run_dispatcher(supervisor.clone())
-        .with_host_provider_catalog(catalog);
+    let mut service = LocalControlService::with_workspace_agent(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store,
+        codex,
+    )
+    .with_project_directory_creator(Arc::new(
+        ait_project_local::DocumentsProjectDirectory::default(),
+    ))
+    .with_permission_limits(PermissionPolicyLimits {
+        max_sandbox: arguments.max_sandbox.into(),
+        allow_session_approvals: !arguments.deny_session_approvals,
+    })
+    .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
+    .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
+    .with_run_dispatcher(supervisor.clone())
+    .with_host_provider_catalog(catalog);
     if arguments.max_run_cost_micros.is_none() {
         service = service.with_session_title_generator(titles);
     }

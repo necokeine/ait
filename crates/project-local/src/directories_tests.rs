@@ -5,7 +5,6 @@ use std::{
 };
 
 use ait_domain::ErrorCode;
-use ait_ports::ProjectDirectoryCreator;
 use tempfile::TempDir;
 
 use crate::DocumentsProjectDirectory;

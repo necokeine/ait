@@ -26,7 +26,6 @@ use ait_ports::{
     ProjectDirectoryCreator, SessionTitleGenerator, WorkspaceAgent, WorkspaceApprovalDecision,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -53,7 +52,7 @@ pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
     project_directory_creator: Option<Arc<dyn ProjectDirectoryCreator>>,
     session_leases: Arc<Mutex<HashMap<String, Weak<()>>>>,
-    workspace_leases: Arc<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>>,
+    project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
     cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     workspace_run_controls: Arc<Mutex<HashMap<String, Weak<WorkspaceRunControl>>>>,
     approval_waiters:
@@ -71,12 +70,15 @@ pub struct LocalControlService {
 
 impl LocalControlService {
     #[must_use]
-    pub fn new(store: Arc<dyn ControlStore>) -> Self {
+    pub fn new(
+        project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
+        store: Arc<dyn ControlStore>,
+    ) -> Self {
         Self {
             store,
             project_directory_creator: None,
             session_leases: Arc::new(Mutex::new(HashMap::new())),
-            workspace_leases: Arc::new(Mutex::new(HashMap::new())),
+            project_workspace,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -95,6 +97,7 @@ impl LocalControlService {
     /// Creates a service that can execute real workspace-scoped coding Agents.
     #[must_use]
     pub fn with_workspace_agent(
+        project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
         store: Arc<dyn ControlStore>,
         workspace_agent: Arc<dyn WorkspaceAgent>,
     ) -> Self {
@@ -102,7 +105,7 @@ impl LocalControlService {
             store,
             project_directory_creator: None,
             session_leases: Arc::new(Mutex::new(HashMap::new())),
-            workspace_leases: Arc::new(Mutex::new(HashMap::new())),
+            project_workspace,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
@@ -225,7 +228,8 @@ pub(in crate::control) fn read_command(
     clippy::too_many_lines,
     reason = "Keep exhaustive command dispatch together"
 )]
-pub(in crate::control) fn apply_command(
+pub(in crate::control) async fn apply_command(
+    workspace: &dyn ait_ports::ProjectWorkspace,
     state: &mut WorkingSet,
     command: Command,
     user_git_baseline: Option<&GitBaseline>,
@@ -238,15 +242,19 @@ pub(in crate::control) fn apply_command(
             name,
             workdir,
             repo_url,
-        } => register_project(
-            state,
-            id,
-            name,
-            workdir
-                .as_deref()
-                .expect("workdir prepared before dispatch"),
-            repo_url,
-        ),
+        } => {
+            register_project(
+                workspace,
+                state,
+                id,
+                name,
+                workdir
+                    .as_deref()
+                    .expect("workdir prepared before dispatch"),
+                repo_url,
+            )
+            .await
+        }
         Command::SetProjectDefaultAgent {
             project_id,
             agent_id,
@@ -333,14 +341,18 @@ pub(in crate::control) fn apply_command(
             approval_id,
             action,
             scope,
-        } => resolve_native_approval(
-            state,
-            &run_id,
-            &approval_id,
-            action,
-            scope,
-            permission_limits,
-        ),
+        } => {
+            resolve_native_approval(
+                workspace,
+                state,
+                &run_id,
+                &approval_id,
+                action,
+                scope,
+                permission_limits,
+            )
+            .await
+        }
         Command::CreateCron {
             id,
             name,
@@ -372,7 +384,9 @@ pub(in crate::control) fn apply_command(
                 permission_limits,
             );
         }
-        Command::ImportProject { archive, workdir } => import_project(state, archive, &workdir),
+        Command::ImportProject { archive, workdir } => {
+            import_project(workspace, state, archive, &workdir).await
+        }
         Command::SaveSettings {
             expected_revision,
             values,
@@ -391,3 +405,6 @@ pub(in crate::control) fn apply_command(
     }?;
     Ok((CommandOutcome::Ready(Box::new(result)), events))
 }
+
+#[cfg(test)]
+mod workspace_tests;

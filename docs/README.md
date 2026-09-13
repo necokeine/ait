@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-253/adr-001-project-workspace-port.md`：控制面 Git/文件系统/lease 的异步 port、本地阻塞预算、取消与授权事实边界。
+
 - NEC-248 将生产 Run 接入受监督的独立 worker；协议、事务 receipt、恢复与平台限制见 `operations/worker-processes.md` 和 NEC-169 ADR。
 
 - `decisions/NEC-257/adr-001-cli-command-and-address-simplification.md`：删除顶层 `events`、将 Provider 操作移到 `agent provider`，并以全局 `--host` / `--port` 固定 HTTP 连接 daemon。

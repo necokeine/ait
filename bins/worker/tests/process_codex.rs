@@ -106,8 +106,12 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
                     .with_observer(fault.clone()),
             );
             let store = Arc::new(SqliteControlStore::open(root.path().join("ait.db")).unwrap());
-            let service = LocalControlService::with_workspace_agent(store, supervisor.clone())
-                .with_run_dispatcher(supervisor);
+            let service = LocalControlService::with_workspace_agent(
+                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                store,
+                supervisor.clone(),
+            )
+            .with_run_dispatcher(supervisor);
             let mut settings = default_settings();
             settings
                 .0
@@ -238,9 +242,10 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
                         .contains("tool_use")
                 );
             }
-            let reopened = LocalControlService::new(Arc::new(
-                SqliteControlStore::open(root.path().join("ait.db")).unwrap(),
-            ));
+            let reopened = LocalControlService::new(
+                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                Arc::new(SqliteControlStore::open(root.path().join("ait.db")).unwrap()),
+            );
             assert_eq!(support::workspace(&reopened).await, view);
         }
     }

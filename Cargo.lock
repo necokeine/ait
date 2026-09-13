@@ -97,6 +97,7 @@ dependencies = [
  "ait-contracts",
  "ait-domain",
  "ait-ports",
+ "ait-project-local",
  "ait-runtime",
  "ait-scheduler",
  "ait-storage-sqlite",
@@ -229,8 +230,10 @@ dependencies = [
  "ait-storage-sqlite",
  "async-trait",
  "dirs",
+ "nix",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -340,6 +343,7 @@ dependencies = [
  "ait-domain",
  "ait-ipc",
  "ait-ports",
+ "ait-project-local",
  "ait-providers",
  "ait-runtime",
  "ait-sandbox",

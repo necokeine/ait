@@ -182,9 +182,10 @@ async fn failed_effect_is_settled(fault: u8) {
     );
     // Replace the effect externally; an unsafe replay would overwrite this marker.
     std::fs::write(f.worktree().join("once"), "external marker").unwrap();
-    let restarted = LocalControlService::new(Arc::new(
-        SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
-    ));
+    let restarted = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
+    );
     restarted.recover_interrupted_runs().await.unwrap();
     let CommandResult::Run(saved) = ok(
         &restarted,
@@ -290,8 +291,10 @@ async fn durable_cancel_survives_a_crash_after_an_intermediate_tool_save() {
     drop(restored);
     // No gateway or tool factory is installed: recovery must consume cancellation
     // without even preparing an executor or requesting credentials.
-    let restarted =
-        LocalControlService::new(Arc::new(SqliteControlStore::open(&restore_path).unwrap()));
+    let restarted = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::open(&restore_path).unwrap()),
+    );
     restarted.recover_interrupted_runs().await.unwrap();
     let state = support::workspace(&restarted).await;
     let execution = state.runs[0].execution.as_ref().unwrap();
@@ -357,8 +360,10 @@ async fn startup_repairs_old_terminal_projection_without_stealing_a_moved_sessio
             .await
             .unwrap();
         drop(restore);
-        let restarted =
-            LocalControlService::new(Arc::new(SqliteControlStore::open(&path).unwrap()));
+        let restarted = LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            Arc::new(SqliteControlStore::open(&path).unwrap()),
+        );
         restarted.recover_interrupted_runs().await.unwrap();
         let state = support::workspace(&restarted).await;
         let execution = state.runs[0].execution.as_ref().unwrap();
@@ -399,9 +404,10 @@ async fn panic_with_running_attempt_settles_before_session_release() {
             .active_run_id
             .is_none()
     );
-    let restarted = LocalControlService::new(Arc::new(
-        SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
-    ));
+    let restarted = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
+    );
     restarted.recover_interrupted_runs().await.unwrap();
     assert_eq!(support::workspace(&restarted).await.runs[0], run);
     assert!(f.requests.lock().unwrap().is_empty());
@@ -450,9 +456,10 @@ async fn lost_outcome_ack_keeps_stable_tool_result_order() {
         ["first", "second"],
         "terminal repair must sort by ToolUse position, not last-updated storage order"
     );
-    let restarted = LocalControlService::new(Arc::new(
-        SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
-    ));
+    let restarted = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
+    );
     restarted.recover_interrupted_runs().await.unwrap();
     assert_eq!(support::workspace(&restarted).await.runs[0], run);
     assert_eq!(f.requests.lock().unwrap().len(), 1);

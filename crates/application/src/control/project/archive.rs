@@ -1,8 +1,9 @@
 //! Project archive import, export and validation.
 use crate::control::catalog::validate_provider;
 use crate::control::errors::error;
+use crate::control::errors::project_error;
 use crate::control::events::pending;
-use crate::control::project::git::{ensure_git_head, is_git_commit, prepare_git_root};
+use crate::control::project::git::is_git_commit;
 use crate::control::project::worktrees::session_worktree_path;
 use crate::control::state::WorkingSet;
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
@@ -12,6 +13,7 @@ use ait_contracts::{
 };
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
+use ait_ports::ProjectWorkspace;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use uuid::Uuid;
@@ -93,14 +95,18 @@ pub(in crate::control) fn export_project(
     Ok(archive)
 }
 
-pub(in crate::control) fn import_project(
+pub(in crate::control) async fn import_project(
+    workspace: &dyn ProjectWorkspace,
     state: &mut WorkingSet,
     archive: ProjectExport,
     workdir: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_project_export(&archive)?;
     validate_import_conflicts(state, &archive)?;
-    let canonical = prepare_git_root(Path::new(workdir))?;
+    let canonical = workspace
+        .prepare_git_root(Path::new(workdir))
+        .await
+        .map_err(project_error)?;
     let canonical_text = canonical.to_string_lossy().into_owned();
     if state
         .projects
@@ -115,7 +121,10 @@ pub(in crate::control) fn import_project(
     }
     let mut project = archive.project;
     project.workdir = canonical_text;
-    project.base_commit = ensure_git_head(&canonical)?;
+    project.base_commit = workspace
+        .ensure_git_head(&canonical)
+        .await
+        .map_err(project_error)?;
     let mut sessions = archive.sessions;
     for session in &mut sessions {
         session.workdir = session_worktree_path(&project.workdir, &session.id)?

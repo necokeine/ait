@@ -47,9 +47,8 @@ impl LocalControlService {
         let mut session_admission = self.acquire_session(&command)?;
         let derive_source_locked = session_admission.derive_source_locked();
         let workspace_lease = self.acquire_workspace_write(&command).await?;
-        let has_workspace_lease = workspace_lease.is_some();
         match self
-            .commit_with_finalization_gate(command, has_workspace_lease, derive_source_locked)
+            .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
             .await?
         {
             CommandOutcome::ExecuteWorkspaceRun(run) => {
@@ -123,11 +122,10 @@ impl LocalControlService {
         // the same Run permission profile but cannot require this lease until a
         // host-owned tool bridge gives them workspace side effects.
         let workspace_lease = self.acquire_workspace_write(&command).await?;
-        let has_workspace_lease = workspace_lease.is_some();
         // Commit retries may reapply state changes, but never repeat an external
         // Agent invocation. Only the command that created the Run can request it.
         let outcome = self
-            .commit_with_finalization_gate(command, has_workspace_lease, derive_source_locked)
+            .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
             .await?;
         match outcome {
             CommandOutcome::Ready(result) => Ok(*result),
@@ -178,14 +176,14 @@ impl LocalControlService {
     pub(in crate::control) async fn commit_command(
         &self,
         command: Command,
-        has_workspace_lease: bool,
+        workspace_lease: Option<crate::control::admission::WorkspaceWriteLease>,
         derive_source_locked: bool,
     ) -> Result<CommandOutcome, ApiError> {
         let mut created_workdir = None;
         let mut created_session_worktrees = Vec::new();
         self.commit_command_inner(
             command,
-            has_workspace_lease,
+            workspace_lease,
             derive_source_locked,
             &mut created_workdir,
             &mut created_session_worktrees,
@@ -217,7 +215,7 @@ impl LocalControlService {
     async fn commit_command_inner(
         &self,
         mut command: Command,
-        has_workspace_lease: bool,
+        workspace_lease: Option<crate::control::admission::WorkspaceWriteLease>,
         derive_source_locked: bool,
         created_workdir: &mut Option<PathBuf>,
         created_session_worktrees: &mut Vec<PathBuf>,
@@ -238,7 +236,7 @@ impl LocalControlService {
                         ErrorCode::ProjectDefaultDirectoryUnavailable,
                         "The host has no default Project directory configured; specify a workdir.", false,
                     ))?;
-                    let path = creator.create_workdir(name).map_err(|failure| {
+                    let path = creator.create_workdir(name).await.map_err(|failure| {
                         error(failure.code, failure.message, failure.retryable)
                     })?;
                     *created_workdir = Some(path.clone());
@@ -258,8 +256,15 @@ impl LocalControlService {
                 }
             }
             check_session_admission(&state, &command)?;
-            prepare_command_session_worktrees(&state, &command, created_session_worktrees)?;
-            if !has_workspace_lease
+            prepare_command_session_worktrees(
+                self.project_workspace.as_ref(),
+                workspace_lease.clone(),
+                &state,
+                &command,
+                created_session_worktrees,
+            )
+            .await?;
+            if workspace_lease.is_none()
                 && workspace_write_path(&state, &command, self.permission_limits)?.is_some()
             {
                 return Err(error(
@@ -268,14 +273,17 @@ impl LocalControlService {
                     true,
                 ));
             }
-            let git_baseline = command_git_baseline(&state, &command)?;
+            let git_baseline =
+                command_git_baseline(self.project_workspace.as_ref(), &state, &command).await?;
             let (result, events) = apply_command(
+                self.project_workspace.as_ref(),
                 &mut state,
                 command.clone(),
                 git_baseline.as_ref(),
                 self.permission_limits,
                 derive_source_locked,
-            )?;
+            )
+            .await?;
             match self.persist_records(&loaded, &state, events).await {
                 Ok(()) => {
                     if matches!(

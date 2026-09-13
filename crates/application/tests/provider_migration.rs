@@ -16,7 +16,10 @@ use std::sync::Arc;
 #[tokio::test]
 async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::new(store.clone());
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
     let _directory = setup(&service, config("high")).await;
     ok(&service, send("one")).await;
     let before = view(&service).await;
@@ -30,7 +33,10 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
         .await
         .unwrap();
 
-    let reopened = LocalControlService::new(store.clone());
+    let reopened = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
     let after = view(&reopened).await;
     assert_eq!(after.providers, before.providers);
     assert_eq!(after.agents, before.agents);
@@ -50,7 +56,12 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     assert_eq!(saved.value["providers"].as_array().unwrap().len(), 4);
     assert_eq!(view(&reopened).await.providers, before.providers);
     assert_eq!(
-        view(&LocalControlService::new(store)).await.messages,
+        view(&LocalControlService::new(
+            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            store
+        ))
+        .await
+        .messages,
         before.messages
     );
 }
@@ -60,7 +71,10 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
     for kind in RETIRED_BUILTINS {
         for reference in ["agent", "run", "credential", "custom", "url"] {
             let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-            let service = LocalControlService::new(store.clone());
+            let service = LocalControlService::new(
+                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                store.clone(),
+            );
             let _directory = setup(&service, config("high")).await;
             ok(&service, send("one")).await;
             let mut snapshot = store.load().await.unwrap();
@@ -95,9 +109,12 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
                 "credential" | "custom" | "url" => Command::ListAgentProviders,
                 _ => unreachable!(),
             };
-            let rejected = LocalControlService::new(store.clone())
-                .execute(command)
-                .await;
+            let rejected = LocalControlService::new(
+                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                store.clone(),
+            )
+            .execute(command)
+            .await;
             assert!(!rejected.ok, "{kind}/{reference} unexpectedly decoded");
             assert_eq!(rejected.error.unwrap().code, ErrorCode::RunRecoveryFailed);
             assert_eq!(store.load().await.unwrap().value, saved.value);
@@ -121,7 +138,10 @@ fn retired_provider(kind: &str) -> serde_json::Value {
 #[tokio::test]
 async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::new(store.clone());
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
     let _directory = setup(&service, config("high")).await;
     ok(&service, send("one")).await;
     let before = view(&service).await;
@@ -141,7 +161,11 @@ async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
         .commit(snapshot.revision, snapshot.value, vec![])
         .await
         .unwrap();
-    let migrated = view(&LocalControlService::new(store)).await;
+    let migrated = view(&LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store,
+    ))
+    .await;
     assert_eq!(migrated.sessions, before.sessions);
     assert_eq!(migrated.messages, before.messages);
     assert_eq!(migrated.runs, before.runs);
@@ -151,7 +175,10 @@ async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
 
 #[tokio::test]
 async fn v2_archive_import_migrates_legacy_agents_without_credentials() {
-    let service = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let service = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    );
     let _directory = setup(&service, config("high")).await;
     let CommandResult::ProjectExport(archive) = ok(
         &service,
@@ -175,7 +202,10 @@ async fn v2_archive_import_migrates_legacy_agents_without_credentials() {
     let upgraded: ait_contracts::ProjectExport = serde_json::from_value(old).unwrap();
     assert_eq!(upgraded.format_version, 3);
     let destination = tempfile::tempdir().unwrap();
-    let target = LocalControlService::new(Arc::new(SqliteControlStore::in_memory().unwrap()));
+    let target = LocalControlService::new(
+        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    );
     ok(
         &target,
         Command::ImportProject {

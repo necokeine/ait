@@ -22,6 +22,7 @@ ait-tools = { path = "../../crates/tools" }
 tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
+ait-project-local = { path = "../../crates/project-local" }
 ait-application = { path = "../../crates/application" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
 axum = "0.8"

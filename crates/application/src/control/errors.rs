@@ -38,3 +38,8 @@ pub(in crate::control) fn store_error(failure: ControlStoreError) -> ApiError {
 pub(in crate::control) fn serialization_error(failure: serde_json::Error) -> ApiError {
     error(ErrorCode::RunRecoveryFailed, failure.to_string(), false)
 }
+
+#[allow(clippy::needless_pass_by_value)]
+pub(in crate::control) fn project_error(failure: DomainError) -> ApiError {
+    error(failure.code, failure.message, failure.retryable)
+}

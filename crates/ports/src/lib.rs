@@ -8,6 +8,8 @@ mod provider;
 mod run;
 mod scheduler;
 mod session;
+mod workspace;
+pub use workspace::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
 
 pub use control::{
     ControlChange, ControlFilter, ControlRead, ControlRecord, ControlRecordKind, ControlStore,
@@ -37,3 +39,6 @@ pub use scheduler::{
     RunStarter, StartRunRequest,
 };
 pub use session::{SessionAdvance, SessionStore, SessionStoreError};
+
+#[cfg(feature = "contract-tests")]
+pub mod workspace_contract;

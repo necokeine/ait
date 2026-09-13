@@ -1,11 +1,12 @@
-use std::{fs, io::ErrorKind, path::PathBuf};
+use std::{fs, io::ErrorKind, path::PathBuf, sync::Arc};
 
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::ProjectDirectoryCreator;
 
 /// Creates named Project directories beneath the current host user's Documents.
+#[derive(Clone)]
 pub struct DocumentsProjectDirectory {
-    resolve: Box<dyn Fn() -> Option<PathBuf> + Send + Sync>,
+    resolve: Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>,
 }
 
 impl Default for DocumentsProjectDirectory {
@@ -20,13 +21,25 @@ impl DocumentsProjectDirectory {
     #[must_use]
     pub fn with_resolver(resolve: impl Fn() -> Option<PathBuf> + Send + Sync + 'static) -> Self {
         Self {
-            resolve: Box::new(resolve),
+            resolve: Arc::new(resolve),
         }
     }
 }
 
+#[async_trait::async_trait]
 impl ProjectDirectoryCreator for DocumentsProjectDirectory {
-    fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
+    async fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
+        let (creator, name) = (self.clone(), name.to_owned());
+        crate::workspace::blocking::run(move |_| creator.create_workdir(&name)).await
+    }
+}
+
+impl DocumentsProjectDirectory {
+    /// Synchronous compatibility entry point for hosts outside an async runtime.
+    /// Async application code uses the bounded `ProjectDirectoryCreator` port.
+    /// # Errors
+    /// Invalid names, unavailable Documents, existing targets, or mkdir failures.
+    pub fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError> {
         validate_directory_name(name)?;
         let unavailable = |message| {
             DomainError::invariant(ErrorCode::ProjectDefaultDirectoryUnavailable, message)

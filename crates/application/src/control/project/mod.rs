@@ -1,12 +1,13 @@
 //! Project registration and default Agent selection.
 use crate::control::catalog::require_named_agent;
 use crate::control::errors::error;
+use crate::control::errors::project_error;
 use crate::control::events::{now, pending};
-use crate::control::project::git::{ensure_git_head, prepare_git_root};
 use crate::control::state::WorkingSet;
 use ait_contracts::{ApiError, CommandResult, MessageView, ProjectView};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
+use ait_ports::ProjectWorkspace;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -71,7 +72,8 @@ pub(in crate::control) fn validate_project_registration(
     Ok(())
 }
 
-pub(in crate::control) fn register_project(
+pub(in crate::control) async fn register_project(
+    workspace: &dyn ProjectWorkspace,
     state: &mut WorkingSet,
     id: String,
     name: String,
@@ -79,8 +81,14 @@ pub(in crate::control) fn register_project(
     mut repo_url: Option<String>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     validate_project_registration(state, &id, &name, &mut repo_url)?;
-    let canonical = prepare_git_root(Path::new(&workdir))?;
-    let base_commit = ensure_git_head(&canonical)?;
+    let canonical = workspace
+        .prepare_git_root(Path::new(&workdir))
+        .await
+        .map_err(project_error)?;
+    let base_commit = workspace
+        .ensure_git_head(&canonical)
+        .await
+        .map_err(project_error)?;
     let canonical_text = canonical.to_string_lossy().into_owned();
     if state
         .projects

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+contract-tests = []
+
 [dependencies]
 ait-domain = { path = "../domain" }
 async-trait = "0.1"
