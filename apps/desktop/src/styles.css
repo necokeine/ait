@@ -217,6 +217,9 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .message-disclosure-content > .message:last-child { margin-bottom: 0; }
 .message-disclosure-content .message-content { color: var(--text-soft); font-size: 11.5px; }
 .message-disclosure-content .codex-output-message + .codex-output-message { margin-top: 10px; }
+.message-event-count { font-size: 10px; font-variant-numeric: tabular-nums; }
+.message-event + .message-event { margin-top: 12px; }
+.message-event-kind { margin-bottom: 4px; color: var(--text-muted); font-size: 10px; font-weight: 600; }
 .codex-final-answer { min-width: 0; }
 .composer-wrap { min-width: 0; padding: 0 24px 15px; background: linear-gradient(transparent, var(--bg) 18px); }
 .composer, .branch-context, .composer-hint { width: min(790px, 100%); margin-left: auto; margin-right: auto; }

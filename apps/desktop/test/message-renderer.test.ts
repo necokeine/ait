@@ -35,7 +35,7 @@ test("hides only leading system messages without changing history or later syste
   assert.equal(renderConversationMessages([], []), "");
 });
 
-test("collapses consecutive reasoning, calls and results across message boundaries in order", () => {
+test("combines consecutive activity types into Events across message boundaries in order", () => {
   const messages = [
     transcriptMessage("thinking-a", [reasoning("Thought A"), reasoning("Thought B")]),
     transcriptMessage("thinking-b", [reasoning("Thought C"), { type: "text", text: "Inspecting files" }, call("read-a"), call("read-b")]),
@@ -46,7 +46,13 @@ test("collapses consecutive reasoning, calls and results across message boundari
   ];
   const snapshot = structuredClone(messages);
   const html = renderConversationMessages(messages, [], "result-b");
-  assert.deepEqual(disclosureTitles(html), ["Reasoning", "Tool call", "Tool result", "Reasoning", "Tool call"]);
+  assert.deepEqual(disclosureTitles(html), ["Events", "Events", "Events"]);
+  const groups = Array.from(html.matchAll(/<details\b[^>]*>(.*?)<\/details>/gs), (match) => match[1]!);
+  assert.deepEqual(groups.map((group) => Number(/class="message-event-count">(\d+)/.exec(group)?.[1])), [3, 5, 2]);
+  assert.ok(groups.every((group) => !group.includes("Inspecting files") && !group.includes("Done")));
+  assert.ok(groups[1]!.includes("read-c") && groups[1]!.includes("output-read-b"));
+  assert.ok(groups[2]!.includes("Follow-up") && groups[2]!.includes("read-d"));
+  for (const kind of ["Reasoning", "Tool call", "Tool result"]) assert.ok(html.includes(`class="message-event-kind">${kind}</div>`));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(!html.includes("message-avatar"));
   for (const message of messages) assert.ok(html.includes(`data-message-id="${message.id}"`));
@@ -62,7 +68,7 @@ test("keeps separated groups separate and leaves unrelated structured content vi
     call("first"), { type: "text", text: "Between calls" }, call("second"),
     { type: "structured", media_type: "application/json", value: '{"visible":true}' },
   ]), []);
-  assert.deepEqual(disclosureTitles(html), ["Tool call", "Tool call"]);
+  assert.deepEqual(disclosureTitles(html), ["Events", "Events"]);
   assert.ok(html.indexOf("</details>") < html.indexOf("Between calls"));
   assert.ok(html.lastIndexOf("</details>") < html.indexOf("application/json"));
 });
@@ -73,10 +79,24 @@ test("collapses detail-free operations together without nesting disclosures", ()
     { type: "operation", id: "write", kind: "fileChange", status: "failed", title: "Write file", detail: "<script>failed</script>", paths: [] },
     { type: "codex_message", id: "final", phase: "final_answer", text: "Final answer" },
   ]), []);
-  assert.deepEqual(disclosureTitles(html), ["Tool call"]);
+  assert.deepEqual(disclosureTitles(html), ["Events"]);
   assert.equal(html.match(/<details /g)?.length, 1);
   assert.ok(html.includes("&lt;script&gt;failed&lt;/script&gt;"));
   assert.ok(html.indexOf("</details>") < html.indexOf("Final answer"));
+});
+
+test("user input ends an Events group even when it contains tool-shaped parts", () => {
+  const input = transcriptMessage("input", [{ type: "text", text: "User follow-up" }, call("input-call")], "user");
+  const html = renderConversationMessages([
+    transcriptMessage("before", [reasoning("Before input")]),
+    input,
+    transcriptMessage("after", [call("after-input"), result("after-input")]),
+  ], []);
+  assert.deepEqual(disclosureTitles(html), ["Events", "Events"]);
+  const inputStart = html.indexOf('data-message-id="input"');
+  assert.ok(html.indexOf("</details>") < inputStart);
+  assert.ok(inputStart < html.lastIndexOf("<details "));
+  assert.equal(html.match(/class="user-input-bubble"/g)?.length, 1);
 });
 
 test("separates prose and multiple code fences while preserving code whitespace", () => {
@@ -194,7 +214,7 @@ test("projects and renders persisted Codex operation records with expandable det
   assert.equal(message.parts[0]?.type, "operation");
   assert.equal(message.parts[1]?.type, "codex_message");
   const html = renderMessage(message, []);
-  assert.ok(html.includes('<summary><span>Tool call</span>'));
+  assert.ok(html.includes('<summary><span>Events</span>'));
   assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
   assert.ok(html.indexOf("Read file") < html.indexOf("Done."));
   assert.ok(html.includes('class="operation-record"'));
@@ -227,7 +247,9 @@ test("renders ordered Codex progress collapsed before an independent final answe
   assert.deepEqual(message.parts.map((part) => part.type), ["codex_message", "operation", "codex_message"]);
   assert.equal(messageText(message), "Implemented and verified.");
   const html = renderMessage(message, []);
-  assert.ok(html.includes('<summary><span>Tool call</span>'));
+  assert.deepEqual(disclosureTitles(html), ["Events"]);
+  assert.ok(html.includes('class="message-event-kind">Process</div>'));
+  assert.ok(html.includes('class="message-event-kind">Tool call</div>'));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
   assert.ok(html.indexOf("Inspecting the repository.") < html.indexOf("Read file"));
@@ -267,7 +289,7 @@ test("projects native API tool results as collapsed records without exposing the
       data: { agent_revision: 9, native_message: { tool_result: { call_id: "call", status, output: '{"stdout":"<script>output</script>"}', error: status === "denied" ? "Permission denied" : null } } },
     }, null);
     const html = renderMessage(message, []);
-    assert.ok(html.includes('<summary><span>Tool result</span>'));
+    assert.ok(html.includes('<summary><span>Events</span>'));
     assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
     assert.ok(html.includes("Tool result"));
     assert.ok(html.includes(status));
