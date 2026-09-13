@@ -8,7 +8,7 @@ use crate::control::errors::error;
 use crate::control::project::archive::{validate_import_conflicts, validate_project_export};
 use crate::control::project::git::{ensure_git_head, git_head, git_stdout, prepare_git_root};
 use crate::control::project::require_project_view;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 use ait_contracts::{ApiError, Command, ProjectExport, ProjectView, RunView};
 use ait_domain::ErrorCode;
 use std::fs::OpenOptions;
@@ -59,11 +59,11 @@ pub(in crate::control) fn session_worktree_path(
 }
 
 pub(in crate::control) fn run_workdir(
-    state: &WorkingSet,
+    state: &(impl HasProjects + HasSessions),
     run: &RunView,
 ) -> Result<PathBuf, ApiError> {
     let project = state
-        .projects
+        .projects()
         .iter()
         .find(|project| project.id == run.project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
@@ -71,7 +71,7 @@ pub(in crate::control) fn run_workdir(
         return Ok(PathBuf::from(&project.workdir));
     };
     let session = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == session_id && session.project_id == run.project_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "run Session not found", false))?;
@@ -87,7 +87,7 @@ pub(in crate::control) fn run_workdir(
 }
 
 pub(in crate::control) fn prepare_command_session_worktrees(
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     command: &Command,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
@@ -142,7 +142,7 @@ pub(in crate::control) fn prepare_command_session_worktrees(
 }
 
 fn prepare_import_session_worktrees(
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     archive: &ProjectExport,
     workdir: &str,
     created: &mut Vec<PathBuf>,
@@ -159,8 +159,8 @@ fn prepare_import_session_worktrees(
     Ok(())
 }
 
-fn prepare_new_session_worktree(
-    state: &WorkingSet,
+pub(in crate::control) fn prepare_new_session_worktree(
+    state: &(impl HasAgents + HasMessages + HasProjects + HasSessions),
     id: &str,
     project_id: &str,
     agent_id: &str,
@@ -168,7 +168,7 @@ fn prepare_new_session_worktree(
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     validate_session_path_component(id)?;
-    if state.sessions.iter().any(|session| session.id == id) {
+    if state.sessions().iter().any(|session| session.id == id) {
         return Err(error(
             ErrorCode::InvalidSession,
             "session id is already registered",
@@ -184,7 +184,7 @@ fn prepare_new_session_worktree(
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_derived_session_worktree(
-    state: &WorkingSet,
+    state: &(impl HasAgents + HasMessages + HasProjects + HasSessions),
     id: &str,
     project_id: &str,
     source_session_id: &str,
@@ -196,7 +196,7 @@ fn prepare_derived_session_worktree(
     validate_message_text(text)?;
     validate_session_path_component(id)?;
     let source = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == source_session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
@@ -216,12 +216,12 @@ fn prepare_derived_session_worktree(
 }
 
 fn prepare_existing_session_worktree(
-    state: &WorkingSet,
+    state: &(impl HasProjects + HasSessions),
     session_id: &str,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     let session = state
-        .sessions
+        .sessions()
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;

@@ -3,7 +3,9 @@ use crate::control::catalog::{require_agent, validate_config};
 use crate::control::conversation::derive_reuses_source;
 use crate::control::errors::error;
 use crate::control::project::worktrees::session_worktree_path;
-use crate::control::state::WorkingSet;
+use crate::control::state::{
+    HasAgents, HasCrons, HasMessages, HasProjects, HasProviders, HasRuns, HasSessions,
+};
 use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
 use std::path::{Path, PathBuf};
@@ -220,13 +222,13 @@ pub(in crate::control) fn git_stdout(cwd: &Path, arguments: &[&str]) -> Result<S
 }
 
 pub(in crate::control) fn command_git_baseline(
-    state: &WorkingSet,
+    state: &(impl HasMessages + HasProjects + HasSessions),
     command: &Command,
 ) -> Result<Option<GitBaseline>, ApiError> {
     let path = match command {
         Command::SendMessage { session_id, .. } => Some(PathBuf::from(
             &state
-                .sessions
+                .sessions()
                 .iter()
                 .find(|session| session.id == *session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?
@@ -234,7 +236,7 @@ pub(in crate::control) fn command_git_baseline(
         )),
         Command::ForkSession { id, project_id, .. } => {
             let project = state
-                .projects
+                .projects()
                 .iter()
                 .find(|project| project.id == *project_id)
                 .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
@@ -249,7 +251,7 @@ pub(in crate::control) fn command_git_baseline(
             ..
         } => {
             let source = state
-                .sessions
+                .sessions()
                 .iter()
                 .find(|session| session.id == *source_session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
@@ -257,40 +259,12 @@ pub(in crate::control) fn command_git_baseline(
                 Some(PathBuf::from(&source.workdir))
             } else {
                 let project = state
-                    .projects
+                    .projects()
                     .iter()
                     .find(|project| project.id == *project_id)
                     .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
                 Some(session_worktree_path(&project.workdir, id)?)
             }
-        }
-        Command::TriggerCron {
-            cron_id,
-            scheduled_at,
-        } => {
-            if state.runs.iter().any(|run| {
-                run.cron_id.as_deref() == Some(cron_id.as_str())
-                    && run.scheduled_at == Some(*scheduled_at)
-            }) {
-                return Ok(None);
-            }
-            let Some(cron) = state
-                .crons
-                .iter()
-                .find(|cron| cron.id == *cron_id && cron.enabled)
-            else {
-                return Ok(None);
-            };
-            let agent = require_agent(state, &cron.agent_id)?;
-            if validate_config(state, &agent.config)?.kind != AgentMode::Codex {
-                return Ok(None);
-            }
-            let project = state
-                .projects
-                .iter()
-                .find(|project| project.id == cron.project_id)
-                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-            Some(PathBuf::from(&project.workdir))
         }
         _ => return Ok(None),
     };
@@ -310,6 +284,7 @@ fn clean_git_baseline(path: &Path) -> Result<GitBaseline, ApiError> {
     })?;
     let index_before = git_index_tree(path)?;
     let status = ProcessCommand::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(path)
         .args(["status", "--porcelain=v1", "--untracked-files=normal"])
@@ -371,27 +346,30 @@ fn clean_git_baseline(path: &Path) -> Result<GitBaseline, ApiError> {
     })
 }
 
+// A clean index already has HEAD's tree. Verify it without `write-tree`, so
+// CAS revalidation cannot create Git objects or refresh the index.
 fn git_index_tree(path: &Path) -> Result<String, ApiError> {
     let output = ProcessCommand::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(path)
-        .arg("write-tree")
+        .args(["diff-index", "--cached", "--quiet", "HEAD", "--"])
         .output()
         .map_err(|failure| {
             error(
                 ErrorCode::ProjectGitHeadUnavailable,
-                format!("cannot snapshot Project Git index: {failure}"),
+                format!("cannot inspect Project Git index: {failure}"),
                 false,
             )
         })?;
     if !output.status.success() {
         return Err(error(
             ErrorCode::ProjectGitDirty,
-            String::from_utf8_lossy(&output.stderr).trim(),
+            "Project Git index must match HEAD before adding a user message",
             false,
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    git_commit_tree(path, "HEAD")
 }
 
 fn git_commit_tree(path: &Path, commit: &str) -> Result<String, ApiError> {
@@ -466,4 +444,55 @@ fn git_top_level(path: &Path) -> Option<std::path::PathBuf> {
     Path::new(String::from_utf8_lossy(&output.stdout).trim())
         .canonicalize()
         .ok()
+}
+
+pub(in crate::control) fn cron_git_baseline(
+    state: &(impl HasAgents + HasCrons + HasProjects + HasProviders + HasRuns),
+    command: &Command,
+) -> Result<Option<GitBaseline>, ApiError> {
+    let path = match command {
+        Command::TriggerCron {
+            cron_id,
+            scheduled_at,
+        } => {
+            if state.runs().iter().any(|run| {
+                run.cron_id.as_deref() == Some(cron_id.as_str())
+                    && run.scheduled_at == Some(*scheduled_at)
+            }) {
+                return Ok(None);
+            }
+            let Some(cron) = state
+                .crons()
+                .iter()
+                .find(|cron| cron.id == *cron_id && cron.enabled)
+            else {
+                return Ok(None);
+            };
+            let agent = require_agent(state, &cron.agent_id)?;
+            if validate_config(state, &agent.config)?.kind != AgentMode::Codex {
+                return Ok(None);
+            }
+            let project = state
+                .projects()
+                .iter()
+                .find(|project| project.id == cron.project_id)
+                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            Some(PathBuf::from(&project.workdir))
+        }
+        _ => return Ok(None),
+    };
+    path.map(|path| clean_git_baseline(&path)).transpose()
+}
+
+#[derive(Clone)]
+pub(in crate::control) struct PreparedProject {
+    pub(in crate::control) workdir: String,
+    pub(in crate::control) base_commit: String,
+}
+pub(in crate::control) fn prepare_project(workdir: &str) -> Result<PreparedProject, ApiError> {
+    let canonical = prepare_git_root(Path::new(workdir))?;
+    Ok(PreparedProject {
+        base_commit: ensure_git_head(&canonical)?,
+        workdir: canonical.to_string_lossy().into_owned(),
+    })
 }

@@ -408,6 +408,11 @@ fn read_filter(
             ),
             Some(project_id.as_str()),
         ),
+        ControlFilter::ProjectWorkdir { workdir } => (
+            ControlRecordKind::Project,
+            "SELECT id, project_id, body_json FROM projects WHERE json_extract(body_json, '$.workdir') = ?1".into(),
+            Some(workdir.as_str()),
+        ),
         ControlFilter::MessageAncestors { head_id } => (
             ControlRecordKind::Message,
             "WITH RECURSIVE ancestors(id, project_id, parent_message_id, body_json) AS (
@@ -923,6 +928,15 @@ mod tests {
             .unwrap();
         assert_eq!(children.records.len(), 1);
         assert_eq!(children.records[0].id, "m1-child");
+
+        let by_path = store
+            .read(&[ControlFilter::ProjectWorkdir {
+                workdir: "/p2".into(),
+            }])
+            .await
+            .unwrap();
+        assert_eq!(by_path.records.len(), 1);
+        assert_eq!(by_path.records[0].id, "p2");
     }
 
     #[tokio::test]

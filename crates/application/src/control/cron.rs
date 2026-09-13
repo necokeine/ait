@@ -5,7 +5,10 @@ use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
 use crate::control::project::git::GitBaseline;
-use crate::control::state::WorkingSet;
+use crate::control::state::{
+    HasAgents, HasCrons, HasMessages, HasProviderCredentials, HasProviders, HasRunCredentials,
+    HasRuns, HasSettings,
+};
 use ait_contracts::{AgentMode, ApiError, CommandResult, CronView, RunView};
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, ErrorCode, MessageId,
@@ -16,7 +19,7 @@ use uuid::Uuid;
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::control) fn create_cron(
-    state: &mut WorkingSet,
+    state: &mut (impl HasAgents + HasCrons + HasMessages),
     id: String,
     name: String,
     project_id: String,
@@ -25,7 +28,7 @@ pub(in crate::control) fn create_cron(
     schedule: String,
     timezone: String,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
-    if state.crons.iter().any(|cron| cron.id == id) {
+    if state.crons().iter().any(|cron| cron.id == id) {
         return Err(error(
             ErrorCode::InvalidCron,
             "cron id already exists",
@@ -33,7 +36,7 @@ pub(in crate::control) fn create_cron(
         ));
     }
     let base = state
-        .messages
+        .messages()
         .iter()
         .find(|message| message.id == base_message_id)
         .ok_or_else(|| {
@@ -90,7 +93,7 @@ pub(in crate::control) fn create_cron(
         timezone,
         enabled: true,
     };
-    state.crons.push(cron.clone());
+    state.crons_mut().push(cron.clone());
     Ok((
         CommandResult::Cron(cron.clone()),
         vec![pending("cron.created", Some(id), &cron)],
@@ -98,12 +101,12 @@ pub(in crate::control) fn create_cron(
 }
 
 pub(in crate::control) fn set_cron_enabled(
-    state: &mut WorkingSet,
+    state: &mut impl HasCrons,
     cron_id: &str,
     enabled: bool,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let cron = state
-        .crons
+        .crons_mut()
         .iter_mut()
         .find(|cron| cron.id == cron_id)
         .ok_or_else(|| error(ErrorCode::InvalidCron, "cron not found", false))?;
@@ -120,13 +123,21 @@ pub(in crate::control) fn set_cron_enabled(
 }
 
 pub(in crate::control) fn trigger_cron(
-    state: &mut WorkingSet,
+    state: &mut (
+             impl HasAgents
+             + HasCrons
+             + HasProviderCredentials
+             + HasProviders
+             + HasRunCredentials
+             + HasRuns
+             + HasSettings
+         ),
     cron_id: &str,
     scheduled_at: i64,
     workspace_baseline: Option<&GitBaseline>,
     permission_limits: PermissionPolicyLimits,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
-    if let Some(existing) = state.runs.iter().find(|run| {
+    if let Some(existing) = state.runs().iter().find(|run| {
         run.cron_id.as_deref() == Some(cron_id) && run.scheduled_at == Some(scheduled_at)
     }) {
         return Ok((
@@ -135,7 +146,7 @@ pub(in crate::control) fn trigger_cron(
         ));
     }
     let cron = state
-        .crons
+        .crons()
         .iter()
         .find(|cron| cron.id == cron_id && cron.enabled)
         .cloned()
@@ -143,7 +154,7 @@ pub(in crate::control) fn trigger_cron(
     let agent = require_agent(state, &cron.agent_id)?.clone();
     let provider = validate_config(state, &agent.config)?.clone();
     let permission_profile =
-        effective_permission_profile(&state.settings, &provider, permission_limits)?;
+        effective_permission_profile(state.settings(), &provider, permission_limits)?;
     if provider.kind == AgentMode::Codex && workspace_baseline.is_none() {
         return Err(error(
             ErrorCode::ProjectGitHeadUnavailable,
@@ -152,12 +163,16 @@ pub(in crate::control) fn trigger_cron(
         ));
     }
     let run_id = Uuid::new_v4().to_string();
-    if let Some(reference) = state.provider_credentials.get(&agent.config.provider_id) {
+    if let Some(reference) = state
+        .provider_credentials()
+        .get(&agent.config.provider_id)
+        .cloned()
+    {
         state
-            .run_credentials
+            .run_credentials_mut()
             .insert(run_id.clone(), reference.clone());
     }
-    state.runs.push(RunView {
+    state.runs_mut().push(RunView {
         execution: None,
         id: run_id.clone(),
         project_id: cron.project_id,
@@ -182,7 +197,7 @@ pub(in crate::control) fn trigger_cron(
         lease_epoch: 0,
         error: None,
     });
-    let run = state.runs.last().expect("new run exists").clone();
+    let run = state.runs().last().expect("new run exists").clone();
     let event = pending("cron.run_triggered", Some(run_id), &run);
     Ok((CommandOutcome::for_new_run(run), vec![event]))
 }

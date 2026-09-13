@@ -6,7 +6,7 @@ use crate::control::events::{now, pending};
 use crate::control::permissions::validate_run_permission_ceiling;
 use crate::control::project::worktrees::run_workdir;
 use crate::control::runs::is_terminal_workspace_status;
-use crate::control::state::WorkingSet;
+use crate::control::state::{HasMessages, HasProjects, HasRunCredentials, HasSessions};
 use ait_contracts::{
     ApiError, ApiRunExecution, MessageView, RunView,
     sensitive::{validate_serialized_tool_arguments, validate_tool_argument_value},
@@ -17,8 +17,8 @@ use ait_domain::{
 };
 use ait_ports::{
     AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, ApprovalRequest,
-    CompletionResult, ControlFilter, ControlStoreError, RunAgent, RunApproval, RunStore,
-    RunStoreError, RunTool, ToolInvocation, ToolOutcome, ToolRecovery,
+    CompletionResult, ControlStoreError, RunAgent, RunApproval, RunStore, RunStoreError, RunTool,
+    ToolInvocation, ToolOutcome, ToolRecovery,
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
@@ -128,7 +128,7 @@ impl LocalControlService {
             cancellation.cancel();
         }
         let store = Arc::new(ControlRunStore {
-            service: self.clone(),
+            records: self.records(),
             id: view.id.clone(),
             expected: Mutex::new(None),
         });
@@ -238,7 +238,7 @@ impl LocalControlService {
     async fn prepare_api_executor(
         &self,
         view: &RunView,
-        state: &WorkingSet,
+        state: &(impl HasProjects + HasRunCredentials + HasSessions),
     ) -> Result<(Arc<dyn RunTool>, ProviderAgent), DomainError> {
         validate_run_permission_ceiling(view.permission_profile, self.permission_limits)?;
         let root = run_workdir(state, view).map_err(|failure| DomainError {
@@ -270,7 +270,7 @@ impl LocalControlService {
             )
         })?;
         let credential = state
-            .run_credentials
+            .run_credentials()
             .get(&view.id)
             .cloned()
             .ok_or_else(|| {
@@ -292,7 +292,7 @@ fn api_domain_error_reverse(e: DomainError) -> ApiError {
     error(e.code, e.message, e.retryable)
 }
 struct ControlRunStore {
-    service: LocalControlService,
+    records: crate::control::state::records::RecordAccess,
     id: String,
     expected: Mutex<Option<Run>>,
 }
@@ -346,8 +346,8 @@ fn validate_worker_transition(
 }
 impl ControlRunStore {
     async fn latest_view(&self) -> Result<RunView, ApiError> {
-        self.service
-            .read_run_records(&self.id)
+        self.records
+            .read_run_view_records(&self.id)
             .await?
             .original
             .runs
@@ -359,8 +359,8 @@ impl ControlRunStore {
     async fn initialize(&self, view: &RunView) -> Result<(), RunStoreError> {
         for _ in 0..8 {
             let loaded = self
-                .service
-                .read_run_records(&self.id)
+                .records
+                .read_run_view_records(&self.id)
                 .await
                 .map_err(store_failure)?;
             let mut state = loaded.original.clone();
@@ -440,7 +440,7 @@ impl ControlRunStore {
                 worker_receipts: std::collections::BTreeMap::new(),
             }));
             match self
-                .service
+                .records
                 .persist_records(&loaded, &state, Vec::new())
                 .await
             {
@@ -452,8 +452,8 @@ impl ControlRunStore {
         Err(conflict())
     }
     async fn state(&self) -> Result<ApiRunExecution, RunStoreError> {
-        self.service
-            .read_run_records(&self.id)
+        self.records
+            .read_run_view_records(&self.id)
             .await
             .map_err(store_failure)?
             .original
@@ -486,8 +486,8 @@ impl ControlRunStore {
         for _ in 0..8 {
             let mut run = run.clone();
             let loaded = self
-                .service
-                .read_run_records(&self.id)
+                .records
+                .read_api_run_records(&self.id)
                 .await
                 .map_err(store_failure)?;
             let mut state = loaded.original.clone();
@@ -604,7 +604,7 @@ impl ControlRunStore {
                 Some(self.id.clone()),
                 &state.runs[index],
             )];
-            match self.service.persist_records(&loaded, &state, events).await {
+            match self.records.persist_records(&loaded, &state, events).await {
                 Ok(()) => {
                     *self.expected.lock().map_err(store_failure)? = Some(run.clone());
                     return Ok(run);
@@ -621,8 +621,8 @@ impl RunStore for ControlRunStore {
     async fn claim_worker(&self, instance: &str) -> Result<ait_ports::WorkerLease, RunStoreError> {
         for _ in 0..8 {
             let loaded = self
-                .service
-                .read_run_records(&self.id)
+                .records
+                .read_run_view_records(&self.id)
                 .await
                 .map_err(store_failure)?;
             let mut state = loaded.original.clone();
@@ -645,7 +645,7 @@ impl RunStore for ControlRunStore {
                 epoch: view.lease_epoch,
             };
             match self
-                .service
+                .records
                 .persist_records(&loaded, &state, Vec::new())
                 .await
             {
@@ -741,16 +741,18 @@ impl RunStore for ControlRunStore {
         head: &MessageId,
     ) -> Result<Vec<ProjectedMessage>, RunStoreError> {
         let state = self
-            .service
-            .read_records(vec![ControlFilter::message_ancestors(
-                head.as_uuid().to_string(),
-            )])
+            .records
+            .read_message_path_records(&head.as_uuid().to_string())
             .await
             .map_err(store_failure)?
             .original;
         let mut path = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let mut cursor = Some(head.as_uuid().to_string());
         while let Some(id) = cursor.as_deref() {
+            if !seen.insert(id.to_owned()) {
+                return Err(conflict());
+            }
             let m = state
                 .messages
                 .iter()
@@ -872,7 +874,7 @@ impl RunStore for ControlRunStore {
 }
 
 fn append_projection(
-    state: &mut WorkingSet,
+    state: &mut (impl HasMessages + HasSessions),
     view: &RunView,
     run: &Run,
     expected: &Run,
@@ -887,14 +889,14 @@ fn append_projection(
         || message.parent_message_id
             != Some(expected.last_message_id.unwrap_or(expected.base_message_id))
         || state
-            .messages
+            .messages()
             .iter()
             .any(|m| m.id == message.id.as_uuid().to_string())
     {
         return Err(conflict());
     }
     if let Some(result) = &message.tool_result
-        && state.messages.iter().any(|m| {
+        && state.messages().iter().any(|m| {
             m.data.as_ref().is_some_and(|data| {
                 data["native_message"]["tool_result"]["call_id"] == result.call_id
                     && data["native_message"]["run_id"] == run.id.as_str()
@@ -911,7 +913,7 @@ fn append_projection(
             _ => None,
         })
         .collect::<String>();
-    state.messages.push(MessageView {
+    state.messages_mut().push(MessageView {
         id: message.id.as_uuid().to_string(),
         project_id: view.project_id.clone(),
         parent_message_id: message.parent_message_id.map(|id| id.as_uuid().to_string()),
@@ -932,7 +934,7 @@ fn append_projection(
         data: Some(json!({"native_message":message,"agent_revision":run.agent_revision})),
     });
     if let Some(session) = state
-        .sessions
+        .sessions_mut()
         .iter_mut()
         .find(|s| Some(&s.id) == view.session_id.as_ref())
     {
@@ -962,7 +964,7 @@ fn append_projection(
 }
 
 fn validate_tool_child(
-    state: &WorkingSet,
+    state: &impl HasMessages,
     run: &Run,
     tool: &ToolExecution,
     result: Option<&Message>,
@@ -972,7 +974,7 @@ fn validate_tool_child(
         return Err(conflict());
     }
     let native = state
-        .messages
+        .messages()
         .iter()
         .find(|m| m.id == tool.assistant_message_id.as_uuid().to_string())
         .and_then(|m| m.data.as_ref())
@@ -1097,7 +1099,7 @@ pub(in crate::control) fn needs_terminal_repair(view: &RunView) -> bool {
 /// Complete already known/abandoned results in the same terminal CAS. Never
 /// execute or reconcile an effect here, and never modify an existing Message.
 pub(in crate::control) fn append_terminal_results(
-    state: &mut WorkingSet,
+    state: &mut (impl HasMessages + HasSessions),
     view: &mut RunView,
 ) -> Result<(), RunStoreError> {
     let Some(mut execution) = view.execution.take() else {
@@ -1105,7 +1107,7 @@ pub(in crate::control) fn append_terminal_results(
     };
     execution.tools.sort_by_key(|tool| {
         let sequence = state
-            .messages
+            .messages()
             .iter()
             .find(|m| m.id == tool.assistant_message_id.as_uuid().to_string())
             .and_then(|m| m.data.as_ref())
