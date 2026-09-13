@@ -21,6 +21,14 @@ target/debug/ait-daemon --database ./ait.sqlite3 --listen 127.0.0.1:7314
 stage 和打包二者；缺少 worker 时 staging 直接失败。不要手工将 worker 连接到终端；
 stdout 的任何普通文本都会被判为协议污染。
 
+macOS 安装版由 Desktop 给 daemon 传入 `--login-shell-path`，在启动时从用户交互式
+登录 shell 恢复 PATH。优先使用绝对路径的 `SHELL`，未提供时读取用户账户的登录 shell，
+最终回退 `/bin/zsh`。只导入 PATH；按 shell 顺序保留绝对目录并追加继承 PATH 中缺少的
+绝对目录，不导入 shell 中的其他环境变量。模型发现、标题生成和 worker/Codex 子进程
+共享该 PATH，支持 Homebrew、npm 和 shell 启动文件中配置的版本管理器及解释器。
+读取限时 5 秒、输出上限 64 KiB，超时或失败回退继承 PATH，清理探测 shell 的进程组，
+不记录其 stdout/stderr。开发版与其他平台保持继承 PATH；修改配置后需重启安装版。
+
 ## 提交与恢复
 
 - v1 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
@@ -131,4 +139,7 @@ npm test
   慢消费者和 argv/env/stderr 脱敏。
 - `bins/daemon/tests/codex_http.rs`：生产 HTTP → dispatcher → worker → fake Codex，4000 个
   delta 的 cursor replay、启动恢复期间可用的 readiness 和唯一执行。
+  macOS 还从精简 GUI PATH 启动，验证 `.zshrc` 中含空格的安装路径、PATH 解释器、
+  daemon 模型发现和完整 worker Run；`bins/daemon/src/shell_path.rs` 覆盖 shell 输出解析、
+  失败/超限回退和超时后的后代进程清理。
   既有 runtime、host tools、审批及 NEC-212 的故障/取消/Git settlement 测试继续执行。

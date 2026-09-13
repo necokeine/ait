@@ -47,6 +47,8 @@ use crate::{
 #[derive(Clone)]
 pub struct CodexAppServerConfig {
     pub codex_binary: PathBuf,
+    /// Optional host-resolved executable search path, also inherited by Codex tools.
+    pub search_path: Option<OsString>,
     pub extra_args: Vec<OsString>,
     pub client_name: String,
     pub client_title: String,
@@ -60,6 +62,7 @@ impl std::fmt::Debug for CodexAppServerConfig {
         formatter
             .debug_struct("CodexAppServerConfig")
             .field("codex_binary", &self.codex_binary)
+            .field("search_path", &self.search_path)
             .field("extra_args", &self.extra_args)
             .field("client_name", &self.client_name)
             .field("client_title", &self.client_title)
@@ -74,6 +77,7 @@ impl Default for CodexAppServerConfig {
     fn default() -> Self {
         Self {
             codex_binary: PathBuf::from("codex"),
+            search_path: None,
             extra_args: Vec::new(),
             client_name: "local_multi_agent_manager".to_owned(),
             client_title: "Local Multi-Agent Manager".to_owned(),
@@ -116,6 +120,9 @@ impl CodexAppServerAdapter {
 
     fn spawn_process(&self, cwd: &std::path::Path) -> Result<Child, AdapterError> {
         let mut command = Command::new(&self.config.codex_binary);
+        if let Some(path) = &self.config.search_path {
+            command.env("PATH", path);
+        }
         command
             .arg("app-server")
             .arg("--listen")

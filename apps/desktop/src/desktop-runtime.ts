@@ -7,6 +7,12 @@ export interface DesktopDaemonRuntime {
   listen: string;
 }
 
+export function desktopDaemonArgs(isPackaged: boolean, platform: string, database: string): string[] {
+  const args = ["--database", database, "--listen", desktopDaemonRuntime(isPackaged).listen];
+  if (isPackaged && platform === "darwin") args.push("--login-shell-path");
+  return args;
+}
+
 export function desktopDaemonRuntime(isPackaged: boolean): DesktopDaemonRuntime {
   const port = isPackaged ? 7314 : 7315;
   return {

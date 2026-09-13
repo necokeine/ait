@@ -92,11 +92,21 @@ impl Drop for DaemonGuard {
 }
 
 #[tokio::test]
+async fn daemon_http_generates_an_assistant_response_through_codex() {
+    assert_codex_http_response(false).await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn macos_gui_path_reaches_codex_in_the_worker() {
+    assert_codex_http_response(true).await;
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the daemon acceptance flow intentionally remains one end-to-end scenario"
 )]
-async fn daemon_http_generates_an_assistant_response_through_codex() {
+async fn assert_codex_http_response(gui_launch: bool) {
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -111,16 +121,19 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     );
 
     let codex_log = temporary.path().join("codex.jsonl");
-    let fake_bin = temporary.path().join("bin");
+    let fake_bin = temporary
+        .path()
+        .join(if gui_launch { "bin with spaces" } else { "bin" });
     fs::create_dir(&fake_bin).unwrap();
     install_fake_codex(&fake_bin.join("codex"), 0);
 
     let address = unused_loopback_address();
     let daemon_log = temporary.path().join("daemon.log");
     let log = File::create(&daemon_log).unwrap();
-    let mut search_paths = vec![fake_bin];
+    let mut search_paths = vec![fake_bin.clone()];
     search_paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
-    let child = Command::new(env!("CARGO_BIN_EXE_ait-daemon"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ait-daemon"));
+    command
         .args([
             "--database",
             temporary.path().join("ait.sqlite3").to_str().unwrap(),
@@ -129,9 +142,38 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
         ])
         .env("PATH", env::join_paths(search_paths).unwrap())
         .stdout(Stdio::null())
-        .stderr(Stdio::from(log))
-        .spawn()
+        .stderr(Stdio::from(log));
+    if gui_launch {
+        fs::write(
+            temporary.path().join(".zprofile"),
+            "export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n",
+        )
         .unwrap();
+        fs::write(
+            temporary.path().join(".zshrc"),
+            "printf 'shell startup output\\n'\nexport PATH=\"$HOME/bin with spaces:$PATH\"\nexport AIT_GUI_UNRELATED=not-imported\n",
+        )
+        .unwrap();
+        // Like npm's Codex launcher: locating the entry point alone is not enough;
+        // its env-based interpreter must inherit the recovered PATH as well.
+        let codex = fake_bin.join("codex");
+        let script = fs::read_to_string(&codex).unwrap();
+        fs::write(
+            &codex,
+            script.replacen("#!/bin/sh", "#!/usr/bin/env ait-test-runtime", 1),
+        )
+        .unwrap();
+        let interpreter = fake_bin.join("ait-test-runtime");
+        fs::write(&interpreter, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+        fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755)).unwrap();
+        command
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("HOME", temporary.path())
+            .env("SHELL", "/bin/zsh")
+            .arg("--login-shell-path");
+    }
+    let child = command.spawn().unwrap();
     let mut daemon = DaemonGuard {
         child,
         log_path: daemon_log,
@@ -144,6 +186,18 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
         .unwrap();
     wait_until_ready(&client, &base_url, &mut daemon).await;
     register_test_entities(&client, &base_url, &project).await;
+
+    if gui_launch {
+        let models = post(
+            &client,
+            &base_url,
+            "/v1/agent-provider/discover-models",
+            &json!({"provider": {"id": "builtin-codex", "name": "Codex", "kind": "codex", "url": null, "models": []}}),
+        )
+        .await;
+        assert_ok(&models);
+        assert_eq!(models["result"]["value"][0]["id"], "gpt-5.6-sol");
+    }
 
     // Keep one SSE response completely unread. Its socket can back up while
     // the provider emits thousands of deltas, but Run persistence must remain
@@ -169,7 +223,9 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
     assert_ok(&response);
     assert_eq!(response["result"]["kind"], "run");
     assert_eq!(response["result"]["value"]["status"], "queued");
-    assert!(submitted_at.elapsed() < Duration::from_millis(500));
+    if !gui_launch {
+        assert!(submitted_at.elapsed() < Duration::from_millis(500));
+    }
     let run_id = response["result"]["value"]["id"].as_str().unwrap();
 
     // A cold worker may spend up to three seconds in the private handshake.
@@ -189,6 +245,17 @@ async fn daemon_http_generates_an_assistant_response_through_codex() {
         if let Some(checkpoint) = progress.as_array().and_then(|values| values.first()) {
             break checkpoint.clone();
         }
+        let run = post(
+            &client,
+            &base_url,
+            "/v1/run/get",
+            &json!({"run_id": run_id}),
+        )
+        .await;
+        assert_ne!(
+            run["result"]["value"]["status"], "failed",
+            "Run failed: {run}"
+        );
         assert!(
             Instant::now() < progress_deadline,
             "progress was not visible"
@@ -547,6 +614,7 @@ fn install_fake_codex(path: &Path, delay: u32) {
         format!(
             r#"#!/bin/sh
 [ "$1" = "app-server" ] || exit 2
+[ -z "${{AIT_GUI_UNRELATED+x}}" ] || exit 9
 read_line() {{
   IFS= read -r line || exit 3
   printf '%s\n' "$line" >> "$(dirname "$0")/../codex.jsonl"
@@ -556,6 +624,9 @@ printf '%s\n' '{{"id":0,"result":{{}}}}'
 read_line
 read_line
 case "$line" in
+  *'"method":"model/list"'*)
+    printf '%s\n' '{{"id":1,"result":{{"data":[{{"model":"gpt-5.6-sol","displayName":"Codex Test","supportedReasoningEfforts":[{{"reasoningEffort":"high"}}]}}],"nextCursor":null}}}}'
+    exit 0 ;;
   *'"model":"gpt-5.6-sol"'*) ;;
   *) printf '%s\n' '{{"id":1,"error":{{"code":-32602,"message":"unsupported model"}}}}'; exit 4 ;;
 esac

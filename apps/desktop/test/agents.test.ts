@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { projectAgent } from "../src/agents.js";
 import { providerChoices } from "../src/agent-settings.js";
-import { desktopDaemonRuntime, desktopProviderCatalog } from "../src/desktop-runtime.js";
+import { desktopDaemonArgs, desktopDaemonRuntime, desktopProviderCatalog } from "../src/desktop-runtime.js";
 import type { AgentProvider, AgentView } from "../src/types.js";
 const provider: AgentProvider = { id: "provider", name: "Provider", kind: "openai", url: null, has_secret: true, models: [{ id: "model", name: "Model", reasoning_efforts: ["minimal", "high"] }] };
 const agent: AgentView = { id: "agent", name: "", enabled: true, revision: 2, owner_session_id: "session", config: { provider_id: "provider", model: "model", reasoning_effort: "high" } };
@@ -37,6 +37,14 @@ test("development and packaged desktop daemons use isolated ports and databases"
   assert.equal(production.allowDevelopmentMock, false);
   assert.notEqual(development.endpoint, production.endpoint);
   assert.notEqual(development.databaseFilename, production.databaseFilename);
+});
+test("only packaged macOS launches request Rust login-shell PATH recovery", () => {
+  assert.deepEqual(desktopDaemonArgs(true, "darwin", "/Ait Data/ait.sqlite3"), [
+    "--database", "/Ait Data/ait.sqlite3", "--listen", "127.0.0.1:7314", "--login-shell-path",
+  ]);
+  for (const [packaged, platform] of [[false, "darwin"], [true, "linux"], [true, "win32"]] as const) {
+    assert.ok(!desktopDaemonArgs(packaged, platform, "ait.sqlite3").includes("--login-shell-path"));
+  }
 });
 test("unknown models do not receive invented reasoning capabilities", () => {
   const summary = projectAgent({ ...agent, config: { ...agent.config, model: "unknown" } }, [provider]);

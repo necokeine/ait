@@ -10,7 +10,10 @@ async fn credential_environment_probe_child() {
     let Ok(binary) = std::env::var("AIT_TEST_ENV_PROBE") else {
         return;
     };
-    let mut child = ait_sandbox::spawn_worker(std::path::Path::new(&binary)).unwrap();
+    let search_path = std::env::var_os("AIT_TEST_SEARCH_PATH");
+    let mut child =
+        ait_sandbox::spawn_worker_with_path(std::path::Path::new(&binary), search_path.as_deref())
+            .unwrap();
     let mut output = String::new();
     child
         .stdout()
@@ -30,6 +33,7 @@ async fn credential_environment_probe_child() {
         "DEEPSEEK_API_KEY",
         "CODEX_API_KEY",
         "AIT_TEST_ENV_PROBE",
+        "AIT_TEST_SEARCH_PATH",
         "DATABASE_URL",
     ] {
         assert!(
@@ -38,6 +42,9 @@ async fn credential_environment_probe_child() {
         );
     }
     assert!(!output.contains("NEC248-test-secret"));
+    if let Some(path) = search_path {
+        assert_eq!(report["env"]["PATH"], path.to_str().unwrap());
+    }
     assert!(child.wait().await.unwrap().success());
 }
 
@@ -66,6 +73,15 @@ print('NEC248-test-secret',file=sys.stderr)
         .env("DEEPSEEK_API_KEY", "NEC248-test-secret")
         .env("CODEX_API_KEY", "NEC248-test-secret")
         .env("DATABASE_URL", "NEC248-test-secret")
+        .env(
+            "AIT_TEST_SEARCH_PATH",
+            std::env::join_paths(
+                std::iter::once(directory.path().join("Node Versions/bin")).chain(
+                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+                ),
+            )
+            .unwrap(),
+        )
         .output()
         .unwrap();
     assert!(
