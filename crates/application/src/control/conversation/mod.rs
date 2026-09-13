@@ -1,4 +1,7 @@
 //! Session creation, derivation, binding and pointer ownership.
+use crate::control::model::RunState;
+use crate::control::model::SessionState;
+
 use crate::control::catalog::{agent_for_session, require_agent};
 use crate::control::conversation::messages::send_message;
 use crate::control::errors::error;
@@ -11,7 +14,7 @@ use crate::control::state::{
     HasAgents, HasMessages, HasProjects, HasProviderCredentials, HasProviders, HasRunCredentials,
     HasRuns, HasSessions, HasSettings,
 };
-use ait_contracts::{ApiError, CommandResult, RunView, SessionView};
+use ait_contracts::{ApiError, CommandResult};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
 
@@ -196,7 +199,7 @@ pub(in crate::control) fn create_session(
     }
     let session_workdir = session_worktree_path(&project_workdir, &id)?;
     let agent_id = agent_for_session(state, agent_id, &id)?;
-    let session = SessionView {
+    let session = SessionState {
         id: id.clone(),
         project_id,
         workdir: session_workdir.to_string_lossy().into_owned(),
@@ -204,14 +207,20 @@ pub(in crate::control) fn create_session(
         title: None,
         description: String::new(),
         title_generation_started: false,
-        agent_id,
-        current_message_id: head,
-        active_run_id: None,
-        version: 1,
+        reference: ait_domain::SessionReference::new(
+            ait_domain::MessageId::parse(&head).map_err(|_| {
+                error(
+                    ErrorCode::InvalidMessageId,
+                    "invalid Message identity",
+                    false,
+                )
+            })?,
+            ait_domain::AgentId::new(agent_id),
+        ),
     };
     state.sessions_mut().push(session.clone());
     Ok((
-        CommandResult::Session(session.clone()),
+        CommandResult::Session(session.view()),
         vec![pending("session.created", Some(id), &session)],
     ))
 }
@@ -220,14 +229,14 @@ pub(in crate::control) fn derive_reuses_source(
     state: &impl HasMessages,
     _requested_id: &str,
     project_id: &str,
-    source: &SessionView,
+    source: &SessionState,
     agent_id: &str,
     at_message_id: &str,
 ) -> bool {
     source.project_id == project_id
-        && source.active_run_id.is_none()
-        && source.current_message_id == at_message_id
-        && source.agent_id == agent_id
+        && source.active_run_id().is_none()
+        && source.current_message_id() == at_message_id
+        && source.agent_id() == agent_id
         && !state
             .messages()
             .iter()
@@ -255,7 +264,7 @@ pub(in crate::control) fn rename_session(
     session.name = name;
     let session = session.clone();
     Ok((
-        CommandResult::Session(session.clone()),
+        CommandResult::Session(session.view()),
         vec![pending(
             "session.renamed",
             Some(session_id.to_owned()),
@@ -275,21 +284,23 @@ pub(in crate::control) fn set_session_agent(
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-    if session.active_run_id.is_some() {
+    if session.active_run_id().is_some() {
         return Err(error(
             ErrorCode::SessionBusy,
             "session already has an active run",
             false,
         ));
     }
-    if session.agent_id == agent_id {
-        return Ok((CommandResult::Session(session.clone()), Vec::new()));
+    if session.agent_id() == agent_id {
+        return Ok((CommandResult::Session(session.view()), Vec::new()));
     }
-    session.agent_id = agent_id;
-    session.version = session.version.saturating_add(1);
+    session
+        .reference
+        .bind(ait_domain::AgentId::new(agent_id))
+        .map_err(|e| error(e.code, e.message, e.retryable))?;
     let session = session.clone();
     Ok((
-        CommandResult::Session(session.clone()),
+        CommandResult::Session(session.view()),
         vec![pending(
             "session.agent_updated",
             Some(session_id.to_owned()),
@@ -298,13 +309,12 @@ pub(in crate::control) fn set_session_agent(
     ))
 }
 
-pub(in crate::control) fn release_session(state: &mut impl HasSessions, run: &RunView) {
+pub(in crate::control) fn release_session(state: &mut impl HasSessions, run: &RunState) {
     if let Some(session_id) = &run.session_id
         && let Some(session) = state.sessions_mut().iter_mut().find(|session| {
-            &session.id == session_id && session.active_run_id.as_deref() == Some(run.id.as_str())
+            &session.id == session_id && session.active_run_id() == Some(run.id.as_str())
         })
     {
-        session.active_run_id = None;
-        session.version += 1;
+        session.reference.release(&ait_domain::RunId::new(&run.id));
     }
 }

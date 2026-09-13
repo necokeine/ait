@@ -298,3 +298,33 @@ fn encode(value: &Value) -> BTreeMap<(ControlRecordKind, String), ControlRecord>
     );
     records
 }
+
+/// Reads private execution only through the durable store; public projections must omit it.
+pub async fn persisted_run(store: &dyn ControlStore, id: &str) -> RunView {
+    let read = store
+        .read(&[ControlFilter::id(ControlRecordKind::Run, id)])
+        .await
+        .unwrap();
+    serde_json::from_value(
+        read.records
+            .into_iter()
+            .find(|r| r.kind == ControlRecordKind::Run)
+            .unwrap()
+            .value,
+    )
+    .unwrap()
+}
+pub async fn workspace_with_runs(
+    service: &LocalControlService,
+    store: &dyn ControlStore,
+) -> WorkspaceView {
+    let mut view = workspace(service).await;
+    for run in &mut view.runs {
+        assert!(
+            run.execution.is_none(),
+            "private execution leaked into public Run result"
+        );
+        *run = persisted_run(store, &run.id).await;
+    }
+    view
+}

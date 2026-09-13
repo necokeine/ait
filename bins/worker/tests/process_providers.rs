@@ -106,6 +106,7 @@ async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
     r.result.unwrap()
 }
 struct Fixture {
+    store: Arc<SqliteControlStore>,
     directory: tempfile::TempDir,
     project: tempfile::TempDir,
     workdir: std::path::PathBuf,
@@ -224,6 +225,7 @@ impl Fixture {
         let workdir =
             std::path::PathBuf::from(&support::workspace(&service).await.sessions[0].workdir);
         Self {
+            store,
             directory,
             project,
             workdir,
@@ -244,7 +246,8 @@ impl Fixture {
         else {
             panic!()
         };
-        run
+        assert!(run.execution.is_none());
+        support::persisted_run(self.store.as_ref(), &run.id).await
     }
     async fn finish(self) {
         self.server.abort();
@@ -1004,7 +1007,7 @@ async fn shutdown_drains_a_real_tool_run_and_rejects_new_admission() {
     })
     .await
     .unwrap();
-    let view = support::workspace(&service).await;
+    let view = support::workspace_with_runs(&service, f.store.as_ref()).await;
     assert_eq!(view.runs.len(), 1);
     assert_eq!(view.runs[0].status, "cancelled");
     assert!(view.sessions[0].active_run_id.is_none());

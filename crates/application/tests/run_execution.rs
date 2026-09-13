@@ -639,6 +639,8 @@ async fn rewind_completed_run(store: &ConflictingStore, completed: &RunView, sta
     run["status"] = Value::String(status.into());
     run["phase"] = Value::String(if status == "settling" {
         "result_persisted".into()
+    } else if status == "running" {
+        "calling_agent".into()
     } else {
         status.into()
     });

@@ -1,9 +1,10 @@
 //! Typed change collection and the single record/event commit boundary.
+use crate::control::model::ProviderState;
+use crate::control::model::RunState;
+use crate::control::model::{AgentState, CronState, MessageState, ProjectState, SessionState};
+
 use crate::control::runs::journal::WorkspaceRunJournal;
-use ait_contracts::{
-    AgentProviderView, AgentView, CronView, MessageView, ProjectView, RunView, SessionView,
-    SettingsDocument,
-};
+use ait_contracts::SettingsDocument;
 use ait_ports::{
     ControlChange, ControlRecord, ControlRecordKind as Kind, ControlStore, ControlStoreError,
     PendingEvent,
@@ -18,13 +19,13 @@ pub(in crate::control) trait RecordContext: Clone + DeserializeOwned {
 
 /// Only the context's declared record families can produce typed changes.
 pub(in crate::control) enum TypedChange {
-    Project(ProjectView),
-    Agent(AgentView),
-    Provider(AgentProviderView),
-    Session(SessionView),
-    Message(MessageView),
-    Run(Box<RunView>),
-    Cron(CronView),
+    Project(ProjectState),
+    Agent(AgentState),
+    Provider(ProviderState),
+    Session(SessionState),
+    Message(MessageState),
+    Run(Box<RunState>),
+    Cron(CronState),
     ProviderCredential(String, String),
     RunCredential(String, String),
     WorkspaceRunJournal(String, WorkspaceRunJournal),
@@ -36,6 +37,9 @@ pub(in crate::control) trait Entity: Clone + PartialEq {
     const KIND: Kind;
     fn id(&self) -> &str;
     fn change(self) -> TypedChange;
+    fn needs_rewrite(&self) -> bool {
+        false
+    }
 }
 macro_rules! entity {
     ($ty:ty, $kind:ident, $($id:ident).+) => {
@@ -46,13 +50,24 @@ macro_rules! entity {
         }
     };
 }
-entity!(ProjectView, Project, id);
-entity!(AgentView, Agent, id);
-entity!(AgentProviderView, Provider, provider.id);
-entity!(SessionView, Session, id);
-entity!(MessageView, Message, id);
-entity!(RunView, Run, id);
-entity!(CronView, Cron, id);
+entity!(ProjectState, Project, id);
+entity!(AgentState, Agent, id);
+entity!(ProviderState, Provider, provider.id);
+entity!(SessionState, Session, id);
+entity!(MessageState, Message, id);
+impl Entity for RunState {
+    const KIND: Kind = Kind::Run;
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn change(self) -> TypedChange {
+        TypedChange::Run(Box::new(self))
+    }
+    fn needs_rewrite(&self) -> bool {
+        self.compatibility_repair
+    }
+}
+entity!(CronState, Cron, id);
 
 pub(in crate::control) fn diff_records<T: Entity>(
     before: &[T],
@@ -68,7 +83,7 @@ pub(in crate::control) fn diff_records<T: Entity>(
         .map(|v| (v.id(), v))
         .collect::<BTreeMap<_, _>>();
     for (id, value) in &after {
-        if before.get(id) != Some(value) {
+        if before.get(id) != Some(value) || value.needs_rewrite() {
             changes.push((*value).clone().change());
         }
     }

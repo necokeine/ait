@@ -3,10 +3,11 @@ use crate::control::LocalControlService;
 use crate::control::admission::ensure_idle;
 use crate::control::errors::error;
 use crate::control::events::pending;
+use crate::control::model::AgentState;
+use crate::control::model::ProviderState;
 use crate::control::state::{HasAgents, HasProviders, HasSessions};
 use ait_contracts::{
-    AgentConfiguration, AgentMode, AgentProvider, AgentProviderView, AgentView, ApiError,
-    CommandResult, ProviderModel,
+    AgentConfiguration, AgentMode, AgentProvider, ApiError, CommandResult, ProviderModel,
 };
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
@@ -19,7 +20,7 @@ pub(in crate::control) mod providers;
 pub(in crate::control) fn require_agent<'a>(
     state: &'a impl HasAgents,
     id: &str,
-) -> Result<&'a AgentView, ApiError> {
+) -> Result<&'a AgentState, ApiError> {
     state
         .agents()
         .iter()
@@ -27,9 +28,9 @@ pub(in crate::control) fn require_agent<'a>(
         .ok_or_else(|| error(ErrorCode::AgentNotFound, "enabled agent not found", false))
 }
 
-pub(in crate::control) fn builtin_providers() -> Vec<AgentProviderView> {
+pub(in crate::control) fn builtin_providers() -> Vec<ProviderState> {
     vec![
-        AgentProviderView {
+        ProviderState {
             provider: AgentProvider {
                 id: "builtin-codex".into(),
                 name: "Codex".into(),
@@ -46,7 +47,7 @@ pub(in crate::control) fn builtin_providers() -> Vec<AgentProviderView> {
             has_secret: false,
         },
         #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
-        AgentProviderView {
+        ProviderState {
             provider: AgentProvider {
                 id: "builtin-mock".into(),
                 name: "Mock (Development)".into(),
@@ -160,7 +161,7 @@ pub(in crate::control) fn preserve_unadvertised_reasoning_efforts(
 pub(in crate::control) fn require_named_agent<'a>(
     state: &'a impl HasAgents,
     id: &str,
-) -> Result<&'a AgentView, ApiError> {
+) -> Result<&'a AgentState, ApiError> {
     let agent = require_agent(state, id)?;
     if agent.owner_session_id.is_some() {
         return Err(invalid("a named Agent preset is required"));
@@ -178,7 +179,7 @@ pub(in crate::control) fn register_agent(
         return Err(invalid("Agent id and name are required; id must be unique"));
     }
     validate_config(state, &config)?;
-    let agent = AgentView {
+    let agent = AgentState {
         id: id.clone(),
         name,
         config,
@@ -188,7 +189,7 @@ pub(in crate::control) fn register_agent(
     };
     state.agents_mut().push(agent.clone());
     Ok((
-        CommandResult::Agent(agent.clone()),
+        CommandResult::Agent(agent.view()),
         vec![pending("agent.registered", Some(id), &agent)],
     ))
 }
@@ -213,7 +214,7 @@ pub(in crate::control) fn update_agent(
     agent.config = config;
     agent.revision += 1;
     Ok((
-        CommandResult::Agent(agent.clone()),
+        CommandResult::Agent(agent.view()),
         vec![pending("agent.updated", Some(id.into()), agent)],
     ))
 }
@@ -252,7 +253,7 @@ pub(in crate::control) fn set_session_config(
         .position(|s| s.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
     ensure_idle(&state.sessions()[index])?;
-    let current = require_agent(state, &state.sessions()[index].agent_id)?.clone();
+    let current = require_agent(state, state.sessions()[index].agent_id())?.clone();
     let agent = if current.owner_session_id.as_deref() == Some(session_id) {
         let target = state
             .agents_mut()
@@ -263,7 +264,7 @@ pub(in crate::control) fn set_session_config(
         target.revision += 1;
         target.clone()
     } else {
-        let agent = AgentView {
+        let agent = AgentState {
             id: Uuid::new_v4().to_string(),
             name: String::new(),
             config,
@@ -274,11 +275,13 @@ pub(in crate::control) fn set_session_config(
         state.agents_mut().push(agent.clone());
         agent
     };
-    state.sessions_mut()[index].agent_id.clone_from(&agent.id);
-    state.sessions_mut()[index].version += 1;
+    state.sessions_mut()[index]
+        .reference
+        .configure(ait_domain::AgentId::new(&agent.id))
+        .map_err(|e| error(e.code, e.message, e.retryable))?;
     let session = &state.sessions()[index];
     Ok((
-        CommandResult::Session(session.clone()),
+        CommandResult::Session(session.view()),
         vec![
             pending("agent.updated", Some(agent.id.clone()), &agent),
             pending("session.agent_updated", Some(session_id.into()), session),

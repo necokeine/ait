@@ -11,12 +11,23 @@ pub mod cron;
 pub mod error;
 /// Immutable Message protocol and projections.
 pub mod message;
+/// Immutable Message tree traversal policy.
+pub mod message_path;
 /// Run permission snapshots and native approval audit vocabulary.
 pub mod permission;
 /// Project instruction snapshots and movable Session references.
 pub mod project;
+/// Project registration and revisioned defaults.
+pub mod project_policy;
+pub use project_policy::ProjectDefaults;
+/// Atomic Session pointer and binding rules.
+pub mod session_reference;
+pub use session_reference::SessionReference;
+/// Shared execution lifecycle policy.
+pub mod lifecycle;
 /// Run lifecycle, attempts, queue items, budgets, and usage.
 pub mod run;
+pub use lifecycle::{LifecyclePhase, LifecycleStatus};
 /// Tool execution lifecycle and audit links.
 pub mod tool;
 

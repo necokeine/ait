@@ -2,16 +2,16 @@
 use crate::control::LocalControlService;
 use crate::control::conversation::messages::codex_prompt;
 use crate::control::errors::{api_domain_error, error};
+use crate::control::model::RunState;
 use crate::control::permissions::validate_run_permission_ceiling;
 use crate::control::project::worktrees::run_workdir;
-use crate::control::runs::finalization::{
-    InvocationGuard, WorkspaceRunControl, WorkspaceRunControlGuard,
-};
+use crate::control::runs::finalization::{InvocationGuard, RunControl, RunControlGuard};
 use crate::control::runs::journal::WorkspaceExecutionLease;
 use crate::control::runs::progress::ProgressPump;
 use crate::control::runs::recovery::WorkspaceRecoveryClaim;
 use crate::control::state::{HasMessages, HasProjects, HasSessions};
-use ait_contracts::{AgentMode, ApiError, RunView};
+use ait_contracts::{AgentMode, ApiError};
+use ait_domain::LifecycleStatus;
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceResultSink,
@@ -59,8 +59,8 @@ impl WorkspaceResultSink for DurableWorkspaceResultSink {
 
 pub(in crate::control) fn workspace_invocation(
     state: &(impl HasMessages + HasProjects + HasSessions),
-    run: &RunView,
-    control: Arc<WorkspaceRunControl>,
+    run: &RunState,
+    control: Arc<RunControl>,
     approvals: Arc<dyn WorkspaceApproval>,
 ) -> Result<WorkspaceAgentInvocation, DomainError> {
     let user_text = state
@@ -119,11 +119,11 @@ impl LocalControlService {
         clippy::too_many_lines,
         reason = "workspace result checkpoints and recovery are one guarded settlement path"
     )]
-    async fn execute_workspace_agent(
+    async fn drive_run(
         &self,
         run_id: &str,
-        control: Arc<WorkspaceRunControl>,
-    ) -> Result<RunView, ApiError> {
+        control: Arc<RunControl>,
+    ) -> Result<RunState, ApiError> {
         let loaded = self.read_run_records(run_id).await?;
         let state = loaded.original;
         let run = state
@@ -235,11 +235,11 @@ impl LocalControlService {
             if latest
                 .runs
                 .iter()
-                .any(|r| r.id == run.id && r.status == "settling")
+                .any(|r| r.id == run.id && r.status() == LifecycleStatus::Settling)
             {
                 match self.claim_startup_recovery(&run.id).await? {
                     WorkspaceRecoveryClaim::Finalize(recovery_lease) => {
-                        let recovery_control = Arc::new(WorkspaceRunControl::new());
+                        let recovery_control = Arc::new(RunControl::new());
                         recovery_control
                             .bind_integration_lease(self.clone(), recovery_lease.clone())?;
                         let _invocation = InvocationGuard::new(
@@ -247,8 +247,8 @@ impl LocalControlService {
                             &run.id,
                             recovery_control.cancellation.clone(),
                         );
-                        let _control = WorkspaceRunControlGuard::new(
-                            Arc::clone(&self.workspace_run_controls),
+                        let _control = RunControlGuard::new(
+                            Arc::clone(&self.run_controls),
                             &run.id,
                             &recovery_control,
                         );
@@ -271,8 +271,8 @@ impl LocalControlService {
     async fn invoke_codex_workspace_checkpointed(
         &self,
         state: &(impl HasMessages + HasProjects + HasSessions),
-        run: &RunView,
-        control: Arc<WorkspaceRunControl>,
+        run: &RunState,
+        control: Arc<RunControl>,
         progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,
         result_sink: &dyn WorkspaceResultSink,
     ) -> Result<WorkspaceAgentResponse, DomainError> {
@@ -288,17 +288,18 @@ impl LocalControlService {
             .await
     }
 
-    pub(in crate::control) async fn supervise_workspace_agent(
+    pub(in crate::control) async fn supervise_run(
         &self,
         run_id: String,
-        control: Arc<WorkspaceRunControl>,
-    ) -> Result<RunView, ApiError> {
+        control: Arc<RunControl>,
+    ) -> Result<RunState, ApiError> {
         let worker = self.clone();
         let worker_run_id = run_id.clone();
         let task_control = Arc::clone(&control);
-        let task = tokio::spawn(async move {
-            Box::pin(worker.execute_workspace_agent(&worker_run_id, task_control)).await
-        });
+        let task =
+            tokio::spawn(
+                async move { Box::pin(worker.drive_run(&worker_run_id, task_control)).await },
+            );
         let result = match task.await {
             Ok(Ok(run)) => Ok(run),
             Ok(Err(failure)) => {

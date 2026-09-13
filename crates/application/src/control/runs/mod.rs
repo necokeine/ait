@@ -7,6 +7,7 @@ use crate::control::events::pending;
 use crate::control::state::{HasRuns, HasSessions, HasWorkspaceRunJournals};
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::{ErrorCode, NativeApprovalStatus};
+use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::PendingEvent;
 use std::sync::atomic::Ordering;
 
@@ -18,11 +19,8 @@ pub(in crate::control) mod recovery;
 pub(in crate::control) mod settlement;
 pub(in crate::control) mod workspace;
 
-pub(in crate::control) fn is_terminal_workspace_status(status: &str) -> bool {
-    matches!(
-        status,
-        "completed" | "failed" | "cancelled" | "limit_exceeded" | "interrupted"
-    )
+pub(in crate::control) fn is_terminal_run_status(status: ait_domain::LifecycleStatus) -> bool {
+    status.is_terminal()
 }
 
 pub(in crate::control) fn cancel_run(
@@ -34,14 +32,14 @@ pub(in crate::control) fn cancel_run(
         .iter()
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-    if is_terminal_workspace_status(&state.runs()[index].status) {
+    if is_terminal_run_status(state.runs()[index].status()) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
             "run is already terminal",
             false,
         ));
     }
-    if state.runs()[index].phase.as_deref() == Some("integrating") {
+    if state.runs()[index].phase() == Some(LifecyclePhase::Integrating) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
             "workspace integration has started; cancellation cannot replace its durable result",
@@ -49,11 +47,11 @@ pub(in crate::control) fn cancel_run(
         ));
     }
     let mut run = state.runs()[index].clone();
-    if run.execution.is_some() {
-        run.status = "cancelling".into();
+    if run.execution().is_some() {
+        run.set_status(LifecycleStatus::Cancelling);
         state.runs_mut()[index] = run.clone();
         return Ok((
-            CommandResult::Run(run.clone()),
+            CommandResult::Run(run.view()),
             vec![pending("run.updated", Some(run.id.clone()), &run)],
         ));
     }
@@ -61,14 +59,18 @@ pub(in crate::control) fn cancel_run(
     if let Some(journal) = state.workspace_run_journals_mut().get_mut(&run.id) {
         journal.lease_epoch = run.lease_epoch;
     }
-    run.status = "cancelled".into();
-    run.phase = Some("terminal".into());
-    run.error = Some(error(ErrorCode::RunCancelled, "run was cancelled", false));
+    run.set_status(LifecycleStatus::Cancelled);
+    run.set_phase(Some(LifecyclePhase::Terminal));
+    run.set_error(Some(error(
+        ErrorCode::RunCancelled,
+        "run was cancelled",
+        false,
+    )));
     expire_pending_native_approvals(&mut run, NativeApprovalStatus::Cancelled);
     release_session(state, &run);
     state.runs_mut()[index] = run.clone();
     Ok((
-        CommandResult::Run(run.clone()),
+        CommandResult::Run(run.view()),
         // Terminal Run transitions share one event contract so every client
         // schedules an authoritative view refresh. Renderers still accept
         // legacy run.cancelled events retained in older outboxes.

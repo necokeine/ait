@@ -1,57 +1,11 @@
-//! Large Message-tree path-read baseline.
+//! Large Message-tree path baseline using the production traversal policy.
 #![allow(missing_docs)]
-
-use std::{collections::HashMap, hint::black_box, sync::Arc};
-
-use ait_application::MessageService;
 use ait_domain::{
     DomainMetadata, GitCommit, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
-    ProjectId, Session, SessionId, StoredMessage, SubMessage, TimestampMs,
+    ProjectId, SubMessage, TimestampMs,
 };
-use ait_ports::{MessageStore, MessageStoreError, SessionAdvance, SessionStore, SessionStoreError};
 use criterion::{Criterion, criterion_group, criterion_main};
-
-struct ReadOnlyMessages(HashMap<MessageId, Message>);
-
-impl MessageStore for ReadOnlyMessages {
-    fn append_message(&self, message: Message) -> Result<Message, MessageStoreError> {
-        Ok(message)
-    }
-
-    fn get_message(&self, id: &MessageId) -> Result<StoredMessage, MessageStoreError> {
-        self.0
-            .get(id)
-            .cloned()
-            .map(|message| StoredMessage {
-                message,
-                redacted: false,
-            })
-            .ok_or(MessageStoreError::MessageNotFound(*id))
-    }
-}
-
-struct NoSessions;
-
-impl SessionStore for NoSessions {
-    fn create_session(&self, session: Session) -> Result<Session, SessionStoreError> {
-        Ok(session)
-    }
-
-    fn get_session(&self, id: &SessionId) -> Result<Session, SessionStoreError> {
-        Err(SessionStoreError::SessionNotFound(id.clone()))
-    }
-
-    fn advance_head(
-        &self,
-        session_id: &SessionId,
-        _expected_head: &MessageId,
-        _expected_version: u64,
-        _new_head: &MessageId,
-    ) -> Result<SessionAdvance, SessionStoreError> {
-        Err(SessionStoreError::SessionNotFound(session_id.clone()))
-    }
-}
-
+use std::{collections::HashMap, hint::black_box};
 fn message_path(c: &mut Criterion) {
     const DEPTH: u128 = 10_000;
     let project_id = ProjectId::new("benchmark-project");
@@ -86,10 +40,11 @@ fn message_path(c: &mut Criterion) {
             },
         );
     }
-    let service = MessageService::new(Arc::new(ReadOnlyMessages(messages)), Arc::new(NoSessions));
     let head = MessageId::from_u128(DEPTH);
     c.bench_function("message_path/10k_depth", |b| {
-        b.iter(|| service.message_path(black_box(&head)).unwrap());
+        b.iter(|| {
+            ait_domain::message_path::message_path(black_box(head), |id| messages.get(id)).unwrap()
+        });
     });
 }
 

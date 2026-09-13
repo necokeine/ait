@@ -17,7 +17,7 @@ enum WorkspaceFinalizationDecision {
     Cancelled,
 }
 
-pub(in crate::control) struct WorkspaceRunControl {
+pub(in crate::control) struct RunControl {
     pub(in crate::control) cancellation: tokio_util::sync::CancellationToken,
     finalization: tokio::sync::Mutex<WorkspaceFinalizationDecision>,
     integration_lease: OnceLock<WorkspaceIntegrationLease>,
@@ -29,10 +29,10 @@ struct WorkspaceIntegrationLease {
     lease: WorkspaceExecutionLease,
 }
 
-impl std::fmt::Debug for WorkspaceRunControl {
+impl std::fmt::Debug for RunControl {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("WorkspaceRunControl")
+            .debug_struct("RunControl")
             .field("cancellation", &self.cancellation)
             .field("finalization", &self.finalization)
             .field(
@@ -43,7 +43,7 @@ impl std::fmt::Debug for WorkspaceRunControl {
     }
 }
 
-impl WorkspaceRunControl {
+impl RunControl {
     pub(in crate::control) fn new() -> Self {
         Self {
             cancellation: tokio_util::sync::CancellationToken::new(),
@@ -64,7 +64,7 @@ impl WorkspaceRunControl {
 }
 
 #[async_trait::async_trait]
-impl WorkspaceIntegrationGate for WorkspaceRunControl {
+impl WorkspaceIntegrationGate for RunControl {
     async fn claim_worker(&self, instance: &str) -> Result<ait_ports::WorkerLease, DomainError> {
         let binding = self.integration_lease.get().ok_or_else(|| {
             api_domain_error(recovery_error("workspace execution lease unavailable"))
@@ -86,7 +86,7 @@ impl WorkspaceIntegrationGate for WorkspaceRunControl {
     }
 }
 
-impl WorkspaceRunControl {
+impl RunControl {
     async fn begin_integration_with_worker(
         &self,
         operation: Option<&ait_ports::WorkspaceWorkerOperation>,
@@ -118,16 +118,16 @@ impl WorkspaceRunControl {
     }
 }
 
-pub(in crate::control) struct WorkspaceRunControlGuard {
-    controls: Arc<Mutex<HashMap<String, Weak<WorkspaceRunControl>>>>,
+pub(in crate::control) struct RunControlGuard {
+    controls: Arc<Mutex<HashMap<String, Weak<RunControl>>>>,
     id: String,
 }
 
-impl WorkspaceRunControlGuard {
+impl RunControlGuard {
     pub(in crate::control) fn new(
-        controls: Arc<Mutex<HashMap<String, Weak<WorkspaceRunControl>>>>,
+        controls: Arc<Mutex<HashMap<String, Weak<RunControl>>>>,
         id: &str,
-        control: &Arc<WorkspaceRunControl>,
+        control: &Arc<RunControl>,
     ) -> Self {
         controls
             .lock()
@@ -140,7 +140,7 @@ impl WorkspaceRunControlGuard {
     }
 }
 
-impl Drop for WorkspaceRunControlGuard {
+impl Drop for RunControlGuard {
     fn drop(&mut self) {
         self.controls
             .lock()
@@ -211,7 +211,7 @@ impl LocalControlService {
             _ => None,
         };
         let control = cancellation_run_id.and_then(|run_id| {
-            self.workspace_run_controls
+            self.run_controls
                 .lock()
                 .expect("workspace run controls")
                 .get(run_id)
@@ -223,7 +223,7 @@ impl LocalControlService {
                 .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
-                && matches!(run.status.as_str(), "cancelled" | "cancelling")
+                && crate::control::model::cancellation_requested(run)
                 && let Some(token) = self
                     .cancellations
                     .lock()
@@ -248,7 +248,7 @@ impl LocalControlService {
             .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
-            && matches!(run.status.as_str(), "cancelled" | "cancelling")
+            && crate::control::model::cancellation_requested(run)
         {
             *decision = WorkspaceFinalizationDecision::Cancelled;
             control.cancellation.cancel();
