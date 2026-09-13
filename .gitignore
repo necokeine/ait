@@ -14,3 +14,11 @@ apps/desktop/release-resources/
 .env
 .env.*
 !.env.example
+
+# Apple signing credentials and provisioning artifacts
+*.certSigningRequest
+*.cer
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile

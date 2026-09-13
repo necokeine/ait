@@ -39,7 +39,6 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       CARGO_TERM_COLOR: always
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,7 +69,34 @@ jobs:
         run: npm run stage:daemon -- "../../target/${{ matrix.rust_target }}/release/ait-daemon"
 
       - name: Package Ait
+        if: matrix.label != 'Apple Silicon'
         working-directory: apps/desktop
+        run: npm run "${{ matrix.package_script }}"
+
+      - name: Validate Apple signing secrets
+        if: matrix.label == 'Apple Silicon'
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_BUILD_APP_SECRET }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$CSC_LINK"
+          test -n "$CSC_KEY_PASSWORD"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+
+      - name: Package, sign, and notarize Ait desktop
+        if: matrix.label == 'Apple Silicon'
+        working-directory: apps/desktop
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_BUILD_APP_SECRET }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run "${{ matrix.package_script }}"
 
       - name: Collect release assets

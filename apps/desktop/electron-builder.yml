@@ -18,6 +18,15 @@ extraResources:
 mac:
   icon: ../../logo.svg
   category: public.app-category.developer-tools
+  forceCodeSigning: true
+  identity: "Dong Shan (SVS7GV79T9)"
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  binaries:
+    - Contents/Resources/bin/ait-daemon
+    - Contents/Resources/bin/ait-worker
+  notarize: true
   artifactName: Ait-${version}-macos-arm64.${ext}
   target:
     - dmg

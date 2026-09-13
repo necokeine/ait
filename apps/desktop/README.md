@@ -76,6 +76,16 @@ remain separate as described above.
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
 
+macOS direct-distribution builds are signed with the personal `Developer ID
+Application: Dong Shan (SVS7GV79T9)` identity, use Hardened Runtime, and sign
+the bundled daemon and worker before notarization. Local builds discover that
+identity in the login keychain. The GitHub Actions release job imports the
+certificate and notarizes with repository secrets; configure
+`MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_BUILD_APP_SECRET` (mapped to `APPLE_APP_SPECIFIC_PASSWORD`), and
+`APPLE_TEAM_ID` (`SVS7GV79T9`). Never add
+the `.p12`, its password, or an Apple app-specific password to the repository.
+
 ## Providers and Agent presets
 
 Settings → Models manages shared Codex/OpenAI/DeepSeek provider connections, API
