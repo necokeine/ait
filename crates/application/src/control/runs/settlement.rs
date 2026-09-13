@@ -5,13 +5,15 @@ use crate::control::conversation::messages::{append_output, message};
 use crate::control::conversation::release_session;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
+use crate::control::model::RunState;
 use crate::control::runs::journal::{
     WorkspaceExecutionLease, ensure_current_lease, ensure_journal_lease,
 };
-use crate::control::runs::{api_run, is_terminal_workspace_status};
+use crate::control::runs::{api_run, is_terminal_run_status};
 use crate::control::state::{HasMessages, HasSessions};
-use ait_contracts::{ApiError, RunView};
+use ait_contracts::ApiError;
 use ait_domain::{DomainError, ErrorCode, NativeApprovalStatus};
+use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::{ControlStoreError, WorkspaceAgentResponse, WorkspaceOutputItem};
 use serde_json::json;
 
@@ -24,7 +26,7 @@ async fn wait_for_workspace_terminal_persistence(failures: &mut u32) {
 
 fn apply_workspace_terminal_result(
     state: &mut (impl HasMessages + HasSessions),
-    run: &mut RunView,
+    run: &mut RunState,
     result: &Result<WorkspaceAgentResponse, DomainError>,
 ) {
     match result {
@@ -70,31 +72,34 @@ fn apply_workspace_terminal_result(
                         }})
                     });
             let parent = run
-                .last_message_id
+                .last_message_id()
                 .as_deref()
                 .unwrap_or(&run.base_message_id)
                 .to_owned();
             let reply = message(
                 &run.project_id,
                 Some(&parent),
-                "assistant",
-                "standard",
+                ait_domain::MessageRole::Assistant,
+                ait_domain::MessageKind::Standard,
                 Some(output.assistant_text.clone()),
                 None,
                 data,
             );
             append_output(state, run, reply);
-            run.status = "completed".into();
-            run.error = None;
+            run.set_status(LifecycleStatus::Completed);
+            run.set_error(None);
         }
         Err(failure) => {
-            run.status = match failure.code {
-                ErrorCode::RunCancelled => "cancelled",
-                ErrorCode::RunLimitExceeded => "limit_exceeded",
-                _ => "failed",
-            }
-            .into();
-            run.error = Some(error(failure.code, &failure.message, failure.retryable));
+            run.set_status(match failure.code {
+                ErrorCode::RunCancelled => LifecycleStatus::Cancelled,
+                ErrorCode::RunLimitExceeded => LifecycleStatus::LimitExceeded,
+                _ => LifecycleStatus::Failed,
+            });
+            run.set_error(Some(error(
+                failure.code,
+                &failure.message,
+                failure.retryable,
+            )));
         }
     }
 }
@@ -104,7 +109,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
         result: Result<WorkspaceAgentResponse, DomainError>,
-    ) -> Result<RunView, ApiError> {
+    ) -> Result<RunState, ApiError> {
         let lease = self.current_workspace_lease(run_id).await?;
         self.finish_workspace_run(&lease, result).await
     }
@@ -122,11 +127,11 @@ impl LocalControlService {
                 .find(|run| run.id == lease.run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
             ensure_current_lease(run, lease)?;
-            if run.status != "running" {
+            if run.status() != LifecycleStatus::Running {
                 return Ok(false);
             }
-            run.status = "settling".into();
-            run.phase = Some("settling".into());
+            run.set_status(LifecycleStatus::Settling);
+            run.set_phase(Some(LifecyclePhase::Settling));
             let event = pending("run.updated", Some(lease.run_id.clone()), run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => return Ok(true),
@@ -149,7 +154,7 @@ impl LocalControlService {
         &self,
         lease: &WorkspaceExecutionLease,
         result: Result<WorkspaceAgentResponse, DomainError>,
-    ) -> Result<RunView, ApiError> {
+    ) -> Result<RunState, ApiError> {
         let mut persistence_failures = 0_u32;
         loop {
             let Ok(loaded) = self.read_run_records(&lease.run_id).await else {
@@ -174,28 +179,28 @@ impl LocalControlService {
                     ));
                 }
             }
-            if is_terminal_workspace_status(&run.status) && !api_run::needs_terminal_repair(&run) {
+            if is_terminal_run_status(run.status()) && !api_run::needs_terminal_repair(&run) {
                 let _ = self.store.clear_progress(&lease.run_id).await;
                 return Ok(run);
             }
-            if run.execution.is_some() && run.status == "cancelling" {
-                run.status = "cancelled".into();
-                run.error = Some(error(
+            if run.execution().is_some() && run.status() == LifecycleStatus::Cancelling {
+                run.set_status(LifecycleStatus::Cancelled);
+                run.set_error(Some(error(
                     ErrorCode::RunCancelled,
                     "API Run cancellation completed after worker settlement",
                     false,
-                ));
-            } else if run.status == "settling" && result.is_err() {
+                )));
+            } else if run.status() == LifecycleStatus::Settling && result.is_err() {
                 let failure = result.as_ref().expect_err("checked error");
-                run.status = "interrupted".into();
-                run.error = Some(error(
+                run.set_status(LifecycleStatus::Interrupted);
+                run.set_error(Some(error(
                     failure.code,
                     format!(
                         "checkpointed workspace result could not be integrated: {}",
                         failure.message
                     ),
                     failure.retryable,
-                ));
+                )));
             } else {
                 apply_workspace_terminal_result(&mut state, &mut run, &result);
             }
@@ -208,7 +213,7 @@ impl LocalControlService {
                 NativeApprovalStatus::Expired
             };
             expire_pending_native_approvals(&mut run, approval_status);
-            run.phase = Some("terminal".into());
+            run.set_phase(Some(LifecyclePhase::Terminal));
             api_run::interrupt(&mut run);
             api_run::append_terminal_results(&mut state, &mut run)
                 .map_err(|_| recovery_error("could not settle API child records"))?;
@@ -217,7 +222,7 @@ impl LocalControlService {
             let event = pending("run.updated", Some(lease.run_id.clone()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
-                    self.notify_approval_waiters(&run);
+                    self.notify_approval_waiters(&run.view());
                     let _ = self.store.clear_progress(&lease.run_id).await;
                     return Ok(run);
                 }

@@ -1,16 +1,16 @@
 //! Project archive import, export and validation.
 use crate::control::catalog::validate_provider;
-use crate::control::errors::error;
+use crate::control::errors::{error, serialization_error};
 use crate::control::events::pending;
+use crate::control::model::ProviderState;
+use crate::control::model::{AgentState, MessageState, ProjectState, SessionState};
 use crate::control::project::git::{PreparedProject, is_git_commit};
 use crate::control::project::validate_project_workdir;
 use crate::control::project::worktrees::session_worktree_path;
 use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
-use ait_contracts::{
-    AgentProviderView, ApiError, CommandResult, PROJECT_EXPORT_VERSION, ProjectExport,
-};
+use ait_contracts::{ApiError, CommandResult, PROJECT_EXPORT_VERSION, ProjectExport};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
 use std::collections::{HashMap, HashSet};
@@ -31,7 +31,7 @@ pub(in crate::control) fn export_project(
         .messages()
         .iter()
         .filter(|message| message.project_id == project_id)
-        .cloned()
+        .map(crate::control::model::MessageState::view)
         .map(|mut message| {
             if message
                 .data
@@ -50,7 +50,7 @@ pub(in crate::control) fn export_project(
         .sessions()
         .iter()
         .filter(|session| session.project_id == project_id)
-        .cloned()
+        .map(crate::control::model::SessionState::view)
         .map(|mut session| {
             // An active Run is process-local state and cannot safely be resumed
             // from a portable archive.
@@ -65,7 +65,7 @@ pub(in crate::control) fn export_project(
         .iter()
         .map(|session| session.agent_id.as_str())
         .collect::<HashSet<_>>();
-    if let Some(default_agent_id) = project.default_agent_id.as_deref() {
+    if let Some(default_agent_id) = project.default_agent_id() {
         referenced_agents.insert(default_agent_id);
     }
     let agents: Vec<_> = state
@@ -84,8 +84,11 @@ pub(in crate::control) fn export_project(
         format_version: PROJECT_EXPORT_VERSION,
         source_revision,
         providers,
-        project,
-        agents,
+        project: project.view(),
+        agents: agents
+            .iter()
+            .map(crate::control::model::AgentState::view)
+            .collect(),
         sessions,
         messages,
     };
@@ -117,7 +120,9 @@ pub(in crate::control) fn import_project(
             .iter()
             .any(|existing| existing.id == agent.id)
         {
-            state.agents_mut().push(agent);
+            state
+                .agents_mut()
+                .push(AgentState::try_from(agent).map_err(serialization_error)?);
         }
     }
     for provider in archive.providers {
@@ -126,15 +131,30 @@ pub(in crate::control) fn import_project(
             .iter()
             .any(|p| p.provider.id == provider.id)
         {
-            state.providers_mut().push(AgentProviderView {
+            state.providers_mut().push(ProviderState {
                 provider,
                 has_secret: false,
             });
         }
     }
-    state.messages_mut().extend(archive.messages);
-    state.sessions_mut().extend(sessions);
-    state.projects_mut().push(project.clone());
+    state.messages_mut().extend(
+        archive
+            .messages
+            .into_iter()
+            .map(MessageState::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(serialization_error)?,
+    );
+    state.sessions_mut().extend(
+        sessions
+            .into_iter()
+            .map(SessionState::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(serialization_error)?,
+    );
+    state
+        .projects_mut()
+        .push(ProjectState::try_from(project.clone()).map_err(serialization_error)?);
     Ok((
         CommandResult::Project(project.clone()),
         vec![pending(
@@ -182,7 +202,7 @@ pub(in crate::control) fn validate_import_conflicts(
             .agents()
             .iter()
             .find(|existing| existing.id == imported.id)
-            && existing != imported
+            && existing.view() != *imported
         {
             return Err(error(
                 ErrorCode::InvalidAgentConfiguration,

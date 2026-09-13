@@ -261,7 +261,7 @@ async fn session_reference_revision_is_checked_before_decoding() {
         panic!("typed context")
     };
     assert_eq!(loaded.revision, 2);
-    assert_eq!(loaded.original.sessions[0].current_message_id, NEXT);
+    assert_eq!(loaded.original.sessions[0].current_message_id(), NEXT);
     let reads = store.reads.lock().unwrap();
     assert!(reads[2].contains(&ControlFilter::id(Kind::Message, ROOT)));
     assert!(reads[5].contains(&ControlFilter::id(Kind::Message, NEXT)));
@@ -363,7 +363,7 @@ async fn api_run_plan_reselects_head_without_catalog_settings_or_journal() {
         ),
     ]);
     let tx = store.access().read_api_run_records("r").await.unwrap();
-    assert_eq!(tx.original.runs[0].last_message_id.as_deref(), Some(NEXT));
+    assert_eq!(tx.original.runs[0].last_message_id().as_deref(), Some(NEXT));
     let reads = store.reads.lock().unwrap();
     assert!(reads[3].contains(&ControlFilter::message_ancestors(NEXT)));
     assert!(reads.iter().flatten().all(|f| matches!(

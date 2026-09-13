@@ -1,11 +1,11 @@
 //! Command admission and CAS commits; execution continuations run only after persistence.
+use crate::control::model::RunState;
+
 use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
 use crate::control::project::git::{canonical_project_path, prepare_project};
-use crate::control::runs::finalization::{
-    InvocationGuard, WorkspaceRunControl, WorkspaceRunControlGuard,
-};
-use ait_contracts::{ApiError, Command, CommandResult, RunView};
+use crate::control::runs::finalization::{InvocationGuard, RunControl, RunControlGuard};
+use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::ErrorCode;
 use ait_ports::ControlStoreError;
 use std::path::PathBuf;
@@ -15,12 +15,12 @@ use std::sync::Arc;
 /// is committed. A public `RunView` is a result snapshot, never an execution signal.
 pub(in crate::control) enum CommandOutcome {
     Ready(Box<CommandResult>),
-    ExecuteWorkspaceRun(Box<RunView>),
+    ExecuteRun(Box<RunState>),
 }
 
 impl CommandOutcome {
-    pub(in crate::control) fn for_new_run(run: RunView) -> Self {
-        Self::ExecuteWorkspaceRun(Box::new(run))
+    pub(in crate::control) fn for_new_run(run: RunState) -> Self {
+        Self::ExecuteRun(Box::new(run))
     }
 }
 
@@ -48,23 +48,20 @@ impl LocalControlService {
             .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
             .await?
         {
-            CommandOutcome::ExecuteWorkspaceRun(run) => {
+            CommandOutcome::ExecuteRun(run) => {
                 let accepted = (*run).clone();
                 if let Some(session_id) = &accepted.session_id {
                     session_admission.retain_for_session(session_id);
                 }
                 let run_id = run.id.clone();
-                let control = Arc::new(WorkspaceRunControl::new());
+                let control = Arc::new(RunControl::new());
                 let invocation = InvocationGuard::new(
                     Arc::clone(&self.cancellations),
                     &run_id,
                     control.cancellation.clone(),
                 );
-                let control_guard = WorkspaceRunControlGuard::new(
-                    Arc::clone(&self.workspace_run_controls),
-                    &run_id,
-                    &control,
-                );
+                let control_guard =
+                    RunControlGuard::new(Arc::clone(&self.run_controls), &run_id, &control);
                 let service = Arc::clone(self);
                 tokio::spawn(async move {
                     let _owned = (
@@ -73,9 +70,9 @@ impl LocalControlService {
                         invocation,
                         control_guard,
                     );
-                    let _ = service.supervise_workspace_agent(run_id, control).await;
+                    let _ = service.supervise_run(run_id, control).await;
                 });
-                Ok(CommandResult::Run(accepted))
+                Ok(CommandResult::Run(accepted.view()))
             }
             CommandOutcome::Ready(_) => unreachable!("interactive submission creates a Run"),
         }
@@ -126,22 +123,19 @@ impl LocalControlService {
             .await?;
         match outcome {
             CommandOutcome::Ready(result) => Ok(*result),
-            CommandOutcome::ExecuteWorkspaceRun(run) => {
+            CommandOutcome::ExecuteRun(run) => {
                 let run_id = run.id.clone();
                 if let Some(session_id) = &run.session_id {
                     session_admission.retain_for_session(session_id);
                 }
-                let control = Arc::new(WorkspaceRunControl::new());
+                let control = Arc::new(RunControl::new());
                 let invocation = InvocationGuard::new(
                     Arc::clone(&self.cancellations),
                     &run_id,
                     control.cancellation.clone(),
                 );
-                let control_guard = WorkspaceRunControlGuard::new(
-                    Arc::clone(&self.workspace_run_controls),
-                    &run_id,
-                    &control,
-                );
+                let control_guard =
+                    RunControlGuard::new(Arc::clone(&self.run_controls), &run_id, &control);
                 let service = self.clone();
                 let (sender, receiver) = tokio::sync::oneshot::channel();
                 tokio::spawn(async move {
@@ -153,7 +147,7 @@ impl LocalControlService {
                         invocation,
                         control_guard,
                     );
-                    let result = service.supervise_workspace_agent(run_id, control).await;
+                    let result = service.supervise_run(run_id, control).await;
                     let _ = sender.send(result);
                 });
                 receiver
@@ -165,7 +159,7 @@ impl LocalControlService {
                             true,
                         )
                     })?
-                    .map(CommandResult::Run)
+                    .map(|run| CommandResult::Run(run.view()))
             }
         }
     }

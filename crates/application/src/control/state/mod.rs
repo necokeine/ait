@@ -1,11 +1,12 @@
 //! Typed command contexts. Reducers declare capabilities instead of accessing a workspace bag.
+use crate::control::model::ProviderState;
+use crate::control::model::RunState;
+use crate::control::model::{AgentState, CronState, MessageState, ProjectState, SessionState};
+
 use crate::control::catalog::builtin_providers;
 use crate::control::runs::journal::WorkspaceRunJournal;
 use crate::control::state::transaction::{RecordContext, TypedChange, diff_map, diff_records};
-use ait_contracts::{
-    AgentProviderView, AgentView, CronView, MessageView, ProjectView, RunView, SessionView,
-    SettingsDocument, default_settings,
-};
+use ait_contracts::{SettingsDocument, default_settings};
 use ait_ports::ControlRecordKind as Kind;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -18,16 +19,16 @@ pub(in crate::control) const fn default_settings_revision() -> u64 {
     1
 }
 pub(in crate::control) trait HasProjects {
-    fn projects(&self) -> &Vec<ProjectView>;
-    fn projects_mut(&mut self) -> &mut Vec<ProjectView>;
+    fn projects(&self) -> &Vec<ProjectState>;
+    fn projects_mut(&mut self) -> &mut Vec<ProjectState>;
 }
 pub(in crate::control) trait HasAgents {
-    fn agents(&self) -> &Vec<AgentView>;
-    fn agents_mut(&mut self) -> &mut Vec<AgentView>;
+    fn agents(&self) -> &Vec<AgentState>;
+    fn agents_mut(&mut self) -> &mut Vec<AgentState>;
 }
 pub(in crate::control) trait HasProviders {
-    fn providers(&self) -> &Vec<AgentProviderView>;
-    fn providers_mut(&mut self) -> &mut Vec<AgentProviderView>;
+    fn providers(&self) -> &Vec<ProviderState>;
+    fn providers_mut(&mut self) -> &mut Vec<ProviderState>;
 }
 pub(in crate::control) trait HasProviderCredentials {
     fn provider_credentials(&self) -> &HashMap<String, String>;
@@ -37,23 +38,23 @@ pub(in crate::control) trait HasRunCredentials {
     fn run_credentials_mut(&mut self) -> &mut HashMap<String, String>;
 }
 pub(in crate::control) trait HasSessions {
-    fn sessions(&self) -> &Vec<SessionView>;
-    fn sessions_mut(&mut self) -> &mut Vec<SessionView>;
+    fn sessions(&self) -> &Vec<SessionState>;
+    fn sessions_mut(&mut self) -> &mut Vec<SessionState>;
 }
 pub(in crate::control) trait HasMessages {
-    fn messages(&self) -> &Vec<MessageView>;
-    fn messages_mut(&mut self) -> &mut Vec<MessageView>;
+    fn messages(&self) -> &Vec<MessageState>;
+    fn messages_mut(&mut self) -> &mut Vec<MessageState>;
 }
 pub(in crate::control) trait HasRuns {
-    fn runs(&self) -> &Vec<RunView>;
-    fn runs_mut(&mut self) -> &mut Vec<RunView>;
+    fn runs(&self) -> &Vec<RunState>;
+    fn runs_mut(&mut self) -> &mut Vec<RunState>;
 }
 pub(in crate::control) trait HasWorkspaceRunJournals {
     fn workspace_run_journals_mut(&mut self) -> &mut HashMap<String, WorkspaceRunJournal>;
 }
 pub(in crate::control) trait HasCrons {
-    fn crons(&self) -> &Vec<CronView>;
-    fn crons_mut(&mut self) -> &mut Vec<CronView>;
+    fn crons(&self) -> &Vec<CronState>;
+    fn crons_mut(&mut self) -> &mut Vec<CronState>;
 }
 pub(in crate::control) trait HasSettings {
     fn settings(&self) -> &SettingsDocument;
@@ -260,70 +261,70 @@ macro_rules! field_access {
 }
 
 context!(ProjectsContext {
-    projects: Vec<ProjectView>,
+    projects: Vec<ProjectState>,
 } [ "projects" => Project ]);
 
 context!(ProjectRegistrationContext {
-    projects: Vec<ProjectView>,
-    messages: Vec<MessageView>,
+    projects: Vec<ProjectState>,
+    messages: Vec<MessageState>,
 } [ "projects" => Project, "messages" => Message ]);
 
 context!(ProjectAgentContext {
-    projects: Vec<ProjectView>,
-    agents: Vec<AgentView>,
+    projects: Vec<ProjectState>,
+    agents: Vec<AgentState>,
 } [ "projects" => Project, "agents" => Agent ]);
 
 context!(AgentsContext {
-    agents: Vec<AgentView>,
+    agents: Vec<AgentState>,
 } [ "agents" => Agent ]);
 
 context!(AgentContext {
-    agents: Vec<AgentView>,
-    providers: Vec<AgentProviderView>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
 } [ "agents" => Agent, "providers" => Provider ]);
 
 context!(ProviderContext {
-    agents: Vec<AgentView>,
-    providers: Vec<AgentProviderView>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
     provider_credentials: HashMap<String, String>,
 } [ "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential ]);
 
 context!(SessionsContext {
-    sessions: Vec<SessionView>,
+    sessions: Vec<SessionState>,
 } [ "sessions" => Session ]);
 
 context!(SessionConfigContext {
-    sessions: Vec<SessionView>,
-    agents: Vec<AgentView>,
-    providers: Vec<AgentProviderView>,
+    sessions: Vec<SessionState>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
 } [ "sessions" => Session, "agents" => Agent, "providers" => Provider ]);
 
 context!(MessagesContext {
-    messages: Vec<MessageView>,
+    messages: Vec<MessageState>,
 } [ "messages" => Message ]);
 
 context!(RunsContext {
-    runs: Vec<RunView>,
+    runs: Vec<RunState>,
 } [ "runs" => Run ]);
 
 context!(ConversationContext {
-    projects: Vec<ProjectView>,
-    agents: Vec<AgentView>,
-    providers: Vec<AgentProviderView>,
+    projects: Vec<ProjectState>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
     provider_credentials: HashMap<String, String>,
     run_credentials: HashMap<String, String>,
-    sessions: Vec<SessionView>,
-    messages: Vec<MessageView>,
-    runs: Vec<RunView>,
+    sessions: Vec<SessionState>,
+    messages: Vec<MessageState>,
+    runs: Vec<RunState>,
     settings: SettingsDocument,
     settings_revision: u64,
 } [ "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "run_credentials" => RunCredential, "sessions" => Session, "messages" => Message, "runs" => Run, "settings" => Settings ]);
 
 context!(RunContext {
-    projects: Vec<ProjectView>,
-    sessions: Vec<SessionView>,
-    messages: Vec<MessageView>,
-    runs: Vec<RunView>,
+    projects: Vec<ProjectState>,
+    sessions: Vec<SessionState>,
+    messages: Vec<MessageState>,
+    runs: Vec<RunState>,
     workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
     run_credentials: HashMap<String, String>,
     settings: SettingsDocument,
@@ -331,41 +332,41 @@ context!(RunContext {
 } [ "projects" => Project, "sessions" => Session, "messages" => Message, "runs" => Run, "workspace_run_journals" => WorkspaceRunJournal, "run_credentials" => RunCredential, "settings" => Settings ]);
 
 context!(RunControlContext {
-    projects: Vec<ProjectView>,
-    sessions: Vec<SessionView>,
-    runs: Vec<RunView>,
+    projects: Vec<ProjectState>,
+    sessions: Vec<SessionState>,
+    runs: Vec<RunState>,
     workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
 } [ "projects" => Project, "sessions" => Session, "runs" => Run, "workspace_run_journals" => WorkspaceRunJournal ]);
 
 context!(CronCreateContext {
-    crons: Vec<CronView>,
-    messages: Vec<MessageView>,
-    agents: Vec<AgentView>,
+    crons: Vec<CronState>,
+    messages: Vec<MessageState>,
+    agents: Vec<AgentState>,
 } [ "crons" => Cron, "messages" => Message, "agents" => Agent ]);
 
 context!(CronsContext {
-    crons: Vec<CronView>,
+    crons: Vec<CronState>,
 } [ "crons" => Cron ]);
 
 context!(CronTriggerContext {
-    crons: Vec<CronView>,
-    projects: Vec<ProjectView>,
-    agents: Vec<AgentView>,
-    providers: Vec<AgentProviderView>,
+    crons: Vec<CronState>,
+    projects: Vec<ProjectState>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
     provider_credentials: HashMap<String, String>,
     run_credentials: HashMap<String, String>,
-    messages: Vec<MessageView>,
-    runs: Vec<RunView>,
+    messages: Vec<MessageState>,
+    runs: Vec<RunState>,
     settings: SettingsDocument,
     settings_revision: u64,
 } [ "crons" => Cron, "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "run_credentials" => RunCredential, "messages" => Message, "runs" => Run, "settings" => Settings ]);
 
 context!(ArchiveContext {
-    projects: Vec<ProjectView>,
-    agents: Vec<AgentView>,
-    providers: Vec<AgentProviderView>,
-    sessions: Vec<SessionView>,
-    messages: Vec<MessageView>,
+    projects: Vec<ProjectState>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
+    sessions: Vec<SessionState>,
+    messages: Vec<MessageState>,
 } [ "projects" => Project, "agents" => Agent, "providers" => Provider, "sessions" => Session, "messages" => Message ]);
 
 context!(SettingsContext {
@@ -374,28 +375,28 @@ context!(SettingsContext {
 } [ "settings" => Settings ]);
 
 context!(ApiRunContext {
-    runs: Vec<RunView>,
-    sessions: Vec<SessionView>,
-    messages: Vec<MessageView>,
+    runs: Vec<RunState>,
+    sessions: Vec<SessionState>,
+    messages: Vec<MessageState>,
 } [ "runs" => Run, "sessions" => Session, "messages" => Message ]);
 
 context!(NewSessionContext {
-    projects: Vec<ProjectView>,
-    sessions: Vec<SessionView>,
-    agents: Vec<AgentView>,
-    messages: Vec<MessageView>,
+    projects: Vec<ProjectState>,
+    sessions: Vec<SessionState>,
+    agents: Vec<AgentState>,
+    messages: Vec<MessageState>,
 } [ "projects" => Project, "sessions" => Session, "agents" => Agent, "messages" => Message ]);
 
 context!(SessionBindingContext {
-    sessions: Vec<SessionView>,
-    agents: Vec<AgentView>,
+    sessions: Vec<SessionState>,
+    agents: Vec<AgentState>,
 } [ "sessions" => Session, "agents" => Agent ]);
 
 context!(SessionTitleContext {
-    projects: Vec<ProjectView>,
-    sessions: Vec<SessionView>,
-    messages: Vec<MessageView>,
-    runs: Vec<RunView>,
+    projects: Vec<ProjectState>,
+    sessions: Vec<SessionState>,
+    messages: Vec<MessageState>,
+    runs: Vec<RunState>,
 } [ "projects" => Project, "sessions" => Session, "messages" => Message, "runs" => Run ]);
 
 #[cfg(test)]

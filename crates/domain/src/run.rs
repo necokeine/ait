@@ -638,6 +638,96 @@ impl RunTerminationReadiness {
     }
 }
 
+impl Run {
+    /// Validates a worker mutation against the last acknowledged Run.
+    /// # Errors
+    /// Rejects changes to fixed input, counter rollback, or completion without barrier authority.
+    pub fn validate_worker_successor(
+        &self,
+        after: &Self,
+        completion: Option<bool>,
+    ) -> Result<(), DomainError> {
+        if self.status.is_terminal()
+            || self.id != after.id
+            || self.project_id != after.project_id
+            || self.base_message_id != after.base_message_id
+            || self.agent_id != after.agent_id
+            || self.agent_revision != after.agent_revision
+            || self.agent_snapshot != after.agent_snapshot
+            || self.budget != after.budget
+            || self.retry_policy != after.retry_policy
+            || self.follow_session_id != after.follow_session_id
+            || self.trigger != after.trigger
+            || self.cron_id != after.cron_id
+            || self.scheduled_at != after.scheduled_at
+            || self.created_at != after.created_at
+            || self.dedupe_key != after.dedupe_key
+            || (self.started_at.is_some() && self.started_at != after.started_at)
+            || (after.status == RunStatus::Queued && self.status != RunStatus::Queued)
+            || after.step_count < self.step_count
+            || after.step_count > self.step_count.saturating_add(1)
+            || after.attempt_count < self.attempt_count
+            || after.attempt_count > self.attempt_count.saturating_add(1)
+            || after.compaction_count < self.compaction_count
+            || after.compaction_count > self.compaction_count.saturating_add(1)
+            || after.queue_version != self.queue_version
+            || after.queue_cursor < self.queue_cursor
+            || after.usage.input_tokens < self.usage.input_tokens
+            || after.usage.cached_input_tokens < self.usage.cached_input_tokens
+            || after.usage.output_tokens < self.usage.output_tokens
+            || after.usage.tool_executions < self.usage.tool_executions
+            || (self.usage.cost.is_some() && after.usage.cost < self.usage.cost)
+            || (after.status == RunStatus::Completed
+                && (completion != Some(true) || self.status != RunStatus::Settling))
+        {
+            return Err(DomainError::invariant(
+                ErrorCode::InvalidRun,
+                "Run successor changes fixed identity, counters or completion authority",
+            ));
+        }
+        Ok(())
+    }
+    /// Stops an interrupted or cancelled execution without granting completion.
+    /// # Errors
+    /// Completion is reserved for the coordinator's termination barrier.
+    pub fn stop(
+        &mut self,
+        reason: RunStopReason,
+        at: TimestampMs,
+        error: Option<DomainError>,
+    ) -> Result<(), DomainError> {
+        let status = match reason {
+            RunStopReason::Completed => {
+                return Err(DomainError::invariant(
+                    ErrorCode::InvalidRun,
+                    "completion requires the termination barrier",
+                ));
+            }
+            RunStopReason::Cancelled => RunStatus::Cancelled,
+            RunStopReason::Failed | RunStopReason::RetryExhausted => RunStatus::Failed,
+            _ => RunStatus::LimitExceeded,
+        };
+        self.status = status;
+        self.phase = RunPhase::Terminal;
+        self.stop_reason = Some(reason);
+        self.error = error;
+        self.next_retry_at = None;
+        self.ended_at.get_or_insert(at);
+        Ok(())
+    }
+}
+
+impl RunTrigger {
+    /// Stable transport spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Cron => "cron",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

@@ -1,9 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use ait_domain::{
-    AgentId, DomainError, GitCommit, InstructionSourceSnapshot, MessageId, Project, ProjectId,
-    SessionId, SessionRoot,
-};
+use ait_domain::{DomainError, GitCommit};
 
 /// Allocates a new workdir for a Project whose caller supplied only a name.
 /// Platform default-directory resolution and filename rules belong to the adapter.
@@ -24,30 +21,6 @@ pub trait ProjectDirectoryCreator: Send + Sync {
     /// Returns a stable Project failure for invalid names, unavailable default
     /// directories, existing targets, or failed directory creation.
     async fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError>;
-}
-
-/// Captured Project-instruction component before a store assigns its revision.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveredInstructions {
-    /// Ordered source content and provenance.
-    pub sources: Vec<InstructionSourceSnapshot>,
-    /// SHA-256 of the canonical component content and provenance.
-    pub content_digest: String,
-}
-
-/// Input for the atomic new-tree/session write.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreateSessionRoot {
-    /// Project that owns the tree.
-    pub project_id: ProjectId,
-    /// Agent fixed for the lifetime of the new Session.
-    pub agent_id: AgentId,
-    /// Externally assigned session identity.
-    pub session_id: SessionId,
-    /// Externally assigned root message identity.
-    pub root_message_id: MessageId,
-    /// Current instruction component discovered immediately before the write.
-    pub instructions: DiscoveredInstructions,
 }
 
 /// Stable failures exposed by a local project environment adapter.
@@ -166,74 +139,4 @@ pub trait ProjectEnvironment: Send + Sync {
         authorized_root: &Path,
         absolute_path: &Path,
     ) -> Result<Option<Vec<u8>>, EnvironmentError>;
-}
-
-/// Stable persistence failures for project orchestration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum StoreError {
-    /// A canonical workdir is already registered.
-    ProjectPathAlreadyRegistered(PathBuf),
-    /// The project does not exist.
-    ProjectNotFound(ProjectId),
-    /// A supplied message does not belong to the project.
-    MessageProjectMismatch,
-    /// A generated identity is already in use.
-    IdentityConflict(String),
-    /// Adapter-specific failure.
-    Other(String),
-}
-
-impl std::fmt::Display for StoreError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ProjectPathAlreadyRegistered(path) => {
-                write!(
-                    formatter,
-                    "project path is already registered: {}",
-                    path.display()
-                )
-            }
-            Self::ProjectNotFound(id) => write!(formatter, "project not found: {}", id.as_str()),
-            Self::MessageProjectMismatch => write!(formatter, "message belongs to another project"),
-            Self::IdentityConflict(id) => write!(formatter, "identity already exists: {id}"),
-            Self::Other(message) => formatter.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for StoreError {}
-
-/// Persistence transaction boundary for Project registration and Session roots.
-pub trait ProjectStore: Send + Sync {
-    /// Inserts a project and its first instruction revision atomically.
-    ///
-    /// Implementations must enforce canonical workdir uniqueness.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StoreError`] when the Project identity or canonical path is
-    /// already registered, or when the atomic write fails.
-    fn register_project(
-        &self,
-        project: Project,
-        initial_instructions: DiscoveredInstructions,
-    ) -> Result<Project, StoreError>;
-
-    /// Returns a registered project.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::ProjectNotFound`] when the identity is unknown, or
-    /// another [`StoreError`] when the store cannot be read.
-    fn get_project(&self, project_id: &ProjectId) -> Result<Project, StoreError>;
-
-    /// Atomically appends an instruction revision when the digest changed,
-    /// creates an immutable root System message containing the selected
-    /// structured component, and creates a Session pointing at that root.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`StoreError`] when the Project is missing, an assigned
-    /// identity conflicts, or the transaction cannot be committed.
-    fn create_session_root(&self, command: CreateSessionRoot) -> Result<SessionRoot, StoreError>;
 }

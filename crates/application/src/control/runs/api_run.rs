@@ -3,14 +3,17 @@ use crate::control::LocalControlService;
 use crate::control::conversation::release_session;
 use crate::control::errors::{error, recovery_error};
 use crate::control::events::{now, pending};
+use crate::control::model::MessageState;
+use crate::control::model::{ApiRunState, RunState};
 use crate::control::permissions::validate_run_permission_ceiling;
 use crate::control::project::worktrees::run_workdir;
-use crate::control::runs::is_terminal_workspace_status;
+use crate::control::runs::is_terminal_run_status;
 use crate::control::state::{HasMessages, HasProjects, HasRunCredentials, HasSessions};
 use ait_contracts::{
-    ApiError, ApiRunExecution, MessageView, RunView,
+    ApiError,
     sensitive::{validate_serialized_tool_arguments, validate_tool_argument_value},
 };
+use ait_domain::LifecycleStatus;
 use ait_domain::{
     DomainError, ErrorCode, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
     ProjectedMessage, Run, RunAttempt, RunId, RunStatus, SubMessage, ToolExecution,
@@ -57,17 +60,13 @@ fn message_id(id: &str) -> Result<MessageId, RunStoreError> {
         .map(MessageId::new)
         .map_err(store_failure)
 }
-fn status(run: &Run) -> String {
-    serde_json::to_value(run.status)
-        .expect("status serializes")
-        .as_str()
-        .expect("status string")
-        .into()
+fn status(run: &Run) -> LifecycleStatus {
+    run.status.into()
 }
 
 struct ProviderAgent {
     gateway: Arc<dyn AgentProviderGateway>,
-    view: RunView,
+    view: RunState,
     credential: String,
     names: Vec<String>,
 }
@@ -118,13 +117,13 @@ impl LocalControlService {
     )]
     pub(in crate::control) async fn execute_api_run(
         &self,
-        view: &RunView,
+        view: &RunState,
         cancellation: tokio_util::sync::CancellationToken,
-    ) -> Result<RunView, ApiError> {
-        if is_terminal_workspace_status(&view.status) {
+    ) -> Result<RunState, ApiError> {
+        if is_terminal_run_status(view.status()) {
             return Ok(view.clone());
         }
-        if view.status == "cancelling" {
+        if view.status() == LifecycleStatus::Cancelling {
             cancellation.cancel();
         }
         let store = Arc::new(ControlRunStore {
@@ -137,21 +136,22 @@ impl LocalControlService {
             .await
             .map_err(|_| recovery_error("could not initialize API Run"))?;
         let current = store.latest_view().await?;
-        if is_terminal_workspace_status(&current.status) {
+        if is_terminal_run_status(current.status()) {
             return Ok(current);
         }
         // A recovered durable cancel is a settlement instruction, never a new
         // provider/tool invocation (even if credentials or the Project moved).
-        if current.status == "cancelling" {
+        if current.status() == LifecycleStatus::Cancelling {
             let mut run = store
                 .load_run(&RunId::new(&view.id))
                 .await
                 .map_err(|_| recovery_error("could not read cancelled API Run"))?;
-            run.status = RunStatus::Cancelled;
-            run.phase = ait_domain::RunPhase::Terminal;
-            run.stop_reason = Some(ait_domain::RunStopReason::Cancelled);
-            run.next_retry_at = None;
-            run.ended_at = Some(ait_domain::TimestampMs(now()));
+            run.stop(
+                ait_domain::RunStopReason::Cancelled,
+                ait_domain::TimestampMs(now()),
+                run.error.clone(),
+            )
+            .map_err(api_domain_error_reverse)?;
             store
                 .save_run(run)
                 .await
@@ -197,12 +197,12 @@ impl LocalControlService {
                     .load_run(&RunId::new(&view.id))
                     .await
                     .map_err(|_| recovery_error("could not load API Run"))?;
-                run.status = RunStatus::Failed;
-                run.phase = ait_domain::RunPhase::Terminal;
-                run.stop_reason = Some(ait_domain::RunStopReason::Failed);
-                run.error = Some(failure);
-                run.next_retry_at = None;
-                run.ended_at = Some(ait_domain::TimestampMs(now()));
+                run.stop(
+                    ait_domain::RunStopReason::Failed,
+                    ait_domain::TimestampMs(now()),
+                    Some(failure),
+                )
+                .map_err(api_domain_error_reverse)?;
                 store
                     .save_run(run)
                     .await
@@ -237,7 +237,7 @@ impl LocalControlService {
 
     async fn prepare_api_executor(
         &self,
-        view: &RunView,
+        view: &RunState,
         state: &(impl HasProjects + HasRunCredentials + HasSessions),
     ) -> Result<(Arc<dyn RunTool>, ProviderAgent), DomainError> {
         validate_run_permission_ceiling(view.permission_profile, self.permission_limits)?;
@@ -307,45 +307,13 @@ fn validate_worker_transition(
     after: &Run,
     completion: Option<bool>,
 ) -> Result<(), RunStoreError> {
-    if before.status.is_terminal()
-        || before.id != after.id
-        || before.project_id != after.project_id
-        || before.base_message_id != after.base_message_id
-        || before.agent_id != after.agent_id
-        || before.agent_revision != after.agent_revision
-        || before.agent_snapshot != after.agent_snapshot
-        || before.budget != after.budget
-        || before.retry_policy != after.retry_policy
-        || before.follow_session_id != after.follow_session_id
-        || before.trigger != after.trigger
-        || before.cron_id != after.cron_id
-        || before.scheduled_at != after.scheduled_at
-        || before.created_at != after.created_at
-        || before.dedupe_key != after.dedupe_key
-        || (before.started_at.is_some() && before.started_at != after.started_at)
-        || (after.status == RunStatus::Queued && before.status != RunStatus::Queued)
-        || after.step_count < before.step_count
-        || after.step_count > before.step_count.saturating_add(1)
-        || after.attempt_count < before.attempt_count
-        || after.attempt_count > before.attempt_count.saturating_add(1)
-        || after.compaction_count < before.compaction_count
-        || after.compaction_count > before.compaction_count.saturating_add(1)
-        || after.queue_version != before.queue_version
-        || after.queue_cursor < before.queue_cursor
-        || after.usage.input_tokens < before.usage.input_tokens
-        || after.usage.cached_input_tokens < before.usage.cached_input_tokens
-        || after.usage.output_tokens < before.usage.output_tokens
-        || after.usage.tool_executions < before.usage.tool_executions
-        || (before.usage.cost.is_some() && after.usage.cost < before.usage.cost)
-        || (after.status == RunStatus::Completed
-            && (completion != Some(true) || before.status != RunStatus::Settling))
-    {
-        return Err(conflict());
-    }
-    Ok(())
+    before
+        .validate_worker_successor(after, completion)
+        .map_err(|_| conflict())
 }
+
 impl ControlRunStore {
-    async fn latest_view(&self) -> Result<RunView, ApiError> {
+    async fn latest_view(&self) -> Result<RunState, ApiError> {
         self.records
             .read_run_view_records(&self.id)
             .await?
@@ -356,7 +324,7 @@ impl ControlRunStore {
             .ok_or_else(|| invalid("Run disappeared"))
     }
 
-    async fn initialize(&self, view: &RunView) -> Result<(), RunStoreError> {
+    async fn initialize(&self, view: &RunState) -> Result<(), RunStoreError> {
         for _ in 0..8 {
             let loaded = self
                 .records
@@ -369,7 +337,7 @@ impl ControlRunStore {
                 .iter_mut()
                 .find(|r| r.id == self.id)
                 .ok_or_else(conflict)?;
-            if target.execution.is_some() || is_terminal_workspace_status(&target.status) {
+            if target.execution().is_some() || is_terminal_run_status(target.status()) {
                 return Ok(());
             }
             let now = ait_domain::TimestampMs(now());
@@ -396,11 +364,7 @@ impl ControlRunStore {
                         Sha256::digest(serde_json::to_vec(&view.config).map_err(store_failure)?)
                     ),
                 },
-                trigger: if view.trigger == "cron" {
-                    ait_domain::RunTrigger::Cron
-                } else {
-                    ait_domain::RunTrigger::Manual
-                },
+                trigger: view.trigger,
                 cron_id: view.cron_id.as_ref().map(ait_domain::CronId::new),
                 scheduled_at: view.scheduled_at.map(ait_domain::TimestampMs),
                 status: RunStatus::Queued,
@@ -432,13 +396,13 @@ impl ControlRunStore {
                 created_at: now,
             };
             run.validate().map_err(store_failure)?;
-            target.execution = Some(Box::new(ApiRunExecution {
+            target.install_execution(ApiRunState {
                 run,
                 attempts: Vec::new(),
                 tools: Vec::new(),
                 worker_instance_id: None,
                 worker_receipts: std::collections::BTreeMap::new(),
-            }));
+            });
             match self
                 .records
                 .persist_records(&loaded, &state, Vec::new())
@@ -451,7 +415,7 @@ impl ControlRunStore {
         }
         Err(conflict())
     }
-    async fn state(&self) -> Result<ApiRunExecution, RunStoreError> {
+    async fn state(&self) -> Result<ApiRunState, RunStoreError> {
         self.records
             .read_run_view_records(&self.id)
             .await
@@ -460,8 +424,7 @@ impl ControlRunStore {
             .runs
             .into_iter()
             .find(|r| r.id == self.id)
-            .and_then(|r| r.execution)
-            .map(|e| *e)
+            .and_then(|r| r.execution().cloned())
             .ok_or_else(conflict)
     }
     #[allow(
@@ -501,16 +464,14 @@ impl ControlRunStore {
                 if view.id != operation.lease.run_id.as_str()
                     || view.lease_epoch != operation.lease.epoch
                     || view
-                        .execution
-                        .as_ref()
+                        .execution()
                         .and_then(|e| e.worker_instance_id.as_deref())
                         != Some(&operation.lease.instance_id)
                 {
                     return Err(conflict());
                 }
                 if let Some(receipt) = view
-                    .execution
-                    .as_ref()
+                    .execution()
                     .and_then(|e| e.worker_receipts.get(operation.id))
                 {
                     if receipt.fingerprint != operation.fingerprint {
@@ -528,14 +489,12 @@ impl ControlRunStore {
                     return Err(conflict());
                 }
             }
-            if view.status == "cancelling" && run.status.is_terminal() {
+            if view.status() == LifecycleStatus::Cancelling && run.status.is_terminal() {
                 run.status = RunStatus::Cancelled;
                 run.stop_reason = Some(ait_domain::RunStopReason::Cancelled);
             }
-            let execution = view.execution.as_mut().ok_or_else(conflict)?;
-            if execution.run != expected
-                || (is_terminal_workspace_status(&view.status) && view.status != status(&expected))
-            {
+            let execution = view.execution_mut().ok_or_else(conflict)?;
+            if execution.run != expected {
                 return Err(conflict());
             }
             if let Some(attempt) = &attempt {
@@ -563,29 +522,17 @@ impl ControlRunStore {
             if let Some(message) = &message {
                 append_projection(&mut state, &view, &run, &expected, message)?;
             }
-            if view.status != "cancelling" || run.status.is_terminal() {
-                view.status = status(&run);
-            }
-            view.phase = Some(
-                serde_json::to_value(run.phase)
-                    .map_err(store_failure)?
-                    .as_str()
-                    .ok_or_else(conflict)?
-                    .into(),
-            );
-            view.last_message_id = run.last_message_id.map(|id| id.as_uuid().to_string());
-            view.error = run.error.clone().map(api_domain_error_reverse);
             if run.status.is_terminal() {
                 if run.status != RunStatus::Completed {
                     interrupt(&mut view);
                     append_terminal_results(&mut state, &mut view)?;
-                    run = view.execution.as_ref().ok_or_else(conflict)?.run.clone();
+                    run = view.execution().ok_or_else(conflict)?.run.clone();
                 }
                 release_session(&mut state, &view);
             }
             state.runs[index] = view;
             if let Some(operation) = &operation {
-                let execution = state.runs[index].execution.as_mut().ok_or_else(conflict)?;
+                let execution = state.runs[index].execution_mut().ok_or_else(conflict)?;
                 if execution.worker_receipts.len() >= 8192 {
                     return Err(conflict());
                 }
@@ -631,12 +578,11 @@ impl RunStore for ControlRunStore {
                 .iter_mut()
                 .find(|v| v.id == self.id)
                 .ok_or_else(conflict)?;
-            if is_terminal_workspace_status(&view.status) {
+            if is_terminal_run_status(view.status()) {
                 return Err(conflict());
             }
             view.lease_epoch = view.lease_epoch.checked_add(1).ok_or_else(conflict)?;
-            view.execution
-                .as_mut()
+            view.execution_mut()
                 .ok_or_else(conflict)?
                 .worker_instance_id = Some(instance.into());
             let lease = ait_ports::WorkerLease {
@@ -671,7 +617,7 @@ impl RunStore for ControlRunStore {
             Sha256::digest(serde_json::to_vec(&mutation).map_err(store_failure)?)
         );
         let view = self.latest_view().await.map_err(store_failure)?;
-        let execution = view.execution.as_ref().ok_or_else(conflict)?;
+        let execution = view.execution().ok_or_else(conflict)?;
         if view.lease_epoch != lease.epoch
             || execution.worker_instance_id.as_deref() != Some(&lease.instance_id)
         {
@@ -746,66 +692,16 @@ impl RunStore for ControlRunStore {
             .await
             .map_err(store_failure)?
             .original;
-        let mut path = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut cursor = Some(head.as_uuid().to_string());
-        while let Some(id) = cursor.as_deref() {
-            if !seen.insert(id.to_owned()) {
-                return Err(conflict());
-            }
-            let m = state
-                .messages
-                .iter()
-                .find(|m| m.id == id)
-                .ok_or_else(conflict)?;
-            let message =
-                if let Some(native) = m.data.as_ref().and_then(|d| d.get("native_message")) {
-                    serde_json::from_value(native.clone()).map_err(store_failure)?
-                } else {
-                    Message {
-                        id: message_id(&m.id)?,
-                        project_id: ait_domain::ProjectId::new(&m.project_id),
-                        parent_message_id: m
-                            .parent_message_id
-                            .as_deref()
-                            .map(message_id)
-                            .transpose()?,
-                        role: match m.role.as_str() {
-                            "assistant" => MessageRole::Assistant,
-                            "system" => MessageRole::System,
-                            _ => MessageRole::User,
-                        },
-                        kind: MessageKind::Standard,
-                        origin: if m.role == "system" {
-                            MessageOrigin::Project
-                        } else if m.git_commit.is_some() {
-                            MessageOrigin::Human
-                        } else {
-                            MessageOrigin::Agent
-                        },
-                        sub_messages: vec![SubMessage::Text {
-                            text: m.text.clone().unwrap_or_default(),
-                        }],
-                        created_by_session_id: None,
-                        run_id: None,
-                        run_seq: None,
-                        tool_result: None,
-                        git_commit: m
-                            .git_commit
-                            .as_ref()
-                            .map(|s| ait_domain::GitCommit::parse(s.clone()))
-                            .transpose()
-                            .map_err(store_failure)?,
-                        metadata: ait_domain::DomainMetadata::default(),
-                        created_at: ait_domain::TimestampMs(m.created_at),
-                    }
-                };
-            cursor.clone_from(&m.parent_message_id);
-            path.push(ProjectedMessage::Visible(message));
-        }
-        path.reverse();
-        Ok(path)
+        crate::control::model::domain_path(&state.messages, &head.to_string())
+            .map(|messages| {
+                messages
+                    .into_iter()
+                    .map(ProjectedMessage::Visible)
+                    .collect()
+            })
+            .map_err(store_failure)
     }
+
     async fn load_attempts(&self, _: &RunId) -> Result<Vec<RunAttempt>, RunStoreError> {
         Ok(self.state().await?.attempts)
     }
@@ -875,7 +771,7 @@ impl RunStore for ControlRunStore {
 
 fn append_projection(
     state: &mut (impl HasMessages + HasSessions),
-    view: &RunView,
+    view: &RunState,
     run: &Run,
     expected: &Run,
     message: &Message,
@@ -913,21 +809,12 @@ fn append_projection(
             _ => None,
         })
         .collect::<String>();
-    state.messages_mut().push(MessageView {
+    state.messages_mut().push(MessageState {
         id: message.id.as_uuid().to_string(),
         project_id: view.project_id.clone(),
         parent_message_id: message.parent_message_id.map(|id| id.as_uuid().to_string()),
-        role: serde_json::to_value(message.role)
-            .map_err(store_failure)?
-            .as_str()
-            .ok_or_else(conflict)?
-            .into(),
-        kind: if message.kind == MessageKind::ToolResult {
-            "tool_result"
-        } else {
-            "standard"
-        }
-        .into(),
+        role: message.role,
+        kind: message.kind,
         text: (!text.is_empty()).then_some(text),
         created_at: message.created_at.0,
         git_commit: None,
@@ -938,10 +825,10 @@ fn append_projection(
         .iter_mut()
         .find(|s| Some(&s.id) == view.session_id.as_ref())
     {
-        let owns_pointer = session.active_run_id.as_deref() == Some(&view.id)
-            || (run.status.is_terminal() && session.active_run_id.is_none());
+        let owns_pointer = session.active_run_id() == Some(&view.id)
+            || (run.status.is_terminal() && session.active_run_id().is_none());
         if !owns_pointer
-            || session.current_message_id
+            || session.current_message_id()
                 != expected
                     .last_message_id
                     .unwrap_or(expected.base_message_id)
@@ -956,8 +843,15 @@ fn append_projection(
             }
             return Err(conflict());
         }
-        session.current_message_id = message.id.as_uuid().to_string();
-        session.version += 1;
+        session
+            .reference
+            .advance(
+                session.reference.head(),
+                session.reference.version(),
+                message.parent_message_id,
+                message.id,
+            )
+            .map_err(store_failure)?;
     }
 
     Ok(())
@@ -1008,16 +902,13 @@ fn validate_tool_child(
 }
 
 /// Keep the public projection and canonical aggregate consistent on policy-driven recovery stops.
-pub(in crate::control) fn interrupt(view: &mut RunView) {
-    if view.status == "completed" && !needs_terminal_repair(view) {
+pub(in crate::control) fn interrupt(view: &mut RunState) {
+    if view.status() == LifecycleStatus::Completed && !needs_terminal_repair(view) {
         return;
     }
-    let Some(execution) = view.execution.as_mut() else {
-        return;
-    };
-    let (status, reason) = if view.status == "cancelled" {
+    let (status, reason) = if view.status() == LifecycleStatus::Cancelled {
         (RunStatus::Cancelled, ait_domain::RunStopReason::Cancelled)
-    } else if view.status == "limit_exceeded" {
+    } else if view.status() == LifecycleStatus::LimitExceeded {
         (
             RunStatus::LimitExceeded,
             ait_domain::RunStopReason::RuntimeLimit,
@@ -1025,20 +916,22 @@ pub(in crate::control) fn interrupt(view: &mut RunView) {
     } else {
         (RunStatus::Failed, ait_domain::RunStopReason::Failed)
     };
-    if execution.run.status != status || execution.run.stop_reason.is_none() {
-        execution.run.stop_reason = Some(reason);
-    }
-    execution.run.status = status;
-    execution.run.phase = ait_domain::RunPhase::Terminal;
-    execution.run.next_retry_at = None;
-    execution
-        .run
-        .ended_at
-        .get_or_insert_with(|| ait_domain::TimestampMs(now()));
-    execution.run.error = view
-        .error
+    let failure = view
+        .error()
         .as_ref()
         .map(|e| DomainError::invariant(e.code, &e.message));
+    let Some(execution) = view.execution_mut() else {
+        return;
+    };
+    let reason = if execution.run.status == status {
+        execution.run.stop_reason.unwrap_or(reason)
+    } else {
+        reason
+    };
+    execution
+        .run
+        .stop(reason, ait_domain::TimestampMs(now()), failure)
+        .expect("interruption cannot complete a Run");
     for attempt in &mut execution.attempts {
         if attempt.status == ait_domain::RunAttemptStatus::Running {
             attempt.status = if status == RunStatus::Cancelled {
@@ -1075,19 +968,13 @@ pub(in crate::control) fn interrupt(view: &mut RunView) {
             ));
         }
     }
-    view.status = serde_json::to_value(status)
-        .expect("status serializes")
-        .as_str()
-        .expect("status string")
-        .into();
-    view.phase = Some("terminal".into());
 }
 
-pub(in crate::control) fn needs_terminal_repair(view: &RunView) -> bool {
-    is_terminal_workspace_status(&view.status)
-        && view.execution.as_ref().is_some_and(|execution| {
+pub(in crate::control) fn needs_terminal_repair(view: &RunState) -> bool {
+    is_terminal_run_status(view.status())
+        && view.execution().is_some_and(|execution| {
             !execution.run.status.is_terminal()
-                || status(&execution.run) != view.status
+                || status(&execution.run) != view.status()
                 || execution
                     .attempts
                     .iter()
@@ -1100,9 +987,9 @@ pub(in crate::control) fn needs_terminal_repair(view: &RunView) -> bool {
 /// execute or reconcile an effect here, and never modify an existing Message.
 pub(in crate::control) fn append_terminal_results(
     state: &mut (impl HasMessages + HasSessions),
-    view: &mut RunView,
+    view: &mut RunState,
 ) -> Result<(), RunStoreError> {
-    let Some(mut execution) = view.execution.take() else {
+    let Some(mut execution) = view.execution().cloned() else {
         return Ok(());
     };
     execution.tools.sort_by_key(|tool| {
@@ -1166,8 +1053,7 @@ pub(in crate::control) fn append_terminal_results(
         tool.tool_result_message_id = Some(id);
     }
     run.validate().map_err(store_failure)?;
-    view.last_message_id = run.last_message_id.map(|id| id.as_uuid().to_string());
-    view.execution = Some(execution);
+    view.install_execution(execution);
     Ok(())
 }
 

@@ -5,9 +5,8 @@ use crate::control::catalog::{
 };
 use crate::control::errors::{error, store_error};
 use crate::control::events::pending;
-use ait_contracts::{
-    AgentMode, AgentProvider, AgentProviderView, ApiError, CommandResult, ProviderSecret,
-};
+use crate::control::model::ProviderState;
+use ait_contracts::{AgentMode, AgentProvider, ApiError, CommandResult, ProviderSecret};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{AgentProviderGateway, ControlStoreError, HostProviderModelCatalog};
 use uuid::Uuid;
@@ -98,7 +97,7 @@ impl LocalControlService {
                     .provider_credentials
                     .insert(provider.id.clone(), reference.into());
             }
-            let view = AgentProviderView {
+            let view = ProviderState {
                 provider: provider.clone(),
                 has_secret: state.provider_credentials.contains_key(&provider.id),
             };
@@ -117,7 +116,7 @@ impl LocalControlService {
                 &view,
             )];
             match self.persist_records(&loaded, &state, events).await {
-                Ok(()) => return Ok(CommandResult::AgentProvider(view)),
+                Ok(()) => return Ok(CommandResult::AgentProvider(view.view())),
                 Err(ControlStoreError::Conflict) => {}
                 Err(failure) => return Err(store_error(failure)),
             }
@@ -250,7 +249,7 @@ impl LocalControlService {
                 &view,
             )];
             match self.persist_records(&loaded, &latest, events).await {
-                Ok(()) => return Ok(CommandResult::AgentProvider(view)),
+                Ok(()) => return Ok(CommandResult::AgentProvider(view.view())),
                 Err(ControlStoreError::Conflict) => {}
                 Err(failure) => return Err(store_error(failure)),
             }

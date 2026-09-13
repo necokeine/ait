@@ -2,12 +2,13 @@
 use crate::control::LocalControlService;
 use crate::control::catalog::{require_agent, validate_config};
 use crate::control::errors::error;
+use crate::control::model::SessionState;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
 use crate::control::project::require_project_view;
 use crate::control::state::{
     HasAgents, HasCrons, HasProjects, HasProviders, HasRuns, HasSessions, HasSettings,
 };
-use ait_contracts::{AgentMode, ApiError, Command, SessionView};
+use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
@@ -128,8 +129,8 @@ fn busy() -> ApiError {
     )
 }
 
-pub(in crate::control) fn ensure_idle(session: &SessionView) -> Result<(), ApiError> {
-    if session.active_run_id.is_some() {
+pub(in crate::control) fn ensure_idle(session: &SessionState) -> Result<(), ApiError> {
+    if session.active_run_id().is_some() {
         Err(busy())
     } else {
         Ok(())
