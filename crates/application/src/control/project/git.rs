@@ -89,7 +89,8 @@ pub(in crate::control) fn require_user_git_baseline(
     })
 }
 
-pub(in crate::control) fn prepare_git_root(path: &Path) -> Result<std::path::PathBuf, ApiError> {
+/// Resolve the target without initializing Git or changing the filesystem.
+pub(in crate::control) fn canonical_project_path(path: &Path) -> Result<PathBuf, ApiError> {
     if !path.exists() {
         return Err(error(
             ErrorCode::ProjectPathNotFound,
@@ -104,9 +105,21 @@ pub(in crate::control) fn prepare_git_root(path: &Path) -> Result<std::path::Pat
             false,
         ));
     }
-    let canonical = path
-        .canonicalize()
-        .map_err(|failure| error(ErrorCode::ProjectPathNotFound, failure.to_string(), false))?;
+    path.canonicalize()
+        .map_err(|failure| error(ErrorCode::ProjectPathNotFound, failure.to_string(), false))
+}
+
+fn prepare_git_root(path: &Path) -> Result<PathBuf, ApiError> {
+    let canonical = canonical_project_path(path)?;
+    // The caller has already checked uniqueness for this canonical path.
+    // Rebinding it must not redirect preparation to an unchecked target.
+    if canonical != path {
+        return Err(error(
+            ErrorCode::RunQueueConflict,
+            "canonical Project target changed before preparation; retry the request",
+            true,
+        ));
+    }
     let top = git_top_level(&canonical);
     if top.as_deref() != Some(canonical.as_path()) {
         let output = ProcessCommand::new("git")
@@ -398,6 +411,7 @@ fn git_commit_tree(path: &Path, commit: &str) -> Result<String, ApiError> {
 
 pub(in crate::control) fn git_head(path: &Path) -> Result<Option<String>, ApiError> {
     let output = ProcessCommand::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--verify", "HEAD"])
@@ -433,6 +447,7 @@ pub(in crate::control) fn is_git_commit(value: &str) -> bool {
 
 fn git_top_level(path: &Path) -> Option<std::path::PathBuf> {
     let output = ProcessCommand::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(path)
         .args(["rev-parse", "--show-toplevel"])
@@ -488,6 +503,23 @@ pub(in crate::control) fn cron_git_baseline(
 pub(in crate::control) struct PreparedProject {
     pub(in crate::control) workdir: String,
     pub(in crate::control) base_commit: String,
+}
+impl PreparedProject {
+    /// Revalidate the frozen preparation before each CAS, without repairing Git.
+    pub(in crate::control) fn verify(&self) -> Result<(), ApiError> {
+        let expected = Path::new(&self.workdir);
+        if expected.canonicalize().ok().as_deref() != Some(expected)
+            || git_top_level(expected).as_deref() != Some(expected)
+            || git_head(expected).ok().flatten().as_deref() != Some(self.base_commit.as_str())
+        {
+            return Err(error(
+                ErrorCode::RunQueueConflict,
+                "prepared Project Git root or HEAD changed; retry the request",
+                true,
+            ));
+        }
+        Ok(())
+    }
 }
 pub(in crate::control) fn prepare_project(workdir: &str) -> Result<PreparedProject, ApiError> {
     let canonical = prepare_git_root(Path::new(workdir))?;

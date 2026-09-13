@@ -801,9 +801,11 @@ impl RecordAccess {
                 ({ self.read_session_records(session_id).await })
                     .map(CommandTransaction::Conversation)
             }
-            Command::GetRun { run_id }
-            | Command::CancelRun { run_id }
-            | Command::ResolveNativeApproval { run_id, .. } => {
+            Command::GetRun { run_id } => self
+                .read_run_view_records(run_id)
+                .await
+                .map(CommandTransaction::Runs),
+            Command::CancelRun { run_id } | Command::ResolveNativeApproval { run_id, .. } => {
                 ({ self.read_run_control_records(run_id).await })
                     .map(CommandTransaction::RunControl)
             }

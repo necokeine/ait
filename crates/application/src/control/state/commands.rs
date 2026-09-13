@@ -10,9 +10,13 @@ use crate::control::conversation::{
 use crate::control::cron::{create_cron, set_cron_enabled, trigger_cron};
 use crate::control::errors::error;
 use crate::control::execution::CommandOutcome;
-use crate::control::project::archive::{export_project, import_project};
-use crate::control::project::git::{GitBaseline, require_user_git_baseline};
-use crate::control::project::{register_project, set_project_default_agent};
+use crate::control::project::archive::{
+    export_project, import_project, validate_import_conflicts, validate_project_export,
+};
+use crate::control::project::git::{GitBaseline, PreparedProject, require_user_git_baseline};
+use crate::control::project::{
+    register_project, set_project_default_agent, validate_project_workdir,
+};
 use crate::control::runs::cancel_run;
 
 use crate::control::errors::store_error;
@@ -59,6 +63,32 @@ pub(in crate::control) struct CommandCommit {
 impl CommandTransaction {
     pub(in crate::control) fn check_admission(&self, command: &Command) -> Result<(), ApiError> {
         match self {
+            Self::ProjectRegistration(tx) => {
+                let Command::RegisterProject {
+                    id,
+                    name,
+                    workdir,
+                    repo_url,
+                } = command
+                else {
+                    unreachable!("registration context")
+                };
+                self.validate_registration(id, name, &mut repo_url.clone())?;
+                // Workspace admission can run before a name-only Project has
+                // allocated its directory. Commit admission rechecks the resolved path.
+                if let Some(workdir) = workdir {
+                    validate_project_workdir(&tx.original, workdir)?;
+                }
+                Ok(())
+            }
+            Self::Archive(tx) => {
+                if let Command::ImportProject { archive, workdir } = command {
+                    validate_project_export(archive)?;
+                    validate_import_conflicts(&tx.original, archive)?;
+                    validate_project_workdir(&tx.original, workdir)?;
+                }
+                Ok(())
+            }
             Self::Conversation(tx) => {
                 crate::control::admission::check_session_admission(&tx.original, command)
             }
@@ -106,6 +136,7 @@ impl CommandTransaction {
     pub(in crate::control) fn prepare(
         &self,
         command: &Command,
+        prepared_project: Option<&PreparedProject>,
         created: &mut Vec<std::path::PathBuf>,
     ) -> Result<(), ApiError> {
         match self {
@@ -117,9 +148,13 @@ impl CommandTransaction {
                 )
             }
             Self::Archive(tx) => {
-                crate::control::project::worktrees::prepare_command_session_worktrees(
+                let Command::ImportProject { archive, .. } = command else {
+                    unreachable!("import preparation")
+                };
+                crate::control::project::worktrees::prepare_import_session_worktrees(
                     &tx.original,
-                    command,
+                    archive,
+                    prepared_project.expect("Project prepared before Session worktrees"),
                     created,
                 )
             }
@@ -161,7 +196,8 @@ impl CommandTransaction {
             _ => Ok(None),
         }
     }
-    /// References that select prepared filesystem work must remain stable on CAS retry.
+    /// Record references selecting filesystem work must remain stable on CAS retry.
+    /// Project Git identity is checked separately through `PreparedProject::verify`.
     pub(in crate::control) fn preparation_key(&self) -> PreparationKey {
         match self {
             Self::NewSession(tx) => session_preparation_key(&tx.original),
@@ -175,7 +211,7 @@ impl CommandTransaction {
     }
     pub(in crate::control) fn read(self, command: Command) -> Result<CommandResult, ApiError> {
         match (self, command) {
-            (Self::RunControl(loaded), Command::GetRun { run_id }) => loaded
+            (Self::Runs(loaded), Command::GetRun { run_id }) => loaded
                 .original
                 .runs
                 .into_iter()

@@ -3,6 +3,7 @@ use crate::control::catalog::validate_provider;
 use crate::control::errors::error;
 use crate::control::events::pending;
 use crate::control::project::git::{PreparedProject, is_git_commit};
+use crate::control::project::validate_project_workdir;
 use crate::control::project::worktrees::session_worktree_path;
 use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
@@ -100,17 +101,7 @@ pub(in crate::control) fn import_project(
     validate_project_export(&archive)?;
     validate_import_conflicts(state, &archive)?;
     let canonical_text = prepared.workdir.clone();
-    if state
-        .projects()
-        .iter()
-        .any(|project| project.workdir == canonical_text)
-    {
-        return Err(error(
-            ErrorCode::ProjectPathAlreadyRegistered,
-            "project path is already registered",
-            false,
-        ));
-    }
+    validate_project_workdir(state, &canonical_text)?;
     let mut project = archive.project;
     project.workdir = canonical_text;
     project.base_commit.clone_from(&prepared.base_commit);

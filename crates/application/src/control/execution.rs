@@ -1,6 +1,7 @@
 //! Command admission and CAS commits; execution continuations run only after persistence.
 use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
+use crate::control::project::git::{canonical_project_path, prepare_project};
 use crate::control::runs::finalization::{
     InvocationGuard, WorkspaceRunControl, WorkspaceRunControlGuard,
 };
@@ -179,6 +180,7 @@ impl LocalControlService {
     ) -> Result<CommandOutcome, ApiError> {
         let mut created_workdir = None;
         let mut created_session_worktrees = Vec::new();
+        let importing_project = matches!(&command, Command::ImportProject { .. });
         self.commit_command_inner(
             command,
             has_workspace_lease,
@@ -204,7 +206,9 @@ impl LocalControlService {
                         "{} Session worktree retained at {retained}; inspect it before retrying.",
                         failure.message
                     );
-                    failure.retryable = false;
+                    // Import can be prepared again after inspection; never reset
+                    // or overwrite a retained worktree automatically.
+                    failure.retryable &= importing_project && failure.code == ErrorCode::RunQueueConflict;
                 }
                 failure
             })
@@ -220,34 +224,36 @@ impl LocalControlService {
     ) -> Result<CommandOutcome, ApiError> {
         let initial = self.read_command_records(&command).await?;
         self.allocate_project_directory(&initial, &mut command, created_workdir)?;
-        initial.check_admission(&command)?;
-        initial.prepare(&command, created_session_worktrees)?;
-        let prepared_project = match &command {
+        let project_workdir = match &mut command {
             Command::RegisterProject { workdir, .. } => {
-                Some(crate::control::project::git::prepare_project(
-                    workdir.as_deref().expect("allocated workdir"),
-                )?)
+                Some(workdir.as_mut().expect("allocated workdir"))
             }
-            Command::ImportProject { workdir, .. } => {
-                Some(crate::control::project::git::prepare_project(workdir)?)
-            }
+            Command::ImportProject { workdir, .. } => Some(workdir),
             _ => None,
         };
-        if let Some(prepared) = &prepared_project {
-            match &mut command {
-                Command::RegisterProject { workdir, .. } => {
-                    *workdir = Some(prepared.workdir.clone());
-                }
-                Command::ImportProject { workdir, .. } => workdir.clone_from(&prepared.workdir),
-                _ => unreachable!("Project preparation"),
-            }
-        }
-        let initial = if prepared_project.is_some() {
-            // Include the allocated/canonical path in the uniqueness read before the CAS.
-            self.read_command_records(&command).await?
-        } else {
-            initial
+        let canonical_workdir = project_workdir
+            .map(|workdir| {
+                *workdir = canonical_project_path(std::path::Path::new(workdir))?
+                    .to_string_lossy()
+                    .into_owned();
+                Ok::<_, ApiError>(workdir.clone())
+            })
+            .transpose()?;
+        let initial = match &canonical_workdir {
+            // Read and validate the canonical target before Git init or worktree creation.
+            Some(_) => self.read_command_records(&command).await?,
+            None => initial,
         };
+        initial.check_admission(&command)?;
+        let prepared_project = canonical_workdir
+            .as_deref()
+            .map(prepare_project)
+            .transpose()?;
+        initial.prepare(
+            &command,
+            prepared_project.as_ref(),
+            created_session_worktrees,
+        )?;
         let preparation_key = initial.preparation_key();
         for attempt in 0..4 {
             let loaded = if attempt == 0 {
@@ -284,6 +290,9 @@ impl LocalControlService {
                 derive_source_locked,
                 prepared_project.as_ref(),
             )?;
+            if let Some(prepared) = &prepared_project {
+                prepared.verify()?;
+            }
             match self
                 .store
                 .apply(commit.revision, commit.changes, commit.events)

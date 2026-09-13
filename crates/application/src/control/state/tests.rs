@@ -10,7 +10,10 @@ use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+
+mod project_preparation;
 
 const ROOT: &str = "00000000-0000-4000-8000-000000000001";
 const NEXT: &str = "00000000-0000-4000-8000-000000000002";
@@ -19,6 +22,8 @@ struct Probe {
     inner: SqliteControlStore,
     scripted: Mutex<VecDeque<ControlRead>>,
     reads: Mutex<Vec<Vec<ControlFilter>>>,
+    conflict_once: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    apply_attempts: AtomicUsize,
 }
 impl Probe {
     fn new(scripted: Vec<ControlRead>) -> Arc<Self> {
@@ -26,6 +31,8 @@ impl Probe {
             inner: SqliteControlStore::in_memory().unwrap(),
             scripted: Mutex::new(scripted.into()),
             reads: Mutex::new(Vec::new()),
+            conflict_once: Mutex::new(None),
+            apply_attempts: AtomicUsize::new(0),
         })
     }
     fn access(self: &Arc<Self>) -> RecordAccess {
@@ -51,6 +58,12 @@ impl ControlStore for Probe {
         changes: Vec<ControlChange>,
         events: Vec<PendingEvent>,
     ) -> Result<u64, ControlStoreError> {
+        self.apply_attempts.fetch_add(1, Ordering::SeqCst);
+        let fault = self.conflict_once.lock().unwrap().take();
+        if let Some(fault) = fault {
+            fault();
+            return Err(ControlStoreError::Conflict);
+        }
         self.inner.apply(revision, changes, events).await
     }
     async fn replay(
@@ -415,6 +428,47 @@ async fn unrelated_corrupt_records_do_not_block_typed_session_commit() {
     // The runtime mutation context never opens the corrupt catalog or journal.
     let run = store.access().read_api_run_records("r").await.unwrap();
     assert_eq!(run.original.runs[0].id, "r");
+}
+
+#[tokio::test]
+async fn get_run_reads_only_run_even_with_corrupt_related_records() {
+    let store = Probe::new(vec![]);
+    store
+        .inner
+        .apply(
+            0,
+            vec![
+                ControlChange::Put(run(ROOT)),
+                ControlChange::Put(record(Kind::Project, "p", json!({"broken":true}))),
+                ControlChange::Put(record(Kind::Session, "s", json!({"broken":true}))),
+                ControlChange::Put(record(
+                    Kind::WorkspaceRunJournal,
+                    "r",
+                    json!({"broken":true}),
+                )),
+            ],
+            vec![],
+        )
+        .await
+        .unwrap();
+    let command = Command::GetRun { run_id: "r".into() };
+    let tx = store.access().read_command_records(&command).await.unwrap();
+    assert!(matches!(tx, CommandTransaction::Runs(_)));
+    let CommandResult::Run(found) = tx.read(command.clone()).unwrap() else {
+        panic!("expected Run")
+    };
+    assert_eq!(found.id, "r");
+    let service = crate::control::LocalControlService::new(store.clone());
+    let response = service.execute(command).await;
+    assert!(response.ok, "{:?}", response.error);
+    assert_eq!(
+        *store.reads.lock().unwrap(),
+        vec![
+            vec![ControlFilter::id(Kind::Run, "r")],
+            vec![ControlFilter::id(Kind::Run, "r")],
+        ]
+    );
+    assert_eq!(store.apply_attempts.load(Ordering::SeqCst), 0);
 }
 
 #[test]

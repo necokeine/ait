@@ -80,17 +80,7 @@ pub(in crate::control) fn register_project(
     validate_project_registration(state, &id, &name, &mut repo_url)?;
     let base_commit = prepared.base_commit.clone();
     let canonical_text = prepared.workdir.clone();
-    if state
-        .projects()
-        .iter()
-        .any(|project| project.workdir == canonical_text)
-    {
-        return Err(error(
-            ErrorCode::ProjectPathAlreadyRegistered,
-            "project path is already registered",
-            false,
-        ));
-    }
+    validate_project_workdir(state, &canonical_text)?;
     let root_id = Uuid::new_v4().to_string();
     let project = ProjectView {
         id: id.clone(),
@@ -118,6 +108,24 @@ pub(in crate::control) fn register_project(
         CommandResult::Project(project.clone()),
         vec![pending("project.registered", Some(id), &project)],
     ))
+}
+
+pub(in crate::control) fn validate_project_workdir(
+    state: &impl HasProjects,
+    canonical_workdir: &str,
+) -> Result<(), ApiError> {
+    if state
+        .projects()
+        .iter()
+        .any(|project| project.workdir == canonical_workdir)
+    {
+        return Err(error(
+            ErrorCode::ProjectPathAlreadyRegistered,
+            "project path is already registered",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 pub(in crate::control) fn require_project_view<'a>(

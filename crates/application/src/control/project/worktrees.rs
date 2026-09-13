@@ -6,8 +6,8 @@ use crate::control::conversation::messages::{
 };
 use crate::control::errors::error;
 use crate::control::project::archive::{validate_import_conflicts, validate_project_export};
-use crate::control::project::git::{ensure_git_head, git_head, git_stdout, prepare_git_root};
-use crate::control::project::require_project_view;
+use crate::control::project::git::{PreparedProject, git_head, git_stdout};
+use crate::control::project::{require_project_view, validate_project_workdir};
 use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 use ait_contracts::{ApiError, Command, ProjectExport, ProjectView, RunView};
 use ait_domain::ErrorCode;
@@ -92,9 +92,6 @@ pub(in crate::control) fn prepare_command_session_worktrees(
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     match command {
-        Command::ImportProject { archive, workdir } => {
-            prepare_import_session_worktrees(state, archive, workdir, created)
-        }
         Command::CreateSession {
             id,
             project_id,
@@ -141,20 +138,34 @@ pub(in crate::control) fn prepare_command_session_worktrees(
     }
 }
 
-fn prepare_import_session_worktrees(
+pub(in crate::control) fn prepare_import_session_worktrees(
     state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
     archive: &ProjectExport,
-    workdir: &str,
+    prepared: &PreparedProject,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
     validate_project_export(archive)?;
     validate_import_conflicts(state, archive)?;
-    let canonical = prepare_git_root(Path::new(workdir))?;
+    validate_project_workdir(state, &prepared.workdir)?;
+    prepared.verify()?;
     let mut project = archive.project.clone();
-    project.workdir = canonical.to_string_lossy().into_owned();
-    project.base_commit = ensure_git_head(&canonical)?;
+    project.workdir.clone_from(&prepared.workdir);
+    project.base_commit.clone_from(&prepared.base_commit);
     for session in &archive.sessions {
         ensure_session_worktree(&project, &session.id, &project.base_commit, created)?;
+        // A new request may encounter a worktree retained after a failed CAS.
+        // Do not silently reuse its stale HEAD or reset potentially user-owned work.
+        let worktree = session_worktree_path(&project.workdir, &session.id)?;
+        if git_head(&worktree)?.as_deref() != Some(project.base_commit.as_str()) {
+            return Err(error(
+                ErrorCode::InvalidSession,
+                format!(
+                    "retained Session worktree at {} does not match the import HEAD; inspect it before retrying",
+                    worktree.display()
+                ),
+                false,
+            ));
+        }
     }
     Ok(())
 }
