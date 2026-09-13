@@ -17,7 +17,7 @@ import { messageAgentIds, projectMessage, type WorkspaceMessage } from "./messag
 import { sessionDisplayTitle } from "./session-titles.js";
 import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
-import { desktopDaemonArgs, desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
+import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
 import { registerDesktopProject, type ProjectCreationInput } from "./projects.js";
 import { projectReadPaths } from "./desktop-slices.js";
 import { configureDesktopIdentity } from "./branding.js";
@@ -289,7 +289,7 @@ class DaemonClient {
       ? join(process.resourcesPath, "bin", executableName)
       : join(workspaceRoot, "target", "debug", executableName);
     const database = join(app.getPath("userData"), daemonRuntime.databaseFilename);
-    const args = desktopDaemonArgs(app.isPackaged, process.platform, database);
+    const args = ["--database", database, "--listen", daemonRuntime.listen];
     let stderr = "";
     this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
     const child = this.ownedProcess;

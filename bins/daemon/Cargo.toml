@@ -25,9 +25,6 @@ axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time", "signal", "sync"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-nix = { version = "0.31", features = ["signal", "process", "user"] }
-
 [dev-dependencies]
 ait-contracts = { path = "../../crates/contracts" }
 async-trait = "0.1"

@@ -24,7 +24,6 @@ use tokio_util::sync::CancellationToken;
 /// Shared production dispatcher; entries exist only while owned children run.
 pub struct WorkerSupervisor {
     binary: PathBuf,
-    search_path: Option<std::ffi::OsString>,
     pub(crate) codex_binary: PathBuf,
     pub(crate) limits: Limits,
     active: Mutex<HashMap<String, CancellationToken>>,
@@ -60,7 +59,6 @@ impl WorkerSupervisor {
     pub fn new(binary: PathBuf) -> Self {
         Self {
             binary,
-            search_path: None,
             codex_binary: PathBuf::from("codex"),
             limits: Limits::default(),
             active: Mutex::new(HashMap::new()),
@@ -72,12 +70,6 @@ impl WorkerSupervisor {
     #[must_use]
     pub fn with_codex_binary(mut self, binary: PathBuf) -> Self {
         self.codex_binary = binary;
-        self
-    }
-    /// Supply the host's executable search path without widening the environment allowlist.
-    #[must_use]
-    pub fn with_search_path(mut self, path: Option<std::ffi::OsString>) -> Self {
-        self.search_path = path;
         self
     }
     /// Enable a strict optional monetary ceiling. Unpriced providers fail closed.
@@ -139,8 +131,7 @@ impl WorkerSupervisor {
             run_id,
         };
         let mut child =
-            ait_sandbox::spawn_worker_with_path(&self.binary, self.search_path.as_deref())
-                .map_err(|_| ProtocolError::WorkerExited)?;
+            ait_sandbox::spawn_worker(&self.binary).map_err(|_| ProtocolError::WorkerExited)?;
         let result = async {
             let pid = child.id().ok_or(ProtocolError::WorkerExited)?;
             let mut reader = Reader::new(

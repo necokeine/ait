@@ -14,16 +14,18 @@ use tokio_util::sync::CancellationToken;
 async fn cancellation_during_handshake_reaps_the_owned_child() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
-    let binary = cwd.join("stalled-codex");
+    let binary = cwd.join("stalled codex '$(touch injected)'");
+    let extra_arg = "literal ' \" ; $() `argument`";
     // Only shell builtins: no grandchildren or external sleep process to orphan.
     fs::write(
         &binary,
-        "#!/bin/sh\necho $$ > child.pid\nwhile read -r line; do :; done\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > child.args\necho $$ > child.pid\nwhile read -r line; do :; done\n",
     )
     .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     let adapter = CodexAppServerAdapter::new(CodexAppServerConfig {
         codex_binary: binary,
+        extra_args: vec![extra_arg.into()],
         ..CodexAppServerConfig::default()
     })
     .unwrap();
@@ -57,6 +59,10 @@ async fn cancellation_during_handshake_reaps_the_owned_child() {
     })
     .await
     .unwrap();
+    assert_eq!(
+        fs::read_to_string(cwd.join("child.args")).unwrap(),
+        format!("app-server\n--listen\nstdio://\n{extra_arg}\n")
+    );
     cancellation.cancel();
     tokio::time::timeout(Duration::from_secs(5), async {
         let error = stream.next().await.unwrap().unwrap_err();

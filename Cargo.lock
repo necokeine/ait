@@ -166,7 +166,6 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
- "nix",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",

@@ -21,13 +21,11 @@ target/debug/ait-daemon --database ./ait.sqlite3 --listen 127.0.0.1:7314
 stage 和打包二者；缺少 worker 时 staging 直接失败。不要手工将 worker 连接到终端；
 stdout 的任何普通文本都会被判为协议污染。
 
-macOS 安装版由 Desktop 给 daemon 传入 `--login-shell-path`，在启动时从用户交互式
-登录 shell 恢复 PATH。优先使用绝对路径的 `SHELL`，未提供时读取用户账户的登录 shell，
-最终回退 `/bin/zsh`。只导入 PATH；按 shell 顺序保留绝对目录并追加继承 PATH 中缺少的
-绝对目录，不导入 shell 中的其他环境变量。模型发现、标题生成和 worker/Codex 子进程
-共享该 PATH，支持 Homebrew、npm 和 shell 启动文件中配置的版本管理器及解释器。
-读取限时 5 秒、输出上限 64 KiB，超时或失败回退继承 PATH，清理探测 shell 的进程组，
-不记录其 stdout/stderr。开发版与其他平台保持继承 PATH；修改配置后需重启安装版。
+macOS 的 Codex adapter 直接通过 `/bin/zsh -lic 'exec "$@"' -- codex app-server
+--listen stdio://` 启动，模型发现、标题生成和 worker Run 共用此入口。zsh 加载
+`.zprofile`、`.zshrc`，Codex 及其解释器/工具继承 shell 环境；daemon 不探测或转发 PATH。
+可执行文件和额外参数作为独立 argv 传递，`exec` 让受管子进程直接成为 Codex。
+shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使用此方式，其他平台直接启动。
 
 ## 提交与恢复
 
@@ -139,7 +137,6 @@ npm test
   慢消费者和 argv/env/stderr 脱敏。
 - `bins/daemon/tests/codex_http.rs`：生产 HTTP → dispatcher → worker → fake Codex，4000 个
   delta 的 cursor replay、启动恢复期间可用的 readiness 和唯一执行。
-  macOS 还从精简 GUI PATH 启动，验证 `.zshrc` 中含空格的安装路径、PATH 解释器、
-  daemon 模型发现和完整 worker Run；`bins/daemon/src/shell_path.rs` 覆盖 shell 输出解析、
-  失败/超限回退和超时后的后代进程清理。
+  macOS 还覆盖精简 GUI PATH 下，登录 shell 提供的含空格安装路径、PATH 解释器、
+  daemon 模型发现和完整 worker Run。
   既有 runtime、host tools、审批及 NEC-212 的故障/取消/Git settlement 测试继续执行。

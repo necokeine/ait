@@ -1,8 +1,5 @@
 //! AIT control-plane daemon entry point.
 
-#[cfg(target_os = "macos")]
-mod shell_path;
-
 use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use ait_agent_adapters::codex::{
@@ -53,10 +50,6 @@ struct Arguments {
     /// Providers without verifiable prices are denied before invocation.
     #[arg(long)]
     max_run_cost_micros: Option<u64>,
-    /// Recover macOS GUI executable discovery from the user's login shell.
-    #[cfg(target_os = "macos")]
-    #[arg(long)]
-    login_shell_path: bool,
 }
 
 #[tokio::main]
@@ -65,21 +58,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !arguments.listen.ip().is_loopback() {
         return Err("local API must bind a loopback address".into());
     }
-    #[cfg(target_os = "macos")]
-    let search_path = if arguments.login_shell_path {
-        shell_path::recover().await
-    } else {
-        None
-    };
-    #[cfg(not(target_os = "macos"))]
-    let search_path = None;
-    serve(arguments, search_path).await
-}
-
-async fn serve(
-    arguments: Arguments,
-    search_path: Option<std::ffi::OsString>,
-) -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(SqliteControlStore::open(arguments.database)?);
     let worker_binary = match arguments.worker_binary {
         Some(path) => path,
@@ -91,13 +69,9 @@ async fn serve(
     };
     let supervisor = Arc::new(
         ait_ipc::supervisor::WorkerSupervisor::new(worker_binary)
-            .with_search_path(search_path.clone())
             .with_cost_ceiling(arguments.max_run_cost_micros),
     );
-    let adapter = Arc::new(CodexAppServerAdapter::new(CodexAppServerConfig {
-        search_path,
-        ..CodexAppServerConfig::default()
-    })?);
+    let adapter = Arc::new(CodexAppServerAdapter::new(CodexAppServerConfig::default())?);
     let codex: Arc<dyn WorkspaceAgent> = supervisor.clone();
     let catalog: Arc<dyn HostProviderModelCatalog> = adapter.clone();
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));

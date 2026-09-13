@@ -103,17 +103,6 @@ impl RunToolFactory for SandboxToolFactory {
 /// # Errors
 /// Returns an OS spawn error to the caller, which must publish only a stable code.
 pub fn spawn_worker(binary: &Path) -> std::io::Result<Box<dyn ChildWrapper>> {
-    spawn_worker_with_path(binary, None)
-}
-
-/// Spawn a worker with an optional host-resolved PATH and the same environment allowlist.
-///
-/// # Errors
-/// Returns an OS spawn error to the caller, which must publish only a stable code.
-pub fn spawn_worker_with_path(
-    binary: &Path,
-    search_path: Option<&std::ffi::OsStr>,
-) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut command = CommandWrap::with_new(binary, |command| {
         command
             .args(["--stdio", "--protocol-major", "1"])
@@ -136,9 +125,6 @@ pub fn spawn_worker_with_path(
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
-        }
-        if let Some(path) = search_path {
-            command.env("PATH", path);
         }
     });
     command.wrap(KillOnDrop);

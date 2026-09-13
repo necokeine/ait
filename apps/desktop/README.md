@@ -80,20 +80,12 @@ remain separate as described above.
 
 A packaged application expects a prebuilt `ait-daemon` binary at `resources/bin/ait-daemon` (or `.exe` on Windows). It rejects a pre-existing listener on its daemon port, and its trusted Electron main boundary strips a development Mock provider and any Agent that references it before data reaches Settings, Agents, or the composer. There is no desktop-specific persistence adapter: daemon and its SQLite control store are the only state interaction boundary.
 
-On macOS, packaged launches ask the Rust daemon to recover `PATH` from the user's
-interactive login shell before starting Codex. This makes Homebrew and npm/version
-manager installations configured in shell startup files available when Ait opens
-from Finder or the Dock. The same path reaches model discovery, title generation,
-Run workers, and Codex's interpreter/tools. Codex must still be installed and
-authenticated locally; shell aliases and functions are not executables.
-
-Recovery imports only `PATH`, preserves shell search order, appends missing
-inherited absolute directories, and ignores relative/empty entries. It has a
-five-second timeout and a 64 KiB output cap; failed shell startup retains the
-inherited path and emits a fixed diagnostic without shell output. If a startup
-script blocks on terminal input, fix that script or launch Ait from a terminal
-with a working `PATH`. Restart Ait after changing the shell's PATH. Development
-and non-macOS launches keep their inherited environment.
+On macOS, the Codex adapter launches through `/bin/zsh -lic`, so model discovery,
+title generation, and Runs use the environment from `.zprofile` and `.zshrc` even
+when Ait opens from Finder or the Dock. Codex must be installed and authenticated
+locally. Shell startup files must leave stdout quiet for the app-server JSONL
+protocol. This also applies to development launches; other platforms launch Codex
+directly.
 
 macOS direct-distribution builds are signed with the personal `Developer ID
 Application: Dong Shan (SVS7GV79T9)` identity, use Hardened Runtime, and sign

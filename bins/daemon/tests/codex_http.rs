@@ -132,7 +132,7 @@ async fn assert_codex_http_response(gui_launch: bool) {
     let log = File::create(&daemon_log).unwrap();
     let mut search_paths = vec![fake_bin.clone()];
     search_paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ait-daemon"));
+    let mut command = codex_daemon_command(temporary.path());
     command
         .args([
             "--database",
@@ -144,18 +144,20 @@ async fn assert_codex_http_response(gui_launch: bool) {
         .stdout(Stdio::null())
         .stderr(Stdio::from(log));
     if gui_launch {
+        let runtime_bin = temporary.path().join("runtime with spaces");
+        fs::create_dir(&runtime_bin).unwrap();
         fs::write(
             temporary.path().join(".zprofile"),
-            "export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n",
+            "export PATH=\"$HOME/runtime with spaces:/usr/bin:/bin:/usr/sbin:/sbin\"\n",
         )
         .unwrap();
         fs::write(
             temporary.path().join(".zshrc"),
-            "printf 'shell startup output\\n'\nexport PATH=\"$HOME/bin with spaces:$PATH\"\nexport AIT_GUI_UNRELATED=not-imported\n",
+            "export PATH=\"$HOME/bin with spaces:$PATH\"\n",
         )
         .unwrap();
         // Like npm's Codex launcher: locating the entry point alone is not enough;
-        // its env-based interpreter must inherit the recovered PATH as well.
+        // its env-based interpreter must inherit the shell PATH as well.
         let codex = fake_bin.join("codex");
         let script = fs::read_to_string(&codex).unwrap();
         fs::write(
@@ -163,15 +165,14 @@ async fn assert_codex_http_response(gui_launch: bool) {
             script.replacen("#!/bin/sh", "#!/usr/bin/env ait-test-runtime", 1),
         )
         .unwrap();
-        let interpreter = fake_bin.join("ait-test-runtime");
+        let interpreter = runtime_bin.join("ait-test-runtime");
         fs::write(&interpreter, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
         fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755)).unwrap();
         command
             .env_clear()
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("HOME", temporary.path())
-            .env("SHELL", "/bin/zsh")
-            .arg("--login-shell-path");
+            .env("SHELL", "/bin/zsh");
     }
     let child = command.spawn().unwrap();
     let mut daemon = DaemonGuard {
@@ -345,7 +346,7 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     let mut search_paths = vec![fake_bin];
     search_paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
     let started_at = Instant::now();
-    let child = Command::new(env!("CARGO_BIN_EXE_ait-daemon"))
+    let child = codex_daemon_command(temporary.path())
         .args([
             "--database",
             database.to_str().unwrap(),
@@ -608,13 +609,20 @@ fn assert_ok(response: &Value) {
     assert_eq!(response["ok"], true, "daemon response: {response}");
 }
 
+fn codex_daemon_command(home: &Path) -> Command {
+    // Isolate shell startup from the developer's Codex installation and config.
+    fs::write(home.join(".zprofile"), "export PATH=\"$HOME/bin:$PATH\"\n").unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ait-daemon"));
+    command.env("HOME", home).env_remove("ZDOTDIR");
+    command
+}
+
 fn install_fake_codex(path: &Path, delay: u32) {
     fs::write(
         path,
         format!(
             r#"#!/bin/sh
 [ "$1" = "app-server" ] || exit 2
-[ -z "${{AIT_GUI_UNRELATED+x}}" ] || exit 9
 read_line() {{
   IFS= read -r line || exit 3
   printf '%s\n' "$line" >> "$(dirname "$0")/../codex.jsonl"
