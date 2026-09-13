@@ -2,10 +2,11 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
 use crate::control::events::pending;
+use crate::control::model::SessionState;
 use crate::control::state::{HasMessages, HasRuns, HasSessions};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
-use ait_contracts::{ApiError, CommandResult, Response, SessionView};
+use ait_contracts::{ApiError, CommandResult, Response};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlStoreError, PendingEvent, SessionTitleRequest};
 use uuid::Uuid;
@@ -33,7 +34,7 @@ pub(in crate::control) fn set_session_title(
     }
     let session = session.clone();
     Ok((
-        CommandResult::Session(session.clone()),
+        CommandResult::Session(session.view()),
         vec![pending(
             "session.title_updated",
             Some(session_id.to_owned()),
@@ -44,13 +45,13 @@ pub(in crate::control) fn set_session_title(
 
 fn is_first_completed_interaction(
     state: &(impl HasMessages + HasRuns),
-    session: &SessionView,
+    session: &SessionState,
 ) -> bool {
     let head_is_assistant = state
         .messages()
         .iter()
-        .find(|message| message.id == session.current_message_id)
-        .is_some_and(|message| message.role == "assistant");
+        .find(|message| message.id == session.current_message_id())
+        .is_some_and(|message| message.role == ait_domain::MessageRole::Assistant);
     head_is_assistant
         && state
             .runs()
@@ -99,7 +100,7 @@ impl LocalControlService {
             .try_generate_session_title(&session_id, &user_prompt)
             .await
         {
-            Ok(session) => Response::success(CommandResult::Session(session)),
+            Ok(session) => Response::success(CommandResult::Session(session.view())),
             Err(error) => Response::failure(error),
         }
     }
@@ -108,7 +109,7 @@ impl LocalControlService {
         &self,
         session_id: &str,
         user_prompt: &str,
-    ) -> Result<SessionView, ApiError> {
+    ) -> Result<SessionState, ApiError> {
         let bounded_prompt = user_prompt.chars().take(2_000).collect::<String>();
         if bounded_prompt.trim().is_empty() {
             return Err(error(
@@ -146,7 +147,7 @@ impl LocalControlService {
     async fn begin_title_generation(
         &self,
         session_id: &str,
-    ) -> Result<(SessionView, String, bool, bool), ApiError> {
+    ) -> Result<(SessionState, String, bool, bool), ApiError> {
         for _ in 0..4 {
             let loaded = self.read_session_title_records(session_id).await?;
             let mut state = loaded.original.clone();
@@ -205,7 +206,7 @@ impl LocalControlService {
         session_id: &str,
         title: String,
         description: String,
-    ) -> Result<SessionView, ApiError> {
+    ) -> Result<SessionState, ApiError> {
         for _ in 0..4 {
             let loaded = self.records().read_session_record(session_id).await?;
             let mut state = loaded.original.clone();

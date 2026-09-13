@@ -106,6 +106,7 @@ async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
     r.result.unwrap()
 }
 struct Fixture {
+    store: Arc<SqliteControlStore>,
     directory: tempfile::TempDir,
     project: tempfile::TempDir,
     workdir: std::path::PathBuf,
@@ -224,6 +225,7 @@ impl Fixture {
         let workdir =
             std::path::PathBuf::from(&support::workspace(&service).await.sessions[0].workdir);
         Self {
+            store,
             directory,
             project,
             workdir,
@@ -244,7 +246,8 @@ impl Fixture {
         else {
             panic!()
         };
-        run
+        assert!(run.execution.is_none());
+        support::persisted_run(self.store.as_ref(), &run.id).await
     }
     async fn finish(self) {
         self.server.abort();
@@ -310,7 +313,11 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
             std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
         );
-        let after = support::workspace(&reopened).await;
+        let after = support::workspace_with_runs(
+            &reopened,
+            &SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
+        )
+        .await;
         assert_eq!(after.runs[0], run);
         assert_eq!(
             after.sessions[0].current_message_id,
@@ -691,7 +698,15 @@ async fn receipts_survive_sqlite_commit_and_reject_stale_or_changed_replays() {
         std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
-    assert_eq!(support::workspace(&reopened).await.runs[0], view);
+    assert_eq!(
+        support::workspace_with_runs(
+            &reopened,
+            &SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap(),
+        )
+        .await
+        .runs[0],
+        view,
+    );
     for record in [
         serde_json::to_vec(&view).unwrap(),
         std::fs::read(f.directory.path().join("ait.db")).unwrap(),
@@ -1004,7 +1019,7 @@ async fn shutdown_drains_a_real_tool_run_and_rejects_new_admission() {
     })
     .await
     .unwrap();
-    let view = support::workspace(&service).await;
+    let view = support::workspace_with_runs(&service, f.store.as_ref()).await;
     assert_eq!(view.runs.len(), 1);
     assert_eq!(view.runs[0].status, "cancelled");
     assert!(view.sessions[0].active_run_id.is_none());

@@ -1,4 +1,7 @@
 //! Immutable conversation messages and interactive Run creation.
+use crate::control::model::{MessageState, ProjectState};
+use crate::control::model::{RunLifecycle, RunState};
+
 use crate::control::catalog::{require_agent, validate_config};
 use crate::control::errors::error;
 use crate::control::events::{now, pending};
@@ -9,7 +12,7 @@ use crate::control::state::{
     HasAgents, HasMessages, HasProviderCredentials, HasProviders, HasRunCredentials, HasRuns,
     HasSessions, HasSettings,
 };
-use ait_contracts::{ApiError, MessageView, ProjectView, RunView};
+use ait_contracts::ApiError;
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
 use serde_json::Value;
@@ -33,54 +36,61 @@ pub(in crate::control) fn send_message(
     git_baseline: &GitBaseline,
     permission_limits: PermissionPolicyLimits,
 ) -> Result<(CommandOutcome, Vec<PendingEvent>), ApiError> {
-    if text.trim().is_empty() {
-        return Err(error(
-            ErrorCode::InvalidMessageRole,
-            "message text is required",
-            false,
-        ));
-    }
+    validate_message_text(&text)?;
     let index = state
         .sessions()
         .iter()
         .position(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
     let session = state.sessions()[index].clone();
-    if session.active_run_id.is_some() {
+    if session.active_run_id().is_some() {
         return Err(error(
             ErrorCode::SessionBusy,
             "session already has an active run",
             false,
         ));
     }
-    let agent = require_agent(state, &session.agent_id)?.clone();
+    let agent = require_agent(state, session.agent_id())?.clone();
     let provider = validate_config(state, &agent.config)?.clone();
     let permission_profile =
         effective_permission_profile(state.settings(), &provider, permission_limits)?;
     let user = message(
         &session.project_id,
-        Some(&session.current_message_id),
-        "user",
-        "standard",
+        Some(&session.current_message_id()),
+        ait_domain::MessageRole::User,
+        ait_domain::MessageKind::Standard,
         Some(text),
         Some(&git_baseline.commit),
         None,
     );
     state.messages_mut().push(user.clone());
     let run_id = Uuid::new_v4().to_string();
-    state.sessions_mut()[index]
-        .current_message_id
-        .clone_from(&user.id);
-    state.sessions_mut()[index].version += 1;
-    state.sessions_mut()[index].active_run_id = Some(run_id.clone());
+    let reference = &mut state.sessions_mut()[index].reference;
+    reference
+        .advance(
+            reference.head(),
+            reference.version(),
+            Some(reference.head()),
+            ait_domain::MessageId::parse(&user.id).map_err(|_| {
+                error(
+                    ErrorCode::InvalidMessageId,
+                    "invalid Message identity",
+                    false,
+                )
+            })?,
+        )
+        .map_err(|e| error(e.code, e.message, e.retryable))?;
+    reference
+        .acquire(ait_domain::RunId::new(&run_id))
+        .map_err(|e| error(e.code, e.message, e.retryable))?;
     let workspace_base_commit = Some(git_baseline.commit.clone());
     let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
-    let run = RunView {
-        execution: None,
+    let run = RunState {
+        compatibility_repair: false,
+        lifecycle: RunLifecycle::queued(),
         id: run_id.clone(),
         project_id: session.project_id,
         base_message_id: user.id,
-        last_message_id: None,
         session_id: Some(session_id),
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
@@ -88,16 +98,13 @@ pub(in crate::control) fn send_message(
         provider,
         permission_profile,
         native_approvals: Vec::new(),
-        trigger: "manual".into(),
+        trigger: ait_domain::RunTrigger::Manual,
         cron_id: None,
         scheduled_at: None,
         workspace_base_commit,
         workspace_base_index_tree,
-        status: "queued".into(),
-        phase: Some("queued".into()),
         operation_id: Some(format!("workspace-{run_id}").into_boxed_str()),
         lease_epoch: 0,
-        error: None,
     };
     if let Some(reference) = state
         .provider_credentials()
@@ -118,40 +125,18 @@ pub(in crate::control) fn codex_prompt(
     state: &impl HasMessages,
     head_id: &str,
 ) -> Result<(Option<String>, String), ApiError> {
-    let mut path = Vec::new();
-    let mut seen = HashSet::new();
-    let mut current = Some(head_id);
-    while let Some(id) = current {
-        if !seen.insert(id) {
-            return Err(error(
-                ErrorCode::InvalidMessageId,
-                "message path contains a cycle",
-                false,
-            ));
-        }
-        let message = state
-            .messages()
-            .iter()
-            .find(|message| message.id == id)
-            .ok_or_else(|| {
-                error(
-                    ErrorCode::MessageNotFound,
-                    "message path is incomplete",
-                    false,
-                )
-            })?;
-        path.push(message);
-        current = message.parent_message_id.as_deref();
-    }
-    path.reverse();
+    let path = crate::control::model::domain_path(state.messages(), head_id)
+        .map_err(|e| error(e.code, e.message, e.retryable))?;
     let mut instructions = Vec::new();
     let mut prompt = String::from("Conversation:\n");
-    for message in path {
-        if let Some(text) = &message.text {
-            if message.role == "system" {
-                instructions.push(text.as_str());
-            } else {
-                let _ = writeln!(prompt, "{}: {text}", message.role);
+    for message in &path {
+        for part in &message.sub_messages {
+            if let ait_domain::SubMessage::Text { text } = part {
+                if message.role == ait_domain::MessageRole::System {
+                    instructions.push(text.as_str());
+                } else {
+                    let _ = writeln!(prompt, "{}: {text}", message.role.as_str());
+                }
             }
         }
     }
@@ -163,18 +148,30 @@ pub(in crate::control) fn codex_prompt(
 
 pub(in crate::control) fn append_output(
     state: &mut (impl HasMessages + HasSessions),
-    run: &mut RunView,
-    output: MessageView,
+    run: &mut RunState,
+    output: MessageState,
 ) {
-    run.last_message_id = Some(output.id.clone());
+    run.set_last_message_id(Some(output.id.clone()));
     if let Some(session_id) = &run.session_id
         && let Some(session) = state
             .sessions_mut()
             .iter_mut()
             .find(|session| &session.id == session_id)
     {
-        session.current_message_id.clone_from(&output.id);
-        session.version += 1;
+        session
+            .reference
+            .advance(
+                session.reference.head(),
+                session.reference.version(),
+                output
+                    .parent_message_id
+                    .as_deref()
+                    .map(ait_domain::MessageId::parse)
+                    .transpose()
+                    .expect("validated Message parent"),
+                ait_domain::MessageId::parse(&output.id).expect("generated UUID"),
+            )
+            .expect("settlement holds the Session pointer and finalization gate");
     }
     state.messages_mut().push(output);
 }
@@ -182,18 +179,18 @@ pub(in crate::control) fn append_output(
 pub(in crate::control) fn message(
     project: &str,
     parent: Option<&str>,
-    role: &str,
-    kind: &str,
+    role: ait_domain::MessageRole,
+    kind: ait_domain::MessageKind,
     text: Option<String>,
     git_commit: Option<&str>,
     data: Option<Value>,
-) -> MessageView {
-    MessageView {
+) -> MessageState {
+    MessageState {
         id: Uuid::new_v4().to_string(),
         project_id: project.into(),
         parent_message_id: parent.map(str::to_owned),
-        role: role.into(),
-        kind: kind.into(),
+        role,
+        kind,
         text,
         git_commit: git_commit.map(str::to_owned),
         data,
@@ -202,14 +199,8 @@ pub(in crate::control) fn message(
 }
 
 pub(in crate::control) fn validate_message_text(text: &str) -> Result<(), ApiError> {
-    if text.trim().is_empty() {
-        return Err(error(
-            ErrorCode::InvalidMessageRole,
-            "message text is required",
-            false,
-        ));
-    }
-    Ok(())
+    ait_domain::message::validate_message_text(text)
+        .map_err(|e| error(e.code, e.message, e.retryable))
 }
 
 pub(in crate::control) fn validate_session_message(
@@ -240,7 +231,7 @@ pub(in crate::control) fn validate_session_message(
 
 pub(in crate::control) fn message_workspace_commit(
     state: &impl HasMessages,
-    project: &ProjectView,
+    project: &ProjectState,
     message_id: &str,
 ) -> Result<String, ApiError> {
     let mut cursor = Some(message_id);

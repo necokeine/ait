@@ -595,10 +595,10 @@ impl RecordAccess {
                 .original
                 .sessions
                 .iter()
-                .map(|session| session.agent_id.clone())
+                .map(|session| session.agent_id().to_owned())
                 .collect::<HashSet<_>>();
-            if let Some(agent_id) = &project.default_agent_id {
-                agent_ids.insert(agent_id.clone());
+            if let Some(agent_id) = &project.default_agent_id() {
+                agent_ids.insert(agent_id.to_string());
             }
             let mut filters = vec![
                 ControlFilter::id(Kind::Project, project_id),

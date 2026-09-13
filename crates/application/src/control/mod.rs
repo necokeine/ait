@@ -1,7 +1,8 @@
 //! Shared service composition, public command entry points and exhaustive command routing.
 #![allow(missing_docs)]
+mod model;
 
-use crate::control::runs::finalization::WorkspaceRunControl;
+use crate::control::runs::finalization::RunControl;
 use ait_contracts::{Command, Response};
 use ait_ports::{
     AgentProviderGateway, ControlStore, HostProviderModelCatalog, ProjectDirectoryCreator,
@@ -36,7 +37,7 @@ pub struct LocalControlService {
     session_leases: Arc<Mutex<HashMap<String, Weak<()>>>>,
     project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
     cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
-    workspace_run_controls: Arc<Mutex<HashMap<String, Weak<WorkspaceRunControl>>>>,
+    run_controls: Arc<Mutex<HashMap<String, Weak<RunControl>>>>,
     approval_waiters:
         Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<WorkspaceApprovalDecision>>>>>,
     permission_limits: PermissionPolicyLimits,
@@ -62,7 +63,7 @@ impl LocalControlService {
             session_leases: Arc::new(Mutex::new(HashMap::new())),
             project_workspace,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
-            workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
+            run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,
@@ -89,7 +90,7 @@ impl LocalControlService {
             session_leases: Arc::new(Mutex::new(HashMap::new())),
             project_workspace,
             cancellations: Arc::new(Mutex::new(HashMap::new())),
-            workspace_run_controls: Arc::new(Mutex::new(HashMap::new())),
+            run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             permission_limits: PermissionPolicyLimits::default(),
             provider_gateway: None,

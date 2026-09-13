@@ -10,6 +10,7 @@ use crate::control::conversation::{
 use crate::control::cron::{create_cron, set_cron_enabled, trigger_cron};
 use crate::control::errors::error;
 use crate::control::execution::CommandOutcome;
+use crate::control::model::{CronState, ProjectState, SessionState};
 use crate::control::project::archive::{
     export_project, import_project, validate_import_conflicts, validate_project_export,
 };
@@ -231,7 +232,7 @@ impl CommandTransaction {
                 .runs
                 .into_iter()
                 .find(|run| run.id == run_id)
-                .map(CommandResult::Run)
+                .map(|run| CommandResult::Run(run.view()))
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false)),
             (Self::Archive(loaded), Command::ExportProject { project_id }) => {
                 export_project(&loaded.original, loaded.revision, &project_id)
@@ -240,27 +241,64 @@ impl CommandTransaction {
             (Self::Settings(loaded), Command::GetSettings) => {
                 Ok(CommandResult::Settings(settings_view(&loaded.original)))
             }
-            (Self::Projects(loaded), Command::ListProjects) => {
-                Ok(CommandResult::Projects(loaded.original.projects))
-            }
-            (Self::Agents(loaded), Command::ListAgents) => {
-                Ok(CommandResult::Agents(loaded.original.agents))
-            }
+            (Self::Projects(loaded), Command::ListProjects) => Ok(CommandResult::Projects(
+                loaded
+                    .original
+                    .projects
+                    .iter()
+                    .map(crate::control::model::ProjectState::view)
+                    .collect(),
+            )),
+            (Self::Agents(loaded), Command::ListAgents) => Ok(CommandResult::Agents(
+                loaded
+                    .original
+                    .agents
+                    .iter()
+                    .map(crate::control::model::AgentState::view)
+                    .collect(),
+            )),
             (Self::Provider(loaded), Command::ListAgentProviders) => {
-                Ok(CommandResult::AgentProviders(loaded.original.providers))
+                Ok(CommandResult::AgentProviders(
+                    loaded
+                        .original
+                        .providers
+                        .iter()
+                        .map(crate::control::model::ProviderState::view)
+                        .collect(),
+                ))
             }
-            (Self::Sessions(loaded), Command::ListSessions { .. }) => {
-                Ok(CommandResult::Sessions(loaded.original.sessions))
-            }
-            (Self::Messages(loaded), Command::ListMessages { .. }) => {
-                Ok(CommandResult::Messages(loaded.original.messages))
-            }
-            (Self::Runs(loaded), Command::ListRuns { .. }) => {
-                Ok(CommandResult::Runs(loaded.original.runs))
-            }
-            (Self::Crons(loaded), Command::ListCrons) => {
-                Ok(CommandResult::Crons(loaded.original.crons))
-            }
+            (Self::Sessions(loaded), Command::ListSessions { .. }) => Ok(CommandResult::Sessions(
+                loaded
+                    .original
+                    .sessions
+                    .iter()
+                    .map(crate::control::model::SessionState::view)
+                    .collect(),
+            )),
+            (Self::Messages(loaded), Command::ListMessages { .. }) => Ok(CommandResult::Messages(
+                loaded
+                    .original
+                    .messages
+                    .iter()
+                    .map(crate::control::model::MessageState::view)
+                    .collect(),
+            )),
+            (Self::Runs(loaded), Command::ListRuns { .. }) => Ok(CommandResult::Runs(
+                loaded
+                    .original
+                    .runs
+                    .iter()
+                    .map(crate::control::model::RunState::view)
+                    .collect(),
+            )),
+            (Self::Crons(loaded), Command::ListCrons) => Ok(CommandResult::Crons(
+                loaded
+                    .original
+                    .crons
+                    .iter()
+                    .map(crate::control::model::CronState::view)
+                    .collect(),
+            )),
             _ => unreachable!("read command/context mismatch"),
         }
     }
@@ -553,13 +591,13 @@ impl CommandTransaction {
 pub(in crate::control) enum PreparationKey {
     None,
     Session {
-        projects: Vec<ait_contracts::ProjectView>,
-        sessions: Vec<ait_contracts::SessionView>,
+        projects: Vec<ProjectState>,
+        sessions: Vec<SessionState>,
         messages: Vec<MessageBaseline>,
     },
     Cron {
-        projects: Vec<ait_contracts::ProjectView>,
-        crons: Vec<ait_contracts::CronView>,
+        projects: Vec<ProjectState>,
+        crons: Vec<CronState>,
     },
 }
 #[derive(PartialEq)]

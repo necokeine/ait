@@ -2,12 +2,10 @@
 
 mod control;
 mod dispatch;
-mod message;
 mod project;
 mod provider;
 mod run;
 mod scheduler;
-mod session;
 mod workspace;
 pub use workspace::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
 
@@ -19,11 +17,7 @@ pub use control::{
 pub use dispatch::{
     ApiRunDispatch, RunDispatcher, RunMutation, RunReceipt, WorkerLease, WorkspaceWorkerOperation,
 };
-pub use message::{MessageStore, MessageStoreError};
-pub use project::{
-    CreateSessionRoot, DiscoveredInstructions, EnvironmentError, ProjectDirectoryCreator,
-    ProjectEnvironment, ProjectStore, StoreError,
-};
+pub use project::{EnvironmentError, ProjectDirectoryCreator, ProjectEnvironment};
 pub use provider::{AgentProviderGateway, HostProviderModelCatalog, ProviderMessage};
 pub use run::{
     AgentInvocation, AgentResponse, ApprovalDecision, ApprovalRequest, CompletionResult,
@@ -38,7 +32,6 @@ pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,
     RunStarter, StartRunRequest,
 };
-pub use session::{SessionAdvance, SessionStore, SessionStoreError};
 
 #[cfg(feature = "contract-tests")]
 pub mod workspace_contract;

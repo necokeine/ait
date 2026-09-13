@@ -172,7 +172,9 @@ async fn failed_effect_is_settled(fault: u8) {
     );
     assert!(execution.tools[0].tool_result_message_id.is_some());
     assert!(
-        support::workspace(&f.service).await.sessions[0]
+        support::workspace_with_runs(&f.service, f.store.as_ref())
+            .await
+            .sessions[0]
             .active_run_id
             .is_none()
     );
@@ -197,7 +199,8 @@ async fn failed_effect_is_settled(fault: u8) {
     else {
         panic!()
     };
-    assert_eq!(saved, run);
+    assert!(saved.execution.is_none());
+    assert_eq!(support::persisted_run(f.store.as_ref(), &run.id).await, run);
     assert_eq!(
         std::fs::read_to_string(f.worktree().join("once")).unwrap(),
         "external marker"
@@ -207,6 +210,7 @@ async fn failed_effect_is_settled(fault: u8) {
 }
 async fn wait_run(
     service: &LocalControlService,
+    store: &dyn ControlStore,
     id: &str,
     predicate: impl Fn(&ait_contracts::RunView) -> bool,
 ) -> ait_contracts::RunView {
@@ -216,6 +220,8 @@ async fn wait_run(
             else {
                 panic!()
             };
+            assert!(run.execution.is_none());
+            let run = support::persisted_run(store, &run.id).await;
             if predicate(&run) {
                 return run;
             }
@@ -254,7 +260,7 @@ async fn durable_cancel_survives_a_crash_after_an_intermediate_tool_save() {
     let Some(CommandResult::Run(initial)) = accepted.result else {
         panic!()
     };
-    wait_run(&service, &initial.id, |r| {
+    wait_run(&service, f.store.as_ref(), &initial.id, |r| {
         r.execution.as_ref().is_some_and(|e| {
             e.tools
                 .iter()
@@ -269,7 +275,10 @@ async fn durable_cancel_survives_a_crash_after_an_intermediate_tool_save() {
         },
     )
     .await;
-    wait_run(&service, &initial.id, |r| r.status == "cancelled").await;
+    wait_run(&service, f.store.as_ref(), &initial.id, |r| {
+        r.status == "cancelled"
+    })
+    .await;
     let image = f
         .store
         .image
@@ -296,7 +305,11 @@ async fn durable_cancel_survives_a_crash_after_an_intermediate_tool_save() {
         Arc::new(SqliteControlStore::open(&restore_path).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();
-    let state = support::workspace(&restarted).await;
+    let state = support::workspace_with_runs(
+        &restarted,
+        &SqliteControlStore::open(&restore_path).unwrap(),
+    )
+    .await;
     let execution = state.runs[0].execution.as_ref().unwrap();
     assert_eq!(state.runs[0].status, "cancelled");
     assert_eq!(execution.run.status, ait_domain::RunStatus::Cancelled);
@@ -365,7 +378,9 @@ async fn startup_repairs_old_terminal_projection_without_stealing_a_moved_sessio
             Arc::new(SqliteControlStore::open(&path).unwrap()),
         );
         restarted.recover_interrupted_runs().await.unwrap();
-        let state = support::workspace(&restarted).await;
+        let state =
+            support::workspace_with_runs(&restarted, &SqliteControlStore::open(&path).unwrap())
+                .await;
         let execution = state.runs[0].execution.as_ref().unwrap();
         assert_eq!(state.runs[0].id, finished.id);
         assert_eq!(execution.run.status, ait_domain::RunStatus::Failed);
@@ -400,7 +415,9 @@ async fn panic_with_running_attempt_settles_before_session_release() {
     );
     assert!(execution.attempts[0].ended_at.is_some());
     assert!(
-        support::workspace(&f.service).await.sessions[0]
+        support::workspace_with_runs(&f.service, f.store.as_ref())
+            .await
+            .sessions[0]
             .active_run_id
             .is_none()
     );
@@ -409,7 +426,12 @@ async fn panic_with_running_attempt_settles_before_session_release() {
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();
-    assert_eq!(support::workspace(&restarted).await.runs[0], run);
+    assert_eq!(
+        support::workspace_with_runs(&restarted, f.store.as_ref())
+            .await
+            .runs[0],
+        run
+    );
     assert!(f.requests.lock().unwrap().is_empty());
     f.finish().await;
 }
@@ -432,7 +454,7 @@ async fn lost_outcome_ack_keeps_stable_tool_result_order() {
     f.store.fault_after_effect.store(3, Ordering::SeqCst);
     let run = f.run().await;
     assert_eq!(run.status, "failed");
-    let state = support::workspace(&f.service).await;
+    let state = support::workspace_with_runs(&f.service, f.store.as_ref()).await;
     let mut results = state
         .messages
         .iter()
@@ -461,7 +483,12 @@ async fn lost_outcome_ack_keeps_stable_tool_result_order() {
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();
-    assert_eq!(support::workspace(&restarted).await.runs[0], run);
+    assert_eq!(
+        support::workspace_with_runs(&restarted, f.store.as_ref())
+            .await
+            .runs[0],
+        run
+    );
     assert_eq!(f.requests.lock().unwrap().len(), 1);
     f.finish().await;
 }
@@ -521,10 +548,13 @@ async fn cancelling_a_blocked_host_write_keeps_session_until_worker_cleanup() {
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    let during = support::workspace(&service).await;
+    let during = support::workspace_with_runs(&service, f.store.as_ref()).await;
     *pause.released.lock().unwrap() = true;
     pause.wake.notify_all();
-    let final_run = wait_run(&service, &initial.id, |r| r.status == "cancelled").await;
+    let final_run = wait_run(&service, f.store.as_ref(), &initial.id, |r| {
+        r.status == "cancelled"
+    })
+    .await;
     assert_eq!(during.runs[0].status, "cancelling");
     assert_eq!(
         during.sessions[0].active_run_id.as_deref(),
@@ -544,7 +574,9 @@ async fn cancelling_a_blocked_host_write_keeps_session_until_worker_cleanup() {
     );
     assert!(execution.tools[0].tool_result_message_id.is_some());
     assert!(
-        support::workspace(&service).await.sessions[0]
+        support::workspace_with_runs(&service, f.store.as_ref())
+            .await
+            .sessions[0]
             .active_run_id
             .is_none()
     );

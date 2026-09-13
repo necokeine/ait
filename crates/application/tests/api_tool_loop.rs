@@ -216,7 +216,8 @@ impl Fixture {
         else {
             panic!()
         };
-        run
+        assert!(run.execution.is_none());
+        support::persisted_run(self.store.as_ref(), &run.id).await
     }
     fn worktree(&self) -> std::path::PathBuf {
         self.project.path().join(".ait").join("session")
@@ -284,7 +285,7 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
         );
-        let after = support::workspace(&reopened).await;
+        let after = support::workspace_with_runs(&reopened, f.store.as_ref()).await;
         assert_eq!(after.runs[0], run);
         assert_eq!(
             after.sessions[0].current_message_id,
@@ -460,6 +461,7 @@ async fn public_cancellation_waits_for_one_cancelled_tool_result_and_releases_se
             else {
                 panic!()
             };
+            let run = support::persisted_run(f.store.as_ref(), &run.id).await;
             if run.execution.as_ref().is_some_and(|e| {
                 e.tools
                     .iter()
@@ -503,6 +505,7 @@ async fn public_cancellation_waits_for_one_cancelled_tool_result_and_releases_se
     })
     .await
     .unwrap();
+    let run = support::persisted_run(f.store.as_ref(), &run.id).await;
     let execution = run.execution.unwrap();
     assert_eq!(execution.tools.len(), 1);
     assert_eq!(
@@ -511,7 +514,9 @@ async fn public_cancellation_waits_for_one_cancelled_tool_result_and_releases_se
     );
     assert!(execution.tools[0].tool_result_message_id.is_some());
     assert!(
-        support::workspace(&service).await.sessions[0]
+        support::workspace_with_runs(&service, f.store.as_ref())
+            .await
+            .sessions[0]
             .active_run_id
             .is_none()
     );

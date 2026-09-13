@@ -2,10 +2,12 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
+use crate::control::model::RunState;
 use crate::control::project::worktrees::run_workdir;
-use crate::control::runs::is_terminal_workspace_status;
-use ait_contracts::{AgentMode, ApiError, RunView};
+use crate::control::runs::is_terminal_run_status;
+use ait_contracts::{AgentMode, ApiError};
 use ait_domain::ErrorCode;
+use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::{ControlStoreError, WorkspaceAgentResponse};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -73,7 +75,7 @@ pub(in crate::control) struct WorkspaceExecutionLease {
 }
 
 pub(in crate::control) fn ensure_current_lease(
-    run: &RunView,
+    run: &RunState,
     lease: &WorkspaceExecutionLease,
 ) -> Result<(), ApiError> {
     if run.operation_id.as_deref() != Some(lease.operation_id.as_str())
@@ -107,7 +109,7 @@ impl LocalControlService {
                 .iter()
                 .position(|run| run.id == run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-            if state.runs[index].status != "queued" {
+            if state.runs[index].status() != LifecycleStatus::Queued {
                 return Ok(None);
             }
             let operation_id = state.runs[index]
@@ -124,11 +126,11 @@ impl LocalControlService {
                 None
             };
             let run = &mut state.runs[index];
-            run.status = "running".into();
-            run.phase = Some("calling_agent".into());
+            run.set_status(LifecycleStatus::Running);
+            run.set_phase(Some(LifecyclePhase::CallingAgent));
             run.operation_id = Some(operation_id.clone().into_boxed_str());
             run.lease_epoch = lease_epoch;
-            run.error = None;
+            run.set_error(None);
             state.workspace_run_journals.insert(
                 run_id.to_owned(),
                 WorkspaceRunJournal {
@@ -177,7 +179,7 @@ impl LocalControlService {
                 .find(|r| r.id == lease.run_id)
                 .ok_or_else(|| recovery_error("Run missing"))?;
             ensure_current_lease(run, lease)?;
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_run_status(run.status()) {
                 return Err(recovery_error("terminal Run rejects worker claim"));
             }
             let journal = state
@@ -213,7 +215,7 @@ impl LocalControlService {
         lease: &WorkspaceExecutionLease,
         result: WorkspaceAgentResponse,
         worker: Option<&ait_ports::WorkspaceWorkerOperation>,
-    ) -> Result<RunView, ApiError> {
+    ) -> Result<RunState, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&lease.run_id).await?;
             let mut state = loaded.original.clone();
@@ -233,7 +235,7 @@ impl LocalControlService {
             if record_workspace_receipt(journal, lease, worker, &fingerprint)? {
                 return Ok(run);
             }
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_run_status(run.status()) {
                 return if journal.result.as_ref() == Some(&result) {
                     Ok(run)
                 } else {
@@ -242,8 +244,9 @@ impl LocalControlService {
                     ))
                 };
             }
-            let repeated = run.status == "settling" && journal.result.as_ref() == Some(&result);
-            if run.status != "running" && !repeated {
+            let repeated = run.status() == LifecycleStatus::Settling
+                && journal.result.as_ref() == Some(&result);
+            if run.status() != LifecycleStatus::Running && !repeated {
                 return Err(error(
                     ErrorCode::RunNotResumable,
                     "run is not accepting a workspace result checkpoint",
@@ -251,9 +254,9 @@ impl LocalControlService {
                 ));
             }
             journal.result = Some(result.clone());
-            run.status = "settling".into();
-            run.phase = Some("result_persisted".into());
-            run.error = None;
+            run.set_status(LifecycleStatus::Settling);
+            run.set_phase(Some(LifecyclePhase::ResultPersisted));
+            run.set_error(None);
             state.runs[index] = run.clone();
             let events = if repeated {
                 Vec::new()
@@ -281,7 +284,7 @@ impl LocalControlService {
         &self,
         lease: &WorkspaceExecutionLease,
         worker: Option<&ait_ports::WorkspaceWorkerOperation>,
-    ) -> Result<RunView, ApiError> {
+    ) -> Result<RunState, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&lease.run_id).await?;
             let mut state = loaded.original.clone();
@@ -300,21 +303,21 @@ impl LocalControlService {
             if record_workspace_receipt(journal, lease, worker, "integration")? {
                 return Ok(run);
             }
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_run_status(run.status()) {
                 return Err(error(
                     ErrorCode::RunAlreadyTerminal,
                     "workspace Run became terminal before integration",
                     false,
                 ));
             }
-            if run.status != "settling" || journal.result.is_none() {
+            if run.status() != LifecycleStatus::Settling || journal.result.is_none() {
                 return Err(recovery_error(
                     "workspace integration requires a durable result checkpoint",
                 ));
             }
-            let repeated = run.phase.as_deref() == Some("integrating");
-            run.phase = Some("integrating".into());
-            run.error = None;
+            let repeated = run.phase() == Some(LifecyclePhase::Integrating);
+            run.set_phase(Some(LifecyclePhase::Integrating));
+            run.set_error(None);
             state.runs[index] = run.clone();
             let events = if repeated {
                 Vec::new()

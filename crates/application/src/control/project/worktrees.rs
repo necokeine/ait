@@ -1,4 +1,7 @@
 //! Manager-owned Session worktree preparation and validation.
+use crate::control::model::ProjectState;
+use crate::control::model::RunState;
+
 use crate::control::catalog::require_agent;
 use crate::control::conversation::derive_reuses_source;
 use crate::control::conversation::messages::{
@@ -10,7 +13,7 @@ use crate::control::project::archive::{validate_import_conflicts, validate_proje
 use crate::control::project::git::PreparedProject;
 use crate::control::project::{require_project_view, validate_project_workdir};
 use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
-use ait_contracts::{ApiError, Command, ProjectExport, ProjectView, RunView};
+use ait_contracts::{ApiError, Command, ProjectExport};
 use ait_domain::ErrorCode;
 use ait_ports::{ProjectWorkspace, WorkspaceLease};
 use std::path::{Path, PathBuf};
@@ -61,7 +64,7 @@ pub(in crate::control) fn session_worktree_path(
 
 pub(in crate::control) fn run_workdir(
     state: &(impl HasProjects + HasSessions),
-    run: &RunView,
+    run: &RunState,
 ) -> Result<PathBuf, ApiError> {
     let project = state
         .projects()
@@ -179,7 +182,8 @@ pub(in crate::control) async fn prepare_import_session_worktrees(
     validate_import_conflicts(state, archive)?;
     validate_project_workdir(state, &prepared.workdir)?;
     prepared.verify(workspace).await?;
-    let mut project = archive.project.clone();
+    let mut project = ProjectState::try_from(archive.project.clone())
+        .map_err(crate::control::errors::serialization_error)?;
     project.workdir.clone_from(&prepared.workdir);
     project.base_commit.clone_from(&prepared.base_commit);
     for session in &archive.sessions {
@@ -275,7 +279,7 @@ async fn prepare_derived_session_worktree(
         .await;
     }
     let project = require_project_view(state, project_id)?;
-    let baseline = message_workspace_commit(state, project, &source.current_message_id)?;
+    let baseline = message_workspace_commit(state, project, &source.current_message_id())?;
     ensure_session_worktree(
         workspace,
         lease.clone(),
@@ -319,7 +323,7 @@ async fn prepare_existing_session_worktree(
 async fn ensure_session_worktree(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    project: &ProjectView,
+    project: &ProjectState,
     session_id: &str,
     baseline: &str,
     created: &mut Vec<PathBuf>,

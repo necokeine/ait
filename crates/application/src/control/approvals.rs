@@ -2,13 +2,15 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{api_domain_error, error, store_error};
 use crate::control::events::{now, pending};
+use crate::control::model::NativeApprovalState;
+use crate::control::model::RunState;
 use crate::control::permissions::{PermissionPolicyLimits, validate_native_permission_profile};
-use crate::control::runs::{cancel_run, is_terminal_workspace_status};
+use crate::control::runs::{cancel_run, is_terminal_run_status};
 use crate::control::state::{HasProjects, HasRuns, HasSessions, HasWorkspaceRunJournals};
 use ait_contracts::{
-    ApiError, CommandResult, NativeApprovalAction, NativeApprovalView, NativePermissionProfile,
-    ProtocolRequestId, RunView,
+    ApiError, CommandResult, NativeApprovalAction, NativePermissionProfile, ProtocolRequestId,
 };
+use ait_domain::LifecyclePhase;
 use ait_domain::{
     ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, NativeApprovalStatus,
     NativeApprovalTarget, RunPermissionProfile, SandboxAccess,
@@ -131,15 +133,15 @@ impl WorkspaceApproval for LocalControlService {
                 .native_approvals
                 .iter()
                 .any(|candidate| candidate.status == NativeApprovalStatus::Pending)
-                && !is_terminal_workspace_status(&run.status)
+                && !is_terminal_run_status(run.status())
             {
-                run.phase = Some("calling_agent".into());
+                run.set_phase(Some(LifecyclePhase::CallingAgent));
             }
             let run = run.clone();
             let event = pending("run.approval_expired", Some(request.run_id.clone()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
-                    self.notify_approval_waiters(&run);
+                    self.notify_approval_waiters(&run.view());
                     return Ok(());
                 }
                 Err(ControlStoreError::Conflict) => {}
@@ -155,7 +157,7 @@ impl WorkspaceApproval for LocalControlService {
 
 fn native_approval_record(
     request: &WorkspaceApprovalRequest,
-) -> Result<NativeApprovalView, ApiError> {
+) -> Result<NativeApprovalState, ApiError> {
     if request.run_id.trim().is_empty()
         || request.thread_id.trim().is_empty()
         || request.turn_id.trim().is_empty()
@@ -231,7 +233,7 @@ fn native_approval_record(
     } else {
         None
     };
-    Ok(NativeApprovalView {
+    Ok(NativeApprovalState {
         id: native_approval_id(&request.run_id, &request.protocol_request_id)?,
         run_id: request.run_id.clone(),
         protocol_request_id,
@@ -311,7 +313,7 @@ pub(in crate::control) fn is_bounded_display_value(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 4_096 && !value.chars().any(char::is_control)
 }
 
-fn approval_decision(approval: &NativeApprovalView) -> Option<WorkspaceApprovalDecision> {
+fn approval_decision(approval: &NativeApprovalState) -> Option<WorkspaceApprovalDecision> {
     match approval.status {
         NativeApprovalStatus::Approved => Some(WorkspaceApprovalDecision::Approved {
             scope: approval.granted_scope?,
@@ -344,7 +346,7 @@ pub(in crate::control) async fn resolve_native_approval(
         .position(|run| run.id == run_id)
         .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
     let run = &state.runs()[run_index];
-    if is_terminal_workspace_status(&run.status) {
+    if is_terminal_run_status(run.status()) {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
             "native approval belongs to a terminal Run",
@@ -430,18 +432,18 @@ pub(in crate::control) async fn resolve_native_approval(
         .iter()
         .any(|candidate| candidate.status == NativeApprovalStatus::Pending)
     {
-        run.phase = Some("calling_agent".into());
+        run.set_phase(Some(LifecyclePhase::CallingAgent));
     }
     let run = run.clone();
     Ok((
-        CommandResult::Run(run.clone()),
+        CommandResult::Run(run.view()),
         vec![pending("run.approval_resolved", Some(run.id.clone()), &run)],
     ))
 }
 
 async fn validate_native_approval_grant(
     workspace: &dyn ProjectWorkspace,
-    approval: &NativeApprovalView,
+    approval: &NativeApprovalState,
     scope: ApprovalGrantScope,
     limits: PermissionPolicyLimits,
     run_profile: RunPermissionProfile,
@@ -667,7 +669,7 @@ fn project_boundary_error() -> ApiError {
 }
 
 pub(in crate::control) fn expire_pending_native_approvals(
-    run: &mut RunView,
+    run: &mut RunState,
     status: NativeApprovalStatus,
 ) {
     let decided_at = now();
@@ -680,7 +682,7 @@ pub(in crate::control) fn expire_pending_native_approvals(
 }
 
 impl LocalControlService {
-    pub(in crate::control) fn notify_approval_waiters(&self, run: &RunView) {
+    pub(in crate::control) fn notify_approval_waiters(&self, run: &ait_contracts::RunView) {
         let Ok(mut waiters) = self.approval_waiters.lock() else {
             return;
         };
@@ -691,16 +693,16 @@ impl LocalControlService {
             let Some(sender) = waiters.remove(&approval.id) else {
                 continue;
             };
-            let decision =
-                approval_decision(approval).unwrap_or(WorkspaceApprovalDecision::Cancelled);
+            let decision = approval_decision(&NativeApprovalState::from(approval.clone()))
+                .unwrap_or(WorkspaceApprovalDecision::Cancelled);
             sender.send_replace(Some(decision));
         }
     }
 
     async fn persist_native_approval(
         &self,
-        approval: NativeApprovalView,
-    ) -> Result<NativeApprovalView, ApiError> {
+        approval: NativeApprovalState,
+    ) -> Result<NativeApprovalState, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&approval.run_id).await?;
             let mut state = loaded.original.clone();
@@ -709,7 +711,7 @@ impl LocalControlService {
                 .iter_mut()
                 .find(|run| run.id == approval.run_id)
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-            if is_terminal_workspace_status(&run.status) {
+            if is_terminal_run_status(run.status()) {
                 return Err(error(
                     ErrorCode::RunAlreadyTerminal,
                     "native approval belongs to a terminal Run",
@@ -737,7 +739,7 @@ impl LocalControlService {
                 return Ok(existing.clone());
             }
             run.native_approvals.push(approval.clone());
-            run.phase = Some("waiting_approval".into());
+            run.set_phase(Some(LifecyclePhase::WaitingApproval));
             let run = run.clone();
             let event = pending("run.approval_requested", Some(run.id.clone()), &run);
             match self.persist_records(&loaded, &state, vec![event]).await {

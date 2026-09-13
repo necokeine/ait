@@ -495,6 +495,41 @@ impl From<StoredMessage> for ProjectedMessage {
     }
 }
 
+impl MessageRole {
+    /// Stable transport spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::System => "system",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+impl MessageKind {
+    /// Stable transport spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::ToolResult => "tool_result",
+        }
+    }
+}
+
+/// Validates text supplied as a new human Message.
+/// # Errors
+/// Rejects blank input before any Message or Session transition.
+pub fn validate_message_text(text: &str) -> Result<(), DomainError> {
+    if text.trim().is_empty() {
+        return Err(DomainError::invariant(
+            ErrorCode::InvalidMessageRole,
+            "message text is required",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

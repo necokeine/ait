@@ -1,4 +1,7 @@
 //! Cron configuration, enablement and idempotent Run triggers.
+use crate::control::model::CronState;
+use crate::control::model::{RunLifecycle, RunState};
+
 use crate::control::catalog::{require_agent, require_named_agent, validate_config};
 use crate::control::errors::error;
 use crate::control::events::{now, pending};
@@ -9,7 +12,7 @@ use crate::control::state::{
     HasAgents, HasCrons, HasMessages, HasProviderCredentials, HasProviders, HasRunCredentials,
     HasRuns, HasSettings,
 };
-use ait_contracts::{AgentMode, ApiError, CommandResult, CronView, RunView};
+use ait_contracts::{AgentMode, ApiError, CommandResult};
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, ErrorCode, MessageId,
     ProjectId, TimestampMs,
@@ -83,7 +86,7 @@ pub(in crate::control) fn create_cron(
     domain
         .validate()
         .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
-    let cron = CronView {
+    let cron = CronState {
         id: id.clone(),
         name,
         project_id,
@@ -95,7 +98,7 @@ pub(in crate::control) fn create_cron(
     };
     state.crons_mut().push(cron.clone());
     Ok((
-        CommandResult::Cron(cron.clone()),
+        CommandResult::Cron(cron.view()),
         vec![pending("cron.created", Some(id), &cron)],
     ))
 }
@@ -113,7 +116,7 @@ pub(in crate::control) fn set_cron_enabled(
     cron.enabled = enabled;
     let cron = cron.clone();
     Ok((
-        CommandResult::Cron(cron.clone()),
+        CommandResult::Cron(cron.view()),
         vec![pending(
             "cron.enabled_changed",
             Some(cron.id.clone()),
@@ -141,7 +144,7 @@ pub(in crate::control) fn trigger_cron(
         run.cron_id.as_deref() == Some(cron_id) && run.scheduled_at == Some(scheduled_at)
     }) {
         return Ok((
-            CommandOutcome::Ready(Box::new(CommandResult::Run(existing.clone()))),
+            CommandOutcome::Ready(Box::new(CommandResult::Run(existing.view()))),
             Vec::new(),
         ));
     }
@@ -172,12 +175,12 @@ pub(in crate::control) fn trigger_cron(
             .run_credentials_mut()
             .insert(run_id.clone(), reference.clone());
     }
-    state.runs_mut().push(RunView {
-        execution: None,
+    state.runs_mut().push(RunState {
+        compatibility_repair: false,
+        lifecycle: RunLifecycle::queued(),
         id: run_id.clone(),
         project_id: cron.project_id,
         base_message_id: cron.base_message_id,
-        last_message_id: None,
         session_id: None,
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
@@ -185,17 +188,14 @@ pub(in crate::control) fn trigger_cron(
         provider,
         permission_profile,
         native_approvals: Vec::new(),
-        trigger: "cron".into(),
+        trigger: ait_domain::RunTrigger::Cron,
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),
         workspace_base_commit: workspace_baseline.map(|baseline| baseline.commit.clone()),
         workspace_base_index_tree: workspace_baseline
             .map(|baseline| baseline.index_tree.clone().into_boxed_str()),
-        status: "queued".into(),
-        phase: Some("queued".into()),
         operation_id: Some(format!("workspace-{run_id}").into_boxed_str()),
         lease_epoch: 0,
-        error: None,
     });
     let run = state.runs().last().expect("new run exists").clone();
     let event = pending("cron.run_triggered", Some(run_id), &run);

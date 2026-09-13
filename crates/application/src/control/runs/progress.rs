@@ -1,11 +1,12 @@
 //! Bounded progress reporting and drain before terminal persistence.
+use crate::control::model::RunState;
+
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use ait_contracts::RunView;
 use ait_ports::{
     ControlStore, ControlStoreError, PendingEvent, ProgressCheckpoint, WorkspaceOperation,
     WorkspaceProgressEvent, WorkspaceProgressReporter,
@@ -28,7 +29,7 @@ pub(super) struct ProgressPump {
 }
 
 impl ProgressPump {
-    pub(super) fn start(store: Arc<dyn ControlStore>, run: &RunView) -> Self {
+    pub(super) fn start(store: Arc<dyn ControlStore>, run: &RunState) -> Self {
         let (sender, receiver) = mpsc::channel(PROGRESS_BUFFER);
         let identity = ProgressIdentity {
             run: run.id.clone(),
