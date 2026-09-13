@@ -72,19 +72,38 @@ assert_eq!(profiles.resolve("deepseek", "my-model-id").tools().len(), 1);
 
 The public OpenAI/DeepSeek Session path now uses the existing `RunCoordinator`
 with `HostToolFactory`. After exact provider/model selection, the adapter advertises
-only executable functions: `read`, `grep`, and Unix `bash`; writable Runs also get
-`write` and `edit`. Unsupported options are removed from schemas and rejected by
-the executor. The remaining catalog is available for future implementations.
+only executable functions: `read`, `grep`, `glob`, and `bash` where the OS backend
+is available; writable Runs also get `write` and `edit`. Unsupported options are
+removed from schemas and rejected by the executor.
 
-Files are Project-relative, non-hidden, bounded to 64 KiB, and opened through
-capability directory handles without following symlinks. Writes atomically replace
-files. `read_only` cannot write; all modes retain the admitted Run ceiling and
-administrator limit. Wider permission requests receive a persisted denial.
+Structured file tools use workspace-relative, non-hidden capability directory
+handles without following symlinks. Writes atomically replace files with a 64 KiB
+input cap. `read` streams line windows or lists directories; `grep` supports `path`,
+`include`, and `output_mode: "count"` for per-file matching-line counts without
+returning contents. `glob` discovers scoped paths. Results are paginated and mark
+truncation/skipped files explicitly; `count_complete` identifies incomplete counts.
+Hidden paths, `target`, and `node_modules` are excluded from these inspection tools.
 
-`bash` is a controlled command slice: only `echo`, `printf`, and `sleep` are admitted
-through fixed binaries, with no interpreter, environment inheritance, network,
-redirection or background jobs. Commands time out after at most 30 seconds; output
-is bounded. Windows does not advertise a shell executor yet.
+`bash` executes shell syntax in the Session workspace. Readonly forbids writes;
+Workspace Write permits workspace writes. Both can read only the Session and
+explicit OS runtime directories; host homes, other Projects and host temporary
+files remain inaccessible, including through workspace symlinks. Both restrict
+networking and use a fixed system PATH. macOS uses
+Seatbelt, Linux requires system bubblewrap (`bwrap`) with working user namespaces.
+Full Access explicitly removes the OS sandbox. All modes keep the admitted Run
+and administrator ceilings. Same/lower `sandbox_permissions` requests execute;
+higher requests receive a persisted denial. Windows has no shell executor yet;
+missing or unusable sandbox backends never fall back to unrestricted execution.
+Each Run probes the actual isolation command with a bounded, reaped shell startup
+before advertising Bash, so an installed binary alone does not confer capability.
+
+Shell commands default to 10 seconds, capped at 120 seconds. Both output streams
+are captured and truncated with explicit markers; nonzero exit status and stderr
+remain available. The host clears inherited environment/startup configuration,
+reaps the process group on completion/cancellation, and does not expose background
+jobs. Shell calls run serially because they may write. See
+[NEC-263](../../docs/decisions/NEC-263/adr-001-shell-and-prompt-permissions.md) for the
+platform boundary and the Prompt permission selector.
 
 The host persists intent before execution and a unique user ToolResult afterward.
 Up to four safe calls can run concurrently; results append in proposal order.

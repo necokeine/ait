@@ -92,7 +92,7 @@ impl RunToolFactory for SandboxToolFactory {
             ));
         }
         // HostToolFactory uses capability-relative, no-symlink handles and
-        // bounded controlled commands; full_access does not grant arbitrary shell.
+        // an OS-sandboxed shell; full_access explicitly removes OS restrictions.
         ait_tools::host::HostToolFactory.create(root, profile)
     }
 }

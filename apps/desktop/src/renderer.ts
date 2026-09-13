@@ -54,6 +54,8 @@ const composerConfigPanel = $<HTMLElement>("#composer-config-panel");
 const composerAgent = $<HTMLSelectElement>("#composer-agent");
 const composerProvider = $<HTMLSelectElement>("#composer-provider");
 const composerModel = $<HTMLSelectElement>("#composer-model");
+const composerPermission = $<HTMLSelectElement>("#composer-permission");
+let permissionSaving = false;
 const composerReasoning = $<HTMLSelectElement>("#composer-reasoning");
 const sendButton = $<HTMLButtonElement>("#send-button");
 const settingsDialog = $("#settings-dialog");
@@ -241,6 +243,7 @@ function bindInteractions(): void {
     if (!open) configuringSessionId = undefined;
   });
   window.addEventListener("resize", () => composerConfigPanel.hidePopover());
+  composerPermission.addEventListener("change", () => void changePermission());
   composerAgent.addEventListener("change", () => void changeSessionAgent());
   composerReasoning.addEventListener("change", () => void changeSessionConfig(false));
   composerModel.addEventListener("change", () => void changeSessionConfig(true));
@@ -1048,7 +1051,14 @@ function updateComposerState(): void {
   if (!session || session.active || (configuringSessionId && configuringSessionId !== session.id)) {
     composerConfigPanel.hidePopover();
   }
-  sendButton.disabled = !session || messageInput.value.trim().length === 0 || submissionBusy;
+  sendButton.disabled = !session || messageInput.value.trim().length === 0 || submissionBusy || permissionSaving;
+  composerPermission.disabled = !settings || !session || submissionBusy || permissionSaving;
+  if (!permissionSaving) {
+    const sandbox = session?.active && !deriving
+      ? view?.runs.find((run) => run.id === session.activeRunId)?.permissionProfile.sandbox
+      : settings?.values["permissions.sandbox"];
+    composerPermission.value = sandbox === "workspace_write" || sandbox === "full_access" ? sandbox : "read_only";
+  }
   messageInput.disabled = !session || submissionBusy;
   composerConfigTrigger.disabled = !session || configBusy;
   composerAgent.disabled = !session || configBusy;
@@ -1404,7 +1414,29 @@ async function resetSettings(): Promise<void> {
   }
 }
 
+async function changePermission(): Promise<void> {
+  if (!settings || permissionSaving) return;
+  const sandbox = composerPermission.value;
+  permissionSaving = true;
+  updateComposerState();
+  try {
+    settings = await window.ait.saveSettings(settings.revision, { ...settings.values, "permissions.sandbox": sandbox });
+    settingsDraft = structuredClone(settings.values);
+  } catch (error) {
+    // A CAS conflict can mean another window changed the default. Refresh the
+    // authoritative value before the user can submit another Run.
+    try { settings = await window.ait.settings(); } catch { /* Keep last confirmed settings. */ }
+    showToast(errorMessage(error), true);
+  } finally {
+    permissionSaving = false;
+    applyPreferences();
+    updateComposerState();
+  }
+}
+
 function applyPreferences(): void {
+  const sandbox = settings?.values["permissions.sandbox"];
+  composerPermission.value = sandbox === "workspace_write" || sandbox === "full_access" ? sandbox : "read_only";
   const theme = settings?.values["interface.theme"];
   document.documentElement.dataset.theme = typeof theme === "string" ? theme : "system";
   document.documentElement.dataset.density = settings?.values["interface.density"] === "comfortable" ? "comfortable" : "compact";

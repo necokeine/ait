@@ -328,7 +328,7 @@ export function renderMessageTime(timestamp: number): string {
 export function renderMessage(message: DesktopMessage, agents: AgentSummary[], selected = false): string {
   const author = messageAuthor(message, agents);
   const isInput = message.role === "user" && message.kind !== "tool_result";
-  const avatar = message.role === "assistant" ? author.slice(0, 2).toUpperCase() : message.role === "user" ? "U" : "S";
+  const avatar = message.role === "assistant" ? author.slice(0, 2).toUpperCase() : message.kind === "tool_result" ? "◇" : message.role === "user" ? "U" : "S";
   const content = message.parts.some((part) => part.type === "codex_message")
     ? renderCodexOutput(message.parts)
     : message.parts.map((part) => renderPart(part, isInput)).join("");
@@ -347,11 +347,11 @@ export function renderRunProgress(progress: RunProgress | undefined, author: str
     : latestWarning?.retrying
       ? `Retrying — ${latestWarning.message}`
       : progress?.status === "completed" || progress?.status === "settling"
-        ? "Codex finished; Ait is saving the result…"
-        : "Codex is working…";
+        ? `${author} finished; Ait is saving the result…`
+        : `${author} is working…`;
   const content = progress?.items.length
     ? renderCodexOutput(progress.items, true)
-    : '<div class="live-run-placeholder"><span class="live-run-spinner" aria-hidden="true"></span>Waiting for Codex output</div>';
+    : `<div class="live-run-placeholder"><span class="live-run-spinner" aria-hidden="true"></span>Waiting for ${escapeHtml(author)} output</div>`;
   return `<article class="message assistant live-run" data-run-id="${escapeHtml(progress?.runId ?? "")}" aria-live="polite">
     <div class="message-avatar" aria-hidden="true">${escapeHtml(author.slice(0, 2).toUpperCase())}</div>
     <div class="message-body"><div class="message-heading"><strong>${escapeHtml(author)}</strong><small class="live-run-status">${escapeHtml(status)}</small></div>
@@ -386,6 +386,11 @@ function renderPart(part: DesktopMessage["parts"][number], isInput = false): str
     return `<section class="codex-output-message" data-codex-item-id="${escapeHtml(part.id)}" data-codex-phase="${escapeHtml(part.phase)}">${renderMessageText(part.text)}</section>`;
   }
   if (part.type === "tool_use") return `<div class="tool-card"><header><span>◇</span><strong>${escapeHtml(part.tool_name)}</strong><small>tool call</small></header><pre>${escapeHtml(prettyJson(part.arguments))}</pre></div>`;
+  if (part.type === "tool_result") return renderOperation({
+    type: "operation", id: part.call_id, kind: "tool_result", status: part.status,
+    title: "ToolUse result", summary: part.status, paths: [],
+    detail: [part.error, part.output === null ? undefined : prettyJson(part.output)].filter((value) => value !== undefined && value !== null).join("\n") || "No output",
+  });
   if (part.type === "operation") return renderOperation(part);
   if (part.type === "file") return `<div class="tool-card"><header><span>＋</span><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
   if (part.type === "structured") return `<div class="tool-card"><header><span>{ }</span><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(part.value)}</pre></div>`;

@@ -210,7 +210,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .operation-record summary::-webkit-details-marker { display: none; }
 .operation-record summary:hover { background: var(--surface-hover); }
 .operation-status { width: 7px; height: 7px; flex: 0 0 7px; margin-top: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.operation-status.status-failed, .operation-status.status-declined { background: var(--danger); box-shadow: 0 0 0 3px rgba(255,139,120,.12); }
+.operation-status.status-failed, .operation-status.status-declined, .operation-status.status-denied { background: var(--danger); box-shadow: 0 0 0 3px rgba(255,139,120,.12); }
+.operation-status.status-cancelled { background: var(--text-muted); box-shadow: 0 0 0 3px var(--surface-active); }
 .operation-status.status-inprogress, .operation-status.status-in_progress { background: #d5ad56; box-shadow: 0 0 0 3px rgba(213,173,86,.12); }
 .operation-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
 .operation-copy strong { color: var(--text-soft); font-size: 10.5px; font-weight: 590; }
@@ -242,7 +243,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .composer textarea { display: block; width: 100%; min-height: 65px; max-height: 180px; resize: vertical; border: 0; background: transparent; color: var(--text); padding: 13px 14px 4px; line-height: 1.45; font-size: 12.5px; outline: none; }
 .composer textarea::placeholder { color: #666b61; }
 .composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; }
-.composer-tools { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.composer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
 .tool-button, .composer-config-trigger, .composer-select-wrap select { height: 28px; border: 1px solid var(--line); background: var(--control-bg); color: var(--text-soft); border-radius: 6px; font-size: 10px; cursor: pointer; }
 .tool-button { width: 28px; flex-shrink: 0; }
 .composer-config-trigger { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 240px; padding: 0 9px; }

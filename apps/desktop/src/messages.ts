@@ -23,6 +23,31 @@ export function projectMessage(message: WorkspaceMessage, agentId: string | null
 
 function messageParts(message: WorkspaceMessage): MessagePart[] {
   const data = objectValue(message.data);
+  const native = objectValue(data.native_message);
+  if (message.kind === "tool_result") {
+    const result = objectValue(native.tool_result ?? data.tool_result);
+    return [{
+      type: "tool_result", call_id: stringValue(result.call_id) ?? message.id,
+      status: stringValue(result.status) ?? "completed",
+      output: result.output === null ? null : typeof result.output === "string" ? result.output
+        : result.output !== undefined ? JSON.stringify(result.output) : message.text ?? JSON.stringify(message.data ?? {}),
+      error: stringValue(result.error) ?? null,
+    }];
+  }
+  if (Array.isArray(native.sub_messages) && native.sub_messages.length > 0) {
+    const parts: MessagePart[] = native.sub_messages.flatMap((value): MessagePart[] => {
+      const part = objectValue(value);
+      if (part.type === "text" && typeof part.text === "string") return [{ type: "text", text: part.text }];
+      if (part.type === "tool_use") return [{
+        type: "tool_use", call_id: String(part.call_id ?? ""), tool_name: String(part.tool_name ?? "tool"),
+        arguments: typeof part.arguments === "string" ? part.arguments : JSON.stringify(part.arguments ?? {}),
+      }];
+      if (part.type === "file_ref") return [{ type: "file", name: String(part.name ?? "Attachment"), media_type: String(part.media_type ?? "") }];
+      if (part.type === "structured_data") return [{ type: "structured", media_type: String(part.media_type ?? "application/json"), value: String(part.value ?? "") }];
+      return [];
+    });
+    if (parts.length > 0) return parts;
+  }
   const codex = objectValue(data.codex);
   const operations = operationParts(codex.operations);
   const outputItems = Array.isArray(codex.output_items) ? codex.output_items : [];
@@ -117,6 +142,7 @@ function stringValue(value: unknown): string | undefined {
 }
 
 export function messageAuthor(message: DesktopMessage, agents: AgentSummary[]): string {
+  if (message.kind === "tool_result") return "Tool";
   if (message.role === "user") return "You";
   if (message.role === "system") return "System";
   return agents.find((agent) => agent.id === message.agentId)?.name.trim() || "Assistant";

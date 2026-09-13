@@ -1,6 +1,8 @@
 //! Filesystem confinement, bounded output and cancellation of the actual host slice.
 #![allow(clippy::pedantic)]
-use ait_domain::{ErrorCode, RunId, RunPermissionProfile, SandboxAccess, ToolExecutionId};
+#[cfg(unix)]
+use ait_domain::ErrorCode;
+use ait_domain::{RunId, RunPermissionProfile, SandboxAccess, ToolExecutionId};
 use ait_ports::{RunToolFactory, ToolInvocation};
 use ait_tools::host::{HostIoCheckpoint, HostIoObserver};
 use ait_tools::host::{HostToolFactory, MAX_BYTES};
@@ -107,7 +109,8 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
                     .is_err()
             );
         }
-        assert!(tools.execute(call("write",json!({"file_path":"file","content":"bad","sandbox_permissions":"danger-full-access"}))).await.is_err());
+        let explicit = tools.execute(call("write",json!({"file_path":"explicit","content":"ok","sandbox_permissions":"danger-full-access"}))).await;
+        assert_eq!(explicit.is_ok(), mode == SandboxAccess::FullAccess);
         assert!(
             tools
                 .execute(call(
@@ -189,6 +192,9 @@ async fn shell_is_controlled_cancellable_and_bounded() {
             RunPermissionProfile::default(),
         )
         .unwrap();
+    if !tools.executable_tools().contains(&"bash".to_owned()) {
+        return;
+    }
     let good = tools
         .execute(call(
             "bash",
@@ -197,25 +203,17 @@ async fn shell_is_controlled_cancellable_and_bounded() {
         .await
         .unwrap();
     assert_eq!(good.output["stdout"], "hello");
-    for command in [
-        "sh -c 'touch bad'",
-        "env",
-        "cat /etc/passwd",
-        "echo hi > bad",
-    ] {
-        let result = tools
-            .execute(call(
-                "bash",
-                json!({"command":command,"description":"Try command"}),
-            ))
-            .await;
-        if command.starts_with("echo") {
-            assert!(result.is_ok());
-            assert!(!root.path().join("bad").exists());
-        } else {
-            assert!(result.is_err());
-        }
-    }
+    let inspect = tools.execute(call("bash", json!({"command":"pwd && ls && find . -type f | wc -l","description":"Inspect repository"}))).await.unwrap();
+    assert_eq!(inspect.output["exit_status"], 0, "{inspect:?}");
+    let denied = tools
+        .execute(call(
+            "bash",
+            json!({"command":"echo hi > bad","description":"Attempt write"}),
+        ))
+        .await
+        .unwrap();
+    assert_ne!(denied.output["exit_status"], 0);
+    assert!(!root.path().join("bad").exists());
     let timeout = tools
         .execute(call(
             "bash",
@@ -230,8 +228,9 @@ async fn shell_is_controlled_cancellable_and_bounded() {
             json!({"command":"printf %100000s x","description":"Large output"}),
         ))
         .await
-        .unwrap_err();
-    assert_eq!(output.code, ErrorCode::ToolExecutionFailed);
+        .unwrap();
+    assert_eq!(output.output["truncated"], true);
+    assert!(output.output.to_string().len() < MAX_BYTES);
     let request = call("bash", json!({"command":"sleep 30","description":"Wait"}));
     let cancellation = request.cancellation.clone();
     let work = tools.execute(request);

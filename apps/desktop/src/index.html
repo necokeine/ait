@@ -96,6 +96,13 @@
                     </label>
                     <p>Choose a saved Agent or customize this Session.</p>
                   </div>
+                  <label class="composer-select-wrap" title="Default permission for new Runs; running Runs keep their current permission">
+                    <select id="composer-permission" aria-label="Run permissions">
+                      <option value="read_only">Readonly</option>
+                      <option value="workspace_write">Workspace Write</option>
+                      <option value="full_access">Full Access</option>
+                    </select><span class="select-chevron" aria-hidden="true"></span>
+                  </label>
                   <span id="composer-reasoning-control" class="composer-select-wrap reasoning-control is-hidden">
                     <select id="composer-reasoning" class="reasoning-select" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span>
                   </span>

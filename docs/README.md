@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-263/adr-001-shell-and-prompt-permissions.md`：Prompt 三级权限选择、API Shell 的系统隔离与能力过滤、流式仓库浏览/计数及默认折叠工具结果。
+
 - `decisions/NEC-250/adr-001-application-domain-state.md`：application 领域状态权威、边界投影、统一 Run lifecycle 与旧 Service 收敛。
 
 - `decisions/NEC-253/adr-001-project-workspace-port.md`：控制面 Git/文件系统/lease 的异步 port、本地阻塞预算、取消与授权事实边界。 各 public 调用共享 deadline，queued future drop 立即释放资源，创建失败报告 retained path/state。

@@ -7,20 +7,20 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::OpenOptionsExt;
 use cap_std::fs::{Dir, OpenOptions};
 use serde_json::{Value, json};
-use std::fmt::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     io::{Read, Write},
     path::{Component, Path},
     sync::Arc,
-    time::Duration,
 };
-use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
+
+mod search;
+mod shell;
 
 /// Maximum input file, argument or output bytes accepted by host tools.
 pub const MAX_BYTES: usize = 65_536;
-/// Production factory. Full access remains a ceiling, not an automatic escape grant.
+/// Production factory using the immutable Run permission for supported tools.
 #[derive(Default)]
 pub struct HostToolFactory;
 /// Observable filesystem boundaries; callbacks run on the I/O worker.
@@ -51,6 +51,8 @@ impl RunToolFactory for ObservedFactory {
     ) -> Result<Arc<dyn RunTool>, DomainError> {
         Ok(Arc::new(HostTools {
             root: Arc::new(open_project_root(root)?),
+            root_path: root.to_owned(),
+            shell_backend: shell::ShellBackend::detect(root, profile.sandbox),
             profile,
             observer: Some(self.0.clone()),
             workers: Arc::new(Workers::default()),
@@ -65,6 +67,8 @@ impl RunToolFactory for HostToolFactory {
     ) -> Result<Arc<dyn RunTool>, DomainError> {
         Ok(Arc::new(HostTools {
             root: Arc::new(open_project_root(root)?),
+            root_path: root.to_owned(),
+            shell_backend: shell::ShellBackend::detect(root, profile.sandbox),
             profile,
             observer: None,
             workers: Arc::new(Workers::default()),
@@ -111,11 +115,20 @@ pub fn parameters(name: &str) -> Option<Value> {
             "sandbox_permissions",
             "justification",
         ],
-        "grep" => &["pattern"],
+        "grep" => &[
+            "pattern",
+            "path",
+            "include",
+            "output_mode",
+            "offset",
+            "limit",
+        ],
+        "glob" => &["pattern", "path", "offset", "limit"],
         "bash" => &[
             "command",
             "description",
             "timeoutMs",
+            "workdir",
             "sandbox_permissions",
             "justification",
         ],
@@ -124,6 +137,19 @@ pub fn parameters(name: &str) -> Option<Value> {
     schema["properties"]
         .as_object_mut()?
         .retain(|key, _| allowed.contains(&key.as_str()));
+    if matches!(name, "grep" | "glob") {
+        schema["properties"]["offset"] =
+            json!({"type":"integer","minimum":0,"description":"Zero-based result offset."});
+        schema["properties"]["limit"] = json!({"type":"integer","minimum":1,"maximum":1000,"description":"Maximum returned results, default 200."});
+    }
+    if name == "grep" {
+        schema["properties"]["output_mode"] = json!({"type":"string","enum":["content","count","files_with_matches"],"description":"content (default), per-file matching line counts, or matching paths. count avoids returning file contents."});
+    }
+    if let Some(permission) = schema["properties"].get_mut("sandbox_permissions") {
+        permission["description"] = json!(
+            "Optional requested access. Requests within the Run permission are allowed; higher access is denied. Change Run permissions before starting a new Run to grant more access."
+        );
+    }
     schema["additionalProperties"] = Value::Bool(false);
     Some(schema)
 }
@@ -131,7 +157,9 @@ pub fn parameters(name: &str) -> Option<Value> {
 #[derive(Clone)]
 struct HostTools {
     root: Arc<Dir>,
+    root_path: std::path::PathBuf,
     profile: RunPermissionProfile,
+    shell_backend: Option<shell::ShellBackend>,
     observer: Option<Arc<dyn HostIoObserver>>,
     workers: Arc<Workers>,
 }
@@ -280,58 +308,12 @@ impl HostTools {
         self.checkpoint(request, HostIoCheckpoint::BeforePublish)?;
         dir.rename(&temporary, &dir, name).map_err(|_| failed())
     }
-    fn files(
-        &self,
-        dir: &Dir,
-        prefix: &str,
-        files: &mut Vec<String>,
-        visited: &mut usize,
-        request: &ToolInvocation,
-    ) -> Result<(), DomainError> {
-        self.check(request)?;
-        for entry in dir.entries().map_err(|_| failed())? {
-            self.check(request)?;
-            *visited += 1;
-            if *visited > 2_000 {
-                return Err(failed());
-            }
-            let entry = entry.map_err(|_| failed())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !safe_component(&name) {
-                continue;
-            }
-            let kind = entry.file_type().map_err(|_| failed())?;
-            let path = format!("{prefix}{name}");
-            if kind.is_file() {
-                files.push(path);
-            } else if kind.is_dir() {
-                self.files(
-                    &dir.open_dir_nofollow(&name).map_err(|_| denied())?,
-                    &format!("{path}/"),
-                    files,
-                    visited,
-                    request,
-                )?;
-            }
-        }
-        Ok(())
-    }
     fn filesystem(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
         self.check(request)?;
         let args = &request.arguments;
         match request.tool_name.as_str() {
-            "read" => {
-                let text = self.read(string(args, "file_path")?, request)?;
-                let offset =
-                    usize::try_from(args.get("offset").and_then(Value::as_u64).unwrap_or(1))
-                        .map_err(|_| failed())?;
-                let limit =
-                    usize::try_from(args.get("limit").and_then(Value::as_u64).unwrap_or(2000))
-                        .map_err(|_| failed())?;
-                Ok(
-                    json!({"text":text.lines().enumerate().skip(offset.saturating_sub(1)).take(limit).fold(String::new(),|mut out,(i,line)|{ let _=writeln!(out,"{}: {line}",i+1); out })}),
-                )
-            }
+            "read" => self.read_window(request),
+            "grep" | "glob" => self.search(request),
             "write" => {
                 self.write(
                     string(args, "file_path")?,
@@ -363,103 +345,15 @@ impl HostTools {
                 self.write(path, &text.replace(old, new), request)?;
                 Ok(json!({"replaced":count}))
             }
-            "grep" => {
-                let pattern = regex::RegexBuilder::new(string(args, "pattern")?)
-                    .size_limit(MAX_BYTES)
-                    .build()
-                    .map_err(|_| failed())?;
-                let mut files = Vec::new();
-                self.files(&self.root, "", &mut files, &mut 0, request)?;
-                files.sort();
-                let mut found = Vec::new();
-                let mut bytes = 0;
-                for path in files {
-                    self.check(request)?;
-                    if let Ok(text) = self.read(&path, request) {
-                        for (line, text) in text
-                            .lines()
-                            .enumerate()
-                            .filter(|(_, text)| pattern.is_match(text))
-                        {
-                            self.check(request)?;
-                            bytes += path.len() + text.len() + 32;
-                            if bytes > MAX_BYTES / 2 {
-                                return Err(failed());
-                            }
-                            found.push(json!({"path":path,"line":line+1,"text":text}));
-                        }
-                    }
-                }
-                self.check(request)?;
-                Ok(json!({"matches":found}))
-            }
             _ => Err(denied()),
         }
-    }
-    async fn shell(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
-        self.check(request)?;
-        let words = shlex::split(string(&request.arguments, "command")?).ok_or_else(denied)?;
-        // This slice deliberately admits only pure, finite shell utilities. No shell
-        // interpreter, evaluation, inherited environment, network or filesystem writes.
-        let program = match words.first().map(String::as_str) {
-            Some("printf") => "/usr/bin/printf",
-            Some("echo") => "/bin/echo",
-            Some("sleep") if words.len() == 2 && words[1].parse::<u32>().is_ok_and(|n| n <= 30) => {
-                "/bin/sleep"
-            }
-            _ => return Err(denied()),
-        };
-        let timeout = request
-            .arguments
-            .get("timeoutMs")
-            .and_then(Value::as_u64)
-            .unwrap_or(5_000)
-            .clamp(1, 30_000);
-        let mut child = tokio::process::Command::new(program)
-            .args(&words[1..])
-            .env_clear()
-            .current_dir("/")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| failed())?;
-        let mut stdout = child.stdout.take().ok_or_else(failed)?;
-        let work = async {
-            let mut output = Vec::new();
-            (&mut stdout)
-                .take((MAX_BYTES + 1) as u64)
-                .read_to_end(&mut output)
-                .await
-                .map_err(|_| failed())?;
-            if output.len() > MAX_BYTES {
-                return Err(failed());
-            }
-            let status = child.wait().await.map_err(|_| failed())?;
-            if !status.success() {
-                return Err(failed());
-            }
-            Ok(json!({"stdout":String::from_utf8_lossy(&output),"exit_status":status.code()}))
-        };
-        let result = tokio::select! {
-            biased;
-            () = request.cancellation.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled,"tool cancelled")),
-            () = self.workers.stopping.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled,"host tools stopped")),
-            result = tokio::time::timeout(Duration::from_millis(timeout), work) => result.map_err(|_| DomainError::invariant(ErrorCode::RunLimitExceeded,"tool timeout elapsed"))?,
-        };
-        if result.is_err() {
-            let _ = child.kill().await;
-        }
-        let _ = child.wait().await;
-        result
     }
 }
 #[async_trait]
 impl RunTool for HostTools {
     fn executable_tools(&self) -> Vec<String> {
-        let mut names = vec!["read", "grep"];
-        if cfg!(unix) {
+        let mut names = vec!["read", "grep", "glob"];
+        if self.shell_available() {
             names.push("bash");
         }
         if self.profile.sandbox != SandboxAccess::ReadOnly {
@@ -468,10 +362,15 @@ impl RunTool for HostTools {
         names.into_iter().map(str::to_owned).collect()
     }
     fn parallel_safe(&self, name: &str, args: &Value) -> bool {
-        matches!(name, "read" | "grep" | "bash") && !self.requires_approval(name, args)
+        matches!(name, "read" | "grep" | "glob") && !self.requires_approval(name, args)
     }
     fn requires_approval(&self, _: &str, args: &Value) -> bool {
-        args.get("sandbox_permissions").is_some()
+        match args.get("sandbox_permissions").and_then(Value::as_str) {
+            None => false,
+            Some("workspace-write") => self.profile.sandbox < SandboxAccess::WorkspaceWrite,
+            Some("danger-full-access") => self.profile.sandbox < SandboxAccess::FullAccess,
+            Some(_) => true,
+        }
     }
     async fn execute(&self, mut request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
         request.cancellation = request.cancellation.child_token();
@@ -483,7 +382,7 @@ impl RunTool for HostTools {
             ));
         }
         if !self.executable_tools().contains(&request.tool_name)
-            || request.arguments.get("sandbox_permissions").is_some()
+            || self.requires_approval(&request.tool_name, &request.arguments)
             || request
                 .arguments
                 .get("run_in_background")

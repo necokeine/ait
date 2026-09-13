@@ -136,3 +136,14 @@ test("a cancellation event refreshes an active view into its cancelled terminal 
 
   assert.equal(isTerminalRunEvent({ ...cancelledEvent, kind: "run.cancelled" }), true);
 });
+
+test("uses the selected Agent in working, waiting and completed status, with escaped names", () => {
+  const waiting = renderRunProgress(undefined, "DS-Flash", true);
+  assert.ok(waiting.includes("DS-Flash is working"));
+  assert.ok(waiting.includes("Waiting for DS-Flash output"));
+  assert.ok(!waiting.includes("Codex"));
+  const completed = renderRunProgress({ runId: "run", projectId: "project", sessionId: null, seq: 1, status: "settling", items: [], warnings: [], updatedAt: 0 }, "DS-Flash", true);
+  assert.ok(completed.includes("DS-Flash finished"));
+  assert.ok(!completed.includes("Codex"));
+  assert.ok(!renderRunProgress(undefined, "<script>name</script>", true).includes("<script>"));
+});
