@@ -52,6 +52,7 @@ impl RunToolFactory for ObservedFactory {
         Ok(Arc::new(HostTools {
             root: Arc::new(open_project_root(root)?),
             root_path: root.to_owned(),
+            shell_backend: shell::ShellBackend::detect(root, profile.sandbox),
             profile,
             observer: Some(self.0.clone()),
             workers: Arc::new(Workers::default()),
@@ -67,6 +68,7 @@ impl RunToolFactory for HostToolFactory {
         Ok(Arc::new(HostTools {
             root: Arc::new(open_project_root(root)?),
             root_path: root.to_owned(),
+            shell_backend: shell::ShellBackend::detect(root, profile.sandbox),
             profile,
             observer: None,
             workers: Arc::new(Workers::default()),
@@ -157,6 +159,7 @@ struct HostTools {
     root: Arc<Dir>,
     root_path: std::path::PathBuf,
     profile: RunPermissionProfile,
+    shell_backend: Option<shell::ShellBackend>,
     observer: Option<Arc<dyn HostIoObserver>>,
     workers: Arc<Workers>,
 }

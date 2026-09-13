@@ -1,6 +1,8 @@
 //! Filesystem confinement, bounded output and cancellation of the actual host slice.
 #![allow(clippy::pedantic)]
-use ait_domain::{ErrorCode, RunId, RunPermissionProfile, SandboxAccess, ToolExecutionId};
+#[cfg(unix)]
+use ait_domain::ErrorCode;
+use ait_domain::{RunId, RunPermissionProfile, SandboxAccess, ToolExecutionId};
 use ait_ports::{RunToolFactory, ToolInvocation};
 use ait_tools::host::{HostIoCheckpoint, HostIoObserver};
 use ait_tools::host::{HostToolFactory, MAX_BYTES};

@@ -628,3 +628,90 @@ async fn api_provider_receives_scoped_count_schema_and_persisted_result_with_sel
         fixture.finish().await;
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn restricted_shell_cannot_persist_or_send_outside_secrets_to_either_provider() {
+    use ait_domain::{RunPermissionProfile, SandboxAccess};
+    use ait_ports::RunToolFactory;
+    let outside = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let tools = ait_tools::host::HostToolFactory
+        .create(
+            &root.path().canonicalize().unwrap(),
+            RunPermissionProfile {
+                sandbox: SandboxAccess::ReadOnly,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    if !tools.executable_tools().contains(&"bash".to_owned()) {
+        assert!(
+            std::env::var_os("AIT_REQUIRE_SHELL_SANDBOX").is_none(),
+            "required sandbox unavailable"
+        );
+        return;
+    }
+    let secret = outside.path().join("private-file");
+    let marker = "NEC263_PROVIDER_MUST_NOT_RECEIVE_68175741";
+    std::fs::write(&secret, marker).unwrap();
+    let command = format!(
+        "/bin/cat '{}'",
+        secret.display().to_string().replace('\'', "'\\''")
+    );
+    for kind in [ProviderKind::DeepSeek, ProviderKind::OpenAI] {
+        for sandbox in ["read_only", "workspace_write", "full_access"] {
+            let fixture = Fixture::new(
+                kind,
+                vec![
+                    response(
+                        kind,
+                        &[(
+                            "outside_read",
+                            "bash",
+                            json!({"command":command,"description":"Read fixture file"}),
+                        )],
+                    ),
+                    response(kind, &[]),
+                ],
+                sandbox,
+            )
+            .await;
+            let run = fixture.run().await;
+            assert_eq!(run.status, "completed");
+            let output = run.execution.as_ref().unwrap().tools[0]
+                .result
+                .as_ref()
+                .unwrap();
+            let allowed = sandbox == "full_access";
+            assert_eq!(
+                output["exit_status"] == 0,
+                allowed,
+                "{kind:?} {sandbox}: {output}"
+            );
+            assert_eq!(output.to_string().contains(marker), allowed);
+            let requests = fixture.requests.lock().unwrap().clone();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                requests[1].to_string().contains(marker),
+                allowed,
+                "provider request leaked the marker"
+            );
+            let persisted = support::workspace(&fixture.service).await;
+            let result = persisted
+                .messages
+                .iter()
+                .find_map(|message| {
+                    let result = &message.data.as_ref()?["native_message"]["tool_result"];
+                    (result["call_id"] == "outside_read").then_some(result)
+                })
+                .unwrap();
+            assert_eq!(
+                result.to_string().contains(marker),
+                allowed,
+                "durable ToolResult leaked the marker"
+            );
+            fixture.finish().await;
+        }
+    }
+}

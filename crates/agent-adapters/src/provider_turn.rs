@@ -45,7 +45,7 @@ pub async fn complete_turn(
             tool.description = "Search UTF-8 files with a regex, restricted by path (file or directory) and include glob. output_mode=count returns matching line counts per file and total_count without file contents. Hidden paths, target and node_modules are excluded. offset/limit paginate bounded results; truncated, scan_truncated and skipped_files report incomplete scans.".into();
         }
         if tool.name == "bash" {
-            tool.description = "Run a bash command in the session workspace (or workdir). Supports pipelines, repository inspection and installed utilities. Readonly forbids filesystem writes; Workspace Write allows writes only in the session workspace; both block network. Full Access runs without OS sandbox restrictions. The fixed Run permission and administrator ceiling apply. Returns stdout, stderr, exit_status and truncation flags; no background jobs. Default timeout 10 seconds, maximum 120 seconds.".into();
+            tool.description = "Run a bash command in the session workspace (or workdir). Supports pipelines, repository inspection and system utilities. Restricted profiles can read only the session workspace and OS runtime directories, with a fixed system PATH. Readonly forbids filesystem writes; Workspace Write allows writes only in the session workspace; both block network. Full Access runs without OS sandbox restrictions. The fixed Run permission and administrator ceiling apply. Returns stdout, stderr, exit_status and truncation flags; no background jobs. Default timeout 10 seconds, maximum 120 seconds.".into();
         }
     }
     if let Some(effort) = &config.reasoning_effort {

@@ -46,6 +46,10 @@ async fn applies_all_three_profiles_to_real_commands_and_explicit_requests() {
             )
             .unwrap();
         if !tools.executable_tools().contains(&"bash".to_owned()) {
+            assert!(
+                std::env::var_os("AIT_REQUIRE_SHELL_SANDBOX").is_none(),
+                "required sandbox failed its real startup probe"
+            );
             continue;
         }
         let inspect = tools
@@ -142,6 +146,88 @@ async fn applies_all_three_profiles_to_real_commands_and_explicit_requests() {
             socket.accept().is_ok(),
             sandbox == SandboxAccess::FullAccess
         );
+    }
+}
+
+#[tokio::test]
+async fn outside_secrets_never_enter_restricted_shell_results() {
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let home = tempfile::Builder::new()
+        .prefix("ait-shell-read-test-")
+        .tempdir_in(std::env::var_os("HOME").unwrap())
+        .unwrap();
+    let session = project.path().join(".ait/session");
+    std::fs::create_dir_all(&session).unwrap();
+    let session = session.canonicalize().unwrap();
+    let marker = "NEC263_PRIVATE_READ_MARKER_7a68409b";
+    let secrets = [
+        outside.path().join("secret"),
+        home.path().join("credential"),
+        project.path().join(".ait/other-session-secret"),
+    ];
+    for path in &secrets {
+        std::fs::write(path, marker).unwrap();
+    }
+    std::fs::write(session.join("source"), "workspace-readable").unwrap();
+    std::os::unix::fs::symlink(&secrets[0], session.join("linked-secret")).unwrap();
+    std::os::unix::fs::symlink(home.path(), session.join("linked-home")).unwrap();
+    // Metadata protection must not mount a private symlink target into Linux's
+    // otherwise empty root when Workspace Write is selected.
+    std::os::unix::fs::symlink(outside.path(), session.join(".git")).unwrap();
+    std::os::unix::fs::symlink(home.path(), session.join(".ait")).unwrap();
+    let targets = secrets.into_iter().chain([
+        session.join("linked-secret"),
+        session.join("linked-home/credential"),
+        session.join(".git/secret"),
+        session.join(".ait/credential"),
+    ]);
+    for target in targets {
+        for sandbox in [
+            SandboxAccess::ReadOnly,
+            SandboxAccess::WorkspaceWrite,
+            SandboxAccess::FullAccess,
+        ] {
+            let tools = HostToolFactory
+                .create(
+                    &session,
+                    RunPermissionProfile {
+                        sandbox,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            if !tools.executable_tools().contains(&"bash".to_owned()) {
+                assert!(
+                    std::env::var_os("AIT_REQUIRE_SHELL_SANDBOX").is_none(),
+                    "required sandbox unavailable"
+                );
+                continue;
+            }
+            let source = tools
+                .execute(call("/bin/cat source".into()))
+                .await
+                .unwrap()
+                .output;
+            assert_eq!(source["exit_status"], 0, "{source}");
+            assert_eq!(source["stdout"], "workspace-readable");
+            let output = tools
+                .execute(call(format!("/bin/cat {}", quote(&target))))
+                .await
+                .unwrap()
+                .output;
+            let full = sandbox == SandboxAccess::FullAccess;
+            assert_eq!(
+                output["exit_status"] == 0,
+                full,
+                "{sandbox:?} {target:?}: {output}"
+            );
+            assert_eq!(
+                output.to_string().contains(marker),
+                full,
+                "{sandbox:?}: {output}"
+            );
+        }
     }
 }
 

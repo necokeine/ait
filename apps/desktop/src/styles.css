@@ -210,7 +210,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .operation-record summary::-webkit-details-marker { display: none; }
 .operation-record summary:hover { background: var(--surface-hover); }
 .operation-status { width: 7px; height: 7px; flex: 0 0 7px; margin-top: 5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.operation-status.status-failed, .operation-status.status-declined { background: var(--danger); box-shadow: 0 0 0 3px rgba(255,139,120,.12); }
+.operation-status.status-failed, .operation-status.status-declined, .operation-status.status-denied { background: var(--danger); box-shadow: 0 0 0 3px rgba(255,139,120,.12); }
+.operation-status.status-cancelled { background: var(--text-muted); box-shadow: 0 0 0 3px var(--surface-active); }
 .operation-status.status-inprogress, .operation-status.status-in_progress { background: #d5ad56; box-shadow: 0 0 0 3px rgba(213,173,86,.12); }
 .operation-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
 .operation-copy strong { color: var(--text-soft); font-size: 10.5px; font-weight: 590; }

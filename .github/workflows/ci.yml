@@ -11,6 +11,8 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      AIT_REQUIRE_SHELL_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

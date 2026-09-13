@@ -85,12 +85,17 @@ truncation/skipped files explicitly; `count_complete` identifies incomplete coun
 Hidden paths, `target`, and `node_modules` are excluded from these inspection tools.
 
 `bash` executes shell syntax in the Session workspace. Readonly forbids writes;
-Workspace Write permits workspace writes; both restrict networking. macOS uses
+Workspace Write permits workspace writes. Both can read only the Session and
+explicit OS runtime directories; host homes, other Projects and host temporary
+files remain inaccessible, including through workspace symlinks. Both restrict
+networking and use a fixed system PATH. macOS uses
 Seatbelt, Linux requires system bubblewrap (`bwrap`) with working user namespaces.
 Full Access explicitly removes the OS sandbox. All modes keep the admitted Run
 and administrator ceilings. Same/lower `sandbox_permissions` requests execute;
 higher requests receive a persisted denial. Windows has no shell executor yet;
-missing sandbox backends never fall back to unrestricted execution.
+missing or unusable sandbox backends never fall back to unrestricted execution.
+Each Run probes the actual isolation command with a bounded, reaped shell startup
+before advertising Bash, so an installed binary alone does not confer capability.
 
 Shell commands default to 10 seconds, capped at 120 seconds. Both output streams
 are captured and truncated with explicit markers; nonzero exit status and stderr

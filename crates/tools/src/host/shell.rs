@@ -4,106 +4,25 @@ use ait_domain::{DomainError, ErrorCode, SandboxAccess};
 use ait_ports::ToolInvocation;
 use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt};
+
+mod backend;
+pub(super) use backend::ShellBackend;
 
 impl HostTools {
     pub(super) fn shell_available(&self) -> bool {
-        cfg!(unix)
-            && Path::new("/bin/bash").is_file()
-            && (self.profile.sandbox == SandboxAccess::FullAccess || sandbox_binary().is_some())
+        self.shell_backend.is_some()
     }
 
     fn shell_command(&self, cwd: &Path) -> Result<CommandWrap, DomainError> {
-        if !self.shell_available() {
-            return Err(denied());
-        }
+        let builder = self.shell_backend.as_ref().ok_or_else(denied)?.command(
+            &self.root_path,
+            self.profile.sandbox,
+            cwd,
+        )?;
         let mut command = CommandWrap::with_new("/bin/bash", |_| {});
-        let builder = command.command_mut();
-        if self.profile.sandbox == SandboxAccess::FullAccess {
-            *builder = tokio::process::Command::new("/bin/bash");
-        } else {
-            *builder = tokio::process::Command::new(sandbox_binary().ok_or_else(denied)?);
-            #[cfg(target_os = "macos")]
-            {
-                builder.args(["-p", MACOS_POLICY]);
-                // Parameters are passed as argv, never interpolated into policy source.
-                builder
-                    .arg("-D")
-                    .arg(format!("WORKSPACE={}", self.root_path.display()));
-                builder.arg("-D").arg(format!(
-                    "GIT_METADATA={}",
-                    self.root_path.join(".git").display()
-                ));
-                builder.arg("-D").arg(format!(
-                    "AIT_METADATA={}",
-                    self.root_path.join(".ait").display()
-                ));
-                builder.arg("-D").arg(format!(
-                    "WRITABLE={}",
-                    if self.profile.sandbox == SandboxAccess::WorkspaceWrite {
-                        "yes"
-                    } else {
-                        "no"
-                    }
-                ));
-            }
-            #[cfg(target_os = "linux")]
-            {
-                // An independent PID/network/IPC namespace plus a read-only host
-                // filesystem; only the selected workspace is mounted writable.
-                builder.args([
-                    "--unshare-all",
-                    "--die-with-parent",
-                    "--new-session",
-                    "--ro-bind",
-                    "/",
-                    "/",
-                    "--proc",
-                    "/proc",
-                    "--dev",
-                    "/dev",
-                ]);
-                if self.profile.sandbox == SandboxAccess::WorkspaceWrite {
-                    builder
-                        .arg("--bind")
-                        .arg(&self.root_path)
-                        .arg(&self.root_path);
-                    for name in [".git", ".ait"] {
-                        let path = self.root_path.join(name);
-                        if path.exists() {
-                            builder.arg("--ro-bind").arg(&path).arg(&path);
-                        }
-                    }
-                }
-                builder.args(["--seccomp", "0"]);
-                builder.arg("--chdir").arg(cwd).arg("--");
-            }
-            builder.arg("/bin/bash");
-        }
-        builder
-            .args(["--noprofile", "--norc", "-c"])
-            .env_clear()
-            .env(
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
-            )
-            .env("HOME", &self.root_path)
-            .env("LANG", "en_US.UTF-8")
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(target_os = "linux")]
-        if self.profile.sandbox != SandboxAccess::FullAccess {
-            // Network namespaces alone do not isolate pathname Unix sockets.
-            // No sockets/rings are inherited; block their creation as well.
-            builder.stdin(Stdio::from(network_filter()?));
-        }
+        *command.command_mut() = tokio::process::Command::from(builder);
         command.wrap(KillOnDrop);
         #[cfg(unix)]
         command.wrap(process_wrap::tokio::ProcessGroup::leader());
@@ -165,28 +84,6 @@ impl HostTools {
     }
 }
 
-fn sandbox_binary() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    let candidates = ["/usr/bin/sandbox-exec"];
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ))]
-    let candidates = ["/usr/bin/bwrap", "/bin/bwrap"];
-    #[cfg(not(any(
-        target_os = "macos",
-        all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )
-    )))]
-    let candidates: [&str; 0] = [];
-    candidates
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-}
-
 async fn capture(mut pipe: impl AsyncRead + Unpin) -> Result<(String, bool), DomainError> {
     // Worst-case JSON escaping expands a byte by six. Keep both streams inside
     // the host result budget, and drain excess output without accumulating it.
@@ -204,56 +101,4 @@ async fn capture(mut pipe: impl AsyncRead + Unpin) -> Result<(String, bool), Dom
         truncated |= retained < count;
     }
     Ok((String::from_utf8_lossy(&output).into_owned(), truncated))
-}
-
-#[cfg(target_os = "macos")]
-const MACOS_POLICY: &str = r#"
-(version 1)
-(deny default)
-(allow process-exec process-fork)
-(allow signal (target same-sandbox))
-(allow process-info* (target same-sandbox))
-(allow sysctl-read)
-(allow file-read*)
-(allow file-write-data (literal "/dev/null"))
-(if (string=? (param "WRITABLE") "yes")
-    (allow file-write* (subpath (param "WORKSPACE"))))
-(deny file-write* (subpath (param "GIT_METADATA")) (subpath (param "AIT_METADATA")))
-"#;
-
-// Classic BPF, passed to bubblewrap via an anonymous file on stdin. A restricted
-// child gets only stdin/stdout/stderr, never an inherited host socket or io_uring.
-#[cfg(target_os = "linux")]
-fn network_filter() -> Result<std::fs::File, DomainError> {
-    use std::io::{Seek, Write};
-    #[cfg(target_arch = "x86_64")]
-    let architecture = 0xc000_003e;
-    #[cfg(target_arch = "aarch64")]
-    let architecture = 0xc000_00b7;
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    let architecture = 0; // Such hosts never advertise restricted Bash.
-    let mut instructions: Vec<(u16, u8, u8, u32)> = vec![
-        (0x20, 0, 0, 4), // Load seccomp_data.arch.
-        (0x15, 1, 0, architecture),
-        (0x06, 0, 0, 0x8000_0000), // Kill unknown/compat ABIs.
-        (0x20, 0, 0, 0),           // Load seccomp_data.nr.
-        (0x54, 0, 0, 0xbfff_ffff), // Strip the x32 syscall bit before comparison.
-    ];
-    for number in [
-        libc::SYS_socket,
-        libc::SYS_socketpair,
-        libc::SYS_io_uring_setup,
-    ] {
-        instructions.push((0x15, 0, 1, u32::try_from(number).map_err(|_| denied())?));
-        instructions.push((0x06, 0, 0, 0x0005_0001)); // EPERM.
-    }
-    instructions.push((0x06, 0, 0, 0x7fff_0000)); // Allow other syscalls.
-    let mut file = tempfile::tempfile().map_err(|_| failed())?;
-    for (code, yes, no, value) in instructions {
-        file.write_all(&code.to_ne_bytes()).map_err(|_| failed())?;
-        file.write_all(&[yes, no]).map_err(|_| failed())?;
-        file.write_all(&value.to_ne_bytes()).map_err(|_| failed())?;
-    }
-    file.rewind().map_err(|_| failed())?;
-    Ok(file)
 }
