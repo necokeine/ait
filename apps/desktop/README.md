@@ -36,6 +36,23 @@ a Session. Starting the desktop with an empty workspace leaves this list empty u
 creates a Project. The built-in Codex profile uses the locally installed and authenticated
 `codex app-server`; deterministic adapters remain available to the Rust test suite without network access.
 
+Runs in the workspace navigation (also available as **Open Runs** in the command
+palette) lists active Runs across every registered Project. Queued, running,
+waiting-for-approval, retrying, finishing and cancelling Runs remain visible until
+they reach a terminal state. Each row shows its Project, Session, Agent, pinned
+model and lifecycle phase. **Open Session** loads the Run's Project and conversation;
+scheduled Runs without a Session are also listed.
+
+Electron main builds this narrow activity summary from the existing Rust daemon's
+Project-scoped Run and Session APIs, with at most four Projects read concurrently.
+It does not load Message history for the Runs page or transfer full execution
+records to the renderer. Global lifecycle events refresh the visible list, and a
+five-second refresh recovers missed events and temporarily unavailable Projects.
+Refreshes stop when leaving Runs. Connection loss, failed refreshes and unavailable
+Projects have explicit notices; a partial result is not presented as an empty
+workspace. The current daemon API returns each Project's Run history before main
+filters it, so the read cost still grows with retained Runs.
+
 The composer Agent selector is available for every idle Session. Selecting a
 different Agent immediately rebinds that Session with a version check; an
 active Session remains locked to the Agent revision already pinned by its Run.

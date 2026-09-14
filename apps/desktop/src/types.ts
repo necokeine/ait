@@ -152,6 +152,26 @@ export interface RunSubmission {
   runId: string;
 }
 
+/** Workspace activity summary; excludes conversation content and execution payloads. */
+export interface ActiveRunSummary {
+  id: string;
+  projectId: string;
+  projectName: string;
+  sessionId: string | null;
+  sessionTitle: string | null;
+  agentId: string;
+  model: string;
+  status: string;
+  phase: string | null;
+  trigger: string;
+  pendingApprovals: number;
+}
+
+export interface ActiveRunsCatalog {
+  runs: ActiveRunSummary[];
+  unavailableProjects: Array<{ projectId: string; projectName: string; message: string }>;
+}
+
 export interface ProjectCatalog {
   protocolVersion: number;
   revision: number;
@@ -237,6 +257,7 @@ export interface BridgeErrorShape {
 
 export interface AitDesktopApi {
   projects(): Promise<ProjectCatalog>;
+  activeRuns(): Promise<ActiveRunsCatalog>;
   agents(): Promise<AgentCatalog>;
   project(projectId: string): Promise<ProjectView>;
   saveProvider(input: ProviderInput): Promise<AgentCatalog>;

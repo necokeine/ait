@@ -1,5 +1,6 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
+import { createRunsPage } from "./runs-page.js";
 import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
@@ -86,7 +87,7 @@ const pendingSessions = new Set<string>();
 let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let settingsCategory: SettingCategory = "models";
-let activePage: "sessions" | "agents" = "sessions";
+let activePage: "sessions" | "agents" | "runs" = "sessions";
 let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
 let toastTimer: number | undefined;
@@ -104,8 +105,28 @@ const agentsPage = createAgentsPage($("#agents-page"), {
   notify: showToast,
   configureProvider: openProviderSettings,
 });
+const runsPage = createRunsPage($("#runs-page"), {
+  read: () => window.ait.activeRuns(),
+  agents: () => view?.agents ?? [],
+  openSession: async (projectId, sessionId) => {
+    selectedSessionId = sessionId;
+    resetTreeView();
+    // The Run may belong to a Session created outside this renderer.
+    const loading = Promise.all([selectProjectView(projectId), window.ait.projects()]);
+    showPage("sessions");
+    const [accepted, projects] = await loading;
+    if (!accepted) return;
+    replaceProjectCatalog(projects);
+    renderAll();
+    if (!currentSession()) showToast("This Run's Session is no longer available.", true);
+  },
+  notify: showToast,
+});
 
-window.ait.subscribeRunEvents(handleRunStreamFrame);
+window.ait.subscribeRunEvents((updates) => {
+  runsPage.handleUpdates(updates);
+  handleRunStreamFrame(updates);
+});
 void initialize();
 
 async function initialize(): Promise<void> {
@@ -218,6 +239,7 @@ function bindInteractions(): void {
   $("#tree-toggle").addEventListener("click", toggleTree);
   $("#settings-trigger").addEventListener("click", openSettings);
   $("#sessions-nav").addEventListener("click", () => showPage("sessions"));
+  $("#runs-nav").addEventListener("click", () => showPage("runs"));
   $("#agents-nav").addEventListener("click", () => showPage("agents"));
   $("#project-create-trigger").addEventListener("click", openProjectDialog);
   $("#project-close").addEventListener("click", closeProjectDialog);
@@ -338,20 +360,23 @@ function renderRecoveryNotices(): void {
   });
 }
 
-function showPage(page: "sessions" | "agents"): void {
+function showPage(page: "sessions" | "agents" | "runs"): void {
   activePage = page;
   composerConfigPanel.hidePopover();
   closeSessionContextMenu();
   $("#sessions-page").classList.toggle("is-hidden", page !== "sessions");
   $("#agents-page").classList.toggle("is-hidden", page !== "agents");
+  $("#runs-page").classList.toggle("is-hidden", page !== "runs");
+  runsPage.setActive(page === "runs");
   $("#tree-toggle").classList.toggle("is-hidden", page !== "sessions");
-  for (const name of ["sessions", "agents"] as const) {
+  for (const name of ["sessions", "agents", "runs"] as const) {
     const button = $(`#${name}-nav`);
     button.classList.toggle("is-active", page === name);
     if (page === name) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
   if (page === "agents") $<HTMLElement>("#agents-page-title").focus();
+  if (page === "runs") $<HTMLElement>("#runs-page-title").focus();
 }
 
 function currentSession(): DesktopSession | undefined {
@@ -1464,6 +1489,7 @@ function renderCommandResults(): void {
     { id: "new-session", title: "Create Session", hint: "" },
     { id: "settings", title: "Open Settings", hint: "⌘," },
     { id: "agents", title: "Open Agents", hint: "" },
+    { id: "runs", title: "Open Runs", hint: "" },
     { id: "tree", title: "Toggle Session Tree", hint: "" },
   ].filter((command) => command.title.toLowerCase().includes(query) && (command.id !== "tree" || activePage === "sessions"));
   $("#command-results").innerHTML = [
@@ -1491,6 +1517,7 @@ function renderCommandResults(): void {
       if (button.dataset.command === "new-session") void createSession();
       if (button.dataset.command === "settings") openSettings();
       if (button.dataset.command === "agents") showPage("agents");
+      if (button.dataset.command === "runs") showPage("runs");
       if (button.dataset.command === "tree") toggleTree();
     });
   });
