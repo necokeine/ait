@@ -16,6 +16,7 @@
     "stage:daemon": "node scripts/stage-daemon.mjs",
     "start": "npm run dev",
     "test": "tsx --test test/*.test.ts",
+    "test:browser": "npm run build && node --test test/browser/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:release": "node scripts/verify-release-version.mjs"
   },
@@ -23,6 +24,7 @@
     "@types/node": "^24.3.0",
     "electron": "44.1.1",
     "electron-builder": "26.15.3",
+    "playwright": "1.63.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2"
   }

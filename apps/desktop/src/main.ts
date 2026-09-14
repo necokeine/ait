@@ -21,6 +21,7 @@ import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.
 import { registerDesktopProject, type ProjectCreationInput } from "./projects.js";
 import { projectReadPaths } from "./desktop-slices.js";
 import { configureDesktopIdentity } from "./branding.js";
+import { loadActiveRuns } from "./active-runs.js";
 
 configureDesktopIdentity(app);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,7 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
-  "run.resolve-approval",
+  "run.resolve-approval", "run.active",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -96,6 +97,7 @@ class DaemonClient {
     await this.ensureStarted();
     const params = objectParams(rawParams);
     if (method === "project.list") return this.projectCatalog();
+    if (method === "run.active") return loadActiveRuns((path, kind) => this.get(path, kind));
     if (method === "agent.catalog") return this.agentCatalog();
     if (method === "project.view") return this.projectView(boundedId(params.projectId, "Project"));
     if (method === "settings.get") return this.get("/v1/settings", "settings");
