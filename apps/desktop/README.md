@@ -72,6 +72,15 @@ The composer Agent selector is available for every idle Session. Selecting a
 different Agent immediately rebinds that Session with a version check; an
 active Session remains locked to the Agent revision already pinned by its Run.
 
+Settings → Projects shows the system Documents directory when the default work
+directory is unset, including existing empty settings and Restore defaults.
+Choose a folder with the native directory picker, then use Save changes to persist
+it through the Rust settings API; cancelling the picker keeps the current draft.
+The Project creation picker starts in the saved default directory. Name-only
+Project creation continues to allocate a new folder in Documents.
+The core's empty path remains a host-default marker: Electron main resolves it
+for display without writing settings or changing their optimistic revision.
+
 The composer toolbar starts with Run permissions, followed by Agent configuration
 and reasoning effort. New installations and Restore defaults use Workspace Write;
 saved permission choices are preserved. Permission changes apply to new Runs,

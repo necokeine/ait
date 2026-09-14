@@ -90,6 +90,7 @@ let timeline: TimelineNode[] = [];
 const pendingSessions = new Set<string>();
 let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
+let selectingSettingPath = false;
 let settingsCategory: SettingCategory = "models";
 let activePage: "sessions" | "agents" | "runs" = "sessions";
 let pageGeneration = 0;
@@ -1421,9 +1422,13 @@ function renderSettings(): void {
   $("#settings-save").classList.toggle("is-hidden", definitions.length === 0);
   $("#settings-reset").classList.toggle("is-hidden", definitions.length === 0);
   $("#settings-cancel").textContent = settingsCategory === "models" ? "Close" : "Cancel";
-  $("#settings-fields").querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-setting-id]").forEach((control) => {
+  $("#settings-fields").querySelectorAll<HTMLInputElement | HTMLSelectElement>("input[data-setting-id], select[data-setting-id]").forEach((control) => {
     control.addEventListener("change", () => readSettingControl(control));
     control.addEventListener("input", () => readSettingControl(control));
+  });
+  $("#settings-fields").querySelectorAll<HTMLButtonElement>("button[data-setting-id]").forEach((control) => {
+    control.disabled = selectingSettingPath;
+    control.addEventListener("click", () => void chooseSettingPath(control));
   });
   if (view && settingsCategory === "models") {
     disposeProviderSettings = renderProviderSettings($("#settings-fields"), view, (updated, refreshSettings) => {
@@ -1455,8 +1460,36 @@ function renderSettingControl(definition: SettingDefinition, value: unknown): st
   if (definition.kind.type === "number") {
     return `<input ${common} type="number" min="${definition.kind.min}" max="${definition.kind.max}" value="${escapeAttribute(String(value ?? ""))}"/>`;
   }
+  if (definition.kind.type === "path") {
+    return `<button ${common} type="button" class="setting-path" aria-haspopup="dialog" title="${escapeAttribute(String(value ?? ""))}"><span>${escapeHtml(String(value ?? ""))}</span><span>Choose…</span></button>`;
+  }
   const type = definition.kind.type === "credential_reference" ? "password" : "text";
   return `<input ${common} type="${type}" value="${escapeAttribute(String(value ?? ""))}" autocomplete="off"/>`;
+}
+
+async function chooseSettingPath(control: HTMLButtonElement): Promise<void> {
+  const id = control.dataset.settingId;
+  if (!id || selectingSettingPath) return;
+  const draft = settingsDraft;
+  selectingSettingPath = true;
+  control.disabled = true;
+  try {
+    const path = await window.ait.chooseProjectDirectory(String(draft[id] ?? ""));
+    // Closing, saving or resetting Settings discards this pending draft.
+    if (draft !== settingsDraft || settingsDialog.classList.contains("is-hidden")) return;
+    if (path) {
+      draft[id] = path;
+      renderSettings();
+    }
+  } catch (error) {
+    showToast(errorMessage(error), true);
+  } finally {
+    selectingSettingPath = false;
+    $("#settings-fields").querySelectorAll<HTMLButtonElement>("button[data-setting-id]").forEach((button) => {
+      button.disabled = false;
+      if (button.dataset.settingId === id && draft === settingsDraft && !settingsDialog.classList.contains("is-hidden")) button.focus();
+    });
+  }
 }
 
 function readSettingControl(control: HTMLInputElement | HTMLSelectElement): void {

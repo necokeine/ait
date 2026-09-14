@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentView, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate } from "./types.js";
+import type { AgentProvider, AgentView, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate, SettingsResponse } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -22,6 +22,7 @@ import { registerDesktopProject, type ProjectCreationInput } from "./projects.js
 import { projectReadPaths } from "./desktop-slices.js";
 import { configureDesktopIdentity } from "./branding.js";
 import { loadActiveRuns } from "./active-runs.js";
+import { defaultWorkdirSetting, desktopSettings, directoryDialogOptions } from "./desktop-settings.js";
 
 configureDesktopIdentity(app);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -100,11 +101,12 @@ class DaemonClient {
     if (method === "run.active") return loadActiveRuns((path, kind) => this.get(path, kind));
     if (method === "agent.catalog") return this.agentCatalog();
     if (method === "project.view") return this.projectView(boundedId(params.projectId, "Project"));
-    if (method === "settings.get") return this.get("/v1/settings", "settings");
-    if (method === "settings.save") return this.post("/v1/settings/save", "settings", {
+    const projectSettings = (value: unknown) => desktopSettings(value as SettingsResponse, app.getPath("documents"));
+    if (method === "settings.get") return projectSettings(await this.get("/v1/settings", "settings"));
+    if (method === "settings.save") return projectSettings(await this.post("/v1/settings/save", "settings", {
       expected_revision: params.expectedRevision, values: params.values,
-    });
-    if (method === "settings.reset") return this.post("/v1/settings/reset", "settings", {});
+    }));
+    if (method === "settings.reset") return projectSettings(await this.post("/v1/settings/reset", "settings", {}));
     if (method === "provider.save") {
       await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
       return this.agentCatalog();
@@ -134,10 +136,10 @@ class DaemonClient {
       return { project, agents };
     }
     if (method === "project.choose-directory") {
-      const result = await dialog.showOpenDialog({
-        title: "Choose a Project directory",
-        properties: ["openDirectory", "createDirectory"],
-      });
+      const defaultPath = typeof params.defaultPath === "string" && params.defaultPath
+        ? params.defaultPath
+        : String(projectSettings(await this.get("/v1/settings", "settings")).values[defaultWorkdirSetting]);
+      const result = await dialog.showOpenDialog(directoryDialogOptions(defaultPath));
       return result.canceled ? null : result.filePaths[0] ?? null;
     }
     if (method === "project.open-file") {

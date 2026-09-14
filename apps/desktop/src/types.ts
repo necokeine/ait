@@ -272,7 +272,7 @@ export interface AitDesktopApi {
   settings(): Promise<SettingsResponse>;
   saveSettings(expectedRevision: number, values: Record<string, unknown>): Promise<SettingsResponse>;
   resetSettings(): Promise<SettingsResponse>;
-  chooseProjectDirectory(): Promise<string | null>;
+  chooseProjectDirectory(defaultPath?: string): Promise<string | null>;
   openProjectFile(input: {
     projectId: string;
     sessionId?: string;
