@@ -4,7 +4,7 @@ import { createRunsPage } from "./runs-page.js";
 import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
-import { pendingBranchResolution, type PendingBranch } from "./runs.js";
+import { pendingBranchResolution, runFailure, type PendingBranch, type PendingBranchResolution } from "./runs.js";
 import { buildMessageTimeline, directMessageChildren, messageText, pathToMessage, resolveBranchHead, sessionForBranch, type TimelineNode } from "./tree.js";
 import {
   agentDisplayName,
@@ -75,7 +75,11 @@ let selectedSessionId: string | undefined;
 let inspectedNodeId: string | undefined;
 let branchSourceNodeId: string | undefined;
 let messageContextNodeId: string | undefined;
-let pendingBranch: PendingBranch | undefined;
+interface PendingSessionBranch extends PendingBranch {
+  projectId: string;
+  sourceSessionId: string;
+}
+const pendingBranches = new Map<string, PendingSessionBranch>();
 let configuringProjectId: string | undefined;
 let renamingSessionId: string | undefined;
 let creatingSessionProjectId: string | undefined;
@@ -88,6 +92,7 @@ let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let settingsCategory: SettingCategory = "models";
 let activePage: "sessions" | "agents" | "runs" = "sessions";
+let pageGeneration = 0;
 let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
 let toastTimer: number | undefined;
@@ -109,22 +114,38 @@ const runsPage = createRunsPage($("#runs-page"), {
   read: () => window.ait.activeRuns(),
   agents: () => view?.agents ?? [],
   openSession: async (projectId, sessionId) => {
-    selectedSessionId = sessionId;
-    resetTreeView();
-    // The Run may belong to a Session created outside this renderer.
-    const loading = Promise.all([selectProjectView(projectId), window.ait.projects()]);
-    showPage("sessions");
-    const [accepted, projects] = await loading;
-    if (!accepted) return;
-    replaceProjectCatalog(projects);
-    renderAll();
-    if (!currentSession()) showToast("This Run's Session is no longer available.", true);
+    const generation = pageGeneration;
+    const navigation = projectViews.beginMutation(projectId);
+    try {
+      // Prepare both slices without changing the visible Session or its send target.
+      const [project, projects] = await Promise.all([window.ait.project(projectId), window.ait.projects()]);
+      if (generation !== pageGeneration) {
+        projectViews.discardMutation(navigation);
+        return;
+      }
+      if (project.projectId !== projectId || !project.sessions.some((session) => session.id === sessionId)) {
+        throw new Error("This Run's Session is no longer available.");
+      }
+      if (!projectViews.commitMutation(navigation, project)) return;
+      replaceProjectCatalog(projects);
+      acceptLoadedProjectView();
+      selectedSessionId = sessionId;
+      resetTreeView();
+      renderAll();
+      showPage("sessions");
+      // A Run may have finished while the catalog read was still in flight.
+      scheduleViewRefresh();
+    } catch (error) {
+      projectViews.discardMutation(navigation);
+      throw error;
+    }
   },
   notify: showToast,
 });
 
 window.ait.subscribeRunEvents((updates) => {
   runsPage.handleUpdates(updates);
+  reconcileBackgroundBranches(updates);
   handleRunStreamFrame(updates);
 });
 void initialize();
@@ -325,6 +346,7 @@ function bindInteractions(): void {
 
 function renderAll(): void {
   if (!view) return;
+  reconcilePendingBranch();
   renderRecoveryNotices();
   renderProjects();
   renderAgents();
@@ -347,7 +369,7 @@ function renderRecoveryNotices(): void {
   </button>`).join("");
   container.querySelectorAll<HTMLElement>("[data-recovery-project]").forEach((notice) => {
     notice.addEventListener("click", async () => {
-      if (pendingBranch) return;
+      if (currentPendingBranch()) return;
       const projectId = notice.dataset.recoveryProject;
       if (!projectId) return;
       selectedSessionId = notice.dataset.recoverySession;
@@ -361,6 +383,7 @@ function renderRecoveryNotices(): void {
 }
 
 function showPage(page: "sessions" | "agents" | "runs"): void {
+  pageGeneration += 1;
   activePage = page;
   composerConfigPanel.hidePopover();
   closeSessionContextMenu();
@@ -384,6 +407,11 @@ function currentSession(): DesktopSession | undefined {
     session.id === selectedSessionId && session.projectId === selectedProjectId);
 }
 
+function currentPendingBranch(): PendingSessionBranch | undefined {
+  return Array.from(pendingBranches.values()).find((pending) =>
+    pending.projectId === selectedProjectId && pending.sourceSessionId === selectedSessionId);
+}
+
 function currentProject() {
   return view?.projects.find((project) => project.id === selectedProjectId);
 }
@@ -399,6 +427,7 @@ function resetTreeView(): void {
 
 function renderProjects(): void {
   if (!view) return;
+  const pendingBranch = currentPendingBranch();
   if (view.projects.length === 0) {
     projectList.innerHTML = '<div class="project-list-empty"><p>No Projects yet</p><small>Use + above to add a local workspace.</small></div>';
     return;
@@ -697,20 +726,47 @@ function startReadySessionTitles(): void {
 }
 
 function reconcilePendingBranch(): void {
-  if (!view || !pendingBranch) return;
-  const pending = pendingBranch;
-  const resolution = pendingBranchResolution(pending, view);
+  if (!view || projectViews.projectId !== selectedProjectId) return;
+  for (const pending of pendingBranches.values()) {
+    if (pending.projectId !== selectedProjectId) continue;
+    finishPendingBranch(pending, pendingBranchResolution(pending, view));
+  }
+}
+
+function finishPendingBranch(pending: PendingSessionBranch, resolution: PendingBranchResolution): void {
   if (resolution.kind === "pending") return;
-  pendingBranch = undefined;
+  const followsSource = currentPendingBranch() === pending;
+  pendingBranches.delete(pending.runId);
   if (resolution.kind === "ready") {
-    selectedSessionId = resolution.sessionId;
-    resetTreeView();
-    showToast("New Session is ready.");
+    if (followsSource) {
+      selectedSessionId = resolution.sessionId;
+      resetTreeView();
+    }
+    showToast(followsSource ? "New Session is ready." : `New Session is ready in ${branchProjectName(pending)}.`);
     return;
   }
-  branchSourceNodeId = pending.sourceMessageId;
-  inspectedNodeId = pending.sourceMessageId;
-  showToast(resolution.message, true);
+  if (followsSource) {
+    branchSourceNodeId = pending.sourceMessageId;
+    inspectedNodeId = pending.sourceMessageId;
+  }
+  showToast(`${followsSource ? "" : `${branchProjectName(pending)}: `}${resolution.message}`, true);
+}
+
+function branchProjectName(pending: PendingSessionBranch): string {
+  return projectCatalog?.projects.find((project) => project.id === pending.projectId)?.name ?? "another Project";
+}
+
+/** Settle offscreen derivations before the conversation's selected-Project filter. */
+function reconcileBackgroundBranches(updates: RunStreamUpdate[]): void {
+  for (const update of updates) {
+    if (update.type !== "event" || !isTerminalRunEvent(update.event)) continue;
+    const run = update.event.body as { id?: string; project_id?: string; status?: string };
+    const pending = run.id ? pendingBranches.get(run.id) : undefined;
+    if (!pending || pending.projectId !== run.project_id || pending.projectId === selectedProjectId) continue;
+    finishPendingBranch(pending, run.status === "completed"
+      ? { kind: "ready", sessionId: pending.sessionId }
+      : { kind: "failed", message: runFailure(run)?.message ?? "New Session generation failed." });
+  }
 }
 
 function renderTree(): void {
@@ -780,7 +836,7 @@ function inspectTreeNode(id: string | undefined, focusTree = true): void {
 }
 
 function switchTreeBranch(branchRootId: string | undefined): void {
-  if (!view || !branchRootId || !selectedProjectId || pendingBranch) return;
+  if (!view || !branchRootId || !selectedProjectId || currentPendingBranch()) return;
   const messages = view.messages.filter((message) => message.projectId === selectedProjectId);
   const sessions = view.sessions.filter((session) => session.projectId === selectedProjectId);
   const headId = resolveBranchHead(messages, sessions, branchRootId);
@@ -830,6 +886,7 @@ function renderNodeDetails(): void {
 }
 
 function renderBranchContext(): void {
+  const pendingBranch = currentPendingBranch();
   const sourceId = pendingBranch?.sourceMessageId ?? branchSourceNodeId;
   const source = view?.messages.find((message) => message.id === sourceId);
   const context = $("#branch-context");
@@ -846,7 +903,7 @@ function renderBranchContext(): void {
 }
 
 function clearBranchSource(): void {
-  if (pendingBranch) return;
+  if (currentPendingBranch()) return;
   branchSourceNodeId = undefined;
   renderBranchContext();
   updateComposerState();
@@ -879,6 +936,16 @@ async function submitMessage(): Promise<void> {
         agentId: composerAgent.value,
         content,
       });
+      // Track accepted work even if a later navigation supersedes its visible view.
+      if (!result.reusedCurrentSession) {
+        pendingBranches.set(result.runId, {
+          projectId: session.projectId,
+          sourceSessionId: session.id,
+          sourceMessageId: source.id,
+          sessionId: result.selectedSessionId,
+          runId: result.runId,
+        });
+      }
       if (!projectViews.commitMutation(mutation, result.project) || !acceptLoadedProjectView()) return;
       branchSourceNodeId = undefined;
       pendingTitles.register(result.runId, result.selectedSessionId, content);
@@ -887,13 +954,8 @@ async function submitMessage(): Promise<void> {
         showToast("Message accepted in the current Session.");
         resetTreeView();
       } else {
-        pendingBranch = {
-          sourceMessageId: source.id,
-          sessionId: result.selectedSessionId,
-          runId: result.runId,
-        };
         reconcilePendingBranch();
-        if (pendingBranch) showToast("Creating the new Session. The current path will stay in place until it is ready.");
+        if (currentPendingBranch()) showToast("Creating the new Session. The current path will stay in place until it is ready.");
       }
     } else {
       const result = await window.ait.sendMessage({
@@ -958,7 +1020,7 @@ function closeSessionContextMenu(): void {
 }
 
 function openMessageContextMenu(left: number, top: number, messageId: string): void {
-  if (pendingBranch) return;
+  if (currentPendingBranch()) return;
   closeSessionContextMenu();
   messageContextNodeId = messageId;
   messageContextMenu.classList.remove("is-hidden");
@@ -978,7 +1040,7 @@ function startBranchFromContextMenu(): void {
   const sourceId = messageContextNodeId;
   const source = view?.messages.find((message) => message.id === sourceId);
   closeMessageContextMenu();
-  if (!source || pendingBranch) return;
+  if (!source || currentPendingBranch()) return;
   inspectedNodeId = source.id;
   branchSourceNodeId = source.id;
   renderTree();
@@ -1068,6 +1130,7 @@ async function changeSessionAgent(): Promise<void> {
 
 function updateComposerState(): void {
   const session = currentSession();
+  const pendingBranch = currentPendingBranch();
   const deriving = Boolean(branchSourceNodeId);
   const submissionBusy = !!session
     && (pendingSessions.has(session.id) || Boolean(pendingBranch) || session.active && !deriving);
@@ -1202,7 +1265,7 @@ function closeProjectSettingsDialog(): void {
 }
 
 async function selectProject(projectId: string | undefined): Promise<void> {
-  if (!view || pendingBranch || !projectId || !view.projects.some((project) => project.id === projectId)) return;
+  if (!view || currentPendingBranch() || !projectId || !view.projects.some((project) => project.id === projectId)) return;
   selectedSessionId = undefined;
   resetTreeView();
   const loading = selectProjectView(projectId);
@@ -1267,7 +1330,7 @@ async function saveProjectBackend(): Promise<void> {
 }
 
 async function createSession(projectId = selectedProjectId): Promise<void> {
-  if (!view || creatingSessionProjectId || pendingBranch) return;
+  if (!view || creatingSessionProjectId || currentPendingBranch()) return;
   const project = view.projects.find((candidate) => candidate.id === projectId);
   if (!project) {
     openProjectDialog();
@@ -1498,7 +1561,7 @@ function renderCommandResults(): void {
   ].join("") || '<div class="empty-details"><p>No matching command</p></div>';
   $("#command-results").querySelectorAll<HTMLElement>("[data-session]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (pendingBranch) return;
+      if (currentPendingBranch()) return;
       const session = view?.sessions.find((candidate) => candidate.id === button.dataset.session);
       if (!session) return;
       selectedSessionId = session?.id;

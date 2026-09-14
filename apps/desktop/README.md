@@ -8,6 +8,8 @@ Electron desktop shell for the Ait daemon. The renderer is sandboxed and can onl
 pnpm install
 pnpm run typecheck
 pnpm test
+pnpm exec playwright install chromium
+pnpm run test:browser
 pnpm run dev
 ```
 
@@ -43,6 +45,14 @@ they reach a terminal state. Each row shows its Project, Session, Agent, pinned
 model and lifecycle phase. **Open Session** loads the Run's Project and conversation;
 scheduled Runs without a Session are also listed.
 
+Opening a Run's Session commits its Project data, catalog and visible selection
+together after successful reads. A failed read preserves the previous Session;
+later navigation supersedes an in-flight open request. Pending derivations are
+tracked by their source Project and Session, so opening another Run does not carry
+the source's waiting state into an unrelated Session. Terminal events settle
+offscreen derivations, and returning to their Project also reconciles them from a
+fresh view if an event was missed.
+
 Electron main builds this narrow activity summary from the existing Rust daemon's
 Project-scoped Run and Session APIs, with at most four Projects read concurrently.
 It does not load Message history for the Runs page or transfer full execution
@@ -52,6 +62,11 @@ Refreshes stop when leaving Runs. Connection loss, failed refreshes and unavaila
 Projects have explicit notices; a partial result is not presented as an empty
 workspace. The current daemon API returns each Project's Run history before main
 filters it, so the read cost still grows with retained Runs.
+
+`test:browser` builds the renderer and exercises Runs navigation and message
+submission in headless Chromium with an isolated preload fixture. These tests
+need no daemon or provider credentials and run in desktop CI. To use an existing
+Chromium installation locally, set `AIT_TEST_CHROMIUM` to its executable path.
 
 The composer Agent selector is available for every idle Session. Selecting a
 different Agent immediately rebinds that Session with a version check; an
