@@ -131,7 +131,8 @@ impl Fixture {
             store.clone(),
         )
         .with_provider_gateway(Arc::new(Gateway(LLMClient::new(config).unwrap())))
-        .with_api_tools(Arc::new(ait_tools::host::HostToolFactory));
+        .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
+        .with_tool_approval_timeout(std::time::Duration::from_millis(80));
         let mut settings = default_settings();
         settings
             .0
@@ -395,7 +396,7 @@ async fn denied_invalid_unknown_failed_and_approval_results_continue_without_sid
     f.finish().await;
 }
 #[tokio::test]
-async fn duplicate_calls_fail_before_dispatch_and_read_only_never_advertises_writes() {
+async fn duplicate_calls_fail_before_dispatch_and_read_only_advertises_approvable_writes() {
     let kind = ProviderKind::OpenAI;
     let f = Fixture::new(
         kind,
@@ -417,7 +418,7 @@ async fn duplicate_calls_fail_before_dispatch_and_read_only_never_advertises_wri
     );
     assert!(!f.worktree().join("bad").exists());
     let wire = f.requests.lock().unwrap()[0]["tools"].to_string();
-    assert!(!wire.contains("\"write\""));
+    assert!(wire.contains("\"write\""));
     f.finish().await;
 }
 

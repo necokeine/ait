@@ -44,6 +44,7 @@ const api: AitDesktopApi = {
   generateSessionTitle: (input) => invoke("session.generate-title", input),
   sendMessage: (input) => invoke("session.send-message", input),
   resolveApproval: (input) => invoke("run.resolve-approval", input),
+  resolveToolApproval: (input) => invoke("run.resolve-tool-approval", input),
   subscribeRunEvents: (listener) => {
     runEventListeners.add(listener);
     if (!runEventsReady) {

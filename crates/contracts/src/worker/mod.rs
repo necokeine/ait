@@ -6,10 +6,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 1;
+pub const PROTOCOL_MINOR: u16 = 2;
 pub const MINIMUM_PROTOCOL_MINOR: u16 = 0;
 pub const MAX_FRAME_BYTES: u32 = 1_048_576;
-pub const REQUIRED_CAPABILITIES: &[&str] = &["run-store-v1", "commit-ack-v1", "lease-v1"];
+pub const REQUIRED_CAPABILITIES: &[&str] = &[
+    "run-store-v1",
+    "commit-ack-v1",
+    "lease-v1",
+    "tool-grants-v1",
+];
 pub const SUPPORTED_CAPABILITIES: &[&str] = REQUIRED_CAPABILITIES;
 
 /// Errors deliberately carry no peer-controlled diagnostic strings.
@@ -352,6 +357,9 @@ pub enum StoreRequest {
     Approval {
         execution: Box<model::ToolExecution>,
     },
+    ConsumeToolGrant {
+        grant: Box<ait_domain::ToolGrant>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -382,6 +390,9 @@ pub enum StoreResponse {
     },
     Approval {
         decision: String,
+    },
+    ToolGrant {
+        grant: Box<ait_domain::ToolGrant>,
     },
 }
 
@@ -432,22 +443,23 @@ mod tests {
     fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
         let value = json!({
             "protocol_major": 1,
-            "protocol_minor": 2,
+            "protocol_minor": 3,
             "sequence": 1,
             "lease": null,
             "future_envelope_hint": "optional",
             "payload": {
                 "type": "hello",
                 "protocol_major": 1,
-                "protocol_minor": 2,
+                "protocol_minor": 3,
                 "minimum_protocol_minor": 0,
                 "capabilities": [
                     "run-store-v1",
                     "commit-ack-v1",
                     "lease-v1",
+                    "tool-grants-v1",
                     "future-optional-v1"
                 ],
-                "required_capabilities": ["run-store-v1", "commit-ack-v1", "lease-v1"],
+                "required_capabilities": ["run-store-v1", "commit-ack-v1", "lease-v1", "tool-grants-v1"],
                 "max_frame_bytes": 2_097_152,
                 "pid": 42,
                 "future_hello_hint": true
@@ -462,8 +474,8 @@ mod tests {
         assert_eq!(selected.max_frame_bytes, MAX_FRAME_BYTES);
         assert_eq!(selected.capabilities.len(), REQUIRED_CAPABILITIES.len());
         let encoded = serde_json::to_value(decoded).unwrap();
-        assert_eq!(encoded["protocol_minor"], 2);
-        assert_eq!(encoded["payload"]["protocol_minor"], 2);
+        assert_eq!(encoded["protocol_minor"], 3);
+        assert_eq!(encoded["payload"]["protocol_minor"], 3);
         assert_eq!(encoded["payload"]["minimum_protocol_minor"], 0);
         assert_eq!(encoded["payload"]["max_frame_bytes"], 2_097_152);
     }
@@ -481,7 +493,7 @@ mod tests {
                 "protocol_major": 1,
                 "protocol_minor": 0,
                 "max_frame_bytes": 262_144,
-                "capabilities": ["run-store-v1", "commit-ack-v1", "lease-v1"],
+                "capabilities": ["run-store-v1", "commit-ack-v1", "lease-v1", "tool-grants-v1"],
                 "future_ack_hint": true
             }
         });
@@ -496,7 +508,7 @@ mod tests {
         assert_eq!(encoded["payload"]["max_frame_bytes"], 262_144);
         assert_eq!(
             encoded["payload"]["capabilities"].as_array().unwrap().len(),
-            3
+            REQUIRED_CAPABILITIES.len()
         );
     }
 

@@ -22,6 +22,7 @@ import {
   refreshVisibleSlices,
   resolveInitialProjectId,
 } from "./desktop-slices.js";
+import { expireToolApprovalCards } from "./tool-approval-ui.js";
 import { isApprovalEvent, renderPendingApprovals } from "./approval-ui.js";
 import type {
   AgentCatalog,
@@ -113,6 +114,8 @@ const agentsPage = createAgentsPage($("#agents-page"), {
 });
 const runsPage = createRunsPage($("#runs-page"), {
   read: () => window.ait.activeRuns(),
+  project: (id) => window.ait.project(id),
+  resolve: (input) => window.ait.resolveToolApproval(input),
   agents: () => view?.agents ?? [],
   openSession: async (projectId, sessionId) => {
     const generation = pageGeneration;
@@ -255,7 +258,7 @@ function bindInteractions(): void {
     button.closest("footer")?.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => {
       candidate.disabled = true;
     });
-    void resolveApproval(card.dataset.runId!, card.dataset.approvalId!, action, scope);
+    void resolveApproval(card.dataset.runId!, card.dataset.approvalId!, action, scope, card.dataset.toolApproval === "true");
   });
   $("#sidebar-toggle").addEventListener("click", () => appShell.classList.toggle("sidebar-collapsed"));
   $("#tree-toggle").addEventListener("click", toggleTree);
@@ -650,12 +653,13 @@ async function resolveApproval(
   approvalId: string,
   action: "approve" | "deny" | "cancel",
   scope: "one_shot" | "turn" | "session" | undefined,
+  toolApproval = false,
 ): Promise<void> {
   const projectId = selectedProjectId;
   if (!projectId) return;
   const mutation = projectViews.beginMutation(projectId);
   try {
-    const updated = await window.ait.resolveApproval({
+    const updated = toolApproval ? await window.ait.resolveToolApproval({ runId, projectId, approvalId, action }) : await window.ait.resolveApproval({
       runId,
       projectId,
       approvalId,
@@ -1680,3 +1684,5 @@ function escapeHtml(value: string): string {
 function escapeAttribute(value: string): string {
   return escapeHtml(value);
 }
+
+setInterval(() => expireToolApprovalCards(document), 1_000);

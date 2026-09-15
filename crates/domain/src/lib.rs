@@ -46,7 +46,8 @@ pub use message::{
 pub use permission::{
     ApprovalGrantScope, ApprovalMode, NativeApprovalFileChange, NativeApprovalFileChangeKind,
     NativeApprovalKind, NativeApprovalStatus, NativeApprovalTarget, NativeNetworkProtocol,
-    RunPermissionProfile, SandboxAccess,
+    RunPermissionProfile, SandboxAccess, ToolApprovalRecord, ToolApprovalState, ToolApprovalTarget,
+    ToolGrant,
 };
 pub use project::{
     GitCommit, InstructionSnapshot, InstructionSourceSnapshot, InstructionSourceSummary, MessageId,

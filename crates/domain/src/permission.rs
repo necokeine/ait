@@ -155,3 +155,78 @@ pub enum NativeApprovalStatus {
     /// The app-server withdrew the request or its turn ended before an answer.
     Expired,
 }
+
+/// Reviewed authority for one API host-tool operation, independent of native protocols.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolApprovalTarget {
+    /// Host tool name.
+    pub tool_name: String,
+    /// Canonical execution directory.
+    pub cwd: String,
+    /// Exact command or canonical file target; never file contents.
+    pub operation: String,
+    /// Bounded explanation of the requested escalation.
+    pub reason: String,
+    /// Immutable Run baseline.
+    pub current: SandboxAccess,
+    /// Effective access for this operation only.
+    pub requested: SandboxAccess,
+    /// Identity of reviewed filesystem objects, checked again before execution.
+    pub path_fingerprint: String,
+}
+
+/// An explicit authorization bound to exactly one persisted tool invocation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolGrant {
+    /// Unique approval request.
+    pub request_id: String,
+    /// Owning Run.
+    pub run_id: String,
+    /// Persisted execution identity.
+    pub execution_id: String,
+    /// Provider tool call identity.
+    pub call_id: String,
+    /// Digest of the complete immutable arguments.
+    pub arguments_digest: String,
+    /// Exact reviewed authority.
+    pub target: ToolApprovalTarget,
+    /// Execution lease that may consume the grant.
+    pub lease_epoch: u64,
+    /// Absolute expiry, including the worker's total runtime budget.
+    pub expires_at: i64,
+}
+
+/// Durable one-operation approval lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolApprovalState {
+    /// Waiting for a member decision.
+    Pending,
+    /// Approved but not yet dispatched.
+    Approved,
+    /// Authority consumed before execution; effects must never be replayed.
+    Consumed,
+    /// Refused by a member.
+    Denied,
+    /// Run cancellation revoked the request.
+    Cancelled,
+    /// Deadline, process loss or changed authority invalidated the request.
+    Expired,
+}
+
+/// Auditable request and decision; the Run baseline is never rewritten.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ToolApprovalRecord {
+    /// Immutable binding and authority.
+    pub grant: ToolGrant,
+    /// Current decision/consumption state.
+    pub status: ToolApprovalState,
+    /// Request time.
+    pub created_at: i64,
+    /// Member decision or invalidation time.
+    pub decided_at: Option<i64>,
+    /// Time authority was consumed.
+    pub consumed_at: Option<i64>,
+}

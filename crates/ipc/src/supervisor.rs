@@ -43,6 +43,8 @@ pub enum CommitBoundary {
 }
 /// Bounded observation surface. Never receives credentials or tool arguments.
 pub trait WorkerObserver: Send + Sync {
+    /// The connection was invalidated before outstanding RPCs are drained.
+    fn disconnected(&self, _pid: u32) {}
     /// Observe a frame class at a commit boundary. Returning an error stops that request.
     /// # Errors
     /// A diagnostic/fault hook may explicitly interrupt the attempt.
@@ -98,6 +100,14 @@ impl WorkerSupervisor {
         store: Arc<dyn ait_ports::RunStore>,
         cancel: CancellationToken,
     ) -> Result<(), ProtocolError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        store.set_worker_deadline(
+            i64::try_from(now.saturating_add(u128::from(bootstrap.limits.wall_clock_ms)))
+                .unwrap_or(i64::MAX),
+        );
         let server = StoreServer {
             store,
             lease: bootstrap.lease.clone(),
@@ -257,6 +267,9 @@ impl WorkerSupervisor {
         // A commit already entering the store must finish before the next lease.
         if result.is_err() {
             server.disconnected();
+            if let Some(observer) = &self.observer {
+                observer.disconnected(pid);
+            }
         }
         while pending.next().await.is_some() {}
         result
@@ -351,6 +364,14 @@ pub(crate) trait Handler: Send + Sync {
 }
 #[async_trait]
 impl Handler for StoreServer {
+    fn disconnected(&self) {
+        self.store
+            .interrupt_tool_approvals(&ait_ports::WorkerLease {
+                run_id: ait_domain::RunId::new(&self.lease.run_id),
+                instance_id: self.lease.worker_instance_id.clone(),
+                epoch: self.lease.lease_epoch,
+            });
+    }
     async fn request(
         &self,
         lease: &Lease,
@@ -393,6 +414,8 @@ type Reply = (
 fn request_method(request: &ait_contracts::worker::StoreRequest) -> &'static str {
     use ait_contracts::worker::{StoreRequest, model::ToolExecutionStatus};
     match request {
+        StoreRequest::Approval { .. } => "tool_approval",
+        StoreRequest::ConsumeToolGrant { .. } => "tool_grant",
         StoreRequest::AppendMessage { .. } => "append_message",
         StoreRequest::SaveTool { tool, .. } => match tool.status {
             ToolExecutionStatus::Pending => "tool_intent",

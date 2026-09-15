@@ -402,7 +402,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.approval",
             SettingCategory::Permissions,
             "Approval mode",
-            "Codex only: on_request follows escalation requests; untrusted_only asks for untrusted commands. Shell approvals require an explicit full_access Run because confinement cannot be proven; network approvals remain separate. Legacy always makes Codex Run admission fail closed. API providers use on_request without native approvals.",
+            "API Providers support on_request: operations within the Run baseline run directly; higher access waits for Allow once or Deny, within administrator and tool limits. Waiting counts toward the Run timeout. untrusted_only and legacy always are rejected for API Runs. Codex keeps its native on_request/untrusted_only policies; always is unsupported.",
             SettingKind::Select {
                 options: vec![
                     "on_request".into(),
