@@ -5,6 +5,9 @@
 mod permission_change;
 #[path = "../../../crates/application/tests/support.rs"]
 mod support;
+#[cfg(unix)]
+#[path = "process_providers/tool_approval.rs"]
+mod tool_approval;
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProviderSecret, default_settings};
 use ait_domain::{AgentConfiguration, AgentProvider, DomainError, ProviderKind, ProviderModel};

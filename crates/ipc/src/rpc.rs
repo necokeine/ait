@@ -53,6 +53,20 @@ fn failure() -> RunStoreError {
 
 #[async_trait]
 impl ait_ports::RunApproval for RemoteStore {
+    async fn consume(
+        &self,
+        grant: &ait_domain::ToolGrant,
+    ) -> Result<bool, ait_domain::DomainError> {
+        match self
+            .call(StoreRequest::ConsumeToolGrant {
+                grant: Box::new(grant.clone()),
+            })
+            .await
+        {
+            Ok(StoreResponse::Approval { decision }) => Ok(decision == "consumed"),
+            _ => Ok(false),
+        }
+    }
     async fn decide(
         &self,
         request: ait_ports::ApprovalRequest,
@@ -73,6 +87,10 @@ impl ait_ports::RunApproval for RemoteStore {
             .await
             .map_err(|_| failed())?
         {
+            StoreResponse::ToolGrant { grant } => Ok(ait_ports::ApprovalDecision::Granted(grant)),
+            StoreResponse::Approval { decision } if decision == "cancelled" => {
+                Ok(ait_ports::ApprovalDecision::Cancelled)
+            }
             StoreResponse::Approval { decision } if decision == "denied" => {
                 Ok(ait_ports::ApprovalDecision::Denied)
             }
@@ -320,8 +338,48 @@ impl StoreServer {
                 if execution.run_id != lease.run_id {
                     return Err(ProtocolError::WrongRun);
                 }
+                let decision = self
+                    .store
+                    .request_tool_approval(
+                        &WorkerLease {
+                            run_id: id,
+                            instance_id: lease.worker_instance_id.clone(),
+                            epoch: lease.lease_epoch,
+                        },
+                        ToolExecution::from_wire(*execution)?,
+                    )
+                    .await
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
+                return Ok(match decision {
+                    ait_ports::ApprovalDecision::Granted(grant) => {
+                        StoreResponse::ToolGrant { grant }
+                    }
+                    ait_ports::ApprovalDecision::Cancelled => StoreResponse::Approval {
+                        decision: "cancelled".into(),
+                    },
+                    _ => StoreResponse::Approval {
+                        decision: "denied".into(),
+                    },
+                });
+            }
+            StoreRequest::ConsumeToolGrant { grant } => {
+                if grant.run_id != lease.run_id {
+                    return Err(ProtocolError::WrongRun);
+                }
+                let consumed = self
+                    .store
+                    .consume_tool_grant(
+                        &WorkerLease {
+                            run_id: id,
+                            instance_id: lease.worker_instance_id.clone(),
+                            epoch: lease.lease_epoch,
+                        },
+                        &grant,
+                    )
+                    .await
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
                 return Ok(StoreResponse::Approval {
-                    decision: "denied".into(),
+                    decision: if consumed { "consumed" } else { "denied" }.into(),
                 });
             }
             StoreRequest::SaveRun { run } => RunMutation::SaveRun(Run::from_wire(*run)?),

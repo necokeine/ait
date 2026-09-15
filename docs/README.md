@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-290/adr-001-api-tool-approval-grants.md`：API Provider 的交互升级、固定 Run 基线与一次性 grant、持久化/worker fencing、Session 和 Cron 审批入口；使用与离线 GUI 演示见 `operations/api-tool-approvals.md`。
+
 - `decisions/NEC-269/adr-001-composer-permission-default.md`：Prompt 移除无功能加号、权限选择器置首，新建/重置设置默认 Workspace Write，保留已存权限与 Run 快照。
 
 - `decisions/NEC-263/adr-001-shell-and-prompt-permissions.md`：Prompt 三级权限选择、API Shell 的系统隔离与能力过滤、流式仓库浏览/计数及默认折叠工具结果。

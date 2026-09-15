@@ -7,8 +7,9 @@ export interface DesktopDaemonRuntime {
   listen: string;
 }
 
-export function desktopDaemonRuntime(isPackaged: boolean): DesktopDaemonRuntime {
-  const port = isPackaged ? 7314 : 7315;
+export function desktopDaemonRuntime(isPackaged: boolean, developmentPort?: string): DesktopDaemonRuntime {
+  const port = isPackaged ? 7314 : developmentPort === undefined ? 7315 : Number(developmentPort);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Development daemon port must be between 1024 and 65535.");
   return {
     allowDevelopmentMock: !isPackaged,
     databaseFilename: isPackaged ? "ait.sqlite3" : "ait-development.sqlite3",

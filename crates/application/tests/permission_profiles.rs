@@ -191,7 +191,7 @@ async fn api_provider_branch_permission_settings_are_snapshotted_into_each_run()
                 .with_provider_gateway(gateway.clone());
                 let _directory = setup_api_provider(&service, kind).await;
                 let command = branch.command(&service).await;
-                save_permission_settings(&service, setting, "untrusted_only").await;
+                save_permission_settings(&service, setting, "on_request").await;
 
                 let CommandResult::Run(run) = ok(&service, command).await else {
                     panic!("expected Run")
@@ -287,6 +287,37 @@ async fn api_provider_branch_invalid_permissions_have_no_side_effects() {
                     assert!(gateway.calls.lock().unwrap().is_empty());
                 }
             }
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_unsupported_approval_modes_fail_before_run_or_message_creation() {
+    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+        for approval in ["untrusted_only", "always"] {
+            let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+            let gateway = Arc::new(Gateway::default());
+            let service = LocalControlService::new(
+                Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                store,
+            )
+            .with_provider_gateway(gateway.clone());
+            let _directory = setup_api_provider(&service, kind).await;
+            save_permission_settings(&service, "read_only", approval).await;
+            let before = view(&service).await;
+            let response = service
+                .execute(Command::SendMessage {
+                    session_id: "one".into(),
+                    text: "No unsupported policy should be ignored".into(),
+                })
+                .await;
+            assert_eq!(
+                response.error.as_ref().map(|error| error.code),
+                Some(ErrorCode::InvalidConfiguration)
+            );
+            assert!(response.error.unwrap().message.contains("on_request only"));
+            assert_eq!(view(&service).await, before);
+            assert!(gateway.calls.lock().unwrap().is_empty());
         }
     }
 }
@@ -410,7 +441,7 @@ async fn api_provider_permission_settings_are_snapshotted_into_each_run() {
             )
             .with_provider_gateway(gateway.clone());
             let _directory = setup_api_provider(&service, kind).await;
-            save_permission_settings(&service, setting, "untrusted_only").await;
+            save_permission_settings(&service, setting, "on_request").await;
 
             let CommandResult::Run(run) = ok(&service, send("one")).await else {
                 panic!("expected Run")

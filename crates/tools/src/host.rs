@@ -15,6 +15,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod approval;
 mod search;
 mod shell;
 
@@ -44,6 +45,14 @@ impl HostToolFactory {
     }
 }
 impl RunToolFactory for ObservedFactory {
+    fn review(
+        &self,
+        root: &Path,
+        profile: RunPermissionProfile,
+        execution: &ToolExecution,
+    ) -> Result<Option<ait_domain::ToolApprovalTarget>, DomainError> {
+        approval::review(root, profile, execution)
+    }
     fn create(
         &self,
         root: &Path,
@@ -54,12 +63,21 @@ impl RunToolFactory for ObservedFactory {
             root_path: root.to_owned(),
             shell_backend: shell::ShellBackend::detect(root, profile.sandbox),
             profile,
+            authority: None,
             observer: Some(self.0.clone()),
             workers: Arc::new(Workers::default()),
         }))
     }
 }
 impl RunToolFactory for HostToolFactory {
+    fn review(
+        &self,
+        root: &Path,
+        profile: RunPermissionProfile,
+        execution: &ToolExecution,
+    ) -> Result<Option<ait_domain::ToolApprovalTarget>, DomainError> {
+        approval::review(root, profile, execution)
+    }
     fn create(
         &self,
         root: &Path,
@@ -70,6 +88,7 @@ impl RunToolFactory for HostToolFactory {
             root_path: root.to_owned(),
             shell_backend: shell::ShellBackend::detect(root, profile.sandbox),
             profile,
+            authority: None,
             observer: None,
             workers: Arc::new(Workers::default()),
         }))
@@ -147,7 +166,7 @@ pub fn parameters(name: &str) -> Option<Value> {
     }
     if let Some(permission) = schema["properties"].get_mut("sandbox_permissions") {
         permission["description"] = json!(
-            "Optional requested access. Requests within the Run permission are allowed; higher access is denied. Change Run permissions before starting a new Run to grant more access."
+            "Optional requested access. Higher access requires interactive approval for this operation only, subject to administrator and tool limits. Provide justification. Approval never changes the Run baseline."
         );
     }
     schema["additionalProperties"] = Value::Bool(false);
@@ -159,6 +178,7 @@ struct HostTools {
     root: Arc<Dir>,
     root_path: std::path::PathBuf,
     profile: RunPermissionProfile,
+    authority: Option<ait_domain::ToolGrant>,
     shell_backend: Option<shell::ShellBackend>,
     observer: Option<Arc<dyn HostIoObserver>>,
     workers: Arc<Workers>,
@@ -166,6 +186,7 @@ struct HostTools {
 
 #[derive(Default)]
 struct Workers {
+    grants: std::sync::Mutex<std::collections::HashSet<String>>,
     stopping: CancellationToken,
     active: AtomicUsize,
     done: tokio::sync::Notify,
@@ -208,6 +229,16 @@ impl HostTools {
                 ErrorCode::RunCancelled,
                 "host I/O cancelled before the next effect boundary",
             ));
+        }
+        if let Some(grant) = &self.authority {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| denied())?
+                .as_millis();
+            if i64::try_from(now).map_err(|_| denied())? >= grant.expires_at {
+                return Err(denied());
+            }
+            approval::recheck_paths(&self.root_path, &grant.target)?;
         }
         Ok(())
     }
@@ -356,21 +387,22 @@ impl RunTool for HostTools {
         if self.shell_available() {
             names.push("bash");
         }
-        if self.profile.sandbox != SandboxAccess::ReadOnly {
-            names.extend(["write", "edit"]);
-        }
+        names.extend(["write", "edit"]);
         names.into_iter().map(str::to_owned).collect()
     }
     fn parallel_safe(&self, name: &str, args: &Value) -> bool {
         matches!(name, "read" | "grep" | "glob") && !self.requires_approval(name, args)
     }
-    fn requires_approval(&self, _: &str, args: &Value) -> bool {
-        match args.get("sandbox_permissions").and_then(Value::as_str) {
-            None => false,
-            Some("workspace-write") => self.profile.sandbox < SandboxAccess::WorkspaceWrite,
-            Some("danger-full-access") => self.profile.sandbox < SandboxAccess::FullAccess,
-            Some(_) => true,
-        }
+    fn requires_approval(&self, name: &str, args: &Value) -> bool {
+        approval::requested(name, args, self.profile.sandbox)
+            .is_none_or(|requested| requested > self.profile.sandbox)
+    }
+    async fn execute_granted(
+        &self,
+        request: ToolInvocation,
+        grant: ait_domain::ToolGrant,
+    ) -> Result<ToolOutcome, DomainError> {
+        self.execute_with_grant(request, grant).await
     }
     async fn execute(&self, mut request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
         request.cancellation = request.cancellation.child_token();

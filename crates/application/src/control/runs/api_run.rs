@@ -19,9 +19,9 @@ use ait_domain::{
     ProjectedMessage, Run, RunAttempt, RunId, RunStatus, SubMessage, ToolExecution,
 };
 use ait_ports::{
-    AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, ApprovalRequest,
-    CompletionResult, ControlStoreError, RunAgent, RunApproval, RunStore, RunStoreError, RunTool,
-    ToolInvocation, ToolOutcome, ToolRecovery,
+    AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, CompletionResult,
+    ControlStoreError, RunAgent, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome,
+    ToolRecovery,
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
@@ -100,15 +100,6 @@ impl RunTool for NoTools {
         Ok(ToolRecovery::Unknown)
     }
 }
-// There is no native API approval UI yet. Requests for wider access fail closed;
-// they are never sent through the unrelated Codex operation/approval protocol.
-struct DenyEscalation;
-#[async_trait]
-impl RunApproval for DenyEscalation {
-    async fn decide(&self, _: ApprovalRequest) -> Result<ApprovalDecision, DomainError> {
-        Ok(ApprovalDecision::Denied)
-    }
-}
 
 impl LocalControlService {
     #[allow(
@@ -127,6 +118,8 @@ impl LocalControlService {
             cancellation.cancel();
         }
         let store = Arc::new(ControlRunStore {
+            service: self.clone(),
+            worker_deadline: std::sync::atomic::AtomicI64::new(i64::MAX),
             records: self.records(),
             id: view.id.clone(),
             expected: Mutex::new(None),
@@ -214,7 +207,7 @@ impl LocalControlService {
             store.clone(),
             Arc::new(agent),
             tools.clone(),
-            Arc::new(DenyEscalation),
+            Arc::new(self.clone()),
             Arc::new(SystemClock),
             Arc::new(UuidIds),
         );
@@ -292,6 +285,8 @@ fn api_domain_error_reverse(e: DomainError) -> ApiError {
     error(e.code, e.message, e.retryable)
 }
 struct ControlRunStore {
+    service: LocalControlService,
+    worker_deadline: std::sync::atomic::AtomicI64,
     records: crate::control::state::records::RecordAccess,
     id: String,
     expected: Mutex<Option<Run>>,
@@ -523,6 +518,14 @@ impl ControlRunStore {
                 append_projection(&mut state, &view, &run, &expected, message)?;
             }
             if run.status.is_terminal() {
+                crate::control::tool_approvals::expire(
+                    &mut view,
+                    if run.status == RunStatus::Cancelled {
+                        ait_domain::ToolApprovalState::Cancelled
+                    } else {
+                        ait_domain::ToolApprovalState::Expired
+                    },
+                );
                 if run.status != RunStatus::Completed {
                     interrupt(&mut view);
                     append_terminal_results(&mut state, &mut view)?;
@@ -565,6 +568,39 @@ impl ControlRunStore {
 }
 #[async_trait]
 impl RunStore for ControlRunStore {
+    async fn request_tool_approval(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        execution: ToolExecution,
+    ) -> Result<ApprovalDecision, DomainError> {
+        self.service
+            .request_api_tool_approval(
+                execution,
+                Some(lease),
+                self.worker_deadline
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+            .await
+            .map_err(crate::control::errors::api_domain_error)
+    }
+    async fn consume_tool_grant(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        grant: &ait_domain::ToolGrant,
+    ) -> Result<bool, DomainError> {
+        self.service
+            .consume_api_tool_grant(grant, Some(lease))
+            .await
+            .map_err(crate::control::errors::api_domain_error)
+    }
+    fn interrupt_tool_approvals(&self, lease: &ait_ports::WorkerLease) {
+        self.service
+            .interrupt_api_tool_approvals(lease.run_id.as_str(), lease.epoch);
+    }
+    fn set_worker_deadline(&self, deadline: i64) {
+        self.worker_deadline
+            .store(deadline, std::sync::atomic::Ordering::SeqCst);
+    }
     async fn claim_worker(&self, instance: &str) -> Result<ait_ports::WorkerLease, RunStoreError> {
         for _ in 0..8 {
             let loaded = self
@@ -582,6 +618,7 @@ impl RunStore for ControlRunStore {
                 return Err(conflict());
             }
             view.lease_epoch = view.lease_epoch.checked_add(1).ok_or_else(conflict)?;
+            crate::control::tool_approvals::expire(view, ait_domain::ToolApprovalState::Expired);
             view.execution_mut()
                 .ok_or_else(conflict)?
                 .worker_instance_id = Some(instance.into());
@@ -903,6 +940,14 @@ fn validate_tool_child(
 
 /// Keep the public projection and canonical aggregate consistent on policy-driven recovery stops.
 pub(in crate::control) fn interrupt(view: &mut RunState) {
+    crate::control::tool_approvals::expire(
+        view,
+        if view.status() == LifecycleStatus::Cancelled {
+            ait_domain::ToolApprovalState::Cancelled
+        } else {
+            ait_domain::ToolApprovalState::Expired
+        },
+    );
     if view.status() == LifecycleStatus::Completed && !needs_terminal_repair(view) {
         return;
     }

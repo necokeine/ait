@@ -25,6 +25,7 @@ pub(in crate::control) mod project;
 pub(in crate::control) mod runs;
 pub(in crate::control) mod settings;
 pub(in crate::control) mod state;
+pub(in crate::control) mod tool_approvals;
 
 pub use permissions::PermissionPolicyLimits;
 pub use runs::recovery::StartupRecoveryPlan;
@@ -40,7 +41,9 @@ pub struct LocalControlService {
     run_controls: Arc<Mutex<HashMap<String, Weak<RunControl>>>>,
     approval_waiters:
         Arc<Mutex<HashMap<String, tokio::sync::watch::Sender<Option<WorkspaceApprovalDecision>>>>>,
+    tool_approval_timeout: std::time::Duration,
     permission_limits: PermissionPolicyLimits,
+    tool_approval_waiters: Arc<Mutex<HashMap<String, tool_approvals::ToolApprovalWaiter>>>,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
     api_tools: Option<Arc<dyn ait_ports::RunToolFactory>>,
     run_dispatcher: Option<Arc<dyn ait_ports::RunDispatcher>>,
@@ -52,6 +55,16 @@ pub struct LocalControlService {
 }
 
 impl LocalControlService {
+    /// Set a shorter decision window; never extends the worker or Run budget.
+    #[must_use]
+    pub fn with_tool_approval_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.tool_approval_timeout = timeout.clamp(
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_mins(2),
+        );
+        self
+    }
+
     #[must_use]
     pub fn new(
         project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
@@ -65,7 +78,9 @@ impl LocalControlService {
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
+            tool_approval_timeout: std::time::Duration::from_mins(2),
             permission_limits: PermissionPolicyLimits::default(),
+            tool_approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             provider_gateway: None,
             api_tools: None,
             run_dispatcher: None,
@@ -92,7 +107,9 @@ impl LocalControlService {
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             run_controls: Arc::new(Mutex::new(HashMap::new())),
             approval_waiters: Arc::new(Mutex::new(HashMap::new())),
+            tool_approval_timeout: std::time::Duration::from_mins(2),
             permission_limits: PermissionPolicyLimits::default(),
+            tool_approval_waiters: Arc::new(Mutex::new(HashMap::new())),
             provider_gateway: None,
             api_tools: None,
             run_dispatcher: None,

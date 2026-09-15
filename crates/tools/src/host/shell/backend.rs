@@ -292,6 +292,7 @@ mod tests {
                 let tools = HostTools {
                     root: Arc::new(open_project_root(&root).unwrap()),
                     root_path: root.clone(),
+                    authority: None,
                     profile: RunPermissionProfile {
                         sandbox,
                         ..Default::default()

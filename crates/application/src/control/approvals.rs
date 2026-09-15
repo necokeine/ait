@@ -683,6 +683,12 @@ pub(in crate::control) fn expire_pending_native_approvals(
 
 impl LocalControlService {
     pub(in crate::control) fn notify_approval_waiters(&self, run: &ait_contracts::RunView) {
+        if matches!(
+            run.status.as_str(),
+            "cancelling" | "cancelled" | "failed" | "completed" | "interrupted" | "limit_exceeded"
+        ) {
+            self.interrupt_api_tool_approvals(&run.id, run.lease_epoch);
+        }
         let Ok(mut waiters) = self.approval_waiters.lock() else {
             return;
         };

@@ -27,22 +27,58 @@ impl SandboxToolFactory {
                 "invalid tool limits",
             ));
         }
+        if profile.sandbox > self.maximum {
+            return Err(DomainError::invariant(
+                ErrorCode::ToolApprovalRequired,
+                "Run permission exceeds administrator ceiling",
+            ));
+        }
         Ok(Arc::new(LimitedTools {
-            inner: self.create(root, profile)?,
+            inner: ait_tools::host::HostToolFactory.create(root, profile)?,
+            maximum: self.maximum,
             output_bytes: output_bytes as usize,
             slots: tokio::sync::Semaphore::new(usize::from(concurrency)),
         }))
     }
 }
 struct LimitedTools {
+    maximum: SandboxAccess,
     inner: Arc<dyn RunTool>,
     output_bytes: usize,
     slots: tokio::sync::Semaphore,
 }
 #[async_trait::async_trait]
 impl RunTool for LimitedTools {
+    async fn execute_granted(
+        &self,
+        request: ait_ports::ToolInvocation,
+        grant: ait_domain::ToolGrant,
+    ) -> Result<ait_ports::ToolOutcome, DomainError> {
+        if grant.target.requested > self.maximum {
+            return Err(DomainError::invariant(
+                ErrorCode::ToolApprovalRequired,
+                "grant exceeds administrator ceiling",
+            ));
+        }
+        let _permit =
+            self.slots.acquire().await.map_err(|_| {
+                DomainError::invariant(ErrorCode::RunCancelled, "tool executor closed")
+            })?;
+        let result = self.inner.execute_granted(request, grant).await?;
+        if serde_json::to_vec(&result.output).map_or(true, |b| b.len() > self.output_bytes) {
+            return Err(DomainError::invariant(
+                ErrorCode::RunLimitExceeded,
+                "tool output exceeded limit",
+            ));
+        }
+        Ok(result)
+    }
     fn executable_tools(&self) -> Vec<String> {
-        self.inner.executable_tools()
+        let mut names = self.inner.executable_tools();
+        if self.maximum < SandboxAccess::WorkspaceWrite {
+            names.retain(|name| !matches!(name.as_str(), "write" | "edit"));
+        }
+        names
     }
     fn parallel_safe(&self, name: &str, args: &serde_json::Value) -> bool {
         self.inner.parallel_safe(name, args)
@@ -80,20 +116,31 @@ impl RunTool for LimitedTools {
     }
 }
 impl RunToolFactory for SandboxToolFactory {
+    fn review(
+        &self,
+        root: &Path,
+        profile: RunPermissionProfile,
+        execution: &ait_domain::ToolExecution,
+    ) -> Result<Option<ait_domain::ToolApprovalTarget>, DomainError> {
+        let target = ait_tools::host::HostToolFactory.review(root, profile, execution)?;
+        if profile.sandbox > self.maximum
+            || target.as_ref().is_some_and(|t| t.requested > self.maximum)
+        {
+            return Err(DomainError::invariant(
+                ErrorCode::ToolApprovalRequired,
+                "request exceeds administrator ceiling",
+            ));
+        }
+        Ok(target)
+    }
     fn create(
         &self,
         root: &Path,
         profile: RunPermissionProfile,
     ) -> Result<Arc<dyn RunTool>, DomainError> {
-        if profile.sandbox > self.maximum {
-            return Err(DomainError::invariant(
-                ErrorCode::ToolApprovalRequired,
-                "Run permission exceeds administrator ceiling",
-            ));
-        }
         // HostToolFactory uses capability-relative, no-symlink handles and
         // an OS-sandboxed shell; full_access explicitly removes OS restrictions.
-        ait_tools::host::HostToolFactory.create(root, profile)
+        self.create_bounded(root, profile, 65_536, 4)
     }
 }
 

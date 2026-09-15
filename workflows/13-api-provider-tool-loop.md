@@ -20,7 +20,7 @@ Agent revision、单一 attempt、usage、唯一 ToolResult，以及重新打开
 退出后才确认 cancelled 并释放 Session，慢磁盘上的已开始系统调用可能延迟这一确认。
 API 文件变化保留在 Session worktree 供成员审阅，没有自动 Git 提交；确认后自行提交，再发送下一条需要干净 Git 基线的输入。
 
-新建和重置设置默认 `workspace_write`，允许工作区内创建/编辑。显式选择 `read_only` 时只广告读取、搜索与受控命令。
+新建和重置设置默认 `workspace_write`，允许工作区内创建/编辑。显式选择 `read_only` 时，读取/搜索和只读 Shell 按原档位执行；write/edit 及显式更高权限请求须获得单次人工批准。管理员上限仍是硬边界。详见 [API 工具审批](../docs/operations/api-tool-approvals.md)。
 结构化文件工具的范围外路径、隐藏目录/文件、符号链接，以及未知工具、无效参数或审批升级均在副作用前拒绝。
 `full_access` 仍受管理员上限约束；结构化文件能力仍限制在 Session worktree 内。
 

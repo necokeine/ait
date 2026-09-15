@@ -146,6 +146,16 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .native-approval button:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text); }
 .native-approval button.primary { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-soft); color: var(--accent-strong); }
 .native-approval button:disabled { opacity: .5; cursor: default; }
+.tool-approval dl { gap: 10px; }
+.tool-approval dl div { grid-template-columns: 120px minmax(0, 1fr); }
+.tool-approval dt, .tool-approval dd { font-size: 11px; line-height: 1.5; }
+.tool-approval dd { white-space: normal; overflow-wrap: anywhere; }
+.tool-approval pre { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+.tool-approval header strong { color: var(--text); }
+#run-detail { margin-top: 24px; }
+#run-detail h2 { font-size: 16px; overflow-wrap: anywhere; }
+.run-detail-status { color: var(--text-soft); font-size: 12px; }
+.run-detail-result { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-content { color: var(--text); font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-content.markdown { white-space: normal; }
 .markdown p { margin: 0 0 11px; }
@@ -498,7 +508,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .run-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
 .run-status.needs-attention { color: color-mix(in srgb, var(--text) 40%, #bc850f); }
 .run-status.needs-attention i { background: currentColor; }
-.run-action { justify-self: end; }
+.run-action { justify-self: end; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .run-action button { white-space: nowrap; }
 .run-no-session { color: var(--text-muted); font-size: 11px; }
 .runs-empty { display: grid; justify-items: center; padding: 70px 20px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }

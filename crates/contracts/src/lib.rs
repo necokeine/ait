@@ -167,6 +167,15 @@ pub enum NativeApprovalAction {
     Cancel,
 }
 
+/// Member decision for one API host-tool request. Approval always means once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolApprovalAction {
+    Approve,
+    Deny,
+    Cancel,
+}
+
 /// Stable API error envelope.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApiError {
@@ -400,6 +409,9 @@ pub struct RunView {
     /// Codex-native approval audit records. They are not Ait ToolUse/ToolResult.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub native_approvals: Vec<NativeApprovalView>,
+    /// Independent, durable API host-tool requests and one-operation grants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_approvals: Vec<ait_domain::ToolApprovalRecord>,
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,

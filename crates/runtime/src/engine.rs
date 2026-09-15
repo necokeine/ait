@@ -751,6 +751,7 @@ impl RunCoordinator {
             }
         }
 
+        let mut operation_grant = None;
         if execution.approval_status == ToolApprovalStatus::Pending {
             run.status = RunStatus::WaitingApproval;
             run.phase = RunPhase::WaitingApproval;
@@ -772,7 +773,12 @@ impl RunCoordinator {
                 Controlled::Returned(Ok(ApprovalDecision::Pending)) => {
                     return Ok(ToolStep::Waiting(run));
                 }
-                Controlled::Returned(Ok(ApprovalDecision::Approved)) => {
+                Controlled::Returned(Ok(
+                    decision @ (ApprovalDecision::Approved | ApprovalDecision::Granted(_)),
+                )) => {
+                    if let ApprovalDecision::Granted(grant) = decision {
+                        operation_grant = Some(grant);
+                    }
                     execution.approval_status = ToolApprovalStatus::Approved;
                     run.status = RunStatus::Running;
                     run.phase = RunPhase::ExecutingTool;
@@ -804,7 +810,7 @@ impl RunCoordinator {
                         .await?;
                     return Ok(ToolStep::Terminal(run));
                 }
-                Controlled::Cancelled => {
+                Controlled::Returned(Ok(ApprovalDecision::Cancelled)) | Controlled::Cancelled => {
                     run = self
                         .finish(run, RunStatus::Cancelled, RunStopReason::Cancelled, None)
                         .await?;
@@ -845,14 +851,27 @@ impl RunCoordinator {
                 .await?;
             let result = self
                 .controlled_tool(
-                    self.tools.execute(ToolInvocation {
-                        run_id: run.id.clone(),
-                        call_id: execution.call_id.clone(),
-                        execution_id: execution.id.clone(),
-                        tool_name: tool_use.tool_name.clone(),
-                        arguments: execution.arguments.clone(),
-                        cancellation: cancellation.clone(),
-                    }),
+                    async {
+                        let request = ToolInvocation {
+                            run_id: run.id.clone(),
+                            call_id: execution.call_id.clone(),
+                            execution_id: execution.id.clone(),
+                            tool_name: tool_use.tool_name.clone(),
+                            arguments: execution.arguments.clone(),
+                            cancellation: cancellation.clone(),
+                        };
+                        if let Some(grant) = operation_grant {
+                            if !self.approvals.consume(&grant).await? {
+                                return Err(DomainError::invariant(
+                                    ErrorCode::ToolApprovalRequired,
+                                    "one-operation grant is no longer valid",
+                                ));
+                            }
+                            self.tools.execute_granted(request, *grant).await
+                        } else {
+                            self.tools.execute(request).await
+                        }
+                    },
                     &run,
                     &cancellation,
                 )

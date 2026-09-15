@@ -1,9 +1,13 @@
 import { escapeCatalog as escape } from "./agent-settings.js";
 import { ActiveRunsMonitor, type ActiveRunsState } from "./active-runs-monitor.js";
 import type { ActiveRunsCatalog, ActiveRunSummary, AgentSummary } from "./types.js";
+import type { ProjectView } from "./types.js";
+import { renderToolApprovals } from "./tool-approval-ui.js";
 
 interface RunsPageActions {
   read(): Promise<ActiveRunsCatalog>;
+  project(id: string): Promise<ProjectView>;
+  resolve(input: { projectId: string; runId: string; approvalId: string; action: "approve" | "deny" | "cancel" }): Promise<ProjectView>;
   agents(): AgentSummary[];
   openSession(projectId: string, sessionId: string): Promise<void>;
   notify(message: string, failure?: boolean): void;
@@ -18,6 +22,7 @@ const labels: Record<string, string> = {
   compacting_context: "Compacting context", checkpointing: "Saving checkpoint",
   recovering: "Recovering", draining_queue: "Processing queued input",
   releasing_session_ref: "Releasing Session", result_persisted: "Result saved",
+  completed: "Completed", failed: "Failed", cancelled: "Cancelled",
   integrating: "Integrating changes", reconciling_result: "Reconciling result",
 };
 
@@ -31,19 +36,38 @@ export function renderActiveRunRows(runs: ActiveRunSummary[], agents: AgentSumma
       <div class="run-location"><strong>${escape(run.sessionTitle ?? (run.trigger === "cron" ? "Scheduled Run" : "Run without Session"))}</strong><small>${escape(run.projectName)}</small><code title="${escape(run.id)}">Run ${escape(run.id)}</code></div>
       <div class="run-agent"><strong>${escape(agentName)}</strong><small>${escape(run.model)}</small><small>${run.trigger === "cron" ? "Scheduled" : "Manual"}</small></div>
       <div class="run-state"><span class="run-status${run.pendingApprovals > 0 || run.status === "waiting_approval" ? " needs-attention" : ""}"><i aria-hidden="true"></i>${escape(status)}</span>${phase ? `<small>${escape(phase)}</small>` : ""}</div>
-      <div class="run-action">${run.sessionId ? `<button class="secondary-button" type="button" data-run-id="${escape(run.id)}" data-run-project="${escape(run.projectId)}" aria-label="Open Session ${escape(run.sessionTitle ?? run.sessionId)} in ${escape(run.projectName)}">Open Session <span aria-hidden="true">↗</span></button>` : '<span class="run-no-session">No Session</span>'}</div>
+      <div class="run-action"><button type="button" class="secondary-button" data-run-detail="${escape(run.id)}" data-run-project="${escape(run.projectId)}">View Run${run.pendingApprovals ? " · Approvals" : ""}</button>${run.sessionId ? `<button class="secondary-button" type="button" data-run-id="${escape(run.id)}" data-run-project="${escape(run.projectId)}" aria-label="Open Session ${escape(run.sessionTitle ?? run.sessionId)} in ${escape(run.projectName)}">Open Session <span aria-hidden="true">↗</span></button>` : '<span class="run-no-session">No Session</span>'}</div>
     </article>`;
   }).join("");
 }
 
 export function createRunsPage(container: Element, actions: RunsPageActions) {
   container.innerHTML = `<header class="agents-page-header"><div><span class="eyebrow">Workspace</span><h1 id="runs-page-title" tabindex="-1">Runs</h1><p>Active Runs across all Projects, including scheduled work.</p></div><button id="runs-refresh" class="secondary-button" type="button">Refresh</button></header>
-    <div class="agents-page-scroll"><div class="runs-overview"><strong id="runs-count" aria-live="polite">Loading Runs…</strong><span id="runs-connection" class="runs-connection" role="status"></span></div><div id="runs-notice" class="runs-notice is-hidden" role="status"></div><div id="runs-list" class="runs-list" aria-label="Active Runs"></div></div>`;
+    <div class="agents-page-scroll"><div class="runs-overview"><strong id="runs-count" aria-live="polite">Loading Runs…</strong><span id="runs-connection" class="runs-connection" role="status"></span></div><div id="runs-notice" class="runs-notice is-hidden" role="status"></div><div id="runs-list" class="runs-list" aria-label="Active Runs"></div><section id="run-detail" aria-live="polite"></section></div>`;
   const get = <T extends Element>(selector: string): T => container.querySelector<T>(selector)!;
   const list = get<HTMLElement>("#runs-list");
   const refreshButton = get<HTMLButtonElement>("#runs-refresh");
 
+  let selected: { runId: string; projectId: string } | undefined;
+  let detailGeneration = 0;
+  let deciding = false;
+  const detail = get<HTMLElement>("#run-detail");
+  const refreshDetail = async (): Promise<void> => {
+    if (!selected || deciding) return;
+    const generation = ++detailGeneration;
+    const target = selected;
+    try {
+      const project = await actions.project(target.projectId);
+      if (generation !== detailGeneration || selected !== target) return;
+      const run = project.runs.find((run) => run.id === target.runId);
+      if (!run) { detail.textContent = "Run unavailable."; return; }
+      const result = project.messages.find((message) => message.id === run.lastMessageId);
+      const text = result?.parts.map((part) => part.type === "text" ? part.text : part.type === "tool_result" ? `Tool result: ${part.status}` : "").join("\n") ?? "";
+      detail.innerHTML = `<header><h2>Run ${escape(run.id)}</h2><p class="run-detail-status">${escape(labels[run.status] ?? run.status)}</p></header>${renderToolApprovals(run)}<pre class="run-detail-result">${escape(text)}</pre>`;
+    } catch { if (generation === detailGeneration) detail.textContent = "Could not refresh this Run. Use Refresh to try again."; }
+  };
   const render = (state: ActiveRunsState): void => {
+    if (!state.loading) void refreshDetail();
     const { catalog, loading, connected, error } = state;
     const runs = catalog?.runs ?? [];
     get("#runs-count").textContent = catalog
@@ -66,13 +90,32 @@ export function createRunsPage(container: Element, actions: RunsPageActions) {
     list.innerHTML = runs.length ? renderActiveRunRows(runs, actions.agents())
       : `<div class="runs-empty"><span aria-hidden="true">⌁</span><h2>${!catalog ? loading ? "Loading active Runs…" : "Could not load Runs" : catalog.unavailableProjects.length || error ? "Activity is unavailable" : "No active Runs"}</h2><p>${!catalog || catalog.unavailableProjects.length || error ? "Use Refresh to try again." : "Runs appear here when you send a message or scheduled work starts."}</p></div>`;
     if (focused) {
-      Array.from(list.querySelectorAll<HTMLButtonElement>("[data-run-id]"))
-        .find((button) => button.dataset.runId === focused.runId && button.dataset.runProject === focused.runProject)?.focus();
+      Array.from(list.querySelectorAll<HTMLButtonElement>("[data-run-id], [data-run-detail]"))
+        .find((button) => button.dataset.runId === focused.runId && button.dataset.runDetail === focused.runDetail && button.dataset.runProject === focused.runProject)?.focus();
     }
   };
   const monitor = new ActiveRunsMonitor(actions.read, render);
   refreshButton.addEventListener("click", () => void monitor.refresh());
+  detail.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-approval-action]") : null;
+    const card = button?.closest<HTMLElement>("[data-approval-id]");
+    const action = button?.dataset.approvalAction;
+    if (!card || !selected || deciding || !["approve", "deny", "cancel"].includes(action ?? "")) return;
+    deciding = true;
+    ++detailGeneration;
+    detail.querySelectorAll<HTMLButtonElement>("button").forEach((button) => { button.disabled = true; });
+    void actions.resolve({ ...selected, approvalId: card.dataset.approvalId!, action: action as "approve" | "deny" | "cancel" })
+      .catch((error: unknown) => actions.notify(error instanceof Error ? error.message : "Approval failed.", true))
+      .finally(() => { deciding = false; void refreshDetail(); void monitor.refresh(); });
+  });
   list.addEventListener("click", (event) => {
+    const detailButton = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-run-detail]") : null;
+    if (detailButton) {
+      selected = { runId: detailButton.dataset.runDetail!, projectId: detailButton.dataset.runProject! };
+      detail.textContent = "Loading Run…";
+      void refreshDetail();
+      return;
+    }
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-run-id]") : null;
     if (!button) return;
     const run = monitor.state.catalog?.runs.find((candidate) =>
