@@ -43,6 +43,8 @@ pub enum CommitBoundary {
 }
 /// Bounded observation surface. Never receives credentials or tool arguments.
 pub trait WorkerObserver: Send + Sync {
+    /// The connection was invalidated before outstanding RPCs are drained.
+    fn disconnected(&self, _pid: u32) {}
     /// Observe a frame class at a commit boundary. Returning an error stops that request.
     /// # Errors
     /// A diagnostic/fault hook may explicitly interrupt the attempt.
@@ -265,6 +267,9 @@ impl WorkerSupervisor {
         // A commit already entering the store must finish before the next lease.
         if result.is_err() {
             server.disconnected();
+            if let Some(observer) = &self.observer {
+                observer.disconnected(pid);
+            }
         }
         while pending.next().await.is_some() {}
         result

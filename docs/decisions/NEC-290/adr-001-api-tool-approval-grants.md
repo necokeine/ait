@@ -53,8 +53,15 @@ cwd/根目录身份在执行前复核；限制继承、输出预算和进程树�
 Desktop 展示绝对期限，断线时也移除过期的批准按钮。
 
 取消先持久化 Cancelling 和请求 Cancelled，再停止执行；runtime 区分拒绝与整个 Run 取消。
-worker 断线唤醒并清理 waiter，重新 claim lease 时过期所有未消费授权。daemon 重启不会复活
-旧 waiter，也不会默认批准；旧 Pending/Approved 意图产生拒绝或保守结算。已经 Running 的
+worker 每次 claim lease 都建立独立、不可恢复的连接失效信号，由该 Run 的 store 持有；
+断线先标记该信号，再通知 waiter 并 drain RPC。目标检查开始前已取得信号，因此注册 waiter
+之前断线也不会丢失。请求、等待、决定和消费共用该信号，在异步目标检查和提交边界后复核。
+已进入存储的提交必须完成，再立即过期；即使该提交短暂留下 Pending，后端也拒绝失效决定，
+不会向 worker 发放授权。连接状态不依赖全局历史 registry，随 store/lease 释放或替换。
+
+重新 claim lease 时过期所有未消费授权，并将旧进程尚未派发的 Pending/Approved 工具意图
+结算为 Denied（包括目标检查尚未生成审批记录的情况）；runtime 随后持久化唯一 ToolResult。
+daemon 重启不会复活旧 waiter，也不会默认批准。已经 Running 的
 工具结果未知时沿 NEC-247 fencing/reconcile 失败并要求人工检查，不重放副作用。
 Consumed 只表示授权已消费，不保证操作成功；最终结果以唯一 ToolResult 为准。
 
@@ -80,3 +87,8 @@ Codex 原生策略。Settings 默认值继续是 workspace_write + on_request。
 两种离线 Provider、真实 Shell、重复/变更/过期/取消/worker 丢失，以及真实 Electron GUI。
 GUI 夹具使用 Playwright 官方 [Electron API](https://playwright.dev/docs/api/class-electron)，
 用支持的 profile 路径配置载入原 main/preload/renderer，模型端仅监听临时 loopback 地址。
+
+断线回归通过目标工厂与真实 SQLite 的提交暂停点控制时序，并等待 supervisor 确认连接已
+失效后才恢复执行；覆盖两个 Provider 的首次目标检查、Pending 提交前后、决定目标检查和
+决定提交前后。测试不靠固定 sleep 猜测 EOF 已处理，并断言及时恢复、旧决定拒绝、唯一拒绝
+ToolResult、零副作用与无新 lease 审批复活。

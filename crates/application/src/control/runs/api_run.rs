@@ -120,6 +120,7 @@ impl LocalControlService {
         let store = Arc::new(ControlRunStore {
             service: self.clone(),
             worker_deadline: std::sync::atomic::AtomicI64::new(i64::MAX),
+            worker_connection: Mutex::new(None),
             records: self.records(),
             id: view.id.clone(),
             expected: Mutex::new(None),
@@ -287,9 +288,21 @@ fn api_domain_error_reverse(e: DomainError) -> ApiError {
 struct ControlRunStore {
     service: LocalControlService,
     worker_deadline: std::sync::atomic::AtomicI64,
+    worker_connection: Mutex<Option<WorkerConnection>>,
     records: crate::control::state::records::RecordAccess,
     id: String,
     expected: Mutex<Option<Run>>,
+}
+struct WorkerConnection {
+    lease: ait_ports::WorkerLease,
+    closed: tokio_util::sync::CancellationToken,
+}
+impl Drop for ControlRunStore {
+    fn drop(&mut self) {
+        if let Ok(Some(connection)) = self.worker_connection.get_mut() {
+            connection.closed.cancel();
+        }
+    }
 }
 struct WorkerOperation<'a> {
     lease: &'a ait_ports::WorkerLease,
@@ -308,6 +321,17 @@ fn validate_worker_transition(
 }
 
 impl ControlRunStore {
+    fn live_connection(
+        &self,
+        lease: &ait_ports::WorkerLease,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.worker_connection
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|connection| connection.lease == *lease && !connection.closed.is_cancelled())
+            .map(|connection| connection.closed.clone())
+    }
     async fn latest_view(&self) -> Result<RunState, ApiError> {
         self.records
             .read_run_view_records(&self.id)
@@ -573,12 +597,16 @@ impl RunStore for ControlRunStore {
         lease: &ait_ports::WorkerLease,
         execution: ToolExecution,
     ) -> Result<ApprovalDecision, DomainError> {
+        let Some(connection) = self.live_connection(lease) else {
+            return Ok(ApprovalDecision::Denied);
+        };
         self.service
             .request_api_tool_approval(
                 execution,
                 Some(lease),
                 self.worker_deadline
                     .load(std::sync::atomic::Ordering::SeqCst),
+                connection,
             )
             .await
             .map_err(crate::control::errors::api_domain_error)
@@ -588,12 +616,22 @@ impl RunStore for ControlRunStore {
         lease: &ait_ports::WorkerLease,
         grant: &ait_domain::ToolGrant,
     ) -> Result<bool, DomainError> {
+        let Some(connection) = self.live_connection(lease) else {
+            return Ok(false);
+        };
         self.service
-            .consume_api_tool_grant(grant, Some(lease))
+            .consume_api_tool_grant(grant, Some(lease), &connection)
             .await
             .map_err(crate::control::errors::api_domain_error)
     }
     fn interrupt_tool_approvals(&self, lease: &ait_ports::WorkerLease) {
+        if let Ok(connection) = self.worker_connection.lock()
+            && let Some(connection) = connection
+                .as_ref()
+                .filter(|connection| connection.lease == *lease)
+        {
+            connection.closed.cancel();
+        }
         self.service
             .interrupt_api_tool_approvals(lease.run_id.as_str(), lease.epoch);
     }
@@ -619,6 +657,7 @@ impl RunStore for ControlRunStore {
             }
             view.lease_epoch = view.lease_epoch.checked_add(1).ok_or_else(conflict)?;
             crate::control::tool_approvals::expire(view, ait_domain::ToolApprovalState::Expired);
+            crate::control::tool_approvals::fence_pending_tools(view);
             view.execution_mut()
                 .ok_or_else(conflict)?
                 .worker_instance_id = Some(instance.into());
@@ -632,7 +671,22 @@ impl RunStore for ControlRunStore {
                 .persist_records(&loaded, &state, Vec::new())
                 .await
             {
-                Ok(()) => return Ok(lease),
+                Ok(()) => {
+                    let mut connection = self.worker_connection.lock().map_err(store_failure)?;
+                    if connection
+                        .as_ref()
+                        .is_some_and(|connection| connection.lease.epoch >= lease.epoch)
+                    {
+                        return Err(conflict());
+                    }
+                    if let Some(previous) = connection.replace(WorkerConnection {
+                        lease: lease.clone(),
+                        closed: tokio_util::sync::CancellationToken::new(),
+                    }) {
+                        previous.closed.cancel();
+                    }
+                    return Ok(lease);
+                }
                 Err(ControlStoreError::Conflict) => {}
                 Err(e) => return Err(store_failure(e)),
             }
