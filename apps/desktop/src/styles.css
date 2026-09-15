@@ -327,6 +327,12 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .restart-badge { margin-left: 6px; color: #d2ad67; font-size: 8px; font-weight: 500; }
 .setting-control input, .setting-control select { width: 100%; height: 32px; border: 1px solid var(--line); border-radius: 7px; background: var(--control-bg); color: var(--text); padding: 0 9px; font-size: 10.5px; }
 .setting-control input.invalid, .setting-control select.invalid { border-color: var(--danger); }
+.setting-path { width: 100%; min-height: 32px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--control-bg); color: var(--text); padding: 7px 9px; font-size: 10.5px; cursor: pointer; text-align: left; }
+.setting-path span:first-child { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setting-path span:last-child { flex: none; color: var(--text-soft); }
+.setting-path:hover { background: var(--surface-hover); }
+.setting-path:disabled { cursor: wait; opacity: .6; }
+.setting-path.invalid { border-color: var(--danger); }
 .switch { margin-left: auto; display: block; position: relative; width: 35px; height: 20px; }
 .switch input { position: absolute; opacity: 0; }
 .switch-track { display: block; width: 35px; height: 20px; border-radius: 999px; background: #373b33; transition: background 120ms ease; cursor: pointer; }

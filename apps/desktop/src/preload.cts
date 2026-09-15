@@ -33,7 +33,7 @@ const api: AitDesktopApi = {
   saveSettings: (expectedRevision, values) =>
     invoke("settings.save", { expectedRevision, values }),
   resetSettings: () => invoke("settings.reset"),
-  chooseProjectDirectory: () => invoke("project.choose-directory"),
+  chooseProjectDirectory: (defaultPath) => invoke("project.choose-directory", { defaultPath }),
   openProjectFile: (input) => invoke("project.open-file", input),
   createProject: (input) => invoke("project.create", input),
   setProjectDefaultAgent: (input) => invoke("project.set-default-agent", input),
