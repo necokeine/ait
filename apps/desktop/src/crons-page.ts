@@ -215,13 +215,12 @@ export function createCronsPage(container: Element, actions: CronPageActions) {
     if (busy) return;
     void (async () => {
       try {
-        const session = sessions.find((candidate) => candidate.id === sessionSelect.value);
         const target = targetSelect.value === "message" ? "message" : "session";
-        const baseMessageId = resolveCronBaseMessage(target, get<HTMLInputElement>("#cron-message").value, session);
+        const projectId = projectSelect.value;
+        const selectedSessionId = sessionSelect.value;
         const input = {
           name: get<HTMLInputElement>("#cron-name").value.trim(),
-          projectId: projectSelect.value,
-          baseMessageId,
+          projectId,
           agentId: agentSelect.value,
           schedule: get<HTMLInputElement>("#cron-schedule").value.trim(),
           timezone: get<HTMLInputElement>("#cron-timezone").value.trim(),
@@ -229,7 +228,19 @@ export function createCronsPage(container: Element, actions: CronPageActions) {
         if (!input.name || !input.agentId || !input.schedule || !input.timezone) throw new Error("Complete every Cron field.");
         setBusy(true);
         get("#cron-save").textContent = "Saving…";
-        replaceCron(await actions.create(input));
+        const currentSessions = target === "session" ? await actions.sessions(projectId) : [];
+        const session = currentSessions.find((candidate) => (
+          candidate.id === selectedSessionId && candidate.projectId === projectId
+        ));
+        if (target === "session" && !session) {
+          throw new Error("Selected Session is no longer available in this Project.");
+        }
+        const baseMessageId = resolveCronBaseMessage(
+          target,
+          get<HTMLInputElement>("#cron-message").value,
+          session,
+        );
+        replaceCron(await actions.create({ ...input, baseMessageId }));
         setBusy(false);
         closeEditor();
         get<HTMLFormElement>("#cron-form").reset();
