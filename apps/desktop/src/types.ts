@@ -2,7 +2,12 @@ export type MessageRole = "user" | "system" | "assistant";
 export type MessageKind = "standard" | "tool_result";
 export type ReasoningEffort = string;
 
-export interface AgentConfiguration { provider_id: string; model: string; reasoning_effort: string | null }
+export interface AgentConfiguration {
+  provider_id: string;
+  model: string;
+  reasoning_effort: string | null;
+  system_prompt?: string | null;
+}
 export interface ProviderModel { id: string; name: string; reasoning_efforts: string[] }
 export interface AgentProvider { id: string; name: string; kind: string; url: string | null; models: ProviderModel[]; has_secret: boolean }
 export interface ProviderInput { provider: Omit<AgentProvider, "has_secret">; secret?: string }
@@ -245,7 +250,8 @@ export type SettingKind =
   | { type: "boolean" }
   | { type: "select"; options: string[] }
   | { type: "path" }
-  | { type: "credential_reference" };
+  | { type: "credential_reference" }
+  | { type: "agent_reference" };
 
 export interface SettingDefinition {
   id: string;
@@ -299,7 +305,7 @@ export interface AitDesktopApi {
   createProject(input: {
     name: string;
     workdir?: string;
-    agentId: string;
+    agentId?: string;
     repoUrl?: string;
   }): Promise<{ catalog: ProjectCatalog; project: ProjectView; selectedProjectId: string }>;
   setProjectDefaultAgent(input: {
@@ -308,7 +314,7 @@ export interface AitDesktopApi {
   }): Promise<ProjectCatalog>;
   createSession(input: {
     projectId: string;
-    agentId: string;
+    agentId?: string;
   }): Promise<{ project: ProjectView; selectedSessionId: string }>;
   setSessionAgent(input: {
     projectId: string;

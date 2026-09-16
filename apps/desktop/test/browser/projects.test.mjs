@@ -63,7 +63,8 @@ test("editing saves name and default Agent together, and new Sessions use the ne
   assert.equal(await page.evaluate(() => window.fixture.sessions[0].agentId), "agent");
   await page.locator('[data-new-session-project-id="a"]').click();
   await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
-  assert.deepEqual(await page.evaluate(() => window.fixture.created), [{ projectId: "a", agentId: "alternate" }]);
+  assert.deepEqual(await page.evaluate(() => window.fixture.created), [{ projectId: "a" }]);
+  assert.equal(await page.evaluate(() => window.fixture.sessions.at(-1).agentId), "alternate");
 });
 
 test("cancel and failed saves retain persisted Project data, with drafts available for retry", async (t) => {
@@ -92,10 +93,22 @@ test("cancel and failed saves retain persisted Project data, with drafts availab
 test("Project names can be edited without an available Agent", async (t) => {
   const page = await openFixture(t, () => { window.fixture.agents = []; });
   await page.locator('[data-project-settings-id="a"]').click();
+  assert.equal(await page.locator("#project-backend").isEnabled(), true);
+  assert.equal(await page.locator("#project-backend").inputValue(), "agent");
   await page.locator("#project-settings-name").fill("Name only");
   await page.locator("#project-backend-save").click();
   await page.waitForFunction(() => document.querySelector('[data-project-id="a"] strong').textContent === "Name only");
   assert.deepEqual(await page.evaluate(() => window.fixture.edits), [{ projectId: "a", name: "Name only" }]);
+  assert.equal(await page.evaluate(() => window.fixture.projects[0].defaultAgentId), "agent");
+
+  await page.locator('[data-project-settings-id="a"]').click();
+  await page.locator("#project-backend").selectOption("");
+  await page.locator("#project-backend-save").click();
+  await page.waitForFunction(() => window.fixture.edits.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.fixture.edits[1]), {
+    projectId: "a", name: "Name only", agentId: "",
+  });
+  assert.equal(await page.evaluate(() => window.fixture.projects[0].defaultAgentId), null);
 });
 
 test("renaming an offscreen Session preserves the visible conversation", async (t) => {

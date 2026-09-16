@@ -110,6 +110,7 @@ async fn setup_api_provider(service: &LocalControlService, kind: AgentMode) -> t
             provider_id,
             model: "chat".into(),
             reasoning_effort: None,
+            system_prompt: None,
         },
     )
     .await

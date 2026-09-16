@@ -27,6 +27,7 @@ fn mock_config() -> AgentConfiguration {
         provider_id: "builtin-mock".into(),
         model: "mock-local".into(),
         reasoning_effort: None,
+        system_prompt: None,
     }
 }
 
@@ -92,6 +93,7 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
                 provider_id: "api".into(),
                 model: "codex-named-test-model".into(),
                 reasoning_effort: None,
+                system_prompt: None,
             }
         };
         let _directory = setup(&service, configuration).await;
@@ -397,6 +399,7 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
         provider_id: "remote".into(),
         model: "chat".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     };
     let _directory = setup(&service, config.clone()).await;
     ok(

@@ -196,7 +196,7 @@ pub(crate) enum SessionCommand {
         #[arg(long, value_parser = input::id)]
         project_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long, value_parser = input::id)]
         at_message_id: Option<String>,
     },
@@ -242,7 +242,7 @@ pub(crate) enum SessionCommand {
         #[arg(long, value_parser = input::id)]
         project_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long, value_parser = input::id)]
         at_message_id: String,
         #[command(flatten)]
@@ -257,7 +257,7 @@ pub(crate) enum SessionCommand {
         #[arg(long, value_parser = input::id)]
         source_session_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long, value_parser = input::id)]
         at_message_id: String,
         #[command(flatten)]
@@ -313,7 +313,7 @@ pub(crate) enum CronCommand {
         #[arg(long, value_parser = input::id)]
         base_message_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long)]
         schedule: String,
         #[arg(long)]
@@ -374,6 +374,9 @@ pub(crate) struct Config {
     /// Provider/model-specific effort from agent provider list (validated by the daemon).
     #[arg(long, value_parser = input::id)]
     reasoning_effort: Option<String>,
+    /// Reserved Agent instructions. Persisted for future use; currently not sent to providers.
+    #[arg(long)]
+    system_prompt: Option<String>,
 }
 
 impl From<Config> for AgentConfiguration {
@@ -382,6 +385,7 @@ impl From<Config> for AgentConfiguration {
             provider_id: value.provider_id,
             model: value.model,
             reasoning_effort: value.reasoning_effort,
+            system_prompt: value.system_prompt,
         }
     }
 }
@@ -698,7 +702,7 @@ impl SessionCommand {
             } => Command::CreateSession {
                 id,
                 project_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 at_message_id,
             },
             SessionCommand::SetAgent {
@@ -731,7 +735,7 @@ impl SessionCommand {
             } => Command::ForkSession {
                 id,
                 project_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 at_message_id,
                 text: text.read(stdin)?,
             },
@@ -746,7 +750,7 @@ impl SessionCommand {
                 id,
                 project_id,
                 source_session_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 at_message_id,
                 text: text.read(stdin)?,
             },
@@ -791,7 +795,7 @@ impl From<CronCommand> for Command {
                 name,
                 project_id,
                 base_message_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 schedule,
                 timezone,
             },

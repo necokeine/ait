@@ -180,13 +180,18 @@ impl CommandTransaction {
                 };
                 let project =
                     crate::control::project::require_project_view(&tx.original, project_id)?;
+                let agent_id = crate::control::settings::resolve_project_agent_id(
+                    &tx.original,
+                    project_id,
+                    agent_id,
+                )?;
                 crate::control::project::worktrees::prepare_new_session_worktree(
                     workspace,
                     lease,
                     &tx.original,
                     id,
                     project_id,
-                    agent_id,
+                    &agent_id,
                     at_message_id.as_deref().unwrap_or(&project.root_message_id),
                     created,
                 )
@@ -214,15 +219,18 @@ impl CommandTransaction {
     }
     /// Record references selecting filesystem work must remain stable on CAS retry.
     /// Project Git identity is checked separately through `PreparedProject::verify`.
-    pub(in crate::control) fn preparation_key(&self) -> PreparationKey {
+    pub(in crate::control) fn preparation_key(
+        &self,
+        command: &Command,
+    ) -> Result<PreparationKey, ApiError> {
         match self {
-            Self::NewSession(tx) => session_preparation_key(&tx.original),
-            Self::Conversation(tx) => session_preparation_key(&tx.original),
-            Self::CronTrigger(tx) => PreparationKey::Cron {
+            Self::NewSession(tx) => session_preparation_key(&tx.original, command),
+            Self::Conversation(tx) => session_preparation_key(&tx.original, command),
+            Self::CronTrigger(tx) => Ok(PreparationKey::Cron {
                 projects: tx.original.projects.clone(),
                 crons: tx.original.crons.clone(),
-            },
-            _ => PreparationKey::None,
+            }),
+            _ => Ok(PreparationKey::None),
         }
     }
     pub(in crate::control) fn read(self, command: Command) -> Result<CommandResult, ApiError> {
@@ -545,7 +553,7 @@ impl CommandTransaction {
                     name,
                     project_id,
                     base_message_id,
-                    agent_id,
+                    &agent_id,
                     schedule,
                     timezone,
                 ))
@@ -611,6 +619,7 @@ pub(in crate::control) enum PreparationKey {
         projects: Vec<ProjectState>,
         sessions: Vec<SessionState>,
         messages: Vec<MessageBaseline>,
+        resolved_agent_id: Option<String>,
     },
     Cron {
         projects: Vec<ProjectState>,
@@ -629,9 +638,31 @@ fn session_preparation_key(
          impl crate::control::state::HasProjects
          + crate::control::state::HasSessions
          + crate::control::state::HasMessages
+         + crate::control::state::HasSettings
      ),
-) -> PreparationKey {
-    PreparationKey::Session {
+    command: &Command,
+) -> Result<PreparationKey, ApiError> {
+    let resolved_agent_id = match command {
+        Command::CreateSession {
+            project_id,
+            agent_id,
+            ..
+        }
+        | Command::ForkSession {
+            project_id,
+            agent_id,
+            ..
+        }
+        | Command::DeriveSession {
+            project_id,
+            agent_id,
+            ..
+        } => Some(crate::control::settings::resolve_project_agent_id(
+            state, project_id, agent_id,
+        )?),
+        _ => None,
+    };
+    Ok(PreparationKey::Session {
         projects: state.projects().clone(),
         sessions: state.sessions().clone(),
         messages: state
@@ -649,5 +680,6 @@ fn session_preparation_key(
                     .map(str::to_owned),
             })
             .collect(),
-    }
+        resolved_agent_id,
+    })
 }

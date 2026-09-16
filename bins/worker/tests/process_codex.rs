@@ -134,6 +134,7 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
                         provider_id: "builtin-codex".into(),
                         model: "gpt-5.6-sol".into(),
                         reasoning_effort: None,
+                        system_prompt: None,
                     },
                 },
                 Command::CreateSession {

@@ -4,8 +4,9 @@ use crate::control::conversation::derive_reuses_source;
 use crate::control::errors::error;
 use crate::control::errors::project_error;
 use crate::control::project::worktrees::session_worktree_path;
+use crate::control::settings::resolve_project_agent_id;
 use crate::control::state::{
-    HasAgents, HasCrons, HasMessages, HasProjects, HasProviders, HasRuns, HasSessions,
+    HasAgents, HasCrons, HasMessages, HasProjects, HasProviders, HasRuns, HasSessions, HasSettings,
 };
 use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
@@ -40,7 +41,7 @@ pub(in crate::control) async fn canonical_project_path(
 
 pub(in crate::control) async fn command_git_baseline(
     workspace: &dyn ProjectWorkspace,
-    state: &(impl HasMessages + HasProjects + HasSessions),
+    state: &(impl HasMessages + HasProjects + HasSessions + HasSettings),
     command: &Command,
 ) -> Result<Option<GitBaseline>, ApiError> {
     let path = match command {
@@ -68,12 +69,13 @@ pub(in crate::control) async fn command_git_baseline(
             at_message_id,
             ..
         } => {
+            let agent_id = resolve_project_agent_id(state, project_id, agent_id)?;
             let source = state
                 .sessions()
                 .iter()
                 .find(|session| session.id == *source_session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-            if derive_reuses_source(state, id, project_id, source, agent_id, at_message_id) {
+            if derive_reuses_source(state, id, project_id, source, &agent_id, at_message_id) {
                 Some(PathBuf::from(&source.workdir))
             } else {
                 let project = state

@@ -182,6 +182,7 @@ impl Fixture {
                     provider_id: "api".into(),
                     model: "fixture-model".into(),
                     reasoning_effort: None,
+                    system_prompt: None,
                 },
             },
         )

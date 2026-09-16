@@ -16,7 +16,10 @@ use ait_agent_adapters::{
     AgentStream, ApprovalPolicy, SandboxMode,
     codex::{CodexSessionTitleGenerator, CodexWorkspaceAgent},
 };
-use ait_domain::{ApprovalMode, RunPermissionProfile, SandboxAccess};
+use ait_domain::{
+    AgentConfiguration, AgentProvider, ApprovalMode, ProviderKind, RunPermissionProfile,
+    SandboxAccess,
+};
 use ait_ports::{
     DenyWorkspaceApprovals, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
     WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceIntegrationCheckpoint,
@@ -1140,6 +1143,13 @@ impl AgentAdapter for TitleAdapter {
             "title generation must not save Codex history"
         );
         assert!(request.resume_thread_id.is_none());
+        assert!(
+            request.project_instructions.is_none(),
+            "reserved Agent system prompts must not be assembled yet"
+        );
+        assert!(request.prompt.contains(
+            "Return only a JSON object with exactly the string fields `title` and `description`"
+        ));
         assert_eq!(request.model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
         assert_eq!(request.sandbox, SandboxMode::ReadOnly);
@@ -1401,13 +1411,35 @@ async fn generate_title_script(
 ) -> Result<ait_ports::GeneratedSessionTitle, ait_domain::DomainError> {
     let project = TempDir::new().unwrap();
     CodexSessionTitleGenerator::new(Arc::new(ScriptedAdapter { events }))
-        .generate(SessionTitleRequest {
-            request_id: "scripted-title".into(),
-            user_prompt: "Summarize the task".into(),
-            cwd: project.path().to_path_buf(),
-            cancellation: CancellationToken::new(),
-        })
+        .generate(title_request(
+            "scripted-title",
+            "Summarize the task",
+            project.path(),
+        ))
         .await
+}
+
+fn title_request(request_id: &str, user_prompt: &str, cwd: &Path) -> SessionTitleRequest {
+    SessionTitleRequest {
+        request_id: request_id.into(),
+        user_prompt: user_prompt.into(),
+        config: AgentConfiguration {
+            provider_id: "builtin-codex".into(),
+            model: "gpt-5.6-luna".into(),
+            reasoning_effort: Some("low".into()),
+            system_prompt: Some("reserved and deliberately unused".into()),
+        },
+        provider: AgentProvider {
+            id: "builtin-codex".into(),
+            name: "Codex".into(),
+            kind: ProviderKind::Codex,
+            url: None,
+            models: Vec::new(),
+        },
+        credential_ref: None,
+        cwd: cwd.to_path_buf(),
+        cancellation: CancellationToken::new(),
+    }
 }
 
 fn title_payload(title: &str) -> String {
@@ -1423,12 +1455,11 @@ async fn generates_structured_session_metadata_with_the_small_read_only_model() 
     let project = TempDir::new().unwrap();
     let generator = CodexSessionTitleGenerator::new(Arc::new(TitleAdapter));
     let generated = generator
-        .generate(SessionTitleRequest {
-            request_id: "title-1".into(),
-            user_prompt: "修复 ABC-123 登录".into(),
-            cwd: project.path().to_path_buf(),
-            cancellation: CancellationToken::new(),
-        })
+        .generate(title_request(
+            "title-1",
+            "修复 ABC-123 登录",
+            project.path(),
+        ))
         .await
         .unwrap();
 

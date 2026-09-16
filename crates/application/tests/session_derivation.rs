@@ -6,7 +6,7 @@ mod support;
 use std::sync::Arc;
 
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult, ProjectView, RunView};
+use ait_contracts::{Command, CommandResult, ProjectView, RunView, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
 use ait_storage_sqlite::SqliteControlStore;
@@ -93,6 +93,18 @@ impl Fixture {
             },
         )
         .await;
+        let mut settings = default_settings();
+        settings
+            .0
+            .insert("agents.default_agent".into(), serde_json::json!("agent"));
+        execute(
+            &service,
+            Command::SaveSettings {
+                expected_revision: 1,
+                values: settings,
+            },
+        )
+        .await;
         execute(
             &service,
             Command::CreateSession {
@@ -115,7 +127,7 @@ impl Fixture {
             id: "fork".into(),
             project_id: self.project.id.clone(),
             source_session_id: "current".into(),
-            agent_id: "agent".into(),
+            agent_id: String::new(),
             at_message_id: self.project.root_message_id.clone(),
             text: text.into(),
         }
@@ -140,6 +152,7 @@ fn config() -> ait_contracts::AgentConfiguration {
         provider_id: "builtin-codex".into(),
         model: "gpt-5.6-sol".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     }
 }
 

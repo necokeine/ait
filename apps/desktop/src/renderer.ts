@@ -1266,7 +1266,7 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
 function openProjectDialog(): void {
   if (!view) return;
   const agent = $<HTMLSelectElement>("#project-create-agent");
-  agent.innerHTML = agentOptions();
+  agent.innerHTML = `<option value="">Use global Default Agent</option>${agentOptions()}`;
   projectDialog.classList.remove("is-hidden");
   requestAnimationFrame(() => $<HTMLInputElement>("#project-create-name").focus());
 }
@@ -1281,11 +1281,16 @@ function openProjectSettingsDialog(projectId: string | undefined): void {
   configuringProjectId = project.id;
   const options = agentOptions();
   const backend = $<HTMLSelectElement>("#project-backend");
-  backend.innerHTML = `<option value="">Keep current default</option>${options}`;
-  backend.disabled = options.length === 0;
+  const availableAgentId = availableProjectDefaultAgentId(project, view?.agents ?? []);
+  const unavailableAgent = project.defaultAgentId && !availableAgentId
+    ? `<option value="${escapeAttribute(project.defaultAgentId)}" disabled>Unavailable current Agent (kept until changed)</option>`
+    : "";
+  backend.innerHTML = `${unavailableAgent}<option value="">Use global Default Agent</option>${options}`;
+  backend.disabled = false;
   $<HTMLButtonElement>("#project-backend-save").disabled = false;
   $<HTMLInputElement>("#project-settings-name").value = project.name;
-  backend.value = availableProjectDefaultAgentId(project, view?.agents ?? []) ?? "";
+  backend.value = availableAgentId ?? project.defaultAgentId ?? "";
+  backend.dataset.initialAgentId = backend.value;
   $("#project-settings-title").textContent = project.name;
   $("#project-backend-copy").textContent = `New Sessions in ${project.name} use this Agent by default.`;
   projectSettingsDialog.classList.remove("is-hidden");
@@ -1399,7 +1404,8 @@ async function createProject(): Promise<void> {
 async function saveProjectSettings(): Promise<void> {
   const project = view?.projects.find((candidate) => candidate.id === configuringProjectId);
   if (!project || projectSettingsSaving) return;
-  const agentId = $<HTMLSelectElement>("#project-backend").value;
+  const backend = $<HTMLSelectElement>("#project-backend");
+  const agentId = backend.value;
   const name = $<HTMLInputElement>("#project-settings-name").value.trim();
   if (!name) { showToast("Enter a Project name.", true); return; }
   const controls = Array.from(projectSettingsDialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"));
@@ -1407,7 +1413,11 @@ async function saveProjectSettings(): Promise<void> {
   projectSettingsSaving = true;
   controls.forEach((control) => { control.disabled = true; });
   try {
-    const updated = await window.ait.updateProject({ projectId: project.id, name, ...(agentId ? { agentId } : {}) });
+    const updated = await window.ait.updateProject({
+      projectId: project.id,
+      name,
+      ...(agentId !== backend.dataset.initialAgentId ? { agentId } : {}),
+    });
     replaceProjectCatalog(updated);
     renderAll();
     projectSettingsSaving = false;
@@ -1428,16 +1438,11 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
     openProjectDialog();
     return;
   }
-  const agentId = availableProjectDefaultAgentId(project, view.agents);
-  if (!agentId) {
-    showToast(`Set an enabled default Agent for ${project.name} in Project settings.`, true);
-    return;
-  }
   creatingSessionProjectId = project.id;
   const mutation = projectViews.beginMutation(project.id);
   renderProjects();
   try {
-    const result = await window.ait.createSession({ projectId: project.id, agentId });
+    const result = await window.ait.createSession({ projectId: project.id });
     if (!projectViews.commitMutation(mutation, result.project)) {
       if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
       return;
@@ -1499,7 +1504,7 @@ function renderSettings(): void {
   disposeProviderSettings?.();
   disposeProviderSettings = undefined;
   const categories = [...new Set<SettingCategory>(["models", ...settings.schema.definitions.map((definition) => definition.category)])];
-  const categoryLabel = (category: SettingCategory): string => category === "models" ? "Providers" : category === "agents" ? "Execution" : category;
+  const categoryLabel = (category: SettingCategory): string => category === "models" ? "Providers" : category;
   $("#settings-nav").innerHTML = categories.map((category) =>
     `<button type="button" data-category="${category}" class="${category === settingsCategory ? "is-active" : ""}">${categoryLabel(category)}</button>`,
   ).join("");
@@ -1548,6 +1553,10 @@ function renderSettingControl(definition: SettingDefinition, value: unknown): st
   }
   if (definition.kind.type === "select") {
     return `<select ${common}>${definition.kind.options.map((option) => `<option value="${escapeAttribute(option)}"${value === option ? " selected" : ""}>${escapeHtml(humanize(option))}</option>`).join("")}</select>`;
+  }
+  if (definition.kind.type === "agent_reference") {
+    const agents = view?.agents.filter((agent) => agent.enabled && !agent.ownerSessionId) ?? [];
+    return `<select ${common}><option value="">${definition.id === "agents.small_agent" ? "Use Default Agent" : "Not configured"}</option>${agents.map((agent) => `<option value="${escapeAttribute(agent.id)}"${value === agent.id ? " selected" : ""}>${escapeHtml(agentLabel(agent))}</option>`).join("")}</select>`;
   }
   if (definition.kind.type === "number") {
     return `<input ${common} type="number" min="${definition.kind.min}" max="${definition.kind.max}" value="${escapeAttribute(String(value ?? ""))}"/>`;

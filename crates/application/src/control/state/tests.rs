@@ -276,9 +276,11 @@ async fn session_reference_revision_is_checked_before_decoding() {
 #[tokio::test]
 async fn new_session_replans_changed_root_and_reads_only_ancestors() {
     let store = Probe::new(vec![
-        read(1, vec![project(ROOT), agent()]),
+        read(1, vec![project(ROOT)]),
+        read(1, vec![agent()]),
         read(2, vec![record(Kind::Message, ROOT, json!(null))]),
-        read(2, vec![project(NEXT), agent()]),
+        read(2, vec![project(NEXT)]),
+        read(2, vec![agent()]),
         read(2, vec![project(NEXT), agent(), message(NEXT, None)]),
     ]);
     let loaded = store
@@ -296,12 +298,12 @@ async fn new_session_replans_changed_root_and_reads_only_ancestors() {
     };
     assert_eq!(loaded.original.messages[0].id, NEXT);
     let reads = store.reads.lock().unwrap();
-    assert!(reads[1].contains(&ControlFilter::message_ancestors(ROOT)));
-    assert!(reads[3].contains(&ControlFilter::message_ancestors(NEXT)));
+    assert!(reads[2].contains(&ControlFilter::message_ancestors(ROOT)));
+    assert!(reads[5].contains(&ControlFilter::message_ancestors(NEXT)));
     assert!(reads.iter().flatten().all(|f| matches!(
         f,
         ControlFilter::Id {
-            kind: Kind::Project | Kind::Agent | Kind::Session,
+            kind: Kind::Project | Kind::Agent | Kind::Session | Kind::Settings,
             ..
         } | ControlFilter::MessageAncestors { .. }
     )));

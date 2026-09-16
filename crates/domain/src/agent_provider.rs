@@ -45,6 +45,10 @@ pub struct AgentConfiguration {
     pub model: String,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Reserved Agent-authored instructions. Persisted and snapshotted only;
+    /// current adapters deliberately do not add this value to provider prompts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 #[cfg(test)]

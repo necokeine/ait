@@ -270,6 +270,8 @@ pub enum SettingKind {
     Path,
     /// Reference into the host credential store; never a secret value.
     CredentialReference,
+    /// Reference to an enabled named Agent in the global catalog.
+    AgentReference,
 }
 
 /// One centrally defined setting and its default.
@@ -350,13 +352,31 @@ pub fn settings_schema() -> SettingsSchema {
     definitions.extend(environment_settings());
     definitions.extend(interface_settings());
     SettingsSchema {
-        revision: 3,
+        revision: 4,
         definitions,
     }
 }
 
 fn execution_settings() -> Vec<SettingDefinition> {
     vec![
+        setting(
+            "agents.default_agent",
+            SettingCategory::Agents,
+            "Default Agent",
+            "Global fallback used whenever a Project, Session, branch, or Cron does not select an Agent.",
+            SettingKind::AgentReference,
+            json!(""),
+            false,
+        ),
+        setting(
+            "agents.small_agent",
+            SettingCategory::Agents,
+            "Small Agent",
+            "Agent used for short AI calls such as Session title and search-summary generation. Falls back to Default Agent when unset.",
+            SettingKind::AgentReference,
+            json!(""),
+            false,
+        ),
         setting(
             "agents.max_steps",
             SettingCategory::Agents,

@@ -10,6 +10,7 @@ use crate::control::execution::CommandOutcome;
 use crate::control::permissions::PermissionPolicyLimits;
 use crate::control::project::git::GitBaseline;
 use crate::control::project::worktrees::{session_worktree_path, validate_session_path_component};
+use crate::control::settings::resolve_project_agent_id;
 use crate::control::state::{
     HasAgents, HasMessages, HasProjects, HasProviderCredentials, HasProviders, HasRunCredentials,
     HasRuns, HasSessions, HasSettings,
@@ -102,7 +103,8 @@ pub(in crate::control) fn derive_session(
     {
         return Err(error(ErrorCode::InvalidProject, "project not found", false));
     }
-    require_agent(state, &input.agent_id)?;
+    let selected_agent_id = resolve_project_agent_id(state, &input.project_id, &input.agent_id)?;
+    require_agent(state, &selected_agent_id)?;
     let source_message = state
         .messages()
         .iter()
@@ -141,7 +143,7 @@ pub(in crate::control) fn derive_session(
             &input.id,
             &input.project_id,
             &source_session,
-            &input.agent_id,
+            &selected_agent_id,
             &input.at_message_id,
         );
     if can_reuse {
@@ -153,11 +155,19 @@ pub(in crate::control) fn derive_session(
             permission_limits,
         );
     }
-    fork_session(state, input, git_baseline, permission_limits)
+    fork_session(
+        state,
+        ForkSessionInput {
+            agent_id: selected_agent_id,
+            ..input
+        },
+        git_baseline,
+        permission_limits,
+    )
 }
 
 pub(in crate::control) fn create_session(
-    state: &mut (impl HasAgents + HasMessages + HasProjects + HasSessions),
+    state: &mut (impl HasAgents + HasMessages + HasProjects + HasSessions + HasSettings),
     id: String,
     project_id: String,
     agent_id: &str,
@@ -171,13 +181,14 @@ pub(in crate::control) fn create_session(
             false,
         ));
     }
+    let agent_id = resolve_project_agent_id(state, &project_id, agent_id)?;
     let project = state
         .projects()
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
     let project_workdir = project.workdir.clone();
-    require_agent(state, agent_id)?;
+    require_agent(state, &agent_id)?;
     let head = at_message_id.unwrap_or_else(|| project.root_message_id.clone());
     let target = state
         .messages()
@@ -198,7 +209,7 @@ pub(in crate::control) fn create_session(
         ));
     }
     let session_workdir = session_worktree_path(&project_workdir, &id)?;
-    let agent_id = agent_for_session(state, agent_id, &id)?;
+    let agent_id = agent_for_session(state, &agent_id, &id)?;
     let session = SessionState {
         id: id.clone(),
         project_id,
