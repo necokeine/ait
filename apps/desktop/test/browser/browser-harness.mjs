@@ -33,8 +33,8 @@ after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
 });
 
-export async function openFixture(t, configure) {
-  const context = await browser.newContext({ viewport: { width: 1480, height: 920 }, colorScheme: "dark" });
+export async function openFixture(t, configure, options = {}) {
+  const context = await browser.newContext({ viewport: { width: 1480, height: 920 }, colorScheme: "dark", ...options });
   t.after(() => context.close());
   const page = await context.newPage();
   page.setDefaultTimeout(3_000);
