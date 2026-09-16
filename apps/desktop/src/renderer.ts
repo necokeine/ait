@@ -10,10 +10,10 @@ import {
   agentDisplayName,
   agentLabel,
   availableProjectDefaultAgentId,
-  groupProjects,
   projectCreationInput,
 } from "./projects.js";
 import { PendingSessionTitles, sanitizeSessionPrompt, temporarySessionTitle } from "./session-titles.js";
+import { ProjectSidebar } from "./project-sidebar.js";
 import { ProjectViewLoader } from "./project-view-loader.js";
 import {
   composeDesktopState,
@@ -83,6 +83,7 @@ interface PendingSessionBranch extends PendingBranch {
 const pendingBranches = new Map<string, PendingSessionBranch>();
 let configuringProjectId: string | undefined;
 let renamingSessionId: string | undefined;
+let renamingSessionProjectId: string | undefined;
 let creatingSessionProjectId: string | undefined;
 let viewedTreeHeadId: string | undefined;
 let branchPickerNodeId: string | undefined;
@@ -105,6 +106,8 @@ let catalogRefreshPending = false;
 const projectViews = new ProjectViewLoader<ProjectView>((projectId) => projectId
   ? window.ait.project(projectId)
   : Promise.resolve(emptyProjectView()));
+const sidebar = new ProjectSidebar();
+let projectSettingsSaving = false;
 const pendingTitles = new PendingSessionTitles();
 const pendingStream = new BoundedRunStreamBacklog();
 const agentsPage = createAgentsPage($("#agents-page"), {
@@ -148,6 +151,7 @@ const runsPage = createRunsPage($("#runs-page"), {
 });
 
 window.ait.subscribeRunEvents((updates) => {
+  refreshSidebarForEvents(updates);
   runsPage.handleUpdates(updates);
   reconcileBackgroundBranches(updates);
   handleRunStreamFrame(updates);
@@ -189,6 +193,7 @@ async function initialize(): Promise<void> {
 
 function replaceProjectView(projectId: string | undefined, updated: ProjectView): void {
   projectViews.replace(projectId, updated);
+  if (projectId) sidebar.replace(projectId, updated.sessions);
   selectedProjectId = projectId;
   rememberProject(projectId);
   rebuildState();
@@ -199,6 +204,7 @@ function acceptLoadedProjectView(): boolean {
   if (!projectViews.view || projectId !== projectViews.selectedProjectId) return false;
   if (projectViews.view.projectId !== (projectId ?? "")) return false;
   selectedProjectId = projectId;
+  if (projectId) sidebar.replace(projectId, projectViews.view.sessions);
   rememberProject(projectId);
   rebuildState();
   return true;
@@ -301,7 +307,7 @@ function bindInteractions(): void {
   });
   $("#project-settings").addEventListener("submit", (event) => {
     event.preventDefault();
-    void saveProjectBackend();
+    void saveProjectSettings();
   });
   $("#rename-session-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -436,21 +442,24 @@ function renderProjects(): void {
     projectList.innerHTML = '<div class="project-list-empty"><p>No Projects yet</p><small>Use + above to add a local workspace.</small></div>';
     return;
   }
-  projectList.innerHTML = groupProjects(view).map(({ project, sessions }) => {
+  projectList.innerHTML = view.projects.map((project) => {
+    const expanded = sidebar.expanded.has(project.id);
+    const sessions = sidebar.sessions.get(project.id)?.toSorted((left, right) => right.updatedAt - left.updatedAt) ?? [];
     const projectSelected = project.id === selectedProjectId;
     const sessionRows = sessions.map((session) => {
       const agent = view?.agents.find((candidate) => candidate.id === session.agentId);
-      const selected = session.id === selectedSessionId;
+      const selected = projectSelected && session.id === selectedSessionId;
       const branchGenerating = session.id === pendingBranch?.sessionId;
-      return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}"${pendingBranch ? ' disabled' : ""}${branchGenerating ? ' aria-busy="true"' : ""}>
+      return `<button class="session-item${selected ? " is-selected" : ""}" type="button" aria-current="${selected ? "page" : "false"}" data-session-id="${escapeAttribute(session.id)}" data-session-project-id="${escapeAttribute(project.id)}"${pendingBranch ? ' disabled' : ""}${branchGenerating ? ' aria-busy="true"' : ""}>
         <span class="session-symbol">${session.active ? "◉" : "⑂"}</span>
         <span class="session-copy"><strong>${escapeHtml(session.title)}</strong><small>${branchGenerating ? "Generating new Session…" : `${escapeHtml(agent ? agentDisplayName(agent) : "Agent")} · ${relativeTime(session.updatedAt)}`}</small></span>
         ${session.active ? '<i class="running-dot" title="Run active"></i>' : ""}
       </button>`;
-    }).join("") || `<p class="project-sessions-empty">${projectSelected ? "No sessions" : "Select Project to load Sessions"}</p>`;
+    }).join("") || `<p class="project-sessions-empty">${sidebar.errors.has(project.id) ? "" : sidebar.sessions.has(project.id) ? "No sessions" : "Loading Sessions…"}</p>`;
     return `<section class="project-group${projectSelected ? " is-current" : ""}" data-project-group="${escapeAttribute(project.id)}">
       <div class="project-row">
-        <button class="project-select" type="button" data-project-id="${escapeAttribute(project.id)}" title="${escapeAttribute(project.workdir)}">
+        <button class="project-toggle" type="button" data-project-toggle="${escapeAttribute(project.id)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeAttribute(project.name)}" aria-expanded="${expanded}">›</button>
+        <button class="project-select" type="button" data-project-id="${escapeAttribute(project.id)}" aria-expanded="${expanded}" title="${escapeAttribute(project.workdir)}">
           <span class="project-avatar">${escapeHtml(project.name.trim().slice(0, 1).toUpperCase() || "P")}</span>
           <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.workdir)}</small></span>
         </button>
@@ -459,27 +468,32 @@ function renderProjects(): void {
           <button class="project-action" type="button" data-new-session-project-id="${escapeAttribute(project.id)}" aria-label="Create Session in ${escapeAttribute(project.name)}"${creatingSessionProjectId === project.id ? ' disabled aria-busy="true"' : ""}>${creatingSessionProjectId === project.id ? "…" : "＋"}</button>
         </div>
       </div>
-      <div class="project-sessions">${sessionRows}</div>
+      <div class="project-sessions${expanded ? "" : " is-hidden"}">${sidebar.errors.has(project.id) ? `<p class="project-sessions-empty" role="alert">${escapeHtml(sidebar.errors.get(project.id)!)} <button type="button" data-project-retry="${escapeAttribute(project.id)}">Retry</button></p>` : ""}${sessionRows}</div>
     </section>`;
   }).join("");
+  projectList.querySelectorAll<HTMLElement>("[data-project-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.projectToggle!;
+      if (sidebar.expanded.has(id)) sidebar.expanded.delete(id);
+      else { sidebar.expanded.add(id); void refreshSidebarProject(id); }
+      renderProjects();
+    });
+  });
+  projectList.querySelectorAll<HTMLElement>("[data-project-retry]").forEach((button) => {
+    button.addEventListener("click", () => void refreshSidebarProject(button.dataset.projectRetry!));
+  });
   projectList.querySelectorAll<HTMLElement>("[data-project-id]").forEach((button) => {
     button.addEventListener("click", () => { void selectProject(button.dataset.projectId); });
   });
   projectList.querySelectorAll<HTMLElement>("[data-session-id]").forEach((button) => {
     button.addEventListener("click", async () => {
       if (pendingBranch) return;
-      const session = view?.sessions.find((candidate) => candidate.id === button.dataset.sessionId);
-      if (!session) return;
-      selectedSessionId = session?.id;
-      resetTreeView();
-      const loading = ensureProjectView(session.projectId);
-      showPage("sessions");
-      if (!await loading) return;
-      renderAll();
+      await openSidebarSession(button.dataset.sessionProjectId!, button.dataset.sessionId!);
     });
     button.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       openSessionContextMenu(event, button.dataset.sessionId);
+      renamingSessionProjectId = button.dataset.sessionProjectId;
     });
   });
   projectList.querySelectorAll<HTMLButtonElement>("[data-new-session-project-id]").forEach((button) => {
@@ -1054,7 +1068,7 @@ function startBranchFromContextMenu(): void {
 }
 
 function openRenameSessionDialog(): void {
-  const session = view?.sessions.find((candidate) => candidate.id === renamingSessionId);
+  const session = sidebar.sessions.get(renamingSessionProjectId ?? "")?.find((candidate) => candidate.id === renamingSessionId);
   closeSessionContextMenu();
   if (!session) return;
   const input = $<HTMLInputElement>("#rename-session-name");
@@ -1069,7 +1083,7 @@ function closeRenameSessionDialog(): void {
 
 async function renameSession(): Promise<void> {
   if (!renamingSessionId) return;
-  const session = view?.sessions.find((candidate) => candidate.id === renamingSessionId);
+  const session = sidebar.sessions.get(renamingSessionProjectId ?? "")?.find((candidate) => candidate.id === renamingSessionId);
   if (!session) return;
   const mutation = projectViews.beginMutation(session.projectId);
   const button = $<HTMLButtonElement>("#rename-session-submit");
@@ -1080,7 +1094,10 @@ async function renameSession(): Promise<void> {
       sessionId: renamingSessionId,
       name: $<HTMLInputElement>("#rename-session-name").value,
     });
-    if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
+    sidebar.replace(session.projectId, updated.sessions);
+    if (selectedProjectId === session.projectId) {
+      if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
+    } else projectViews.discardMutation(mutation);
     closeRenameSessionDialog();
     renderAll();
     showToast("Session renamed.");
@@ -1255,29 +1272,79 @@ function openProjectSettingsDialog(projectId: string | undefined): void {
   configuringProjectId = project.id;
   const options = agentOptions();
   const backend = $<HTMLSelectElement>("#project-backend");
-  backend.innerHTML = options;
+  backend.innerHTML = `<option value="">Keep current default</option>${options}`;
   backend.disabled = options.length === 0;
-  $("#project-backend-save").toggleAttribute("disabled", options.length === 0);
-  if (project.defaultAgentId) backend.value = project.defaultAgentId;
+  $<HTMLButtonElement>("#project-backend-save").disabled = false;
+  $<HTMLInputElement>("#project-settings-name").value = project.name;
+  backend.value = availableProjectDefaultAgentId(project, view?.agents ?? []) ?? "";
   $("#project-settings-title").textContent = project.name;
   $("#project-backend-copy").textContent = `New Sessions in ${project.name} use this Agent by default.`;
   projectSettingsDialog.classList.remove("is-hidden");
 }
 
 function closeProjectSettingsDialog(): void {
+  if (projectSettingsSaving) return;
   projectSettingsDialog.classList.add("is-hidden");
   configuringProjectId = undefined;
 }
 
+async function openSidebarSession(projectId: string, sessionId?: string): Promise<void> {
+  const navigation = projectViews.beginMutation(projectId);
+  const generation = pageGeneration;
+  try {
+    const project = await window.ait.project(projectId);
+    if (generation !== pageGeneration) { projectViews.discardMutation(navigation); return; }
+    if (project.projectId !== projectId || (sessionId && !project.sessions.some((session) => session.id === sessionId))) {
+      throw new Error("This Session is no longer available.");
+    }
+    if (!projectViews.commitMutation(navigation, project) || !acceptLoadedProjectView()) return;
+    selectedSessionId = sessionId ?? project.sessions.toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
+    resetTreeView();
+    showPage("sessions");
+    renderAll();
+    scheduleViewRefresh();
+  } catch (error) {
+    if (!projectViews.discardMutation(navigation)) return;
+    sidebar.errors.set(projectId, errorMessage(error));
+    renderProjects();
+    showToast(errorMessage(error), true);
+  }
+}
+
 async function selectProject(projectId: string | undefined): Promise<void> {
   if (!view || currentPendingBranch() || !projectId || !view.projects.some((project) => project.id === projectId)) return;
-  selectedSessionId = undefined;
-  resetTreeView();
-  const loading = selectProjectView(projectId);
-  showPage("sessions");
-  if (!await loading) return;
-  selectedSessionId = view?.sessions.toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
-  renderAll();
+  if (projectId === selectedProjectId && sidebar.expanded.has(projectId)) {
+    sidebar.expanded.delete(projectId);
+    renderProjects();
+    showPage("sessions");
+    return;
+  }
+  sidebar.expanded.add(projectId);
+  renderProjects();
+  await openSidebarSession(projectId);
+}
+
+async function refreshSidebarProject(projectId: string): Promise<void> {
+  await sidebar.refresh(projectId, (id) => window.ait.projectSessions(id));
+  renderProjects();
+}
+
+function refreshSidebarForEvents(updates: RunStreamUpdate[]): void {
+  if (!view) return;
+  const affected = new Set<string>();
+  for (const update of updates) {
+    if (update.type === "resync" || (update.type === "event" && update.event.kind === "stream.reset_required")) {
+      for (const id of sidebar.expanded) affected.add(id);
+    } else if (update.type === "event") {
+      const { kind, body } = update.event;
+      if (kind.startsWith("project.")) scheduleViewRefresh(true);
+      if ((kind.startsWith("session.") || kind === "run.updated" || kind === "run.cancelled")
+        && typeof body === "object" && body !== null && "project_id" in body && typeof body.project_id === "string") {
+        if (sidebar.expanded.has(body.project_id)) affected.add(body.project_id);
+      }
+    }
+  }
+  for (const id of affected) void refreshSidebarProject(id);
 }
 
 async function chooseProjectPath(): Promise<void> {
@@ -1305,6 +1372,7 @@ async function createProject(): Promise<void> {
     resetTreeView();
     replaceProjectCatalog(result.catalog);
     replaceProjectView(result.selectedProjectId, result.project);
+    sidebar.expanded.add(result.selectedProjectId);
     $<HTMLInputElement>("#project-create-name").value = "";
     $<HTMLInputElement>("#project-create-path").value = "";
     closeProjectDialog();
@@ -1319,18 +1387,28 @@ async function createProject(): Promise<void> {
   }
 }
 
-async function saveProjectBackend(): Promise<void> {
+async function saveProjectSettings(): Promise<void> {
   const project = view?.projects.find((candidate) => candidate.id === configuringProjectId);
+  if (!project || projectSettingsSaving) return;
   const agentId = $<HTMLSelectElement>("#project-backend").value;
-  if (!project || !agentId) return;
+  const name = $<HTMLInputElement>("#project-settings-name").value.trim();
+  if (!name) { showToast("Enter a Project name.", true); return; }
+  const controls = Array.from(projectSettingsDialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"));
+  const disabled = controls.map((control) => control.disabled);
+  projectSettingsSaving = true;
+  controls.forEach((control) => { control.disabled = true; });
   try {
-    const updated = await window.ait.setProjectDefaultAgent({ projectId: project.id, agentId });
+    const updated = await window.ait.updateProject({ projectId: project.id, name, ...(agentId ? { agentId } : {}) });
     replaceProjectCatalog(updated);
     renderAll();
+    projectSettingsSaving = false;
     closeProjectSettingsDialog();
-    showToast(`${project.name} backend updated.`);
+    showToast("Project updated.");
   } catch (error) {
     showToast(errorMessage(error), true);
+  } finally {
+    projectSettingsSaving = false;
+    controls.forEach((control, index) => { control.disabled = disabled[index]!; });
   }
 }
 
@@ -1357,6 +1435,7 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
     }
     if (!acceptLoadedProjectView()) return;
     selectedSessionId = result.selectedSessionId;
+    sidebar.expanded.add(project.id);
     resetTreeView();
     showPage("sessions");
     renderAll();

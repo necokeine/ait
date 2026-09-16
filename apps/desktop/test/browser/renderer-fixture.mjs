@@ -12,6 +12,7 @@ export function installRendererFixture() {
     status, permissionProfile: { sandbox: "workspace_write", approval: "on_request" }, nativeApprovals: [],
   });
   const f = window.fixture = {
+    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false,
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
     runs: [run("run-b", "session-b")], sent: [], projectReads: [],
     catalogFailure: false, catalogDelay: false, viewFailure: false,
@@ -42,11 +43,36 @@ export function installRendererFixture() {
   };
   window.ait = {
     projects: () => f.catalogRead(),
-    agents: async () => ({ protocolVersion: 1, revision: 1, agents: [agent], providers: [{ id: "codex", name: "Codex", kind: "codex", url: null, has_secret: false, models: [{ id: config.model, name: config.model, reasoning_efforts: [] }] }] }),
+    agents: async () => ({ protocolVersion: 1, revision: 1, agents: structuredClone(f.agents), providers: [{ id: "codex", name: "Codex", kind: "codex", url: null, has_secret: false, models: [{ id: config.model, name: config.model, reasoning_efforts: [] }] }] }),
     settings: async () => ({ schema: { revision: 1, definitions: [] }, values: { "interface.theme": "dark", "permissions.sandbox": "workspace_write" }, revision: 1 }),
     project: async (projectId) => {
       f.projectReads.push(projectId);
       if (f.viewFailure) throw new Error("Project view unavailable");
+      return f.view(projectId);
+    },
+    projectSessions: async (projectId) => {
+      f.sessionReads.push(projectId);
+      if (f.sessionFailure) throw new Error("Sessions unavailable");
+      return structuredClone(f.sessions.filter((s) => s.projectId === projectId));
+    },
+    updateProject: async (input) => {
+      f.edits.push(input);
+      if (f.updateFailure) throw new Error("Project update failed");
+      const project = projects.find((p) => p.id === input.projectId);
+      project.name = input.name;
+      if (input.agentId) project.defaultAgentId = input.agentId;
+      return f.catalogRead();
+    },
+    createSession: async (input) => {
+      f.created.push(input);
+      const created = session(input.projectId, "created", "Created Session");
+      created.agentId = input.agentId;
+      f.sessions.push(created);
+      return { project: f.view(input.projectId), selectedSessionId: created.id };
+    },
+    renameSession: async ({ projectId, sessionId, name }) => {
+      const target = f.sessions.find((s) => s.projectId === projectId && s.id === sessionId);
+      target.name = name; target.title = name;
       return f.view(projectId);
     },
     activeRuns: async () => ({ unavailableProjects: [], runs: f.runs.filter((r) => ["queued", "running"].includes(r.status)).map((r) => {

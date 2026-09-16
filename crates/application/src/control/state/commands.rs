@@ -16,7 +16,7 @@ use crate::control::project::archive::{
 };
 use crate::control::project::git::{GitBaseline, PreparedProject, require_user_git_baseline};
 use crate::control::project::{
-    register_project, set_project_default_agent, validate_project_workdir,
+    register_project, set_project_default_agent, update_project, validate_project_workdir,
 };
 use crate::control::runs::cancel_run;
 
@@ -362,6 +362,23 @@ impl CommandTransaction {
                     &mut state,
                     &project_id,
                     &agent_id
+                ))
+            ),
+            (
+                Self::ProjectAgent(loaded),
+                Command::UpdateProject {
+                    project_id,
+                    name,
+                    agent_id,
+                },
+            ) => reduce!(
+                loaded,
+                state,
+                ready!(update_project(
+                    &mut state,
+                    &project_id,
+                    &name,
+                    agent_id.as_deref()
                 ))
             ),
             (Self::Agent(loaded), Command::RegisterAgent { id, name, config }) => reduce!(

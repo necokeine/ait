@@ -116,6 +116,15 @@ pub(crate) enum ProjectCommand {
         #[arg(long)]
         repo_url: Option<String>,
     },
+    /// Edit the display name and optionally the default Agent for new Sessions.
+    Update {
+        #[arg(long, value_parser = input::id)]
+        project_id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_parser = input::id)]
+        agent_id: Option<String>,
+    },
     /// Set the suggested Agent for new Sessions.
     SetDefaultAgent {
         #[arg(long, value_parser = input::id)]
@@ -613,6 +622,15 @@ impl ProjectCommand {
                 name,
                 workdir: workdir.map(|path| path.to_string_lossy().into_owned()),
                 repo_url,
+            },
+            ProjectCommand::Update {
+                project_id,
+                name,
+                agent_id,
+            } => Command::UpdateProject {
+                project_id,
+                name,
+                agent_id,
             },
             ProjectCommand::SetDefaultAgent {
                 project_id,

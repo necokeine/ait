@@ -103,6 +103,18 @@ async fn session_config_is_private_reused_and_copied_when_opening_another_sessio
             .config,
         config("high")
     );
+    let rejected_edit = service
+        .execute(Command::UpdateProject {
+            project_id: "p".into(),
+            name: "Must not change".into(),
+            agent_id: Some(custom.clone()),
+        })
+        .await;
+    assert_eq!(
+        rejected_edit.error.unwrap().code,
+        ErrorCode::InvalidAgentConfiguration
+    );
+    assert_eq!(view(&service).await, after);
     let rejected = service
         .execute(Command::SetProjectDefaultAgent {
             project_id: "p".into(),
@@ -202,4 +214,92 @@ async fn unrelated_malformed_project_record_does_not_block_session_update() {
         .await
         .unwrap();
     assert_eq!(malformed.records[0].value["not"], "a MessageView");
+}
+
+#[tokio::test]
+async fn project_edits_are_atomic_persisted_and_preserve_existing_sessions_and_provenance() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let service = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
+    let _directory = setup(&service, config("high")).await;
+    let before = view(&service).await;
+    ok(
+        &service,
+        Command::RegisterAgent {
+            id: "alternate".into(),
+            name: "Alternate".into(),
+            config: config("low"),
+        },
+    )
+    .await;
+    let result = ok(
+        &service,
+        Command::UpdateProject {
+            project_id: "p".into(),
+            name: "  中文 renamed Project  ".into(),
+            agent_id: Some("alternate".into()),
+        },
+    )
+    .await;
+    let CommandResult::Project(updated) = result else {
+        panic!("Project result")
+    };
+    assert_eq!(updated.name, "中文 renamed Project");
+    assert_eq!(updated.default_agent_id.as_deref(), Some("alternate"));
+    assert_eq!(updated.revision, before.projects[0].revision + 1);
+    assert_eq!(updated.workdir, before.projects[0].workdir);
+    assert_eq!(updated.base_commit, before.projects[0].base_commit);
+    assert_eq!(updated.repo_url, before.projects[0].repo_url);
+    assert_eq!(updated.root_message_id, before.projects[0].root_message_id);
+    let after = view(&service).await;
+    assert_eq!(after.sessions, before.sessions);
+    assert_eq!(after.messages, before.messages);
+    for (project_id, name, agent_id, code) in [
+        ("p", " ", Some("preset"), ErrorCode::InvalidProject),
+        (
+            "p",
+            "Must not be saved",
+            Some("missing"),
+            ErrorCode::AgentNotFound,
+        ),
+        (
+            "missing",
+            "Unknown Project",
+            Some("preset"),
+            ErrorCode::InvalidProject,
+        ),
+    ] {
+        let response = service
+            .execute(Command::UpdateProject {
+                project_id: project_id.into(),
+                name: name.into(),
+                agent_id: agent_id.map(str::to_owned),
+            })
+            .await;
+        assert_eq!(response.error.unwrap().code, code);
+        assert_eq!(view(&service).await, after);
+    }
+    ok(
+        &service,
+        Command::UpdateProject {
+            project_id: "p".into(),
+            name: "Name only".into(),
+            agent_id: None,
+        },
+    )
+    .await;
+    let after = view(&service).await;
+    assert_eq!(after.projects[0].name, "Name only");
+    assert_eq!(
+        after.projects[0].default_agent_id.as_deref(),
+        Some("alternate")
+    );
+    assert_eq!(after.projects[0].revision, updated.revision + 1);
+    let restarted = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store,
+    );
+    assert_eq!(view(&restarted).await, after);
 }

@@ -31,7 +31,7 @@ const daemonRuntime = desktopDaemonRuntime(app.isPackaged, process.env.AIT_DESKT
 const endpoint = daemonRuntime.endpoint;
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
-  "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
+  "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
@@ -179,6 +179,19 @@ class DaemonClient {
       await registerDesktopProject(this.post.bind(this), id, params as unknown as ProjectCreationInput);
       const [catalog, project] = await Promise.all([this.projectCatalog(), this.projectView(id)]);
       return { catalog, project, selectedProjectId: id };
+    }
+    if (method === "project.sessions") {
+      const projectId = boundedId(params.projectId, "Project");
+      const [path] = projectReadPaths(projectId);
+      const sessions = await this.get(path, "sessions") as DaemonData["sessions"];
+      for (const session of sessions) assertProject(session, projectId);
+      return sessions.map(projectSession);
+    }
+    if (method === "project.update") {
+      await this.post("/v1/project/update", "project", {
+        project_id: boundedId(params.projectId, "Project"), name: params.name, agent_id: params.agentId,
+      });
+      return this.projectCatalog();
     }
     if (method === "project.set-default-agent") {
       const projectId = boundedId(params.projectId, "Project");
@@ -548,15 +561,7 @@ class DaemonClient {
       protocolVersion: 1,
       revision: this.viewRevision,
       projectId,
-      sessions: sessions.map((session) => ({
-        id: session.id, projectId: session.project_id, name: session.name ?? "",
-        workdir: session.workdir,
-        title: sessionDisplayTitle(session), description: session.description ?? "",
-        titleGenerationStarted: session.title_generation_started ?? false,
-        currentMessageId: session.current_message_id, agentId: session.agent_id,
-        version: session.version, active: session.active_run_id !== null,
-        activeRunId: session.active_run_id, updatedAt: 0,
-      })),
+      sessions: sessions.map(projectSession),
       messages: messages.map((message) => projectMessage(message, messageAgents.get(message.id) ?? null)),
       runs: runs.map((run) => ({
         id: run.id,
@@ -671,3 +676,15 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
 app.on("before-quit", () => daemon.stop());
+
+function projectSession(session: DaemonData["sessions"][number]): import("./types.js").DesktopSession {
+  return {
+    id: session.id, projectId: session.project_id, name: session.name ?? "",
+    workdir: session.workdir,
+    title: sessionDisplayTitle(session), description: session.description ?? "",
+    titleGenerationStarted: session.title_generation_started ?? false,
+    currentMessageId: session.current_message_id, agentId: session.agent_id,
+    version: session.version, active: session.active_run_id !== null,
+    activeRunId: session.active_run_id, updatedAt: 0,
+  };
+}

@@ -274,6 +274,8 @@ export interface AitDesktopApi {
   activeRuns(): Promise<ActiveRunsCatalog>;
   agents(): Promise<AgentCatalog>;
   project(projectId: string): Promise<ProjectView>;
+  projectSessions(projectId: string): Promise<DesktopSession[]>;
+  updateProject(input: { projectId: string; name: string; agentId?: string }): Promise<ProjectCatalog>;
   saveProvider(input: ProviderInput): Promise<AgentCatalog>;
   discoverProviderModels(input: ProviderInput): Promise<ProviderModel[]>;
   refreshProviderModels(providerId: string): Promise<AgentCatalog>;

@@ -30,11 +30,18 @@ out of the production store. To reset only the development profile, quit Ait and
 `ait-development.sqlite3` plus its optional `-wal` and `-shm` companions from the `userData`
 directory. Never rename or copy that database to `ait.sqlite3`.
 
-The sidebar keeps the Project catalog visible and loads Sessions only for the selected Project. Electron
-uses separate Project catalog, global Agent/Provider catalog, and explicit Project-scoped data calls;
+The sidebar keeps the Project catalog visible. Projects start collapsed; click a Project to select and
+expand it, click it again to collapse, or use its disclosure arrow without changing the selection. Each
+Project keeps its own expansion state while switching Projects and refreshing data in the current window.
+Expanded Projects show all their Sessions through a Project-scoped summary call. Opening a Session loads
+its Project conversation. Electron uses separate Project catalog, global Agent/Provider catalog,
+and explicit Project-scoped data calls;
 it never transfers an all-Workspace view to the renderer. Use the `+` beside Projects to register a
 local directory, choose that Project's default Agent backend, and use the `+` on a Project row to create
-a Session. Starting the desktop with an empty workspace leaves this list empty until the user explicitly
+a Session. The `•••` action edits the display name and default Agent together. Renaming preserves the
+Project directory and Git identity; a new default applies to new Sessions and leaves existing Sessions
+unchanged. Failed saves retain the draft for retry. Starting the desktop with an empty workspace leaves
+this list empty until the user explicitly
 creates a Project. The built-in Codex profile uses the locally installed and authenticated
 `codex app-server`; deterministic adapters remain available to the Rust test suite without network access.
 
