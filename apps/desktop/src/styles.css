@@ -217,7 +217,7 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .operation-status { flex-shrink: 0; color: var(--accent); font-size: 10px; }
 .operation-status.status-failed, .operation-status.status-declined, .operation-status.status-denied { color: var(--danger); }
 .operation-status.status-cancelled { color: var(--text-muted); }
-.operation-status.status-inprogress, .operation-status.status-in_progress { color: #d5ad56; }
+.operation-status.status-inprogress, .operation-status.status-in_progress { color: light-dark(#80601b, #d5ad56); }
 .operation-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
 .operation-copy strong { color: var(--text-soft); font-size: 10.5px; font-weight: 590; }
 .operation-copy small { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.45; }

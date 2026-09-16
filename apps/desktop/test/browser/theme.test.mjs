@@ -34,6 +34,13 @@ function installThemeFixture() {
       parts: [{ type: "text", text: "The reply, code, and message tree should remain readable.\n\n```rust\nlet theme = \"application preference\";\n```" }],
     });
     result.sessions.forEach((session) => { session.currentMessageId = `answer-${projectId}`; });
+    result.runProgress = result.runs.filter((run) => run.status === "running").map((run) => ({
+      runId: run.id, projectId, sessionId: run.sessionId, seq: 1, status: "running", warnings: [], updatedAt: 3,
+      items: ["inProgress", "in_progress"].map((status) => ({
+        type: "operation", id: `operation-${status}`, kind: "commandExecution", status,
+        title: `Checking theme contrast (${status})`, paths: [],
+      })),
+    }));
     return result;
   };
 }
@@ -65,15 +72,18 @@ async function surfaceSnapshot(page) {
   }));
 }
 
-async function assertReadableButton(page, selector) {
-  const { color, background } = await styles(page, selector);
+async function assertReadableText(page, selector, backgroundSelector = selector) {
+  const { color } = await styles(page, selector);
+  const { background } = await styles(page, backgroundSelector);
   const luminance = (rgb) => rgb.match(/[\d.]+/g).slice(0, 3).map(Number).reduce((sum, value, i) => {
     const c = value / 255;
     return sum + (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i];
   }, 0);
   const light = Math.max(luminance(color), luminance(background));
   const dark = Math.min(luminance(color), luminance(background));
-  assert.ok((light + 0.05) / (dark + 0.05) >= 4.5, `${selector} text contrast`);
+  const ratio = (light + 0.05) / (dark + 0.05);
+  assert.ok(ratio >= 4.5, `${selector} text contrast ${ratio.toFixed(2)}:1`);
+  return ratio;
 }
 
 async function chooseTheme(page, theme) {
@@ -82,7 +92,7 @@ async function chooseTheme(page, theme) {
   await page.getByLabel("Theme", { exact: true }).selectOption(theme);
   await page.locator("#settings-save").click();
   await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme);
-  await assertReadableButton(page, "#settings-save");
+  await assertReadableText(page, "#settings-save");
   await page.locator("#settings-close").click();
 }
 
@@ -133,7 +143,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
         await page.waitForFunction((color) => getComputedStyle(document.querySelector("#composer")).borderTopColor === color, p.focus);
         assert.equal(await send.isDisabled(), false);
         assert.equal((await styles(page, "#send-button")).color, p.sendText);
-        await assertReadableButton(page, "#send-button");
+        await assertReadableText(page, "#send-button");
         await screenshot(page, `${name}-focused`);
         await page.locator("#composer-config-trigger").click();
         await page.locator("#composer-config-panel:popover-open").waitFor();
@@ -151,6 +161,26 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800
         assert.deepEqual(await surfaceSnapshot(page), snapshot, "system changes must not alter any explicit-theme surface");
       });
     }
+  }
+}
+
+for (const system of ["light", "dark"]) {
+  for (const theme of ["light", "dark"]) {
+    test(`running operation status: system ${system}, explicit ${theme} remains readable`, async (t) => {
+      const page = await openFixture(t, installThemeFixture, { colorScheme: system, viewport: { width: 1440, height: 900 } });
+      await chooseTheme(page, theme);
+      await page.locator('[data-project-id="b"]').click();
+      await page.locator(".live-run .message-disclosure > summary").click();
+      assert.equal(await page.locator(".live-run .operation-status").count(), 2);
+      for (const status of ["inprogress", "in_progress"]) {
+        const selector = `.live-run .operation-status.status-${status}`;
+        assert.equal(await page.locator(selector).isVisible(), true);
+        const ratio = await assertReadableText(page, selector, ".conversation-pane");
+        t.diagnostic(`${status}: ${ratio.toFixed(2)}:1`);
+        if (theme === "dark") assert.equal((await styles(page, selector)).color, "rgb(213, 173, 86)");
+      }
+      await screenshot(page, `running-system-${system}-app-${theme}`);
+    });
   }
 }
 
