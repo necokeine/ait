@@ -260,7 +260,7 @@ impl LocalControlService {
                 created_session_worktrees,
             )
             .await?;
-        let preparation_key = initial.preparation_key();
+        let preparation_key = initial.preparation_key(&command)?;
         for attempt in 0..4 {
             let loaded = if attempt == 0 {
                 None
@@ -269,7 +269,7 @@ impl LocalControlService {
             };
             let loaded = loaded.as_ref().unwrap_or(&initial);
             loaded.check_admission(&command)?;
-            if loaded.preparation_key() != preparation_key {
+            if loaded.preparation_key(&command)? != preparation_key {
                 return Err(error(
                     ErrorCode::RunQueueConflict,
                     "prepared command references changed; retry the request",

@@ -212,6 +212,106 @@ async fn unchanged_preparation_survives_cas_without_new_files_or_duplicate_event
     assert_eq!(events[0].kind, "project.imported");
 }
 
+#[tokio::test]
+async fn derive_rejects_a_default_agent_change_after_worktree_preparation() {
+    let target = tempfile::tempdir().unwrap();
+    let store = Probe::new(vec![]);
+    let service = LocalControlService::new(
+        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
+    let CommandResult::Project(project) = service
+        .execute(Command::RegisterProject {
+            id: "p".into(),
+            name: "Project".into(),
+            workdir: Some(target.path().display().to_string()),
+            repo_url: None,
+        })
+        .await
+        .result
+        .unwrap()
+    else {
+        panic!("Project")
+    };
+    for id in ["a", "b"] {
+        let response = service
+            .execute(Command::RegisterAgent {
+                id: id.into(),
+                name: format!("Agent {id}"),
+                config: ait_contracts::AgentConfiguration {
+                    provider_id: "builtin-codex".into(),
+                    model: "gpt-5.6-sol".into(),
+                    reasoning_effort: None,
+                    system_prompt: None,
+                },
+            })
+            .await;
+        assert!(response.ok, "{:?}", response.error);
+    }
+    let mut settings = ait_contracts::default_settings();
+    settings.0.insert("agents.default_agent".into(), json!("a"));
+    let response = service
+        .execute(Command::SaveSettings {
+            expected_revision: 1,
+            values: settings,
+        })
+        .await;
+    assert!(response.ok, "{:?}", response.error);
+    let response = service
+        .execute(Command::CreateSession {
+            id: "source".into(),
+            project_id: project.id.clone(),
+            agent_id: "a".into(),
+            at_message_id: None,
+        })
+        .await;
+    assert!(response.ok, "{:?}", response.error);
+
+    let concurrent = store.clone();
+    *store.conflict_once.lock().unwrap() = Some(Box::new(move || {
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let current = concurrent
+                        .inner
+                        .read(&[ControlFilter::id(Kind::Settings, "settings")])
+                        .await
+                        .unwrap();
+                    let mut settings = current.records.into_iter().next().unwrap();
+                    settings.value["values"]["agents.default_agent"] = json!("b");
+                    settings.value["revision"] =
+                        json!(settings.value["revision"].as_u64().unwrap() + 1);
+                    concurrent
+                        .inner
+                        .apply(current.revision, vec![ControlChange::Put(settings)], vec![])
+                        .await
+                        .unwrap();
+                });
+        })
+        .join()
+        .unwrap();
+    }));
+    let attempts = store.apply_attempts.load(Ordering::SeqCst);
+    let response = service
+        .execute(Command::DeriveSession {
+            id: "fork".into(),
+            project_id: project.id,
+            source_session_id: "source".into(),
+            agent_id: String::new(),
+            at_message_id: project.root_message_id,
+            text: "continue".into(),
+        })
+        .await;
+    let error = response.error.unwrap();
+    assert_eq!(error.code, ErrorCode::RunQueueConflict);
+    assert!(error.retryable, "{error:?}");
+    assert_eq!(store.apply_attempts.load(Ordering::SeqCst), attempts + 1);
+    assert!(!target.path().join(".ait/fork").exists());
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn cas_rechecks_canonical_target_even_when_head_is_unchanged() {

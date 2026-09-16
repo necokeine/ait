@@ -1272,11 +1272,16 @@ function openProjectSettingsDialog(projectId: string | undefined): void {
   configuringProjectId = project.id;
   const options = agentOptions();
   const backend = $<HTMLSelectElement>("#project-backend");
-  backend.innerHTML = `<option value="">Use global Default Agent</option>${options}`;
-  backend.disabled = options.length === 0;
+  const availableAgentId = availableProjectDefaultAgentId(project, view?.agents ?? []);
+  const unavailableAgent = project.defaultAgentId && !availableAgentId
+    ? `<option value="${escapeAttribute(project.defaultAgentId)}" disabled>Unavailable current Agent (kept until changed)</option>`
+    : "";
+  backend.innerHTML = `${unavailableAgent}<option value="">Use global Default Agent</option>${options}`;
+  backend.disabled = false;
   $<HTMLButtonElement>("#project-backend-save").disabled = false;
   $<HTMLInputElement>("#project-settings-name").value = project.name;
-  backend.value = availableProjectDefaultAgentId(project, view?.agents ?? []) ?? "";
+  backend.value = availableAgentId ?? project.defaultAgentId ?? "";
+  backend.dataset.initialAgentId = backend.value;
   $("#project-settings-title").textContent = project.name;
   $("#project-backend-copy").textContent = `New Sessions in ${project.name} use this Agent by default.`;
   projectSettingsDialog.classList.remove("is-hidden");
@@ -1390,7 +1395,8 @@ async function createProject(): Promise<void> {
 async function saveProjectSettings(): Promise<void> {
   const project = view?.projects.find((candidate) => candidate.id === configuringProjectId);
   if (!project || projectSettingsSaving) return;
-  const agentId = $<HTMLSelectElement>("#project-backend").value;
+  const backend = $<HTMLSelectElement>("#project-backend");
+  const agentId = backend.value;
   const name = $<HTMLInputElement>("#project-settings-name").value.trim();
   if (!name) { showToast("Enter a Project name.", true); return; }
   const controls = Array.from(projectSettingsDialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"));
@@ -1398,7 +1404,11 @@ async function saveProjectSettings(): Promise<void> {
   projectSettingsSaving = true;
   controls.forEach((control) => { control.disabled = true; });
   try {
-    const updated = await window.ait.updateProject({ projectId: project.id, name, agentId });
+    const updated = await window.ait.updateProject({
+      projectId: project.id,
+      name,
+      ...(agentId !== backend.dataset.initialAgentId ? { agentId } : {}),
+    });
     replaceProjectCatalog(updated);
     renderAll();
     projectSettingsSaving = false;
