@@ -2,7 +2,7 @@
 export function installRendererFixture() {
   const config = { provider_id: "codex", model: "fixture-model", reasoning_effort: null };
   const agent = { id: "agent", name: "Fixture Agent", model: config.model, mode: "codex", enabled: true, config, ownerSessionId: null };
-  const projects = ["a", "b"].map((id) => ({ id, name: `Project ${id.toUpperCase()}`, workdir: `/fixture/${id}`, description: "", baseCommit: "a".repeat(40), defaultAgentId: "agent" }));
+  const projects = ["a", "b"].map((id) => ({ id, name: `Project ${id.toUpperCase()}`, workdir: `/fixture/${id}`, description: "", baseCommit: "a".repeat(40), rootMessageId: `root-${id}`, defaultAgentId: "agent" }));
   const session = (projectId, id, title, activeRunId = null) => ({
     id, projectId, workdir: `/fixture/${projectId}/${id}`, name: "", title, description: "",
     titleGenerationStarted: true, currentMessageId: `message-${projectId}`, agentId: "agent", version: 1,
@@ -14,7 +14,7 @@ export function installRendererFixture() {
   const f = window.fixture = {
     projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false,
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
-    runs: [run("run-b", "session-b")], sent: [], projectReads: [],
+    runs: [run("run-b", "session-b")], sent: [], forks: [], forkFailure: false, projectReads: [],
     catalogFailure: false, catalogDelay: false, viewFailure: false,
     emit: () => {}, releaseCatalog: () => {},
     async catalogRead() {
@@ -63,13 +63,6 @@ export function installRendererFixture() {
       if (input.agentId) project.defaultAgentId = input.agentId;
       return f.catalogRead();
     },
-    createSession: async (input) => {
-      f.created.push(input);
-      const created = session(input.projectId, "created", "Created Session");
-      created.agentId = input.agentId;
-      f.sessions.push(created);
-      return { project: f.view(input.projectId), selectedSessionId: created.id };
-    },
     renameSession: async ({ projectId, sessionId, name }) => {
       const target = f.sessions.find((s) => s.projectId === projectId && s.id === sessionId);
       target.name = name; target.title = name;
@@ -86,9 +79,15 @@ export function installRendererFixture() {
       return { project: f.view(input.projectId), runId: "sent" };
     },
     fork: async (input) => {
-      f.sessions.push(session(input.projectId, "derived", "Derived Session", "run-derived"));
-      f.runs.push(run("run-derived", "derived"));
-      return { project: f.view(input.projectId), runId: "run-derived", selectedSessionId: "derived", reusedCurrentSession: false };
+      f.forks.push(input);
+      if (f.forkFailure) throw new Error("First message rejected");
+      const id = input.currentSessionId ? "derived" : "created";
+      const created = session(input.projectId, id, input.currentSessionId ? "Derived Session" : "Created Session", `run-${id}`);
+      created.agentId = input.agentId;
+      f.sessions.push(created);
+      f.runs.push(run(`run-${id}`, id));
+      if (!input.currentSessionId) f.created.push(input);
+      return { project: f.view(input.projectId), runId: `run-${id}`, selectedSessionId: id, reusedCurrentSession: false };
     },
   };
 }

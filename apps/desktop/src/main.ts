@@ -33,7 +33,7 @@ const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
-  "session.create", "session.set-agent", "session.rename", "session.set-title",
+  "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
   "run.resolve-approval", "run.resolve-tool-approval", "run.active",
 ]);
@@ -46,7 +46,7 @@ interface DaemonResponse {
 interface DaemonData {
   projects: Array<{
     id: string; name: string; workdir: string; repo_url?: string | null;
-    base_commit: string; default_agent_id?: string | null;
+    base_commit: string; root_message_id: string; default_agent_id?: string | null;
   }>;
   agents: AgentView[];
   providers: AgentProvider[];
@@ -200,15 +200,6 @@ class DaemonClient {
       });
       return this.projectCatalog();
     }
-    if (method === "session.create") {
-      const projectId = boundedId(params.projectId, "Project");
-      const id = randomUUID();
-      const session = await this.post("/v1/session/create", "session", {
-        id, project_id: projectId, agent_id: params.agentId,
-      });
-      assertProject(session, projectId);
-      return { project: await this.projectView(projectId), selectedSessionId: id };
-    }
     if (method === "session.set-agent") {
       const projectId = boundedId(params.projectId, "Project");
       const session = await this.post("/v1/session/set-agent", "session", {
@@ -279,10 +270,12 @@ class DaemonClient {
     }
 
     const id = randomUUID();
-    const currentSessionId = String(params.currentSessionId);
+    const currentSessionId = params.currentSessionId === undefined
+      ? undefined : boundedId(params.currentSessionId, "Session");
     const projectId = boundedId(params.projectId, "Project");
-    const run = await this.post("/v1/session/submit-derive", "run", {
-      id, project_id: projectId, source_session_id: currentSessionId,
+    const run = await this.post(currentSessionId ? "/v1/session/submit-derive" : "/v1/session/submit-fork", "run", {
+      id, project_id: projectId,
+      ...(currentSessionId ? { source_session_id: currentSessionId } : {}),
       agent_id: params.agentId, at_message_id: params.sourceMessageId,
       text: params.content,
     }) as { id: string; project_id: string; session_id: string | null };
@@ -517,7 +510,7 @@ class DaemonClient {
       projects: projects.map((project) => ({
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
-        defaultAgentId: project.default_agent_id ?? null,
+        rootMessageId: project.root_message_id, defaultAgentId: project.default_agent_id ?? null,
       })),
     };
   }

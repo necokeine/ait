@@ -35,17 +35,6 @@ test("offers Session rename from a right-click action menu", async () => {
   assert.match(renderer, /window\.ait\.renameSession/);
 });
 
-test("creates a Session directly with the Project default Agent", async () => {
-  const [html, renderer] = await Promise.all([
-    readFile(new URL("../src/index.html", import.meta.url), "utf8"),
-    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
-  ]);
-
-  assert.doesNotMatch(html, /id="session-dialog"/);
-  assert.match(renderer, /availableProjectDefaultAgentId\(project, view\.agents\)/);
-  assert.match(renderer, /window\.ait\.createSession\(\{ projectId: project\.id, agentId \}\)/);
-});
-
 test("uses the titlebar toggle as the persistent Session tree state", async () => {
   const [html, renderer, styles] = await Promise.all([
     readFile(new URL("../src/index.html", import.meta.url), "utf8"),
@@ -71,7 +60,7 @@ test("submits leaf and non-leaf derivation intent through the context menu", asy
   assert.match(renderer, /addEventListener\("contextmenu"[\s\S]*openMessageContextMenu/);
   assert.match(renderer, /sourceMessageId: source\.id/);
   assert.doesNotMatch(renderer, /isCurrentSessionLeaf|reuseCurrentSession:/);
-  assert.match(main, /post\("\/v1\/session\/submit-derive"[\s\S]*source_session_id: currentSessionId/);
+  assert.match(main, /post\(currentSessionId \? "\/v1\/session\/submit-derive" : "\/v1\/session\/submit-fork"[\s\S]*source_session_id: currentSessionId/);
   assert.doesNotMatch(renderer, /canBranch[\s\S]*directMessageChildren/);
 });
 

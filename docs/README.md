@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-296/adr-001-new-session-draft.md`：桌面新建 Session 先进入初始 system Message 的本地派生草稿，首条用户输入通过 Rust 原子派生接纳后才创建 Session。
+
 - `decisions/NEC-294/adr-001-project-editing-and-sidebar.md`：Project 名称与默认 Agent 原子编辑、独立展开状态及按 Project 读取的 Session 导航摘要；修订 NEC-233 的侧栏展示限制。
 
 - `decisions/NEC-290/adr-001-api-tool-approval-grants.md`：API Provider 的交互升级、固定 Run 基线与一次性 grant、持久化/worker fencing、Session 和 Cron 审批入口；使用与离线 GUI 演示见 `operations/api-tool-approvals.md`。
