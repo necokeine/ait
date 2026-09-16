@@ -82,7 +82,7 @@
                     </select><span class="select-chevron" aria-hidden="true"></span>
                   </label>
                   <button id="composer-config-trigger" class="composer-config-trigger" type="button" popovertarget="composer-config-panel" aria-haspopup="dialog" aria-expanded="false" aria-controls="composer-config-panel" disabled>
-                    <span id="composer-config-label">No Agent</span><span class="select-chevron" aria-hidden="true"></span>
+                    <span id="composer-config-label">No Agent</span><span id="composer-config-effort" class="is-hidden"></span><span class="select-chevron" aria-hidden="true"></span>
                   </button>
                   <div id="composer-config-panel" class="composer-config-panel" popover="auto" role="dialog" aria-labelledby="composer-config-title">
                     <header>
@@ -98,11 +98,11 @@
                     <label class="composer-config-field">Model
                       <span class="composer-select-wrap"><select id="composer-model"></select><span class="select-chevron" aria-hidden="true"></span></span>
                     </label>
+                    <label id="composer-reasoning-control" class="composer-config-field is-hidden">Reasoning effort
+                      <span class="composer-select-wrap"><select id="composer-reasoning" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
                     <p>Choose a saved Agent or customize this Session.</p>
                   </div>
-                  <span id="composer-reasoning-control" class="composer-select-wrap reasoning-control is-hidden">
-                    <select id="composer-reasoning" class="reasoning-select" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span>
-                  </span>
                 </div>
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>

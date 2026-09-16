@@ -251,11 +251,11 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .composer-config-trigger, .composer-select-wrap select { height: 28px; border: 1px solid var(--line); background: var(--control-bg); color: var(--text-soft); border-radius: 6px; font-size: 10px; cursor: pointer; }
 .composer-config-trigger { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 240px; padding: 0 9px; }
 .composer-config-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#composer-config-effort { flex-shrink: 0; white-space: nowrap; }
 .select-chevron { display: block; width: 6px; height: 6px; flex-shrink: 0; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: translateY(-2px) rotate(45deg); color: var(--text-muted); pointer-events: none; }
 .composer-select-wrap { display: block; position: relative; min-width: 0; }
 .composer-select-wrap select { appearance: none; width: 100%; padding: 0 25px 0 9px; text-overflow: ellipsis; }
 .composer-select-wrap > .select-chevron { position: absolute; right: 10px; top: 50%; margin-top: -2px; }
-.reasoning-control { flex-shrink: 0; }
 .composer-config-trigger:hover:not(:disabled), .composer-select-wrap select:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--text-muted); }
 .composer-config-trigger[aria-expanded="true"] { background: var(--surface-active); border-color: var(--text-muted); }
 .composer-config-trigger:disabled, .composer-select-wrap select:disabled { opacity: .5; cursor: default; }

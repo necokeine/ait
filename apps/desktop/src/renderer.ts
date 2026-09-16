@@ -516,15 +516,19 @@ function renderAgents(): void {
   const label = agent ? agentLabel(agent) : "No Agent";
   $("#agent-chip").textContent = label;
   $("#composer-config-label").textContent = label;
-  composerConfigTrigger.title = `Configure Agent: ${label}`;
   composerProvider.innerHTML = view.providers.filter((p) => providerChoices([p]).length > 0 || p.id === agent?.config.provider_id).map((p) => `<option value="${escapeAttribute(p.id)}"${p.id === agent?.config.provider_id ? " selected" : ""}>${escapeHtml(p.name)}</option>`).join("");
   const provider = view.providers.find((item) => item.id === agent?.config.provider_id);
   composerModel.innerHTML = provider?.models.map((model) => `<option value="${escapeAttribute(model.id)}"${model.id === agent?.config.model ? " selected" : ""}>${escapeHtml(model.name)}</option>`).join("") ?? "";
   const efforts = agent?.supportedReasoningEfforts ?? [];
-  composerReasoning.innerHTML = `<option value="">Reasoning: Default</option>` + efforts
-    .map((effort) => `<option value="${escapeAttribute(effort)}"${effort === agent?.config.reasoning_effort ? " selected" : ""}>Reasoning: ${escapeHtml(humanize(effort))}</option>`).join("");
+  const effortLabel = humanize(agent?.config.reasoning_effort ?? "default");
+  $("#composer-config-effort").textContent = `· ${effortLabel}`;
+  $("#composer-config-effort").classList.toggle("is-hidden", efforts.length === 0);
+  composerConfigTrigger.title = `Configure Agent: ${label}${efforts.length ? ` · Reasoning: ${effortLabel}` : ""}`;
+  composerReasoning.innerHTML = `<option value="">Provider default</option>` + efforts
+    .map((effort) => `<option value="${escapeAttribute(effort)}"${effort === agent?.config.reasoning_effort ? " selected" : ""}>${escapeHtml(humanize(effort))}</option>`).join("");
   $("#composer-reasoning-control").classList.toggle("is-hidden", efforts.length === 0);
   updateComposerState();
+  positionComposerConfig();
 }
 
 function renderConversation(): void {
@@ -1117,11 +1121,16 @@ function toggleComposerConfig(): void {
   if (composerConfigTrigger.disabled) return;
   configuringSessionId = currentSession()?.id;
   composerConfigPanel.showPopover();
+  positionComposerConfig();
+  composerAgent.focus();
+}
+
+function positionComposerConfig(): void {
+  if (!composerConfigPanel.matches(":popover-open")) return;
   const trigger = composerConfigTrigger.getBoundingClientRect();
   const panel = composerConfigPanel.getBoundingClientRect();
   composerConfigPanel.style.left = `${Math.max(16, Math.min(trigger.left, window.innerWidth - panel.width - 16))}px`;
   composerConfigPanel.style.top = `${Math.max(16, trigger.top - panel.height - 8)}px`;
-  composerAgent.focus();
 }
 
 async function changeSessionAgent(): Promise<void> {
