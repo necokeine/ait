@@ -75,6 +75,14 @@ submission in headless Chromium with an isolated preload fixture. These tests
 need no daemon or provider credentials and run in desktop CI. To use an existing
 Chromium installation locally, set `AIT_TEST_CHROMIUM` to its executable path.
 
+Theme colors share the root `color-scheme`: System follows the OS live, while
+explicit Light or Dark wins across surfaces and native controls. CSS `light-dark()`
+pairs keep both palettes together (supported by the pinned Electron runtime).
+Browser tests cover both system schemes, saved application preferences and composer
+states at 1440×900 and 1280×800. To capture that matrix, run
+`AIT_THEME_SCREENSHOTS=/path/to/output node --test test/browser/theme.test.mjs`
+after building the renderer. Settings persistence is simulated by the preload fixture.
+
 The composer Agent selector is available for every idle Session. Selecting a
 different Agent immediately rebinds that Session with a version check; an
 active Session remains locked to the Agent revision already pinned by its Run.
