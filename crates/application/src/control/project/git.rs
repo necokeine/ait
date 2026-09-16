@@ -135,7 +135,10 @@ pub(in crate::control) async fn cron_git_baseline(
                 .iter()
                 .find(|project| project.id == cron.project_id)
                 .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-            Some(PathBuf::from(&project.workdir))
+            Some(session_worktree_path(
+                &project.workdir,
+                &crate::control::cron::cron_session_id(cron_id, *scheduled_at),
+            )?)
         }
         _ => return Ok(None),
     };

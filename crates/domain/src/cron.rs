@@ -1,8 +1,24 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, DomainError, DurationMs, ErrorCode, MessageId, ProjectId, RunId, TimestampMs,
+    AgentId, DomainError, DurationMs, ErrorCode, MessageId, ProjectId, RunId, SessionId,
+    TimestampMs,
 };
+use uuid::Uuid;
+
+const CRON_SESSION_NAMESPACE: Uuid = Uuid::from_u128(0x5e6bdbd1_5e4c_4aa4_aa04_4f77190b9bc5);
+
+/// Returns the stable Session identity owned by one Cron occurrence.
+#[must_use]
+pub fn cron_session_id(cron_id: &CronId, scheduled_at: TimestampMs) -> SessionId {
+    SessionId::new(
+        Uuid::new_v5(
+            &CRON_SESSION_NAMESPACE,
+            format!("{}:{}", cron_id.as_str(), scheduled_at.get()).as_bytes(),
+        )
+        .to_string(),
+    )
+}
 
 /// Stable identity of a Cron schedule.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -122,7 +138,7 @@ impl CronFire {
 /// Recurring trigger with a fixed Project, base Message, and Agent target.
 ///
 /// A fire resolves the Agent's then-current enabled revision into the new Run;
-/// the Cron never creates or moves a Session.
+/// each new occurrence owns a new Session rooted at the fixed Message.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Cron {
     /// Cron identity.
@@ -231,6 +247,14 @@ mod tests {
         let mut cron = cron();
         cron.validate().unwrap();
         assert_eq!(cron.fire_dedupe_key(TimestampMs(123)), "cron-1:123");
+        assert_eq!(
+            cron_session_id(&cron.id, TimestampMs(123)),
+            cron_session_id(&cron.id, TimestampMs(123))
+        );
+        assert_ne!(
+            cron_session_id(&cron.id, TimestampMs(123)),
+            cron_session_id(&cron.id, TimestampMs(124))
+        );
         cron.schedule.clear();
         assert_eq!(cron.validate().unwrap_err().code, ErrorCode::InvalidCron);
     }

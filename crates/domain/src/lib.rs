@@ -36,7 +36,10 @@ pub use agent::{
 };
 pub use agent_provider::{AgentConfiguration, AgentProvider, ProviderKind, ProviderModel};
 pub use common::{CostMicros, DomainMetadata, DurationMs, TimestampMs};
-pub use cron::{Cron, CronConcurrencyPolicy, CronFire, CronFireState, CronId, CronMisfirePolicy};
+pub use cron::{
+    Cron, CronConcurrencyPolicy, CronFire, CronFireState, CronId, CronMisfirePolicy,
+    cron_session_id,
+};
 pub use error::{DomainError, ErrorCode};
 
 pub use message::{

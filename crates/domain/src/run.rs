@@ -347,11 +347,9 @@ impl Run {
 
         let trigger_valid = match self.trigger {
             RunTrigger::Manual => self.cron_id.is_none() && self.scheduled_at.is_none(),
-            RunTrigger::Cron => {
-                self.cron_id.is_some()
-                    && self.scheduled_at.is_some()
-                    && self.follow_session_id.is_none()
-            }
+            // Legacy Cron Runs can be Sessionless; current occurrences create
+            // and follow a fresh Session without invalidating durable history.
+            RunTrigger::Cron => self.cron_id.is_some() && self.scheduled_at.is_some(),
         };
         let terminal_fields_valid = if self.status.is_terminal() {
             self.ended_at.is_some()

@@ -1,6 +1,7 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
 import { createRunsPage } from "./runs-page.js";
+import { createCronsPage } from "./crons-page.js";
 import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
@@ -94,7 +95,7 @@ let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let selectingSettingPath = false;
 let settingsCategory: SettingCategory = "models";
-let activePage: "sessions" | "agents" | "runs" = "sessions";
+let activePage: "sessions" | "agents" | "runs" | "crons" = "sessions";
 let pageGeneration = 0;
 let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
@@ -149,10 +150,29 @@ const runsPage = createRunsPage($("#runs-page"), {
   },
   notify: showToast,
 });
+const cronsPage = createCronsPage($("#crons-page"), {
+  read: () => window.ait.crons(),
+  sessions: (projectId) => window.ait.projectSessions(projectId),
+  create: (input) => window.ait.createCron(input),
+  setEnabled: (cronId, enabled) => window.ait.setCronEnabled(cronId, enabled),
+  trigger: (cronId, scheduledAt) => window.ait.triggerCron(cronId, scheduledAt),
+  openRun: async (result) => {
+    replaceProjectView(result.project.projectId, result.project);
+    selectedSessionId = result.selectedSessionId;
+    sidebar.expanded.add(result.project.projectId);
+    resetTreeView();
+    renderAll();
+    showPage("sessions");
+  },
+  notify: showToast,
+});
 
 window.ait.subscribeRunEvents((updates) => {
   refreshSidebarForEvents(updates);
   runsPage.handleUpdates(updates);
+  if (updates.some((update) => update.type === "event" && update.event.kind.startsWith("cron."))) {
+    cronsPage.refresh();
+  }
   reconcileBackgroundBranches(updates);
   handleRunStreamFrame(updates);
 });
@@ -271,6 +291,7 @@ function bindInteractions(): void {
   $("#settings-trigger").addEventListener("click", openSettings);
   $("#sessions-nav").addEventListener("click", () => showPage("sessions"));
   $("#runs-nav").addEventListener("click", () => showPage("runs"));
+  $("#crons-nav").addEventListener("click", () => showPage("crons"));
   $("#agents-nav").addEventListener("click", () => showPage("agents"));
   $("#project-create-trigger").addEventListener("click", openProjectDialog);
   $("#project-close").addEventListener("click", closeProjectDialog);
@@ -364,6 +385,12 @@ function renderAll(): void {
   renderTree();
   updateComposerState();
   agentsPage.render(view);
+  cronsPage.render({
+    projects: view.projects,
+    agents: view.agents,
+    selectedProjectId,
+    selectedSessionId,
+  });
 }
 
 function renderRecoveryNotices(): void {
@@ -392,7 +419,7 @@ function renderRecoveryNotices(): void {
   });
 }
 
-function showPage(page: "sessions" | "agents" | "runs"): void {
+function showPage(page: "sessions" | "agents" | "runs" | "crons"): void {
   pageGeneration += 1;
   activePage = page;
   composerConfigPanel.hidePopover();
@@ -400,9 +427,11 @@ function showPage(page: "sessions" | "agents" | "runs"): void {
   $("#sessions-page").classList.toggle("is-hidden", page !== "sessions");
   $("#agents-page").classList.toggle("is-hidden", page !== "agents");
   $("#runs-page").classList.toggle("is-hidden", page !== "runs");
+  $("#crons-page").classList.toggle("is-hidden", page !== "crons");
   runsPage.setActive(page === "runs");
+  cronsPage.setActive(page === "crons");
   $("#tree-toggle").classList.toggle("is-hidden", page !== "sessions");
-  for (const name of ["sessions", "agents", "runs"] as const) {
+  for (const name of ["sessions", "runs", "crons", "agents"] as const) {
     const button = $(`#${name}-nav`);
     button.classList.toggle("is-active", page === name);
     if (page === name) button.setAttribute("aria-current", "page");
@@ -410,6 +439,7 @@ function showPage(page: "sessions" | "agents" | "runs"): void {
   }
   if (page === "agents") $<HTMLElement>("#agents-page-title").focus();
   if (page === "runs") $<HTMLElement>("#runs-page-title").focus();
+  if (page === "crons") $<HTMLElement>("#crons-page-title").focus();
 }
 
 function currentSession(): DesktopSession | undefined {
@@ -1678,6 +1708,7 @@ function renderCommandResults(): void {
     { id: "settings", title: "Open Settings", hint: "⌘," },
     { id: "agents", title: "Open Agents", hint: "" },
     { id: "runs", title: "Open Runs", hint: "" },
+    { id: "crons", title: "Open Crons", hint: "" },
     { id: "tree", title: "Toggle Session Tree", hint: "" },
   ].filter((command) => command.title.toLowerCase().includes(query) && (command.id !== "tree" || activePage === "sessions"));
   $("#command-results").innerHTML = [
@@ -1706,6 +1737,7 @@ function renderCommandResults(): void {
       if (button.dataset.command === "settings") openSettings();
       if (button.dataset.command === "agents") showPage("agents");
       if (button.dataset.command === "runs") showPage("runs");
+      if (button.dataset.command === "crons") showPage("crons");
       if (button.dataset.command === "tree") toggleTree();
     });
   });

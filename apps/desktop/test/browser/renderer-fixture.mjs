@@ -13,6 +13,7 @@ export function installRendererFixture() {
   });
   const f = window.fixture = {
     projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false,
+    crons: [], cronCreates: [], cronRuns: [],
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
     runs: [run("run-b", "session-b")], sent: [], projectReads: [],
     catalogFailure: false, catalogDelay: false, viewFailure: false,
@@ -54,6 +55,29 @@ export function installRendererFixture() {
       f.sessionReads.push(projectId);
       if (f.sessionFailure) throw new Error("Sessions unavailable");
       return structuredClone(f.sessions.filter((s) => s.projectId === projectId));
+    },
+    crons: async () => structuredClone(f.crons),
+    createCron: async (input) => {
+      f.cronCreates.push(input);
+      const cron = { id: `cron-${f.crons.length + 1}`, ...input, enabled: true };
+      f.crons.push(cron);
+      return structuredClone(cron);
+    },
+    setCronEnabled: async (cronId, enabled) => {
+      const cron = f.crons.find((candidate) => candidate.id === cronId);
+      cron.enabled = enabled;
+      return structuredClone(cron);
+    },
+    triggerCron: async (cronId, scheduledAt) => {
+      const cron = f.crons.find((candidate) => candidate.id === cronId);
+      f.cronRuns.push({ cronId, scheduledAt });
+      const scheduled = session(cron.projectId, `scheduled-${f.cronRuns.length}`, `${cron.name} · ${scheduledAt}`);
+      scheduled.currentMessageId = cron.baseMessageId;
+      scheduled.agentId = cron.agentId;
+      f.sessions.push(scheduled);
+      const scheduledRun = run(`cron-run-${f.cronRuns.length}`, scheduled.id, "completed");
+      f.runs.push(scheduledRun);
+      return { project: f.view(cron.projectId), runId: scheduledRun.id, selectedSessionId: scheduled.id };
     },
     updateProject: async (input) => {
       f.edits.push(input);

@@ -419,6 +419,10 @@ async fn claimed_saga_recovers_existing_run_without_duplicate() {
     assert_eq!(request.agent_id, configured.agent_id);
     assert_eq!(request.follow_session_id, None);
     assert_eq!(
+        request.create_session_id,
+        Some(ait_domain::cron_session_id(&configured.id, scheduled_at))
+    );
+    assert_eq!(
         request.dedupe_key,
         Some(configured.fire_dedupe_key(scheduled_at))
     );

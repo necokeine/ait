@@ -380,6 +380,7 @@ impl RecordAccess {
     async fn read_cron_records(
         &self,
         cron_id: &str,
+        scheduled_at: i64,
     ) -> Result<RecordTransaction<CronTriggerContext>, ApiError> {
         use ControlRecordKind as Kind;
         for _ in 0..4 {
@@ -409,15 +410,17 @@ impl RecordAccess {
                 )
             })?;
             let provider_id = agent_provider_id(agent)?;
+            let session_id = crate::control::cron::cron_session_id(cron_id, scheduled_at);
             let read = self
                 .store
                 .read(&[
                     ControlFilter::id(Kind::Cron, cron_id),
                     ControlFilter::id(Kind::Project, project_id),
-                    ControlFilter::id(Kind::Message, message_id),
+                    ControlFilter::message_ancestors(message_id),
                     ControlFilter::id(Kind::Agent, agent_id),
                     ControlFilter::id(Kind::Provider, &provider_id),
                     ControlFilter::id(Kind::ProviderCredential, provider_id),
+                    ControlFilter::id(Kind::Session, session_id),
                     ControlFilter::runs_for_cron(cron_id),
                     ControlFilter::id(Kind::Settings, "settings"),
                 ])
@@ -827,9 +830,11 @@ impl RecordAccess {
                     .await
             })
             .map(CommandTransaction::Crons),
-            Command::TriggerCron { cron_id, .. } => {
-                ({ self.read_cron_records(cron_id).await }).map(CommandTransaction::CronTrigger)
-            }
+            Command::TriggerCron {
+                cron_id,
+                scheduled_at,
+            } => ({ self.read_cron_records(cron_id, *scheduled_at).await })
+                .map(CommandTransaction::CronTrigger),
             Command::GetSettings | Command::SaveSettings { .. } | Command::ResetSettings => ({
                 self.read_records(vec![ControlFilter::id(Kind::Settings, "settings")])
                     .await

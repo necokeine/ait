@@ -17,7 +17,7 @@
 6. Agent 是“可运行的 Message 生成 API 及其版本化配置”。给定一个基准 Message，它持续产生一串后代 Message，其中可经历 ToolUse 与 ToolResult，直到本次 Run 终止。
 7. Run 是“一个基准 Message + 一个 Agent”的一次完整任务运行。交互式 Run 可绑定一个 Session，并随着新 Message 生成而推进该 Session；重试、压缩恢复和队列处理仍属于同一个 Run。
 8. Provider/SDK Adapter 是 Agent 的实现细节，不作为 MVP 的一级领域实体。
-9. Cron 固定引用一个 Message 和一个 Agent，按照时间安排反复启动 Run；它不依赖或移动 Session。
+9. Cron 固定引用一个 Message 和一个 Agent，按照时间安排反复启动 Run；每个 occurrence 创建独立 Session，不移动已有 Session。
 10. MVP 使用 SQLite 保存结构化数据和 append-only Message，以 FTS5 建索引；大附件使用工作目录外的内容寻址文件存储。
 
 ## 2. 术语表与边界
@@ -186,9 +186,9 @@ Run {
 }
 ```
 
-每个 Run 从创建起固定 `base_message_id`、`agent_id` 和 `agent_revision`，其生成的 Message 通过 `run_id` 获得完整来源。交互式 Run 的 `agent_id` 必须等于创建该 Run 时 `follow_session_id` 的 `Session.agent_id`；Session 可在两个 Run 之间重绑，但每个 Run 始终固定触发时解析到的 Agent 与 revision。Cron 或无 Session Run 直接固定其显式选择的 Agent。
+每个 Run 从创建起固定 `base_message_id`、`agent_id` 和 `agent_revision`，其生成的 Message 通过 `run_id` 获得完整来源。交互式 Run 的 `agent_id` 必须等于创建该 Run 时 `follow_session_id` 的 `Session.agent_id`；Session 可在两个 Run 之间重绑，但每个 Run 始终固定触发时解析到的 Agent 与 revision。Cron 以显式选择的 Agent 创建 occurrence Session 并由 Run 跟随；显式无 Session Run 仍直接固定其 Agent。
 
-`follow_session_id` 可空：从交互式 Session 启动时设置，并在启动事务中确认 Session 当前指针等于 `base_message_id`、写入 `active_run_id`；Cron 或后台调用可直接基于 Message 启动 Run，不必创建 Session。无 Session 的 Run 仍通过 `last_message_id` 暴露结果，用户之后可在任一产出 Message 上打开 Session。
+`follow_session_id` 可空：从交互式 Session 启动时设置，并在启动事务中确认 Session 当前指针等于 `base_message_id`、写入 `active_run_id`；Cron occurrence 在同一事务中新建 Session、写入 `active_run_id` 并让 Run 跟随。显式后台调用和旧版 Cron Run 可以没有 Session，仍通过 `last_message_id` 暴露结果，用户之后可在任一产出 Message 上打开 Session。
 
 一次底层 Agent 调用或恢复尝试不是 Run。为了审计，可在一个 Run 下记录多个 attempt：
 
@@ -260,9 +260,9 @@ Cron {
 }
 ```
 
-Cron 的 target 就是固定的 `base_message_id + agent_id`；`project_id` 用于边界校验。每次到点直接以该 Message 为基准、以该 Agent 启动一个没有 `follow_session_id` 的新 Run；不自动创建输入 Message，也不新建或移动 Session。若希望定时任务从另一个节点继续，必须显式更新 Cron 的 `base_message_id`。
+Cron 的 target 就是固定的 `base_message_id + agent_id`；`project_id` 用于边界校验。每次到点以该 Message 为基准、以该 Agent 原子创建一个新 Session 和跟随它的新 Run；不自动创建输入 Message，也不移动已有 Session。若希望定时任务从另一个节点继续，必须显式更新 Cron 的 `base_message_id`。
 
-触发时解析并快照 Agent 当前启用的 revision 到 Run。触发幂等键为 `cron_id + scheduled_at`；`concurrency_policy` 只约束同一 Cron 产生的 Run。Cron 引用的 Message 或 Agent 不可用时，本次触发失败并记录稳定错误，不静默换目标。Run 的 `last_message_id` 是本次结果引用，之后可以在该节点打开 Session。
+触发时解析并快照 Agent 当前启用的 revision 到 Run。触发幂等键为 `cron_id + scheduled_at`，同一键也确定性派生 occurrence Session ID；`concurrency_policy` 只约束同一 Cron 产生的 Run。Cron 引用的 Message 或 Agent 不可用时，本次触发失败并记录稳定错误，不静默换目标。Run 的输出推进其 occurrence Session，终态条件释放 `active_run_id`。
 
 ## 3. 关系图
 
@@ -284,7 +284,7 @@ Project 1 ───── * Message
    │          └── appends an ordered Message chain
    │
    ├──── default/binding ──── * Agent(revisioned)
-   └──── * Cron ── fixed Message + Agent + schedule ──> Run
+   └──── * Cron ── fixed Message + Agent + schedule ──> Session + Run
 
 ToolResult = role=user, message_kind=tool_result 的 Message
 Message.role = user | system | assistant
@@ -306,7 +306,7 @@ Message.role = user | system | assistant
 12. 一个 Session 同时最多有一个非终态 `active_run_id`。跟随 Session 的 Run 必须使用创建 Run 时的 `Session.agent_id`。从同一 Message 并发运行必须创建另一个 Session，或启动不跟随 Session 的 Run；空闲 Session 可显式切换 Agent。
 13. 交互式 Run 每次持久化 Message 时，必须在同一事务内推进其 `follow_session_id`；所有终态都必须条件式释放匹配的 `active_run_id`。
 14. `completed` 只能由终止屏障原子写入：无待处理工具、重试、压缩/恢复或队列项，输出已落盘，且 `queue_version` 未变化。
-15. Cron 必须固定引用 `project_id + base_message_id + agent_id`；每次触发创建不跟随 Session 的新 Run，按 dedupe key 幂等。多个触发从同一 Message 形成分支。
+15. Cron 必须固定引用 `project_id + base_message_id + agent_id`；每次触发原子创建独立 Session 与跟随它的新 Run，按 dedupe key 幂等。多个触发从同一 Message 形成分支，不移动已有 Session。
 
 ## 5. Run 状态机
 
@@ -377,7 +377,7 @@ DomainError { code, message, retryable, details?, cause_id? }
 1. **Agent 语义**：采用“统一运行 API + 可运行的版本化配置”；Provider 是适配层，不是一级领域对象；人格和工具策略属于 Agent 配置。
 2. **Session 与 Agent**：Session 是持有当前 Agent 的可移动 Message ref，也是交互式 Agent 的最小运行单元；空闲时可显式 CAS 重绑，活动 Run 期间锁定。每个 Run 使用创建时的 Agent 并固定 revision，历史不被改写。
 3. **跨 Provider 工具协议**：Message 树只包含 Message。ToolUse 是 assistant Message 内的 sub-message；ToolResult 是 user Message；Adapter 双向转换供应商协议。
-4. **Cron target**：固定 `project_id + base_message_id + agent_id`。每次到点从同一 Message 配合该 Agent 创建一个不跟随 Session 的 Run；不添加隐式输入，也不移动 Session。
+4. **Cron target**：固定 `project_id + base_message_id + agent_id`。每次到点从同一 Message 配合该 Agent 创建独立 Session 与 Run；不添加隐式输入，也不移动已有 Session。
 5. **本地持久化**：SQLite + append-only Message + mutable Session ref + FTS5；sub-message 随 Message 原子持久化；大附件采用内容寻址文件存储；schema 使用单调递增 migration，并在迁移前备份数据库。
 
 ## 9. 实现备注

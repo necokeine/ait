@@ -108,6 +108,23 @@ export interface DesktopRun {
   error?: { code?: string; message: string };
 }
 
+export interface DesktopCron {
+  id: string;
+  name: string;
+  projectId: string;
+  baseMessageId: string;
+  agentId: string;
+  schedule: string;
+  timezone: string;
+  enabled: boolean;
+}
+
+export interface CronRunSubmission {
+  project: ProjectView;
+  runId: string;
+  selectedSessionId: string;
+}
+
 export interface ToolApproval {
   grant: {
     request_id: string; run_id: string; execution_id: string; call_id: string;
@@ -275,6 +292,17 @@ export interface AitDesktopApi {
   agents(): Promise<AgentCatalog>;
   project(projectId: string): Promise<ProjectView>;
   projectSessions(projectId: string): Promise<DesktopSession[]>;
+  crons(): Promise<DesktopCron[]>;
+  createCron(input: {
+    name: string;
+    projectId: string;
+    baseMessageId: string;
+    agentId: string;
+    schedule: string;
+    timezone: string;
+  }): Promise<DesktopCron>;
+  setCronEnabled(cronId: string, enabled: boolean): Promise<DesktopCron>;
+  triggerCron(cronId: string, scheduledAt: number): Promise<CronRunSubmission>;
   updateProject(input: { projectId: string; name: string; agentId?: string }): Promise<ProjectCatalog>;
   saveProvider(input: ProviderInput): Promise<AgentCatalog>;
   discoverProviderModels(input: ProviderInput): Promise<ProviderModel[]>;
