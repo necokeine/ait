@@ -9,7 +9,7 @@ use crate::fixtures::control_fixtures::{config, ok, send, setup, view};
 use crate::fixtures::workspace_agents::BlockingAgent;
 use crate::support::ControlStoreTestExt;
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult};
+use ait_contracts::{Command, CommandResult, default_settings};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlChange, ControlFilter, ControlRecord, ControlRecordKind};
 use ait_storage_sqlite::SqliteControlStore;
@@ -297,6 +297,75 @@ async fn project_edits_are_atomic_persisted_and_preserve_existing_sessions_and_p
         Some("alternate")
     );
     assert_eq!(after.projects[0].revision, updated.revision + 1);
+    let mut invalid_settings = default_settings();
+    invalid_settings
+        .0
+        .insert("agents.default_agent".into(), serde_json::json!("missing"));
+    let rejected = service
+        .execute(Command::SaveSettings {
+            expected_revision: 1,
+            values: invalid_settings,
+        })
+        .await;
+    assert_eq!(rejected.error.unwrap().code, ErrorCode::AgentNotFound);
+
+    let mut settings = default_settings();
+    settings
+        .0
+        .insert("agents.default_agent".into(), serde_json::json!("preset"));
+    ok(
+        &service,
+        Command::SaveSettings {
+            expected_revision: 1,
+            values: settings,
+        },
+    )
+    .await;
+    let cleared = ok(
+        &service,
+        Command::UpdateProject {
+            project_id: "p".into(),
+            name: "Global default".into(),
+            agent_id: Some(String::new()),
+        },
+    )
+    .await;
+    let CommandResult::Project(cleared) = cleared else {
+        panic!("Project result")
+    };
+    assert_eq!(cleared.default_agent_id, None);
+    let created = ok(
+        &service,
+        Command::CreateSession {
+            id: "global-default".into(),
+            project_id: "p".into(),
+            agent_id: String::new(),
+            at_message_id: None,
+        },
+    )
+    .await;
+    let CommandResult::Session(created) = created else {
+        panic!("Session result")
+    };
+    assert_eq!(created.agent_id, "preset");
+    let cron = ok(
+        &service,
+        Command::CreateCron {
+            id: "global-default-cron".into(),
+            name: "Global default".into(),
+            project_id: "p".into(),
+            base_message_id: after.projects[0].root_message_id.clone(),
+            agent_id: String::new(),
+            schedule: "* * * * *".into(),
+            timezone: "UTC".into(),
+        },
+    )
+    .await;
+    let CommandResult::Cron(cron) = cron else {
+        panic!("Cron result")
+    };
+    assert_eq!(cron.agent_id, "preset");
+    let after = view(&service).await;
     let restarted = LocalControlService::new(
         Arc::new(ait_project_local::LocalProjectWorkspace::default()),
         store,

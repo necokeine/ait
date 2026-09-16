@@ -3,13 +3,24 @@ use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
 use crate::control::events::pending;
 use crate::control::model::SessionState;
-use crate::control::state::{HasMessages, HasRuns, HasSessions};
+use crate::control::settings::{
+    DEFAULT_AGENT_SETTING_ID, SMALL_AGENT_SETTING_ID, configured_agent_id,
+};
+use crate::control::state::{
+    HasAgents, HasMessages, HasProviderCredentials, HasProviders, HasRuns, HasSessions, HasSettings,
+};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
 use ait_contracts::{ApiError, CommandResult, Response};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlStoreError, PendingEvent, SessionTitleRequest};
 use uuid::Uuid;
+
+struct TitleAgent {
+    config: ait_domain::AgentConfiguration,
+    provider: ait_domain::AgentProvider,
+    credential_ref: Option<String>,
+}
 
 pub(in crate::control) fn set_session_title(
     state: &mut impl HasSessions,
@@ -118,7 +129,7 @@ impl LocalControlService {
                 false,
             ));
         }
-        let (session, workdir, should_generate, local_only) =
+        let (session, workdir, should_generate, local_only, title_agent) =
             self.begin_title_generation(session_id).await?;
         if !should_generate || local_only {
             return Ok(session);
@@ -134,6 +145,9 @@ impl LocalControlService {
             .generate(SessionTitleRequest {
                 request_id: format!("session-title-{}", Uuid::new_v4()),
                 user_prompt: bounded_prompt,
+                config: title_agent.config,
+                provider: title_agent.provider,
+                credential_ref: title_agent.credential_ref,
                 cwd: workdir.into(),
                 cancellation: tokio_util::sync::CancellationToken::new(),
             })
@@ -147,7 +161,7 @@ impl LocalControlService {
     async fn begin_title_generation(
         &self,
         session_id: &str,
-    ) -> Result<(SessionState, String, bool, bool), ApiError> {
+    ) -> Result<(SessionState, String, bool, bool, TitleAgent), ApiError> {
         for _ in 0..4 {
             let loaded = self.read_session_title_records(session_id).await?;
             let mut state = loaded.original.clone();
@@ -162,15 +176,51 @@ impl LocalControlService {
                 .iter()
                 .find(|project| project.id == session.project_id)
                 .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            let title_agent_id = configured_agent_id(state.settings(), SMALL_AGENT_SETTING_ID)
+                .or_else(|| configured_agent_id(state.settings(), DEFAULT_AGENT_SETTING_ID))
+                .unwrap_or_else(|| session.agent_id());
+            let agent = state
+                .agents()
+                .iter()
+                .find(|agent| agent.id == title_agent_id && agent.enabled)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "Small Agent is unavailable",
+                        false,
+                    )
+                })?;
+            let provider = state
+                .providers()
+                .iter()
+                .find(|provider| provider.provider.id == agent.config.provider_id)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "Small Agent provider is unavailable",
+                        false,
+                    )
+                })?;
+            let title_agent = TitleAgent {
+                config: agent.config.clone(),
+                provider: provider.provider.clone(),
+                credential_ref: state
+                    .provider_credentials()
+                    .get(&provider.provider.id)
+                    .cloned(),
+            };
             #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
-            let local_only = state.runs.iter().any(|run| {
-                run.session_id.as_deref() == Some(session_id)
-                    && run.provider.kind == AgentMode::Mock
-            });
+            let local_only = title_agent.provider.kind == AgentMode::Mock;
             #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
             let local_only = false;
             if session.title_generation_started || !session.name.trim().is_empty() {
-                return Ok((session.clone(), session.workdir, false, local_only));
+                return Ok((
+                    session.clone(),
+                    session.workdir,
+                    false,
+                    local_only,
+                    title_agent,
+                ));
             }
             if !is_first_completed_interaction(&state, &session) {
                 return Err(error(
@@ -188,7 +238,13 @@ impl LocalControlService {
             );
             match self.persist_records(&loaded, &state, vec![event]).await {
                 Ok(()) => {
-                    return Ok((session.clone(), session.workdir, true, local_only));
+                    return Ok((
+                        session.clone(),
+                        session.workdir,
+                        true,
+                        local_only,
+                        title_agent,
+                    ));
                 }
                 Err(ControlStoreError::Conflict) => {}
                 Err(error) => return Err(store_error(error)),

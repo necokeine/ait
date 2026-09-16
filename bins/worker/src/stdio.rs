@@ -176,6 +176,7 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
                         provider_id: String::new(),
                         model,
                         reasoning_effort,
+                        system_prompt: None,
                     },
                     names: tools.executable_tools(),
                     requires_verified_cost: bootstrap.limits.max_cost_micros.is_some(),

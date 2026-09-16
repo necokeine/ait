@@ -8,9 +8,10 @@ use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
 use crate::control::project::git::GitBaseline;
+use crate::control::settings::resolve_project_agent_id;
 use crate::control::state::{
-    HasAgents, HasCrons, HasMessages, HasProviderCredentials, HasProviders, HasRunCredentials,
-    HasRuns, HasSettings,
+    HasAgents, HasCrons, HasMessages, HasProjects, HasProviderCredentials, HasProviders,
+    HasRunCredentials, HasRuns, HasSettings,
 };
 use ait_contracts::{AgentMode, ApiError, CommandResult};
 use ait_domain::{
@@ -22,12 +23,12 @@ use uuid::Uuid;
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::control) fn create_cron(
-    state: &mut (impl HasAgents + HasCrons + HasMessages),
+    state: &mut (impl HasAgents + HasCrons + HasMessages + HasProjects + HasSettings),
     id: String,
     name: String,
     project_id: String,
     base_message_id: String,
-    agent_id: String,
+    agent_id: &str,
     schedule: String,
     timezone: String,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -38,6 +39,7 @@ pub(in crate::control) fn create_cron(
             false,
         ));
     }
+    let agent_id = resolve_project_agent_id(state, &project_id, agent_id)?;
     let base = state
         .messages()
         .iter()

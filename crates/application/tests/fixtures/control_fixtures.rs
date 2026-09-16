@@ -15,6 +15,7 @@ pub(crate) fn config(effort: &str) -> AgentConfiguration {
         provider_id: "builtin-codex".into(),
         model: "gpt-5.6-sol".into(),
         reasoning_effort: Some(effort.into()),
+        system_prompt: None,
     }
 }
 

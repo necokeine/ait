@@ -3,6 +3,7 @@ use crate::control::catalog::builtin_providers;
 use crate::control::catalog::migration::migrate_state;
 use crate::control::errors::{error, serialization_error};
 use crate::control::project::worktrees::session_worktree_path;
+use crate::control::settings::{DEFAULT_AGENT_SETTING_ID, SMALL_AGENT_SETTING_ID};
 use crate::control::state::transaction::{RecordContext, RecordTransaction, TypedChange};
 use ait_contracts::{ApiError, ProjectView, SessionView, default_settings};
 use ait_domain::ErrorCode;
@@ -150,6 +151,10 @@ pub(in crate::control) fn decode_records<C: RecordContext>(
     }
     if let Some(settings) = value["settings"].as_object_mut() {
         settings.retain(|id, _| !id.starts_with("models."));
+        let defaults = default_settings();
+        for id in [DEFAULT_AGENT_SETTING_ID, SMALL_AGENT_SETTING_ID] {
+            settings.entry(id).or_insert_with(|| defaults.0[id].clone());
+        }
     }
     hydrate_session_workdirs(&mut value)?;
     let original = serde_json::from_value(value).map_err(serialization_error)?;

@@ -52,6 +52,7 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         provider_id: "provider".into(),
         model: "model".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     };
     let mut cases: Vec<(&str, Vec<&str>, Command)> = Vec::new();
     macro_rules! case {
@@ -72,6 +73,7 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     case!(&["agent", "provider", "refresh-models", "--provider-id", "provider_id"] => RefreshProviderModels { provider_id: "provider_id".into() });
     case!(&["session", "list", "--project-id", "project_id"] => ListSessions { project_id: "project_id".into() });
     case!(&["session", "create", "--id", "id", "--project-id", "project_id", "--agent-id", "agent_id", "--at-message-id", "at_message_id"] => CreateSession { id: "id".into(), project_id: "project_id".into(), agent_id: "agent_id".into(), at_message_id: Some("at_message_id".into()) });
+    case!(&["session", "create", "--id", "id", "--project-id", "project_id"] => CreateSession { id: "id".into(), project_id: "project_id".into(), agent_id: String::new(), at_message_id: None });
     case!(&["session", "set-agent", "--session-id", "session_id", "--agent-id", "agent_id"] => SetSessionAgent { session_id: "session_id".into(), agent_id: "agent_id".into() });
     case!(&["session", "set-config", "--session-id", "session_id", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => SetSessionConfig { session_id: "session_id".into(), config: config.clone() });
     case!(&["session", "rename", "--session-id", "session_id", "--name", "name"] => RenameSession { session_id: "session_id".into(), name: "name".into() });

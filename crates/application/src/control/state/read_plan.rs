@@ -1,5 +1,6 @@
 //! Bounded record selection and persistence for each existing command path.
 use crate::control::errors::{error, store_error};
+use crate::control::settings::DEFAULT_AGENT_SETTING_ID;
 use crate::control::state::codec::{
     agent_provider_id, decode_records, record_value, required_string,
 };
@@ -15,6 +16,36 @@ use ait_domain::ErrorCode;
 use ait_ports::{ControlFilter, ControlRecordKind, ControlStoreError, PendingEvent};
 use serde_json::Value;
 use std::collections::HashSet;
+
+fn selected_project_agent_id(
+    read: &ait_ports::ControlRead,
+    project: &Value,
+    requested: &str,
+) -> Result<String, ApiError> {
+    if !requested.trim().is_empty() {
+        return Ok(requested.to_owned());
+    }
+    project
+        .get("default_agent_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .or_else(|| {
+            record_value(read, ControlRecordKind::Settings, "settings")
+                .and_then(|settings| settings.pointer("/values/agents.default_agent"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+        })
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            error(
+                ErrorCode::InvalidAgentConfiguration,
+                format!(
+                    "no Agent selected and global setting {DEFAULT_AGENT_SETTING_ID} is not configured"
+                ),
+                false,
+            )
+        })
+}
 
 impl RecordAccess {
     pub(in crate::control) async fn read_run_view_records(
@@ -187,21 +218,56 @@ impl RecordAccess {
         for _ in 0..4 {
             let anchor = self
                 .store
-                .read(&[ControlFilter::id(Kind::Session, session_id)])
+                .read(&[
+                    ControlFilter::id(Kind::Session, session_id),
+                    ControlFilter::id(Kind::Settings, "settings"),
+                ])
                 .await
                 .map_err(store_error)?;
             let session = record_value(&anchor, Kind::Session, session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            let settings = record_value(&anchor, Kind::Settings, "settings");
+            let agent_id = settings
+                .and_then(|settings| settings.pointer("/values/agents.small_agent"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .or_else(|| {
+                    settings
+                        .and_then(|settings| settings.pointer("/values/agents.default_agent"))
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.trim().is_empty())
+                })
+                .map_or(required_string(session, "agent_id")?, str::to_owned);
+            let agent_read = self
+                .store
+                .read(&[ControlFilter::id(Kind::Agent, &agent_id)])
+                .await
+                .map_err(store_error)?;
+            if agent_read.revision != anchor.revision {
+                continue;
+            }
+            let agent = record_value(&agent_read, Kind::Agent, &agent_id).ok_or_else(|| {
+                error(
+                    ErrorCode::InvalidAgentConfiguration,
+                    "Small Agent is unavailable",
+                    false,
+                )
+            })?;
+            let provider_id = agent_provider_id(agent)?;
             let read = self
                 .store
                 .read(&[
                     ControlFilter::id(Kind::Session, session_id),
                     ControlFilter::id(Kind::Project, required_string(session, "project_id")?),
+                    ControlFilter::id(Kind::Agent, agent_id),
+                    ControlFilter::id(Kind::Provider, &provider_id),
+                    ControlFilter::id(Kind::ProviderCredential, provider_id),
                     ControlFilter::id(
                         Kind::Message,
                         required_string(session, "current_message_id")?,
                     ),
                     ControlFilter::runs_for_session(session_id),
+                    ControlFilter::id(Kind::Settings, "settings"),
                 ])
                 .await
                 .map_err(store_error)?;
@@ -434,6 +500,48 @@ impl RecordAccess {
         ))
     }
 
+    async fn read_cron_create_records(
+        &self,
+        cron_id: &str,
+        project_id: &str,
+        base_message_id: &str,
+        agent_id: &str,
+    ) -> Result<RecordTransaction<crate::control::state::CronCreateContext>, ApiError> {
+        use ControlRecordKind as Kind;
+        for _ in 0..4 {
+            let anchors = self
+                .store
+                .read(&[
+                    ControlFilter::id(Kind::Project, project_id),
+                    ControlFilter::id(Kind::Settings, "settings"),
+                ])
+                .await
+                .map_err(store_error)?;
+            let project = record_value(&anchors, Kind::Project, project_id)
+                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            let selected_agent_id = selected_project_agent_id(&anchors, project, agent_id)?;
+            let read = self
+                .store
+                .read(&[
+                    ControlFilter::id(Kind::Cron, cron_id),
+                    ControlFilter::id(Kind::Project, project_id),
+                    ControlFilter::id(Kind::Message, base_message_id),
+                    ControlFilter::id(Kind::Agent, selected_agent_id),
+                    ControlFilter::id(Kind::Settings, "settings"),
+                ])
+                .await
+                .map_err(store_error)?;
+            if read.revision == anchors.revision {
+                return decode_records(&read);
+            }
+        }
+        Err(error(
+            ErrorCode::RunQueueConflict,
+            "concurrent Cron creation references did not settle",
+            true,
+        ))
+    }
+
     async fn read_new_session_records<C: RecordContext>(
         &self,
         session_id: &str,
@@ -448,19 +556,29 @@ impl RecordAccess {
                 .store
                 .read(&[
                     ControlFilter::id(Kind::Project, project_id),
-                    ControlFilter::id(Kind::Agent, agent_id),
+                    ControlFilter::id(Kind::Settings, "settings"),
                 ])
                 .await
                 .map_err(store_error)?;
             let project = record_value(&anchors, Kind::Project, project_id)
                 .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-            let agent = record_value(&anchors, Kind::Agent, agent_id).ok_or_else(|| {
-                error(
-                    ErrorCode::InvalidAgentConfiguration,
-                    "agent not found",
-                    false,
-                )
-            })?;
+            let selected_agent_id = selected_project_agent_id(&anchors, project, agent_id)?;
+            let agent_read = self
+                .store
+                .read(&[ControlFilter::id(Kind::Agent, &selected_agent_id)])
+                .await
+                .map_err(store_error)?;
+            if agent_read.revision != anchors.revision {
+                continue;
+            }
+            let agent =
+                record_value(&agent_read, Kind::Agent, &selected_agent_id).ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "agent not found",
+                        false,
+                    )
+                })?;
             let message_id = at_message_id.map_or_else(
                 || required_string(project, "root_message_id"),
                 |id| Ok(id.to_owned()),
@@ -468,14 +586,14 @@ impl RecordAccess {
 
             let mut filters = vec![
                 ControlFilter::id(Kind::Project, project_id),
-                ControlFilter::id(Kind::Agent, agent_id),
+                ControlFilter::id(Kind::Agent, &selected_agent_id),
                 ControlFilter::id(Kind::Session, session_id),
                 ControlFilter::message_ancestors(message_id),
+                ControlFilter::id(Kind::Settings, "settings"),
             ];
             if include_credential {
                 let provider_id = agent_provider_id(agent)?;
                 filters.push(ControlFilter::id(Kind::Provider, &provider_id));
-                filters.push(ControlFilter::id(Kind::Settings, "settings"));
                 filters.push(ControlFilter::id(Kind::ProviderCredential, provider_id));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
@@ -505,29 +623,21 @@ impl RecordAccess {
                 .read(&[
                     ControlFilter::id(Kind::Project, project_id),
                     ControlFilter::id(Kind::Session, source_session_id),
-                    ControlFilter::id(Kind::Agent, agent_id),
+                    ControlFilter::id(Kind::Settings, "settings"),
                 ])
                 .await
                 .map_err(store_error)?;
-            record_value(&anchors, Kind::Project, project_id)
+            let project = record_value(&anchors, Kind::Project, project_id)
                 .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+            let selected_agent_id = selected_project_agent_id(&anchors, project, agent_id)?;
             let source_session = record_value(&anchors, Kind::Session, source_session_id)
                 .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
             let source_agent_id = required_string(source_session, "agent_id")?;
-            let requested_agent =
-                record_value(&anchors, Kind::Agent, agent_id).ok_or_else(|| {
-                    error(
-                        ErrorCode::InvalidAgentConfiguration,
-                        "agent not found",
-                        false,
-                    )
-                })?;
-
             let agent_records = self
                 .store
                 .read(&[
                     ControlFilter::id(Kind::Agent, &source_agent_id),
-                    ControlFilter::id(Kind::Agent, agent_id),
+                    ControlFilter::id(Kind::Agent, &selected_agent_id),
                 ])
                 .await
                 .map_err(store_error)?;
@@ -542,6 +652,14 @@ impl RecordAccess {
                         false,
                     )
                 })?;
+            let requested_agent = record_value(&agent_records, Kind::Agent, &selected_agent_id)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "agent not found",
+                        false,
+                    )
+                })?;
             let provider_ids = [
                 agent_provider_id(requested_agent)?,
                 agent_provider_id(source_agent)?,
@@ -552,7 +670,7 @@ impl RecordAccess {
                 ControlFilter::id(Kind::Session, session_id),
                 ControlFilter::message_ancestors(at_message_id),
                 ControlFilter::message_children(at_message_id),
-                ControlFilter::id(Kind::Agent, agent_id),
+                ControlFilter::id(Kind::Agent, &selected_agent_id),
                 ControlFilter::id(Kind::Agent, source_agent_id),
                 ControlFilter::id(Kind::Settings, "settings"),
             ];
@@ -701,7 +819,7 @@ impl RecordAccess {
                 ..
             } => {
                 let mut filters = vec![ControlFilter::id(Kind::Project, project_id)];
-                if let Some(agent_id) = agent_id {
+                if let Some(agent_id) = agent_id.as_ref().filter(|id| !id.trim().is_empty()) {
                     filters.push(ControlFilter::id(Kind::Agent, agent_id));
                 }
                 self.read_records(filters)
@@ -721,19 +839,14 @@ impl RecordAccess {
             .map(CommandTransaction::ProjectAgent),
             Command::CreateCron {
                 id,
-                project_id: _,
+                project_id,
                 base_message_id,
                 agent_id,
                 ..
-            } => ({
-                self.read_records(vec![
-                    ControlFilter::id(Kind::Cron, id),
-                    ControlFilter::id(Kind::Message, base_message_id),
-                    ControlFilter::id(Kind::Agent, agent_id),
-                ])
+            } => self
+                .read_cron_create_records(id, project_id, base_message_id, agent_id)
                 .await
-            })
-            .map(CommandTransaction::CronCreate),
+                .map(CommandTransaction::CronCreate),
             Command::ExportProject { project_id } => {
                 (self.read_export_records(project_id).await).map(CommandTransaction::Archive)
             }
@@ -830,7 +943,15 @@ impl RecordAccess {
             Command::TriggerCron { cron_id, .. } => {
                 ({ self.read_cron_records(cron_id).await }).map(CommandTransaction::CronTrigger)
             }
-            Command::GetSettings | Command::SaveSettings { .. } | Command::ResetSettings => ({
+            Command::SaveSettings { .. } => ({
+                self.read_records(vec![
+                    ControlFilter::all(Kind::Agent),
+                    ControlFilter::id(Kind::Settings, "settings"),
+                ])
+                .await
+            })
+            .map(CommandTransaction::Settings),
+            Command::GetSettings | Command::ResetSettings => ({
                 self.read_records(vec![ControlFilter::id(Kind::Settings, "settings")])
                     .await
             })

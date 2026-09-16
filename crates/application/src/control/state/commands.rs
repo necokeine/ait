@@ -180,13 +180,18 @@ impl CommandTransaction {
                 };
                 let project =
                     crate::control::project::require_project_view(&tx.original, project_id)?;
+                let agent_id = crate::control::settings::resolve_project_agent_id(
+                    &tx.original,
+                    project_id,
+                    agent_id,
+                )?;
                 crate::control::project::worktrees::prepare_new_session_worktree(
                     workspace,
                     lease,
                     &tx.original,
                     id,
                     project_id,
-                    agent_id,
+                    &agent_id,
                     at_message_id.as_deref().unwrap_or(&project.root_message_id),
                     created,
                 )
@@ -545,7 +550,7 @@ impl CommandTransaction {
                     name,
                     project_id,
                     base_message_id,
-                    agent_id,
+                    &agent_id,
                     schedule,
                     timezone,
                 ))

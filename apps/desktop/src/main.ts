@@ -108,7 +108,11 @@ class DaemonClient {
     if (method === "settings.save") return projectSettings(await this.post("/v1/settings/save", "settings", {
       expected_revision: params.expectedRevision, values: params.values,
     }));
-    if (method === "settings.reset") return projectSettings(await this.post("/v1/settings/reset", "settings", {}));
+    if (method === "settings.reset") {
+      await this.post("/v1/settings/reset", "settings", {});
+      await this.ensureBuiltInAgents();
+      return projectSettings(await this.get("/v1/settings", "settings"));
+    }
     if (method === "provider.save") {
       await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
       return this.agentCatalog();
@@ -362,9 +366,10 @@ class DaemonClient {
   }
 
   private async ensureBuiltInAgents(): Promise<void> {
-    const [projects, agents] = await Promise.all([
+    const [projects, agents, settings] = await Promise.all([
       this.get("/v1/project/list", "projects") as Promise<DaemonData["projects"]>,
       this.get("/v1/agent/list", "agents") as Promise<DaemonData["agents"]>,
+      this.get("/v1/settings", "settings") as Promise<SettingsResponse>,
     ]);
     if (!agents.some((agent) => agent.id === builtInCodexAgentId)) {
       await this.post("/v1/agent/register", "agent", {
@@ -378,6 +383,23 @@ class DaemonClient {
       .map((project) => this.post("/v1/project/set-default-agent", "project", {
         project_id: project.id, agent_id: builtInCodexAgentId,
       })));
+    const values = { ...settings.values };
+    let changed = false;
+    const hadDefault = typeof values["agents.default_agent"] === "string" && values["agents.default_agent"] !== "";
+    if (!hadDefault) {
+      values["agents.default_agent"] = builtInCodexAgentId;
+      changed = true;
+    }
+    if (!hadDefault && !(typeof values["agents.small_agent"] === "string" && values["agents.small_agent"] !== "")) {
+      values["agents.small_agent"] = builtInCodexAgentId;
+      changed = true;
+    }
+    if (changed) {
+      await this.post("/v1/settings/save", "settings", {
+        expected_revision: settings.revision,
+        values,
+      });
+    }
   }
 
   private async isReady(): Promise<boolean> {

@@ -37,6 +37,11 @@ impl ProjectDefaults {
         self.default_agent_id = Some(agent);
         self.mark_updated();
     }
+    /// Clears the Project override so future Sessions use the global default.
+    pub fn clear(&mut self) {
+        self.default_agent_id = None;
+        self.mark_updated();
+    }
     /// Advances the catalog revision after Project metadata changes.
     pub fn mark_updated(&mut self) {
         self.revision = self.revision.saturating_add(1);

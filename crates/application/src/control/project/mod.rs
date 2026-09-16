@@ -23,7 +23,7 @@ pub(in crate::control) fn update_project(
     let name = name.trim();
     ait_domain::project_policy::validate_registration(project_id, name, &mut None)
         .map_err(|e| error(e.code, e.message, e.retryable))?;
-    if let Some(agent_id) = agent_id {
+    if let Some(agent_id) = agent_id.filter(|id| !id.trim().is_empty()) {
         require_named_agent(state, agent_id)?;
     }
     let project = state
@@ -33,7 +33,11 @@ pub(in crate::control) fn update_project(
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
     name.clone_into(&mut project.name);
     if let Some(agent_id) = agent_id {
-        project.defaults.select(ait_domain::AgentId::new(agent_id));
+        if agent_id.trim().is_empty() {
+            project.defaults.clear();
+        } else {
+            project.defaults.select(ait_domain::AgentId::new(agent_id));
+        }
     } else {
         project.defaults.mark_updated();
     }
