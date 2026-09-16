@@ -170,6 +170,15 @@ async fn first_input_atomically_forks_from_the_initial_system_message_without_a_
         .find(|message| message.id == fixture.project.root_message_id)
         .unwrap();
     assert_eq!(root, &initial.messages[0]);
+
+    // A transport retry keeps the candidate Session ID. Even after the first
+    // Run has finished, replay cannot create another Session, input, or Run.
+    let replay = fixture.service.execute(fork("First input")).await;
+    assert!(!replay.ok);
+    let after_replay = workspace(&fixture.service).await;
+    assert_eq!(after_replay.sessions, accepted.sessions);
+    assert_eq!(after_replay.runs, accepted.runs);
+    assert_eq!(after_replay.messages, accepted.messages);
 }
 
 async fn execute(service: &LocalControlService, command: Command) -> CommandResult {

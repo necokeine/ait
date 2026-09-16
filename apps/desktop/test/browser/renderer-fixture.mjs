@@ -14,7 +14,8 @@ export function installRendererFixture() {
   const f = window.fixture = {
     projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false,
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
-    runs: [run("run-b", "session-b")], sent: [], forks: [], forkFailure: false, projectReads: [],
+    runs: [run("run-b", "session-b")], sent: [], forks: [], forkAttempts: [], forkFailure: false, projectReads: [],
+    createdMessages: [],
     catalogFailure: false, catalogDelay: false, viewFailure: false,
     emit: () => {}, releaseCatalog: () => {},
     async catalogRead() {
@@ -28,6 +29,7 @@ export function installRendererFixture() {
         messages: [
           { id: `root-${projectId}`, projectId, parentMessageId: null, role: "system", kind: "standard", parts: [{ type: "text", text: "System" }], createdAt: 1 },
           { id: `message-${projectId}`, projectId, parentMessageId: `root-${projectId}`, role: "user", kind: "standard", parts: [{ type: "text", text: `Message ${projectId}` }], createdAt: 2 },
+          ...structuredClone(f.createdMessages.filter((m) => m.projectId === projectId)),
         ],
         runs: structuredClone(f.runs.filter((r) => f.sessions.some((s) => s.id === r.sessionId && s.projectId === projectId))), runProgress: [], recoveryNotices: [],
       };
@@ -79,15 +81,23 @@ export function installRendererFixture() {
       return { project: f.view(input.projectId), runId: "sent" };
     },
     fork: async (input) => {
-      f.forks.push(input);
-      if (f.forkFailure) throw new Error("First message rejected");
+      f.forkAttempts.push(input);
+      const { submissionId, recover, ...intent } = input;
+      f.forks.push(intent);
+      if (f.forkFailure) return { status: "rejected", message: "First message rejected" };
       const id = input.currentSessionId ? "derived" : "created";
       const created = session(input.projectId, id, input.currentSessionId ? "Derived Session" : "Created Session", `run-${id}`);
       created.agentId = input.agentId;
       f.sessions.push(created);
       f.runs.push(run(`run-${id}`, id));
-      if (!input.currentSessionId) f.created.push(input);
-      return { project: f.view(input.projectId), runId: `run-${id}`, selectedSessionId: id, reusedCurrentSession: false };
+      if (!input.currentSessionId) {
+        f.created.push(intent);
+        created.currentMessageId = `message-${id}`;
+        f.createdMessages.push({ id: created.currentMessageId, projectId: input.projectId,
+          parentMessageId: input.sourceMessageId, role: "user", kind: "standard",
+          parts: [{ type: "text", text: input.content }], createdAt: 3 });
+      }
+      return { status: "accepted", runId: `run-${id}`, selectedSessionId: id, reusedCurrentSession: false };
     },
   };
 }

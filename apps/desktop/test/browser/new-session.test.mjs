@@ -140,3 +140,165 @@ test("late loading of a new draft cannot override subsequent navigation", async 
   assert.equal(await page.locator("#session-title").textContent(), "Session A");
   assert.deepEqual(await page.evaluate(() => window.fixture.forks), []);
 });
+
+test("a concurrent rename cannot make an accepted draft submit again", async (t) => {
+  const page = await openFixture(t, () => {
+    const fork = window.ait.fork;
+    window.ait.fork = async (input) => {
+      await new Promise((resolve) => { window.fixture.releaseFork = resolve; });
+      return fork(input);
+    };
+  });
+  await openDraft(page);
+  await page.locator("#message-input").fill("Accept once");
+  await page.locator("#send-button").click();
+  await page.locator('[data-session-id="session-a"]').click({ button: "right" });
+  await page.locator("#session-rename-action").click();
+  await page.locator("#rename-session-name").fill("Renamed A");
+  await page.locator("#rename-session-submit").click();
+  await page.locator("#rename-session-dialog.is-hidden").waitFor({ state: "attached" });
+  await page.evaluate(() => window.fixture.releaseFork());
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
+  await page.evaluate(() => document.querySelector("#composer").dispatchEvent(new Event("submit", { cancelable: true })));
+  assert.equal(await page.evaluate(() => window.fixture.created.length), 1);
+  assert.equal(await page.locator("#message-input").inputValue(), "");
+});
+
+test("failed navigation during acceptance cannot unlock the consumed draft", async (t) => {
+  const page = await openFixture(t, () => {
+    const fork = window.ait.fork;
+    window.ait.fork = async (input) => {
+      await new Promise((resolve) => { window.fixture.releaseFork = resolve; });
+      return fork(input);
+    };
+    const project = window.ait.project;
+    window.ait.project = async (id) => {
+      if (id === "b") throw new Error("Navigation failed");
+      return project(id);
+    };
+  });
+  await openDraft(page);
+  await page.locator("#message-input").fill("Accept once");
+  await page.locator("#send-button").click();
+  await page.locator('[data-project-id="b"]').click();
+  await page.locator("#toast.is-error").waitFor();
+  await page.evaluate(() => window.fixture.releaseFork());
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
+  assert.equal(await page.evaluate(() => window.fixture.created.length), 1);
+  assert.equal(await page.locator("#send-button").isDisabled(), true);
+});
+
+test("accepted first input retries only the view after reads fail", async (t) => {
+  const page = await openFixture(t, () => {
+    const fork = window.ait.fork;
+    window.ait.fork = async (input) => {
+      const receipt = await fork(input);
+      window.fixture.viewFailure = true;
+      return receipt;
+    };
+  });
+  await openDraft(page);
+  await page.locator("#message-input").fill("Persist exactly once");
+  await page.locator("#send-button").click();
+  await page.locator("#toast.is-error").waitFor();
+  assert.equal(await page.locator("#message-input").isDisabled(), true);
+  assert.equal(await page.locator("#send-button").getAttribute("aria-label"), "Open Session");
+  // Even another failed recovery must not call the creation endpoint again.
+  await page.locator("#send-button").click();
+  assert.equal(await page.evaluate(() => window.fixture.forks.length), 1);
+  await page.evaluate(() => { window.fixture.viewFailure = false; });
+  await page.locator("#send-button").click();
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
+  assert.deepEqual(await page.evaluate(() => ({
+    sessions: window.fixture.created.length,
+    messages: window.fixture.createdMessages.length,
+    runs: window.fixture.runs.filter((run) => run.sessionId === "created").length,
+    posts: window.fixture.forks.length,
+  })), { sessions: 1, messages: 1, runs: 1, posts: 1 });
+  assert.equal(await page.locator("#message-input").inputValue(), "");
+});
+
+test("an unknown receipt freezes the original intent and recovers using the same identifier", async (t) => {
+  const page = await openFixture(t, () => {
+    const fork = window.ait.fork;
+    window.fixture.attempts = [];
+    window.ait.fork = async (input) => {
+      window.fixture.attempts.push(input);
+      if (window.fixture.receipt) return window.fixture.receipt;
+      window.fixture.receipt = await fork(input);
+      throw new Error("IPC response lost");
+    };
+  });
+  await openDraft(page);
+  await page.locator("#message-input").fill("Original input");
+  await page.locator("#send-button").click();
+  await page.locator("#toast.is-error").waitFor();
+  assert.equal(await page.locator("#message-input").isDisabled(), true);
+  assert.equal(await page.locator("#composer-agent").isDisabled(), true);
+  assert.equal(await page.locator("#send-button").getAttribute("aria-label"), "Check submission");
+  await page.locator("#send-button").click();
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
+  const attempts = await page.evaluate(() => window.fixture.attempts);
+  assert.ok(attempts[0].submissionId);
+  assert.deepEqual(attempts[1], { ...attempts[0], recover: true });
+  assert.equal(await page.evaluate(() => window.fixture.created.length), 1);
+  assert.equal(await page.evaluate(() => window.fixture.createdMessages.length), 1);
+});
+
+test("acceptance cannot cancel a later navigation that is still loading", async (t) => {
+  const page = await openFixture(t, () => {
+    const fork = window.ait.fork;
+    window.ait.fork = async (input) => {
+      await new Promise((resolve) => { window.fixture.releaseFork = resolve; });
+      return fork(input);
+    };
+    const project = window.ait.project;
+    window.ait.project = async (id) => {
+      if (id === "b") await new Promise((resolve) => { window.fixture.releaseNavigation = resolve; });
+      return project(id);
+    };
+  });
+  await openDraft(page);
+  await page.locator("#message-input").fill("One accepted input");
+  await page.locator("#send-button").click();
+  await page.locator('[data-project-id="b"]').click();
+  await page.waitForFunction(() => typeof window.fixture.releaseNavigation === "function");
+  await page.evaluate(() => window.fixture.releaseFork());
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
+  await page.evaluate(() => window.fixture.releaseNavigation());
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Session B");
+  assert.equal(await page.evaluate(() => window.fixture.created.length), 1);
+});
+
+test("a quickly completed first Run cannot let automatic titles cancel later navigation", async (t) => {
+  const page = await openFixture(t, () => {
+    const fork = window.ait.fork;
+    window.ait.fork = async (input) => {
+      await new Promise((resolve) => { window.fixture.releaseFork = resolve; });
+      const receipt = await fork(input);
+      window.fixture.finish(receipt.runId, "completed", false);
+      window.fixture.sessions.find((s) => s.id === receipt.selectedSessionId).titleGenerationStarted = false;
+      return receipt;
+    };
+    const project = window.ait.project;
+    window.ait.project = async (id) => {
+      if (id === "b") await new Promise((resolve) => { window.fixture.releaseNavigation = resolve; });
+      return project(id);
+    };
+    window.ait.setSessionTitle = async ({ projectId }) => window.fixture.view(projectId);
+    window.ait.generateSessionTitle = async ({ projectId }) => {
+      window.fixture.titleGenerated = true;
+      return window.fixture.view(projectId);
+    };
+  });
+  await openDraft(page);
+  await page.locator("#message-input").fill("Fast first Run");
+  await page.locator("#send-button").click();
+  await page.locator('[data-project-id="b"]').click();
+  await page.waitForFunction(() => typeof window.fixture.releaseNavigation === "function");
+  await page.evaluate(() => window.fixture.releaseFork());
+  await page.waitForFunction(() => window.fixture.titleGenerated);
+  await page.evaluate(() => window.fixture.releaseNavigation());
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Session B");
+  assert.equal(await page.evaluate(() => window.fixture.created.length), 1);
+});

@@ -167,6 +167,15 @@ export interface RunSubmission {
   runId: string;
 }
 
+export interface ForkReceipt {
+  status: "accepted";
+  selectedSessionId: string;
+  runId: string;
+  reusedCurrentSession: boolean;
+}
+
+export type ForkSubmission = ForkReceipt | { status: "rejected" | "unknown"; message: string };
+
 /** Workspace activity summary; excludes conversation content and execution payloads. */
 export interface ActiveRunSummary {
   id: string;
@@ -337,10 +346,9 @@ export interface AitDesktopApi {
     sourceMessageId: string;
     agentId: string;
     content: string;
-  }): Promise<RunSubmission & {
-    selectedSessionId: string;
-    reusedCurrentSession: boolean;
-  }>;
+    submissionId?: string;
+    recover?: boolean;
+  }): Promise<ForkSubmission>;
 }
 
 declare global {

@@ -2,7 +2,7 @@
 
 ## 当前基线
 
-- `decisions/NEC-296/adr-001-new-session-draft.md`：桌面新建 Session 先进入初始 system Message 的本地派生草稿，首条用户输入通过 Rust 原子派生接纳后才创建 Session。
+- `decisions/NEC-296/adr-001-new-session-draft.md`：桌面新建 Session 先进入初始 system Message 的本地派生草稿，首条输入原子接纳后才创建 Session；接纳回执独立于视图读取，结果不明时以稳定 ID 恢复。
 
 - `decisions/NEC-294/adr-001-project-editing-and-sidebar.md`：Project 名称与默认 Agent 原子编辑、独立展开状态及按 Project 读取的 Session 导航摘要；修订 NEC-233 的侧栏展示限制。
 

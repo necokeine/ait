@@ -44,6 +44,10 @@ Only sending the first nonempty message creates the Session and starts its Run,
 through the daemon's atomic fork submission. Reopening, cancelling or leaving an
 unsent draft adds no Session or worktree. A rejected submission keeps the input for
 retry. The accepted Session opens immediately so its Run progress is visible.
+If loading the accepted Session fails, the retry control opens that same Session
+without submitting again. If acceptance is unknown, the draft keeps its original
+input and identifier while the retry control checks the submission; inputs stay
+locked until the result is known. This recovery state lasts for the current draft.
 Provider, model and reasoning edits remain Session configuration actions, available
 once the Session is idle; a draft uses the selected preset's configuration.
 The `•••` action edits the display name and default Agent together. Renaming preserves the
