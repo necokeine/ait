@@ -41,6 +41,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
     Router::new()
         .route("/v1/project/register", post(register_project))
         .route("/v1/project/list", get(list_projects))
+        .route("/v1/project/update", post(update_project))
         .route(
             "/v1/project/set-default-agent",
             post(set_project_default_agent),
@@ -122,6 +123,30 @@ async fn register_project(
             name: request.name,
             workdir: request.workdir,
             repo_url: request.repo_url,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateProjectRequest {
+    project_id: String,
+    name: String,
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+async fn update_project(
+    State(state): State<ApiState>,
+    Json(request): Json<UpdateProjectRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::UpdateProject {
+            project_id: request.project_id,
+            name: request.name,
+            agent_id: request.agent_id,
         },
     )
     .await
@@ -919,7 +944,8 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::ResolveNativeApproval { run_id, .. } => {
             correlation.run_id = Some(run_id.clone());
         }
-        Command::SetProjectDefaultAgent { project_id, .. }
+        Command::UpdateProject { project_id, .. }
+        | Command::SetProjectDefaultAgent { project_id, .. }
         | Command::CreateCron { project_id, .. }
         | Command::ExportProject { project_id }
         | Command::ListMessages { project_id }
@@ -1000,6 +1026,7 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
 const fn operation_name(command: &Command) -> &'static str {
     match command {
         Command::RegisterProject { .. } => "register_project",
+        Command::UpdateProject { .. } => "update_project",
         Command::SetProjectDefaultAgent { .. } => "set_project_default_agent",
         Command::RegisterAgent { .. } => "register_agent",
         Command::UpdateAgent { .. } => "update_agent",

@@ -44,6 +44,26 @@ async fn entity_operations_and_cursor_event_replay_share_the_application_service
     let response = app
         .clone()
         .oneshot(
+            Request::post("/v1/project/update")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"project_id":"project-http","name":"Renamed HTTP"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let updated: Response = serde_json::from_slice(&body).unwrap();
+    assert!(updated.ok, "{:?}", updated.error);
+    let Some(ait_contracts::CommandResult::Project(project)) = updated.result else {
+        panic!("Project result")
+    };
+    assert_eq!(project.name, "Renamed HTTP");
+
+    let response = app
+        .clone()
+        .oneshot(
             Request::get("/v1/event/list?after=0")
                 .body(Body::empty())
                 .unwrap(),
@@ -81,6 +101,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
     let post_routes = [
         "/v1/project/register",
         "/v1/project/set-default-agent",
+        "/v1/project/update",
         "/v1/project/export",
         "/v1/project/import",
         "/v1/agent/register",

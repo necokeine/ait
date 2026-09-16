@@ -31,6 +31,13 @@ pub enum Command {
         #[serde(default)]
         repo_url: Option<String>,
     },
+    UpdateProject {
+        project_id: String,
+        name: String,
+        /// Omitted/null preserves the current default Agent.
+        #[serde(default)]
+        agent_id: Option<String>,
+    },
     SetProjectDefaultAgent {
         project_id: String,
         agent_id: String,

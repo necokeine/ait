@@ -695,6 +695,19 @@ impl RecordAccess {
                 .await
             })
             .map(CommandTransaction::Provider),
+            Command::UpdateProject {
+                project_id,
+                agent_id,
+                ..
+            } => {
+                let mut filters = vec![ControlFilter::id(Kind::Project, project_id)];
+                if let Some(agent_id) = agent_id {
+                    filters.push(ControlFilter::id(Kind::Agent, agent_id));
+                }
+                self.read_records(filters)
+                    .await
+                    .map(CommandTransaction::ProjectAgent)
+            }
             Command::SetProjectDefaultAgent {
                 project_id,
                 agent_id,

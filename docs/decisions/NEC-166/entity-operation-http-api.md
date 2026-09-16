@@ -14,6 +14,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | Method | Path | Application command |
 | --- | --- | --- |
 | `POST` | `/v1/project/register` | `RegisterProject` |
+| `POST` | `/v1/project/update` | `UpdateProject`：`project_id`、`name`、可选 `agent_id`；名称和默认 Agent 原子保存 |
 | `POST` | `/v1/project/set-default-agent` | `SetProjectDefaultAgent` |
 | `POST` | `/v1/project/export` | `ExportProject` |
 | `POST` | `/v1/project/import` | `ImportProject` |

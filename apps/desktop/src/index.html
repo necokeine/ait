@@ -179,13 +179,15 @@
             <button id="project-settings-close" class="icon-button" type="button" aria-label="Close Project settings">×</button>
           </header>
           <div class="action-form">
+            <label class="field-label" for="project-settings-name">Name</label>
+            <input id="project-settings-name" type="text" autocomplete="off" required />
             <p id="project-backend-copy" class="field-help">Choose the default Agent for new Sessions.</p>
-            <label class="field-label" for="project-backend">Backend</label>
+            <label class="field-label" for="project-backend">Default Agent</label>
             <select id="project-backend"></select>
           </div>
           <footer class="settings-footer">
             <button id="project-settings-cancel" class="secondary-button" type="button">Cancel</button>
-            <button id="project-backend-save" class="primary-button" type="submit">Save backend</button>
+            <button id="project-backend-save" class="primary-button" type="submit">Save changes</button>
           </footer>
         </form>
       </div>

@@ -14,6 +14,39 @@ pub(in crate::control) mod archive;
 pub(in crate::control) mod git;
 pub(in crate::control) mod worktrees;
 
+pub(in crate::control) fn update_project(
+    state: &mut (impl HasAgents + HasProjects),
+    project_id: &str,
+    name: &str,
+    agent_id: Option<&str>,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    let name = name.trim();
+    ait_domain::project_policy::validate_registration(project_id, name, &mut None)
+        .map_err(|e| error(e.code, e.message, e.retryable))?;
+    if let Some(agent_id) = agent_id {
+        require_named_agent(state, agent_id)?;
+    }
+    let project = state
+        .projects_mut()
+        .iter_mut()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    name.clone_into(&mut project.name);
+    if let Some(agent_id) = agent_id {
+        project.defaults.select(ait_domain::AgentId::new(agent_id));
+    } else {
+        project.defaults.mark_updated();
+    }
+    Ok((
+        CommandResult::Project(project.view()),
+        vec![pending(
+            "project.updated",
+            Some(project_id.to_owned()),
+            project,
+        )],
+    ))
+}
+
 pub(in crate::control) fn set_project_default_agent(
     state: &mut (impl HasAgents + HasProjects),
     project_id: &str,

@@ -35,6 +35,10 @@ impl ProjectDefaults {
     /// Selects a validated named Agent in the surrounding catalog transaction.
     pub fn select(&mut self, agent: AgentId) {
         self.default_agent_id = Some(agent);
+        self.mark_updated();
+    }
+    /// Advances the catalog revision after Project metadata changes.
+    pub fn mark_updated(&mut self) {
         self.revision = self.revision.saturating_add(1);
     }
 }

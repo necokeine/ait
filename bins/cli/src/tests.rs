@@ -62,6 +62,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     case!(&["project", "list"] => ListProjects);
     case!(&["project", "register", "--id", "id", "--name", "name", "--workdir", "workdir", "--repo-url", "repo_url"] => RegisterProject { id: "id".into(), name: "name".into(), workdir: Some("workdir".into()), repo_url: Some("repo_url".into()) });
     case!(&["project", "register", "--id", "named", "--name", "中文 project"] => RegisterProject { id: "named".into(), name: "中文 project".into(), workdir: None, repo_url: None });
+    case!(&["project", "update", "--project-id", "p", "--name", "Renamed", "--agent-id", "a"] => UpdateProject { project_id: "p".into(), name: "Renamed".into(), agent_id: Some("a".into()) });
+    case!(&["project", "update", "--project-id", "p", "--name", "Renamed"] => UpdateProject { project_id: "p".into(), name: "Renamed".into(), agent_id: None });
     case!(&["project", "set-default-agent", "--project-id", "project_id", "--agent-id", "agent_id"] => SetProjectDefaultAgent { project_id: "project_id".into(), agent_id: "agent_id".into() });
     case!(&["agent", "list"] => ListAgents);
     case!(&["agent", "create", "--id", "id", "--name", "name", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => RegisterAgent { id: "id".into(), name: "name".into(), config: config.clone() });
