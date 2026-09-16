@@ -27,7 +27,7 @@ import { defaultWorkdirSetting, desktopSettings, directoryDialogOptions } from "
 configureDesktopIdentity(app);
 const here = dirname(fileURLToPath(import.meta.url));
 const appIcon = join(here, "logo.png");
-const daemonRuntime = desktopDaemonRuntime(app.isPackaged);
+const daemonRuntime = desktopDaemonRuntime(app.isPackaged, process.env.AIT_DESKTOP_DEV_PORT);
 const endpoint = daemonRuntime.endpoint;
 const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
@@ -35,7 +35,7 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
-  "run.resolve-approval", "run.active",
+  "run.resolve-approval", "run.resolve-tool-approval", "run.active",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -60,6 +60,8 @@ interface DaemonData {
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
     permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
+    tool_approvals?: import("./types.js").ToolApproval[];
+    provider?: { name: string };
     native_approvals?: Array<{
       id: string; run_id: string; protocol_request_id: string | number; method: string; kind: string;
       thread_id: string; turn_id: string; item_id: string;
@@ -246,6 +248,19 @@ class DaemonClient {
         action,
         ...(scope ? { scope } : {}),
       });
+      assertProject(run, projectId);
+      return this.projectView(projectId);
+    }
+    if (method === "run.resolve-tool-approval") {
+      const projectId = boundedId(params.projectId, "Project");
+      const runId = boundedId(params.runId, "Run");
+      const approvalId = boundedId(params.approvalId, "approval");
+      const action = approvalAction(params.action);
+      if (Object.keys(params).some((key) => !["projectId", "runId", "approvalId", "action"].includes(key))) {
+        throw new Error("Tool approval supports this operation only.");
+      }
+      assertProject(await this.post("/v1/run/get", "run", { run_id: runId }), projectId);
+      const run = await this.post("/v1/run/tool-approval/resolve", "run", { run_id: runId, approval_id: approvalId, action });
       assertProject(run, projectId);
       return this.projectView(projectId);
     }
@@ -511,7 +526,7 @@ class DaemonClient {
 
   private async projectView(projectId: string): Promise<unknown> {
     const [sessionsPath, messagesPath, runsPath, progressPath] = projectReadPaths(projectId);
-    const [sessions, messages, runs, progressValues] = await Promise.all([
+    const [sessions, messages, runs, progressValues, agents] = await Promise.all([
       this.get(sessionsPath, "sessions") as Promise<DaemonData["sessions"]>,
       this.get(messagesPath, "messages") as Promise<DaemonData["messages"]>,
       this.get(runsPath, "runs") as Promise<DaemonData["runs"]>,
@@ -519,6 +534,7 @@ class DaemonClient {
         if (!response.ok) throw new Error(`Ait daemon returned HTTP ${response.status}.`);
         return response.json() as Promise<unknown[]>;
       }),
+      this.get("/v1/agent/list", "agents") as Promise<DaemonData["agents"]>,
     ]);
     for (const record of [...sessions, ...messages, ...runs]) assertProject(record, projectId);
     const messageAgents = messageAgentIds(messages, runs);
@@ -549,6 +565,9 @@ class DaemonClient {
         lastMessageId: run.last_message_id,
         status: run.status,
         permissionProfile: run.permission_profile,
+        toolApprovals: run.tool_approvals ?? [],
+        agentName: agents.find((agent) => agent.id === run.agent_id)?.name ?? run.agent_id,
+        providerName: run.provider?.name ?? "API Provider",
         nativeApprovals: (run.native_approvals ?? []).map((approval) => ({
           id: approval.id,
           runId: approval.run_id,

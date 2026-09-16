@@ -24,6 +24,7 @@ pub(in crate::control) struct RunState {
     pub permission_profile: RunPermissionProfile,
     /// Codex-native approval audit records. They are not Ait ToolUse/ToolResult.
     pub native_approvals: Vec<NativeApprovalState>,
+    pub tool_approvals: Vec<ait_domain::ToolApprovalRecord>,
     pub trigger: ait_domain::RunTrigger,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
@@ -248,6 +249,7 @@ impl RunState {
             config: self.config.clone(),
             provider: self.provider.clone(),
             permission_profile: self.permission_profile,
+            tool_approvals: self.tool_approvals.clone(),
             native_approvals: self
                 .native_approvals
                 .iter()
@@ -325,6 +327,7 @@ impl<'de> Deserialize<'de> for RunState {
             config: view.config,
             provider: view.provider,
             permission_profile: view.permission_profile,
+            tool_approvals: view.tool_approvals,
             native_approvals: view.native_approvals.into_iter().map(Into::into).collect(),
             trigger: serde_json::from_value(serde_json::Value::String(view.trigger))
                 .map_err(|_| serde::de::Error::custom("unknown Run trigger"))?,

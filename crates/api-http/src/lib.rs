@@ -77,6 +77,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/run/list", get(list_runs))
         .route("/v1/run/cancel", post(cancel_run))
         .route("/v1/run/approval/resolve", post(resolve_native_approval))
+        .route("/v1/run/tool-approval/resolve", post(resolve_tool_approval))
         .route("/v1/cron/create", post(create_cron))
         .route("/v1/cron/list", get(list_crons))
         .route("/v1/cron/set-enabled", post(set_cron_enabled))
@@ -472,6 +473,32 @@ struct ResolveNativeApprovalRequest {
     action: NativeApprovalAction,
     #[serde(default)]
     scope: Option<ApprovalGrantScope>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveToolApprovalRequest {
+    run_id: String,
+    approval_id: String,
+    action: ait_contracts::ToolApprovalAction,
+}
+
+async fn resolve_tool_approval(
+    State(state): State<ApiState>,
+    request: Result<Json<ResolveToolApprovalRequest>, axum::extract::rejection::JsonRejection>,
+) -> HttpResponse {
+    let Json(request) = match request {
+        Ok(r) => r,
+        Err(e) => return malformed_permission_request(e.status()),
+    };
+    match state
+        .service
+        .resolve_tool_approval(&request.run_id, &request.approval_id, request.action)
+        .await
+    {
+        Ok(run) => Json(Response::success(CommandResult::Run(run))).into_response(),
+        Err(error) => (StatusCode::CONFLICT, Json(Response::failure(error))).into_response(),
+    }
 }
 
 fn malformed_permission_request(status: StatusCode) -> HttpResponse {

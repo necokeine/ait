@@ -1,10 +1,16 @@
 //! WF-13: real API HTTP fixtures through the public Session/Run path and SQLite.
 #![allow(clippy::pedantic)]
 #[cfg(unix)]
+#[path = "process_providers/approval_disconnect.rs"]
+mod approval_disconnect;
+#[cfg(unix)]
 #[path = "process_providers/permission_change.rs"]
 mod permission_change;
 #[path = "../../../crates/application/tests/support.rs"]
 mod support;
+#[cfg(unix)]
+#[path = "process_providers/tool_approval.rs"]
+mod tool_approval;
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProviderSecret, default_settings};
 use ait_domain::{AgentConfiguration, AgentProvider, DomainError, ProviderKind, ProviderModel};

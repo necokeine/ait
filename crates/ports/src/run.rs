@@ -49,6 +49,29 @@ pub enum CompletionResult {
 /// preconditions and return [`RunStoreError::Conflict`] for stale writes.
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    /// Ask the application to authorize this exact persisted intent under a live lease.
+    async fn request_tool_approval(
+        &self,
+        _lease: &crate::WorkerLease,
+        _execution: ToolExecution,
+    ) -> Result<ApprovalDecision, DomainError> {
+        Ok(ApprovalDecision::Denied)
+    }
+
+    /// Consume an approved grant durably before a worker can execute it.
+    async fn consume_tool_grant(
+        &self,
+        _lease: &crate::WorkerLease,
+        _grant: &ait_domain::ToolGrant,
+    ) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    /// Release approval waits after a worker connection is lost.
+    fn interrupt_tool_approvals(&self, _lease: &crate::WorkerLease) {}
+    /// Bound visible approval expiry by the supervisor's actual total deadline.
+    fn set_worker_deadline(&self, _deadline: i64) {}
+
     /// Claims a fresh durable worker lease before spawning an executor.
     async fn claim_worker(&self, _instance: &str) -> Result<crate::WorkerLease, RunStoreError> {
         Err(crate::dispatch::unsupported_worker_store())
@@ -628,6 +651,18 @@ pub trait RunTool: Send + Sync {
     /// Executes a previously persisted tool intent.
     async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError>;
 
+    /// Execute one consumed grant after rechecking its complete binding and real targets.
+    async fn execute_granted(
+        &self,
+        _request: ToolInvocation,
+        _grant: ait_domain::ToolGrant,
+    ) -> Result<ToolOutcome, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::ToolApprovalRequired,
+            "executor does not support one-operation grants",
+        ))
+    }
+
     /// Cancels and joins all owned work before a Run may become terminal.
     /// Adapters that start work surviving a dropped execute future must override
     /// this method. Return only once no owned worker can produce a late effect.
@@ -647,10 +682,14 @@ pub struct ApprovalRequest {
 }
 
 /// Result of consulting approval policy or an interactive approver.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApprovalDecision {
     /// Explicit authorization was granted.
     Approved,
+    /// An explicit, auditable one-operation grant. It still requires consumption.
+    Granted(Box<ait_domain::ToolGrant>),
+    /// The entire Run was cancelled while waiting.
+    Cancelled,
     /// Explicit authorization was denied.
     Denied,
     /// No decision exists yet; leave the Run resumably waiting.
@@ -662,6 +701,11 @@ pub enum ApprovalDecision {
 pub trait RunApproval: Send + Sync {
     /// Resolves or observes the current decision.
     async fn decide(&self, request: ApprovalRequest) -> Result<ApprovalDecision, DomainError>;
+
+    /// Revalidate and consume one grant immediately before execution.
+    async fn consume(&self, _grant: &ait_domain::ToolGrant) -> Result<bool, DomainError> {
+        Ok(false)
+    }
 }
 
 /// Time boundary used for deadlines and deterministic retry tests.
@@ -686,6 +730,18 @@ pub trait RunIdGenerator: Send + Sync {
 
 /// Factory for host executors pinned to the admitted Project and permission ceiling.
 pub trait RunToolFactory: Send + Sync {
+    /// Build a bounded authorization target using the same backend as execution.
+    /// Returns no target for unsupported, unreviewable, or non-escalating operations.
+    /// # Errors
+    /// Returns a safe denial when validation or filesystem identity checks fail.
+    fn review(
+        &self,
+        _root: &std::path::Path,
+        _profile: RunPermissionProfile,
+        _execution: &ToolExecution,
+    ) -> Result<Option<ait_domain::ToolApprovalTarget>, DomainError> {
+        Ok(None)
+    }
     /// Assemble a capability-scoped executor; no side effects occur at creation.
     ///
     /// # Errors

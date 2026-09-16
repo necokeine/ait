@@ -372,6 +372,26 @@ async fn malformed_approval_and_settings_requests_do_not_echo_secret_values() {
     )));
     for (path, body, status) in [
         (
+            "/v1/run/tool-approval/resolve",
+            r#"{"run_id":"r","approval_id":"a","action":"fixture-secret"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/run/tool-approval/resolve",
+            r#"{"run_id":"r","approval_id":"a","action":"approve","scope":"fixture-secret"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/run/tool-approval/resolve",
+            r#"{"run_id":"r","approval_id":"a","action":"approve","sandbox":"full_access"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/run/tool-approval/resolve",
+            r#"{"run_id":"fixture-secret","#,
+            StatusCode::BAD_REQUEST,
+        ),
+        (
             "/v1/run/approval/resolve",
             r#"{"run_id":"r","approval_id":"a","action":"fixture-secret"}"#,
             StatusCode::UNPROCESSABLE_ENTITY,

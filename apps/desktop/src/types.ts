@@ -102,7 +102,21 @@ export interface DesktopRun {
     approval: "on_request" | "untrusted_only";
   };
   nativeApprovals: NativeApproval[];
+  toolApprovals?: ToolApproval[];
+  agentName?: string;
+  providerName?: string;
   error?: { code?: string; message: string };
+}
+
+export interface ToolApproval {
+  grant: {
+    request_id: string; run_id: string; execution_id: string; call_id: string;
+    expires_at: number;
+    target: { tool_name: string; cwd: string; operation: string; reason: string;
+      current: "read_only" | "workspace_write" | "full_access";
+      requested: "read_only" | "workspace_write" | "full_access" };
+  };
+  status: "pending" | "approved" | "consumed" | "denied" | "cancelled" | "expired";
 }
 
 export interface NativeApproval {
@@ -313,6 +327,9 @@ export interface AitDesktopApi {
     approvalId: string;
     action: "approve" | "deny" | "cancel";
     scope?: "one_shot" | "turn" | "session";
+  }): Promise<ProjectView>;
+  resolveToolApproval(input: {
+    runId: string; projectId: string; approvalId: string; action: "approve" | "deny" | "cancel";
   }): Promise<ProjectView>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {

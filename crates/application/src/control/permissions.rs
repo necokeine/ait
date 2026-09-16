@@ -62,6 +62,18 @@ pub(in crate::control) fn effective_permission_profile(
         ));
     }
     if provider.kind != AgentMode::Codex {
+        if settings
+            .0
+            .get("permissions.approval")
+            .and_then(Value::as_str)
+            != Some("on_request")
+        {
+            return Err(error(
+                ErrorCode::InvalidConfiguration,
+                "API Providers support on_request only: operations within the Run baseline execute directly; higher access requires approval for that operation",
+                false,
+            ));
+        }
         return Ok(RunPermissionProfile {
             sandbox,
             approval: ApprovalMode::OnRequest,

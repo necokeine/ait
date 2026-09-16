@@ -141,7 +141,9 @@ async fn verify_permission_change(worker: std::path::PathBuf) {
         assert_eq!(persisted, before);
         let requests = f.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 4);
-        for (request, writable) in [(&requests[0], false), (&requests[2], true)] {
+        // Readonly now advertises write/edit as approvable capabilities. The first
+        // invocation above still proves that advertising cannot grant authority.
+        for request in [&requests[0], &requests[2]] {
             let has_write = request["tools"].as_array().unwrap().iter().any(|tool| {
                 let definition = if kind == ProviderKind::OpenAI {
                     tool
@@ -150,7 +152,7 @@ async fn verify_permission_change(worker: std::path::PathBuf) {
                 };
                 definition["name"] == "write"
             });
-            assert_eq!(has_write, writable);
+            assert!(has_write);
         }
         let wire = requests[3].to_string();
         assert!(wire.contains("total_count"));
