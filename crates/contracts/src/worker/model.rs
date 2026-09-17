@@ -28,7 +28,7 @@ pub struct Run {
     /// Last Message persisted by this Run, when any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_id: Option<String>,
-    /// Session advanced by outputs, absent for Cron/background Runs.
+    /// Session advanced by outputs; absent for background and legacy Cron Runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_session_id: Option<String>,
     /// Fixed Agent identity.

@@ -218,7 +218,7 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
             .await;
             assert_eq!(cron["status"], "completed", "{cron}");
             assert_eq!(cron["permission_profile"], run["permission_profile"]);
-            assert!(cron["session_id"].is_null());
+            assert!(cron["session_id"].is_string());
             if kind == "codex" {
                 assert_eq!(*fixture.native.0.lock().unwrap(), vec![wire, wire]);
                 assert_eq!(fixture.text.0.load(Ordering::Relaxed), 0);

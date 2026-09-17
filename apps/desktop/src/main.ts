@@ -36,6 +36,7 @@ const allowedMethods = new Set([
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
   "run.resolve-approval", "run.resolve-tool-approval", "run.active",
+  "cron.list", "cron.create", "cron.set-enabled", "cron.trigger",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -70,6 +71,10 @@ interface DaemonData {
       granted_permissions?: Record<string, unknown>; created_at: number; decided_at?: number;
     }>;
     error?: { code?: string; message?: string } | null;
+  }>;
+  crons: Array<{
+    id: string; name: string; project_id: string; base_message_id: string;
+    agent_id: string; schedule: string; timezone: string; enabled: boolean;
   }>;
 }
 
@@ -190,6 +195,37 @@ class DaemonClient {
       const sessions = await this.get(path, "sessions") as DaemonData["sessions"];
       for (const session of sessions) assertProject(session, projectId);
       return sessions.map(projectSession);
+    }
+    if (method === "cron.list") {
+      const crons = await this.get("/v1/cron/list", "crons") as DaemonData["crons"];
+      return crons.map(desktopCron);
+    }
+    if (method === "cron.create") {
+      const cron = await this.post("/v1/cron/create", "cron", {
+        id: randomUUID(), name: params.name,
+        project_id: boundedId(params.projectId, "Project"),
+        base_message_id: boundedId(params.baseMessageId, "Message"),
+        agent_id: boundedId(params.agentId, "Agent"),
+        schedule: params.schedule, timezone: params.timezone,
+      }) as DaemonData["crons"][number];
+      return desktopCron(cron);
+    }
+    if (method === "cron.set-enabled") {
+      const cron = await this.post("/v1/cron/set-enabled", "cron", {
+        cron_id: boundedId(params.cronId, "Cron"), enabled: params.enabled,
+      }) as DaemonData["crons"][number];
+      return desktopCron(cron);
+    }
+    if (method === "cron.trigger") {
+      const run = await this.post("/v1/cron/trigger", "run", {
+        cron_id: boundedId(params.cronId, "Cron"), scheduled_at: params.scheduledAt,
+      }) as DaemonData["runs"][number];
+      if (!run.session_id) throw new Error("Scheduled Run did not create a Session.");
+      return {
+        project: await this.projectView(run.project_id),
+        runId: run.id,
+        selectedSessionId: run.session_id,
+      };
     }
     if (method === "project.update") {
       await this.post("/v1/project/update", "project", {
@@ -708,5 +744,13 @@ function projectSession(session: DaemonData["sessions"][number]): import("./type
     currentMessageId: session.current_message_id, agentId: session.agent_id,
     version: session.version, active: session.active_run_id !== null,
     activeRunId: session.active_run_id, updatedAt: 0,
+  };
+}
+
+function desktopCron(cron: DaemonData["crons"][number]): import("./types.js").DesktopCron {
+  return {
+    id: cron.id, name: cron.name, projectId: cron.project_id,
+    baseMessageId: cron.base_message_id, agentId: cron.agent_id,
+    schedule: cron.schedule, timezone: cron.timezone, enabled: cron.enabled,
   };
 }

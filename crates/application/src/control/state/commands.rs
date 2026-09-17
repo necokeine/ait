@@ -197,6 +197,40 @@ impl CommandTransaction {
                 )
                 .await
             }
+            Self::CronTrigger(tx) => {
+                let Command::TriggerCron {
+                    cron_id,
+                    scheduled_at,
+                } = command
+                else {
+                    unreachable!("Cron trigger")
+                };
+                if tx.original.runs.iter().any(|run| {
+                    run.cron_id.as_deref() == Some(cron_id.as_str())
+                        && run.scheduled_at == Some(*scheduled_at)
+                }) {
+                    return Ok(());
+                }
+                let cron = tx
+                    .original
+                    .crons
+                    .iter()
+                    .find(|cron| cron.id == *cron_id && cron.enabled)
+                    .ok_or_else(|| {
+                        error(ErrorCode::InvalidCron, "enabled cron not found", false)
+                    })?;
+                crate::control::project::worktrees::prepare_new_session_worktree(
+                    workspace,
+                    lease,
+                    &tx.original,
+                    &crate::control::cron::cron_session_id(cron_id, *scheduled_at),
+                    &cron.project_id,
+                    &cron.agent_id,
+                    &cron.base_message_id,
+                    created,
+                )
+                .await
+            }
             _ => Ok(()),
         }
     }
@@ -229,6 +263,7 @@ impl CommandTransaction {
             Self::CronTrigger(tx) => Ok(PreparationKey::Cron {
                 projects: tx.original.projects.clone(),
                 crons: tx.original.crons.clone(),
+                messages: message_baselines(&tx.original.messages),
             }),
             _ => Ok(PreparationKey::None),
         }
@@ -624,6 +659,7 @@ pub(in crate::control) enum PreparationKey {
     Cron {
         projects: Vec<ProjectState>,
         crons: Vec<CronState>,
+        messages: Vec<MessageBaseline>,
     },
 }
 #[derive(PartialEq)]
@@ -665,21 +701,24 @@ fn session_preparation_key(
     Ok(PreparationKey::Session {
         projects: state.projects().clone(),
         sessions: state.sessions().clone(),
-        messages: state
-            .messages()
-            .iter()
-            .map(|m| MessageBaseline {
-                id: m.id.clone(),
-                parent: m.parent_message_id.clone(),
-                git_commit: m.git_commit.clone(),
-                workspace_commit: m
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.pointer("/codex/commit_id"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned),
-            })
-            .collect(),
+        messages: message_baselines(state.messages()),
         resolved_agent_id,
     })
+}
+
+fn message_baselines(messages: &[crate::control::model::MessageState]) -> Vec<MessageBaseline> {
+    messages
+        .iter()
+        .map(|message| MessageBaseline {
+            id: message.id.clone(),
+            parent: message.parent_message_id.clone(),
+            git_commit: message.git_commit.clone(),
+            workspace_commit: message
+                .data
+                .as_ref()
+                .and_then(|data| data.pointer("/codex/commit_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        })
+        .collect()
 }

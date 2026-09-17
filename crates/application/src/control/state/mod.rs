@@ -358,11 +358,12 @@ context!(CronTriggerContext {
     providers: Vec<ProviderState>,
     provider_credentials: HashMap<String, String>,
     run_credentials: HashMap<String, String>,
+    sessions: Vec<SessionState>,
     messages: Vec<MessageState>,
     runs: Vec<RunState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "crons" => Cron, "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "run_credentials" => RunCredential, "messages" => Message, "runs" => Run, "settings" => Settings ]);
+} [ "crons" => Cron, "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "run_credentials" => RunCredential, "sessions" => Session, "messages" => Message, "runs" => Run, "settings" => Settings ]);
 
 context!(ArchiveContext {
     projects: Vec<ProjectState>,

@@ -9,7 +9,7 @@
 - **Agent**：引用 Provider 的版本化运行配置，包含 model 与 reasoning effort；可以是可复用命名预设，或单个 Session 的匿名配置。
 - **Run**：某个 Agent 基于 Session 当前 Message 发起的一次完整运行。只有重试、压缩恢复与新队列均无需继续处理时才结束。
 - **RunAttempt**：Run 中的一次可重试执行尝试；多个 Attempt 仍属于同一个 Run。
-- **Cron**：绑定 Agent 与 Session 起点，按照时间安排定期启动新 Run 的计划。
+- **Cron**：固定绑定一个 Message 与具名 Agent 的计划；每个 occurrence 从该节点创建独立 Session 与 Run。
 - **Provider Adapter**：把稳定的 Agent/Run 契约映射到具体模型或外部 Agent 协议的适配层。
 
 完整定义、不变量和关系以 `decisions/NEC-150/adr-001-core-domain-model-v4.md` 为准。

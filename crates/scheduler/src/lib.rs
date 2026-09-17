@@ -364,6 +364,7 @@ impl CronScheduler {
             base_message_id: cron.base_message_id,
             agent_id: cron.agent_id.clone(),
             follow_session_id: None,
+            create_session_id: Some(ait_domain::cron_session_id(&cron.id, fire.scheduled_at)),
             trigger: RunStartTrigger::Cron {
                 cron_id: cron.id.clone(),
                 scheduled_at: fire.scheduled_at,

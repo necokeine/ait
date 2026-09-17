@@ -349,7 +349,7 @@ async fn wf04_observe_injected_provider_failure_and_continue() {
     workspace.stop().await;
 }
 
-// WF-05: An occurrence is idempotent and never moves an interactive Session.
+// WF-05: An occurrence is idempotent and creates an independent Session.
 #[tokio::test]
 async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     let mut workspace = Workspace::new().await;
@@ -398,7 +398,9 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     assert_eq!(run["base_message_id"], project["root_message_id"]);
     assert_eq!(run["trigger"], "cron");
     assert_eq!(run["status"], "completed");
-    assert!(run["session_id"].is_null());
+    let first_session_id = run["session_id"]
+        .as_str()
+        .expect("Cron occurrence creates a Session");
     let once = workspace.view().await;
     let event_count = events(&workspace.cli(&["event", "list"]).await).len();
     assert_eq!(workspace.call(trigger).await, run);
@@ -418,8 +420,26 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
         ])
         .await;
     assert_ne!(second["id"], run["id"]);
+    assert_ne!(second["session_id"], run["session_id"]);
     let after = workspace.view().await;
-    assert_eq!(after["sessions"], sessions);
+    assert_eq!(
+        after["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|session| session["id"] == sessions[0]["id"])
+            .count(),
+        1
+    );
+    assert_eq!(after["sessions"].as_array().unwrap().len(), 3);
+    let first_session = after["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == first_session_id)
+        .expect("first Cron Session persists");
+    assert_eq!(first_session["current_message_id"], run["last_message_id"]);
+    assert!(first_session["active_run_id"].is_null());
     assert_eq!(after["runs"].as_array().unwrap().len(), 2);
     assert_eq!(after["messages"].as_array().unwrap().len(), 3);
     workspace.stop().await;

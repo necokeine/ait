@@ -67,7 +67,9 @@ Consumed 只表示授权已消费，不保证操作成功；最终结果以唯�
 
 ### UI、策略与存储兼容
 
-Session 和 Runs → View Run 均从持久化 Run 构建卡片，Cron 的 session_id=None 同样可操作。
+Session 和 Runs → View Run 均从持久化 Run 构建卡片。本 ADR 原有的 Cron `session_id=None`
+约束已由 NEC-304 supersede：当前 occurrence 会携带独立 Session；旧版无 Session Cron Run
+仍可操作。
 事件触发重读，页面恢复和断线重连不依赖瞬时通知。Runs 详情保留最终 Run 状态/最后回复。
 新 HTTP 路由 `/v1/run/tool-approval/resolve` 调用 application 专属授权事务入口；原 native
 approval 命令及 scope 保持独立。Electron preload/main 使用单独白名单方法，拒绝 scope 和

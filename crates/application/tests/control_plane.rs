@@ -851,7 +851,10 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     };
     assert_eq!(scheduled.trigger, "cron");
     assert_eq!(scheduled.status, "completed");
-    assert!(scheduled.session_id.is_none());
+    let scheduled_session_id = scheduled
+        .session_id
+        .as_deref()
+        .expect("Cron occurrence creates a Session");
     assert_eq!(
         scheduled.workspace_base_commit.as_deref(),
         Some(project.base_commit.as_str())
@@ -892,7 +895,17 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     let workspace = workspace(&recovered).await;
     assert_eq!(workspace.runs.len(), 2);
     assert_eq!(workspace.messages, before_restart.messages);
-    assert_eq!(workspace.sessions.len(), 2);
+    assert_eq!(workspace.sessions.len(), 3);
+    let scheduled_session = workspace
+        .sessions
+        .iter()
+        .find(|session| session.id == scheduled_session_id)
+        .expect("Cron Session survives restart");
+    assert_eq!(
+        scheduled_session.current_message_id,
+        scheduled.last_message_id.clone().unwrap()
+    );
+    assert!(scheduled_session.active_run_id.is_none());
     assert_eq!(workspace.messages.len(), 4);
     assert!(workspace.runs.iter().all(|run| run.status == "completed"));
 }

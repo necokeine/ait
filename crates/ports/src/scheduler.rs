@@ -59,8 +59,11 @@ pub struct StartRunRequest {
     pub base_message_id: MessageId,
     /// Agent resolved by the unified execution entry.
     pub agent_id: AgentId,
-    /// Optional Session followed by interactive Runs; Cron always supplies `None`.
+    /// Existing Session followed by an interactive Run.
     pub follow_session_id: Option<SessionId>,
+    /// New Session that the Run starter must atomically create and follow.
+    /// Cron supplies one stable identity per occurrence.
+    pub create_session_id: Option<SessionId>,
     /// Source metadata.
     pub trigger: RunStartTrigger,
     /// Stable request idempotency identity.

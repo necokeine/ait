@@ -3,6 +3,7 @@ use crate::control::model::CronState;
 use crate::control::model::{RunLifecycle, RunState};
 
 use crate::control::catalog::{require_agent, require_named_agent, validate_config};
+use crate::control::conversation::create_session;
 use crate::control::errors::error;
 use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
@@ -11,7 +12,7 @@ use crate::control::project::git::GitBaseline;
 use crate::control::settings::resolve_project_agent_id;
 use crate::control::state::{
     HasAgents, HasCrons, HasMessages, HasProjects, HasProviderCredentials, HasProviders,
-    HasRunCredentials, HasRuns, HasSettings,
+    HasRunCredentials, HasRuns, HasSessions, HasSettings,
 };
 use ait_contracts::{AgentMode, ApiError, CommandResult};
 use ait_domain::{
@@ -20,6 +21,12 @@ use ait_domain::{
 };
 use ait_ports::PendingEvent;
 use uuid::Uuid;
+
+pub(in crate::control) fn cron_session_id(cron_id: &str, scheduled_at: i64) -> String {
+    ait_domain::cron_session_id(&CronId::new(cron_id), TimestampMs(scheduled_at))
+        .as_str()
+        .to_owned()
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::control) fn create_cron(
@@ -131,10 +138,13 @@ pub(in crate::control) fn trigger_cron(
     state: &mut (
              impl HasAgents
              + HasCrons
+             + HasMessages
+             + HasProjects
              + HasProviderCredentials
              + HasProviders
              + HasRunCredentials
              + HasRuns
+             + HasSessions
              + HasSettings
          ),
     cron_id: &str,
@@ -168,6 +178,25 @@ pub(in crate::control) fn trigger_cron(
         ));
     }
     let run_id = Uuid::new_v4().to_string();
+    let session_id = cron_session_id(cron_id, scheduled_at);
+    let (_, _) = create_session(
+        state,
+        session_id.clone(),
+        cron.project_id.clone(),
+        &cron.agent_id,
+        Some(cron.base_message_id.clone()),
+    )?;
+    let session = state
+        .sessions_mut()
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .expect("new Cron Session exists");
+    session.name = format!("{} · {scheduled_at}", cron.name);
+    session
+        .reference
+        .acquire(ait_domain::RunId::new(&run_id))
+        .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
+    let session = session.clone();
     if let Some(reference) = state
         .provider_credentials()
         .get(&agent.config.provider_id)
@@ -183,7 +212,7 @@ pub(in crate::control) fn trigger_cron(
         id: run_id.clone(),
         project_id: cron.project_id,
         base_message_id: cron.base_message_id,
-        session_id: None,
+        session_id: Some(session_id.clone()),
         agent_id: agent.id.clone(),
         agent_revision: agent.revision,
         config: agent.config.clone(),
@@ -201,6 +230,11 @@ pub(in crate::control) fn trigger_cron(
         lease_epoch: 0,
     });
     let run = state.runs().last().expect("new run exists").clone();
-    let event = pending("cron.run_triggered", Some(run_id), &run);
-    Ok((CommandOutcome::for_new_run(run), vec![event]))
+    Ok((
+        CommandOutcome::for_new_run(run.clone()),
+        vec![
+            pending("session.created", Some(session_id), &session),
+            pending("cron.run_triggered", Some(run_id), &run),
+        ],
+    ))
 }
