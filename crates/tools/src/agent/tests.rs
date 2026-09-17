@@ -159,7 +159,10 @@ async fn task_is_self_contained_and_questions_use_the_interaction_port() {
             &paths[0][0],
             ProjectedMessage::Visible(message)
                 if message.role == MessageRole::User
-                    && matches!(message.sub_messages.as_slice(), [SubMessage::Text { text }] if text == "Finish it.")
+                    && matches!(
+                        message.sub_messages.as_slice(),
+                        [SubMessage::Text { text }] if text == "Finish it."
+                    )
         ));
     }
 

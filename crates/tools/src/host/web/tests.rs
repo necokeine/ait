@@ -66,7 +66,11 @@ fn dns_and_redirect_checks_reject_any_private_target() {
 
 #[test]
 fn search_parser_returns_structured_external_urls() {
-    let html = r#"<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc">Example &amp; docs</a><a class="result__snippet">Useful <b>answer</b>.</a></div>"#;
+    let html = concat!(
+        r#"<div class="result"><a class="result__a" "#,
+        r#"href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc">"#,
+        r#"Example &amp; docs</a><a class="result__snippet">Useful <b>answer</b>.</a></div>"#,
+    );
     let results = parse_search("ait", html);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["url"], "https://example.com/doc");

@@ -19,7 +19,12 @@ async fn cancellation_during_handshake_reaps_the_owned_child() {
     // Only shell builtins: no grandchildren or external sleep process to orphan.
     fs::write(
         &binary,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > child.args\necho $$ > child.pid\nwhile read -r line; do :; done\n",
+        concat!(
+            "#!/bin/sh\n",
+            "printf '%s\\n' \"$@\" > child.args\n",
+            "echo $$ > child.pid\n",
+            "while read -r line; do :; done\n",
+        ),
     )
     .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();

@@ -121,7 +121,11 @@ async fn one_shell_grant_cannot_execute_twice_or_change_the_baseline() {
     let root = directory.path().canonicalize().unwrap();
     let e = execution(
         "bash",
-        json!({"command":"printf once >> count.txt","description":"Append a synthetic marker","sandbox_permissions":"workspace-write"}),
+        json!({
+            "command": "printf once >> count.txt",
+            "description": "Append a synthetic marker",
+            "sandbox_permissions": "workspace-write",
+        }),
     );
     // Backend unavailability is an explicit failure, never a skipped sandbox pass.
     let g = grant(&root, &e);

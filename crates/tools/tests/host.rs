@@ -110,7 +110,16 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
                     .is_err()
             );
         }
-        let explicit = tools.execute(call("write",json!({"file_path":"explicit","content":"ok","sandbox_permissions":"danger-full-access"}))).await;
+        let explicit = tools
+            .execute(call(
+                "write",
+                json!({
+                    "file_path": "explicit",
+                    "content": "ok",
+                    "sandbox_permissions": "danger-full-access",
+                }),
+            ))
+            .await;
         assert_eq!(explicit.is_ok(), mode == SandboxAccess::FullAccess);
         assert!(
             tools
@@ -139,7 +148,12 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
             tools
                 .execute(call(
                     "edit",
-                    json!({"file_path":"expansion","old_string":"x","new_string":"y".repeat(1024),"replace_all":true})
+                    json!({
+                        "file_path": "expansion",
+                        "old_string": "x",
+                        "new_string": "y".repeat(1024),
+                        "replace_all": true,
+                    })
                 ))
                 .await
                 .is_err()
@@ -265,7 +279,16 @@ async fn shell_is_controlled_cancellable_and_bounded() {
         .await
         .unwrap();
     assert_eq!(good.output["stdout"], "hello");
-    let inspect = tools.execute(call("bash", json!({"command":"pwd && ls && find . -type f | wc -l","description":"Inspect repository"}))).await.unwrap();
+    let inspect = tools
+        .execute(call(
+            "bash",
+            json!({
+                "command": "pwd && ls && find . -type f | wc -l",
+                "description": "Inspect repository",
+            }),
+        ))
+        .await
+        .unwrap();
     assert_eq!(inspect.output["exit_status"], 0, "{inspect:?}");
     let denied = tools
         .execute(call(

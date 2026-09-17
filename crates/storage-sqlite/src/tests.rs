@@ -92,10 +92,32 @@ async fn reads_are_bounded_by_entity_and_project() {
 #[tokio::test]
 async fn immutable_messages_cannot_be_replaced() {
     let store = SqliteControlStore::in_memory().unwrap();
-    store.apply(0, vec![
-        ControlChange::Put(record(ControlRecordKind::Project, "p1", Some("p1"), serde_json::json!({"id":"p1","workdir":"/p1"}))),
-        ControlChange::Put(record(ControlRecordKind::Message, "m1", Some("p1"), serde_json::json!({"id":"m1","project_id":"p1","parent_message_id":null,"text":"one"}))),
-    ], Vec::new()).await.unwrap();
+    store
+        .apply(
+            0,
+            vec![
+                ControlChange::Put(record(
+                    ControlRecordKind::Project,
+                    "p1",
+                    Some("p1"),
+                    serde_json::json!({"id": "p1", "workdir": "/p1"}),
+                )),
+                ControlChange::Put(record(
+                    ControlRecordKind::Message,
+                    "m1",
+                    Some("p1"),
+                    serde_json::json!({
+                        "id": "m1",
+                        "project_id": "p1",
+                        "parent_message_id": null,
+                        "text": "one",
+                    }),
+                )),
+            ],
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     let failure = store.apply(1, vec![ControlChange::Put(record(
         ControlRecordKind::Message, "m1", Some("p1"),
         serde_json::json!({"id":"m1","project_id":"p1","parent_message_id":null,"text":"two"}),
@@ -111,8 +133,14 @@ async fn legacy_control_blob_is_split_once_and_removed() {
     let legacy = serde_json::json!({
         "projects": [{"id":"p1","workdir":"/p1"}],
         "agents": [
-            {"id":"a1","name":"one","mode":"codex","model":"gpt-5.6-sol","owner_session_id":null,"revision":1,"enabled":true},
-            {"id":"a2","name":"two","mode":"codex","model":"legacy-model","owner_session_id":null,"revision":1,"enabled":true}
+            {
+                "id": "a1", "name": "one", "mode": "codex", "model": "gpt-5.6-sol",
+                "owner_session_id": null, "revision": 1, "enabled": true,
+            },
+            {
+                "id": "a2", "name": "two", "mode": "codex", "model": "legacy-model",
+                "owner_session_id": null, "revision": 1, "enabled": true,
+            }
         ],
         "sessions": [],
         "messages": [{"id":"m1","project_id":"p1","parent_message_id":null}],

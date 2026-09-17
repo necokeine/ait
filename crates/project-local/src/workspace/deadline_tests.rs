@@ -425,7 +425,17 @@ async fn git_timeout_after_worktree_side_effect_reports_uncertain_creation_state
     use std::os::unix::fs::PermissionsExt;
     let (temp, root, head) = repository().await;
     let script = temp.path().join("stall-after-add");
-    fs::write(&script, "#!/bin/sh\ncase \" $* \" in\n  *\" worktree add \"*) git \"$@\" || exit $?; exec sleep 20;;\n  *) exec git \"$@\";;\nesac\n").unwrap();
+    fs::write(
+        &script,
+        concat!(
+            "#!/bin/sh\n",
+            "case \" $* \" in\n",
+            "  *\" worktree add \"*) git \"$@\" || exit $?; exec sleep 20;;\n",
+            "  *) exec git \"$@\";;\n",
+            "esac\n",
+        ),
+    )
+    .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let adapter = LocalProjectWorkspace {
         options: OperationOptions {

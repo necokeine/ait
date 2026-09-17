@@ -76,7 +76,10 @@ fn sub_message_wire_shape_matches_sqlite_projection() {
     let encoded = serde_json::to_string(&tool_use()).unwrap();
     assert_eq!(
         encoded,
-        r#"{"type":"tool_use","call_id":"call-1","tool_name":"read_file","arguments":"{\"path\":\"README.md\"}","provider_metadata":null}"#
+        concat!(
+            r#"{"type":"tool_use","call_id":"call-1","tool_name":"read_file","#,
+            r#""arguments":"{\"path\":\"README.md\"}","provider_metadata":null}"#,
+        )
     );
     let decoded: SubMessage = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, tool_use());

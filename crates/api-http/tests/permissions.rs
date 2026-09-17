@@ -41,7 +41,12 @@ impl AgentAdapter for Native {
         self.0.lock().unwrap().push(request.sandbox);
         Ok(Box::pin(futures_util::stream::iter([
             Ok(AgentEvent::ItemCompleted {
-                item: json!({"type":"agentMessage","id":"answer","phase":"final_answer","text":"Read the project."}),
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "answer",
+                    "phase": "final_answer",
+                    "text": "Read the project.",
+                }),
             }),
             Ok(AgentEvent::Completed {
                 turn_id: "turn".into(),
@@ -139,7 +144,18 @@ async fn fixture(kind: &str, max_sandbox: SandboxAccess) -> Fixture {
     let config = if kind == "codex" {
         json!({"provider_id":"builtin-codex","model":"gpt-5.6-sol"})
     } else {
-        ok(&app, "/v1/agent-provider/save", Some(json!({"provider":{"id":"api","name":"API","kind":kind,"models":[{"id":"chat","name":"Chat","reasoning_efforts":[]}]},"secret":"fixture-secret"}))).await;
+        ok(
+            &app,
+            "/v1/agent-provider/save",
+            Some(json!({
+                "provider": {
+                    "id": "api", "name": "API", "kind": kind,
+                    "models": [{"id": "chat", "name": "Chat", "reasoning_efforts": []}],
+                },
+                "secret": "fixture-secret",
+            })),
+        )
+        .await;
         json!({"provider_id":"api","model":"chat"})
     };
     ok(
@@ -154,7 +170,16 @@ async fn fixture(kind: &str, max_sandbox: SandboxAccess) -> Fixture {
         Some(json!({"id":"s","project_id":"p","agent_id":"a"})),
     )
     .await;
-    ok(&app, "/v1/cron/create", Some(json!({"id":"cron","name":"Cron","project_id":"p","base_message_id":registered["root_message_id"],"agent_id":"a","schedule":"0 * * * * *","timezone":"UTC"}))).await;
+    ok(
+        &app,
+        "/v1/cron/create",
+        Some(json!({
+            "id": "cron", "name": "Cron", "project_id": "p",
+            "base_message_id": registered["root_message_id"], "agent_id": "a",
+            "schedule": "0 * * * * *", "timezone": "UTC",
+        })),
+    )
+    .await;
     Fixture {
         app,
         native,

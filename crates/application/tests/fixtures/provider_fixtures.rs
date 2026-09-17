@@ -1,7 +1,6 @@
 //! Provider fixtures regression coverage.
 #![allow(clippy::pedantic)]
 #![allow(dead_code)]
-#![allow(missing_docs)]
 
 use ait_contracts::{AgentConfiguration, AgentProvider, ProviderModel};
 use ait_domain::{DomainError, ErrorCode};

@@ -3733,7 +3733,11 @@ impl AgentAdapter for PermissionRoundtripAdapter {
         PolicyCapturingAdapter::default().capabilities()
     }
     async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
-        let permissions = json!({"fileSystem": {"write": [self.0.as_ref().unwrap_or(&request.cwd).join("new.txt")]}});
+        let permissions = json!({
+            "fileSystem": {
+                "write": [self.0.as_ref().unwrap_or(&request.cwd).join("new.txt")],
+            },
+        });
         let decision = request
             .approval_handler
             .as_ref()

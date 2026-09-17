@@ -685,10 +685,10 @@ async fn already_published_recovery_claims_finalization_before_cancel_can_win() 
         .iter()
         .find(|message| Some(&message.id) == final_run.last_message_id.as_ref())
         .unwrap();
-    assert_eq!(
-        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
-        store.load().await.unwrap().value["workspace_run_journals"][&completed.id]["result"]["commit_id"]
-    );
+    assert_eq!(assistant.data.as_ref().unwrap()["codex"]["commit_id"], {
+        let state = store.load().await.unwrap();
+        state.value["workspace_run_journals"][&completed.id]["result"]["commit_id"].clone()
+    });
     let events = store.replay(before_cursor, 100).await.unwrap();
     assert_eq!(
         events

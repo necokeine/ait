@@ -1151,9 +1151,20 @@ async fn provider_secret_is_absent_from_malformed_response_diagnostics() {
     use tokio::net::TcpListener;
     let mut workspace = Workspace::new().await;
     // Put a reflected stdin secret into a field whose serde error would quote it.
-    let router = Router::new().route("/v1/agent-provider/save", post(|Json(body): Json<Value>| async move {
-        Json(json!({"api_version": 1, "ok": false, "error": {"code": body["secret"], "message": "bad response", "retryable": false}}))
-    }));
+    let router = Router::new().route(
+        "/v1/agent-provider/save",
+        post(|Json(body): Json<Value>| async move {
+            Json(json!({
+                "api_version": 1,
+                "ok": false,
+                "error": {
+                    "code": body["secret"],
+                    "message": "bad response",
+                    "retryable": false,
+                },
+            }))
+        }),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     workspace.address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {

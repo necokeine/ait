@@ -18,21 +18,33 @@ async fn turn(
     sequence: u8,
 ) -> Vec<AgentEvent> {
     let cancellation = CancellationToken::new();
-    let mut stream = adapter.run(AgentRunRequest {
-        request_id: format!("python-smoke-{sequence}"),
-        model: Some(std::env::var("AIT_CODEX_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".into())),
-        reasoning_effort: Some("low".into()),
-        project_instructions: Some("Use Python 3, no third-party dependencies. Do not access the network or delegate. Only work on hello.py in the project directory.".into()),
-        prompt: prompt.into(),
-        cwd: cwd.to_path_buf(),
-        resume_thread_id: thread,
-        ephemeral: false,
-        sandbox: SandboxMode::WorkspaceWrite,
-        approval_policy: ApprovalPolicy::Never,
-        output_schema: None,
-        approval_handler: None,
-        cancellation: cancellation.clone(),
-    }).await.unwrap();
+    let mut stream = adapter
+        .run(AgentRunRequest {
+            request_id: format!("python-smoke-{sequence}"),
+            model: Some(
+                std::env::var("AIT_CODEX_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".into()),
+            ),
+            reasoning_effort: Some("low".into()),
+            project_instructions: Some(
+                concat!(
+                    "Use Python 3, no third-party dependencies. ",
+                    "Do not access the network or delegate. ",
+                    "Only work on hello.py in the project directory.",
+                )
+                .into(),
+            ),
+            prompt: prompt.into(),
+            cwd: cwd.to_path_buf(),
+            resume_thread_id: thread,
+            ephemeral: false,
+            sandbox: SandboxMode::WorkspaceWrite,
+            approval_policy: ApprovalPolicy::Never,
+            output_schema: None,
+            approval_handler: None,
+            cancellation: cancellation.clone(),
+        })
+        .await
+        .unwrap();
     let result = tokio::time::timeout(Duration::from_mins(4), async {
         let mut events = Vec::new();
         while let Some(event) = stream.next().await {
@@ -121,11 +133,21 @@ fn tool_evidence(events: &[AgentEvent]) -> Vec<Value> {
                 evidence.push(json!({
                     "id": item["id"], "type": item["type"], "status": item["status"],
                     "exit_code": item["exitCode"],
-                    "hello_output": item["aggregatedOutput"].as_str().is_some_and(|text| text.lines().any(|line| line == "Hello, world!")),
-                    "runs_python": item["command"].as_str().is_some_and(|command| command.contains("python3") && command.contains("hello.py")),
-                    "edits_hello_py": item["changes"].as_array().is_some_and(|changes| changes.iter().any(|change| {
-                        change["path"].as_str().is_some_and(|path| Path::new(path).file_name().is_some_and(|name| name == "hello.py"))
-                    })),
+                    "hello_output": item["aggregatedOutput"].as_str().is_some_and(|text| {
+                        text.lines().any(|line| line == "Hello, world!")
+                    }),
+                    "runs_python": item["command"].as_str().is_some_and(|command| {
+                        command.contains("python3") && command.contains("hello.py")
+                    }),
+                    "edits_hello_py": item["changes"].as_array().is_some_and(|changes| {
+                        changes.iter().any(|change| {
+                            change["path"].as_str().is_some_and(|path| {
+                                Path::new(path)
+                                    .file_name()
+                                    .is_some_and(|name| name == "hello.py")
+                            })
+                        })
+                    }),
                 }));
             }
             _ => {}
@@ -136,6 +158,7 @@ fn tool_evidence(events: &[AgentEvent]) -> Vec<Value> {
 
 #[tokio::test]
 #[ignore = "requires logged-in Codex and Python 3; performs two real model turns"]
+#[allow(clippy::too_many_lines)] // One end-to-end scenario with two explicit Codex turns.
 async fn codex_native_tools_create_and_verify_python_hello_world() {
     let cwd = tempfile::Builder::new()
         .prefix("ait-codex-python-")
@@ -160,8 +183,19 @@ async fn codex_native_tools_create_and_verify_python_hello_world() {
     );
     let adapter = CodexAppServerAdapter::new(CodexAppServerConfig::default()).unwrap();
 
-    let create = turn(&adapter, &cwd, None,
-        "Use the native apply_patch tool to create hello.py containing print(\"Hello, world!\"). Do not write files through shell redirection. Then run python3 hello.py with the native command tool and check its output. Report the result.", 1).await;
+    let create = turn(
+        &adapter,
+        &cwd,
+        None,
+        concat!(
+            "Use the native apply_patch tool to create hello.py containing ",
+            "print(\"Hello, world!\"). Do not write files through shell redirection. ",
+            "Then run python3 hello.py with the native command tool and check its output. ",
+            "Report the result.",
+        ),
+        1,
+    )
+    .await;
     verify_python(&cwd).await;
     let first = tool_evidence(&create);
     fs::write(
@@ -186,8 +220,19 @@ async fn codex_native_tools_create_and_verify_python_hello_world() {
 
     // Resume the actual core thread, with fresh instructions and permissions.
     let thread = thread_id(&create);
-    let verify = turn(&adapter, &cwd, Some(thread.clone()),
-        "Inspect hello.py with the native command tool. Use apply_patch to refactor it to a main() function plus an if __name__ == \"__main__\" guard. Preserve the exact Hello, world! output. Run python3 hello.py and check success. Report the result.", 2).await;
+    let verify = turn(
+        &adapter,
+        &cwd,
+        Some(thread.clone()),
+        concat!(
+            "Inspect hello.py with the native command tool. Use apply_patch to refactor it ",
+            "to a main() function plus an if __name__ == \"__main__\" guard. Preserve the ",
+            "exact Hello, world! output. Run python3 hello.py and check success. ",
+            "Report the result.",
+        ),
+        2,
+    )
+    .await;
     assert_eq!(thread_id(&verify), thread);
     verify_python(&cwd).await;
     let source = fs::read_to_string(cwd.join("hello.py")).unwrap();

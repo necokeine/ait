@@ -1,7 +1,6 @@
 //! Control fixtures regression coverage.
 #![allow(clippy::pedantic)]
 #![allow(dead_code)]
-#![allow(missing_docs)]
 
 use crate::support::{WorkspaceView, workspace};
 use ait_application::LocalControlService;

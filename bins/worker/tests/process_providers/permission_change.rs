@@ -19,18 +19,41 @@ async fn verify_permission_change(worker: std::path::PathBuf) {
             vec![
                 response(kind, &[("before", "bash", shell.clone())]),
                 response(kind, &[]),
-                response(kind, &[
-                    ("after", "bash", shell),
-                    ("count", "bash", json!({"command":"wc -l source.rs","description":"Count source lines"})),
-                    ("search", "grep", json!({"pattern":"^pub (struct|enum|trait) [A-Z]"})),
-                    ("tests", "grep", json!({"pattern":r"^#\[cfg\(test\)\]"})),
-                    ("write", "write", json!({"file_path":"permission.txt","content":"workspace write applied\n","sandbox_permissions":"workspace-write"})),
-                ]),
+                response(
+                    kind,
+                    &[
+                        ("after", "bash", shell),
+                        (
+                            "count",
+                            "bash",
+                            json!({
+                                "command": "wc -l source.rs",
+                                "description": "Count source lines",
+                            }),
+                        ),
+                        (
+                            "search",
+                            "grep",
+                            json!({"pattern":"^pub (struct|enum|trait) [A-Z]"}),
+                        ),
+                        ("tests", "grep", json!({"pattern":r"^#\[cfg\(test\)\]"})),
+                        (
+                            "write",
+                            "write",
+                            json!({
+                                "file_path": "permission.txt",
+                                "content": "workspace write applied\n",
+                                "sandbox_permissions": "workspace-write",
+                            }),
+                        ),
+                    ],
+                ),
                 response(kind, &[]),
             ],
             "read_only",
             worker.clone(),
-        ).await;
+        )
+        .await;
         // The file fits the legacy read bound, but its matches exceed the output bound.
         std::fs::write(
             f.workdir.join("source.rs"),

@@ -12,9 +12,14 @@ fn api_state() -> RunState {
     let mut state: RunState = serde_json::from_value(json!({
         "id": "run", "project_id": "project", "base_message_id": MessageId::from_u128(1),
         "last_message_id": null, "session_id": "session", "agent_id": "agent", "agent_revision": 1,
-        "config": config, "provider": {"id":"api", "name":"API", "kind":"openai", "url":null, "models":[]},
-        "trigger":"manual", "cron_id":null, "scheduled_at":null, "status":"queued", "phase":"queued", "error":null
-    })).unwrap();
+        "config": config,
+        "provider": {
+            "id": "api", "name": "API", "kind": "openai", "url": null, "models": [],
+        },
+        "trigger": "manual", "cron_id": null, "scheduled_at": null,
+        "status": "queued", "phase": "queued", "error": null,
+    }))
+    .unwrap();
     state.install_execution(ApiRunState {
         run: Run {
             id: RunId::new("run"),

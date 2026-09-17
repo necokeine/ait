@@ -1,10 +1,9 @@
 //! Large Message-tree path baseline using the production traversal policy.
-#![allow(missing_docs)]
 use ait_domain::{
     DomainMetadata, GitCommit, Message, MessageId, MessageKind, MessageOrigin, MessageRole,
     ProjectId, SubMessage, TimestampMs,
 };
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_main};
 use std::{collections::HashMap, hint::black_box};
 fn message_path(c: &mut Criterion) {
     const DEPTH: u128 = 10_000;
@@ -48,5 +47,9 @@ fn message_path(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, message_path);
+/// Runs the message-path traversal benchmark group.
+pub fn benches() {
+    let mut criterion = Criterion::default().configure_from_args();
+    message_path(&mut criterion);
+}
 criterion_main!(benches);

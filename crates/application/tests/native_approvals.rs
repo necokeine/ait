@@ -191,7 +191,8 @@ async fn command_approval_secrets_never_reach_durable_or_reconnected_views() {
     let binary = fake_server.path().join("fake-codex");
     std::fs::write(
         &binary,
-        r#"#!/bin/sh
+        concat!(
+            r#"#!/bin/sh
 IFS= read -r _ || exit 60
 printf '%s\n' '{"id":0,"result":{}}'
 IFS= read -r _ || exit 61
@@ -199,15 +200,28 @@ IFS= read -r _ || exit 62
 printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-a"}}}'
 IFS= read -r _ || exit 63
 printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-a"}}}'
-printf '%s\n' '{"id":73,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","command":"curl -H X-Api-Key:header-secret --header=\"Authorization: Bearer auth-secret\" -H \"Cookie: session=cookie-secret\" https://url-user:url-secret@example.test/v1","cwd":"/workspace","reason":"offline fixture"}}'
-IFS= read -r approval_response || exit 64
+"#,
+            r#"printf '%s\n' '{"id":73,"method":"item/commandExecution/requestApproval","#,
+            r#""params":{"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","#,
+            r#""command":"curl -H X-Api-Key:header-secret --header=\"Authorization: "#,
+            r#"Bearer auth-secret\" -H \"Cookie: session=cookie-secret\" "#,
+            r#"https://url-user:url-secret@example.test/v1","cwd":"/workspace","#,
+            r#""reason":"offline fixture"}}'
+"#,
+            r#"IFS= read -r approval_response || exit 64
 case "$approval_response" in
   *'"id":73'*'"decision":"accept"'*) ;;
   *) exit 65 ;;
 esac
-printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-a","turnId":"turn-a","itemId":"answer-a","delta":"approved"}}'
-printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-a","turn":{"id":"turn-a","items":[],"status":"completed"}}}'
 "#,
+            r#"printf '%s\n' '{"method":"item/agentMessage/delta","params":{"#,
+            r#""threadId":"thread-a","turnId":"turn-a","itemId":"answer-a","#,
+            r#""delta":"approved"}}'
+"#,
+            r#"printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-a","#,
+            r#""turn":{"id":"turn-a","items":[],"status":"completed"}}}'
+"#,
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();

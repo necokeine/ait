@@ -1,5 +1,5 @@
 //! Shared command setup and passive test doubles for control use-case suites.
-#![allow(dead_code, missing_docs, clippy::pedantic)]
+#![allow(dead_code, clippy::pedantic)]
 
 pub(crate) mod control_fixtures;
 pub(crate) mod pausing_store;
