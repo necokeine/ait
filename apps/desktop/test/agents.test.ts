@@ -16,6 +16,13 @@ test("projects saved configuration and provider capabilities without rewriting m
   assert.deepEqual(summary.supportedReasoningEfforts, ["minimal", "high"]);
   assert.deepEqual(providerChoices([provider]), [provider]);
 });
+test("Gemini providers are selectable in desktop Agent configuration", () => {
+  const gemini: AgentProvider = {
+    id: "gemini", name: "Gemini", kind: "gemini", url: null, has_secret: true,
+    models: [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", reasoning_efforts: [] }],
+  };
+  assert.deepEqual(providerChoices([gemini]), [gemini]);
+});
 test("development Mock providers remain selectable when the backend advertises them", () => {
   const mock: AgentProvider = {
     id: "builtin-mock", name: "Mock (Development)", kind: "mock", url: null,

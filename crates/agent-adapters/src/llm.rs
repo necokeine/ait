@@ -10,7 +10,7 @@ use rig::{
     client::{CompletionClient, ModelListingClient},
     completion::{CompletionError, CompletionModel},
     model::ModelListingError,
-    providers::{deepseek, openai},
+    providers::{deepseek, gemini, openai},
 };
 
 pub use rig::{
@@ -30,6 +30,8 @@ pub enum LLMProvider {
     OpenAI,
     /// `DeepSeek` Chat Completions API.
     DeepSeek,
+    /// Google Gemini `GenerateContent` API.
+    Gemini,
 }
 
 const DEEPSEEK_REASONING_EFFORTS: [&str; 4] = ["off", "low", "high", "max"];
@@ -79,9 +81,10 @@ impl fmt::Debug for LLMClientConfig {
 enum RigClient {
     OpenAI(openai::Client),
     DeepSeek(deepseek::Client<DeepSeekHttp>),
+    Gemini(gemini::Client),
 }
 
-/// A reusable Rig client for either `OpenAI` or `DeepSeek`.
+/// A reusable Rig client for `OpenAI`, `DeepSeek` or Gemini.
 ///
 /// Each operation issues one request with no agent loop or automatic retries.
 /// Dropping its future cancels the in-flight operation.
@@ -137,6 +140,7 @@ impl LLMClient {
         let base_url = config.base_url.as_deref().unwrap_or(match config.provider {
             LLMProvider::OpenAI => "https://api.openai.com/v1",
             LLMProvider::DeepSeek => "https://api.deepseek.com",
+            LLMProvider::Gemini => "https://generativelanguage.googleapis.com",
         });
         let url = reqwest::Url::parse(base_url)
             .map_err(|_| invalid("base URL must be an absolute HTTP(S) API root"))?;
@@ -175,6 +179,14 @@ impl LLMClient {
                     .build()
                     .map_err(|_| invalid("could not build DeepSeek client"))?,
             ),
+            LLMProvider::Gemini => RigClient::Gemini(
+                gemini::Client::builder()
+                    .api_key(config.api_key)
+                    .base_url(base_url)
+                    .http_client(http)
+                    .build()
+                    .map_err(|_| invalid("could not build Gemini client"))?,
+            ),
         };
         Ok(Self {
             inner,
@@ -188,6 +200,7 @@ impl LLMClient {
         match &self.inner {
             RigClient::OpenAI(_) => LLMProvider::OpenAI,
             RigClient::DeepSeek(_) => LLMProvider::DeepSeek,
+            RigClient::Gemini(_) => LLMProvider::Gemini,
         }
     }
 
@@ -200,8 +213,8 @@ impl LLMClient {
     #[must_use]
     pub fn supported_reasoning_efforts(&self) -> &'static [&'static str] {
         match self.provider() {
-            LLMProvider::OpenAI => &[],
             LLMProvider::DeepSeek => &DEEPSEEK_REASONING_EFFORTS,
+            LLMProvider::OpenAI | LLMProvider::Gemini => &[],
         }
     }
 
@@ -214,6 +227,7 @@ impl LLMClient {
         match &self.inner {
             RigClient::OpenAI(client) => client.list_models().await,
             RigClient::DeepSeek(client) => client.list_models().await,
+            RigClient::Gemini(client) => client.list_models().await,
         }
         .map_err(|error| match error {
             ModelListingError::ApiError { status_code, .. } => http_error(status_code),
@@ -250,6 +264,7 @@ impl LLMClient {
             match self.provider() {
                 LLMProvider::OpenAI => "openai",
                 LLMProvider::DeepSeek => "deepseek",
+                LLMProvider::Gemini => "gemini",
             },
             model,
         );
@@ -260,6 +275,11 @@ impl LLMClient {
                 .model(model)
                 .build(),
             RigClient::DeepSeek(client) => client
+                .completion_model(model)
+                .completion_request(prompt)
+                .model(model)
+                .build(),
+            RigClient::Gemini(client) => client
                 .completion_model(model)
                 .completion_request(prompt)
                 .model(model)
@@ -340,6 +360,9 @@ impl LLMClient {
                     params.insert("reasoning_effort".into(), serde_json::json!(effort));
                 }
             }
+            LLMProvider::Gemini => {
+                return Err(invalid("Gemini reasoning effort is not supported"));
+            }
         }
         Ok(())
     }
@@ -364,6 +387,7 @@ impl LLMClient {
         match &self.inner {
             RigClient::OpenAI(client) => client.completion_model(model).completion(request).await,
             RigClient::DeepSeek(client) => client.completion_model(model).completion(request).await,
+            RigClient::Gemini(client) => client.completion_model(model).completion(request).await,
         }
         .map_err(|error| completion_error(&error))
     }

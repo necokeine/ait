@@ -56,7 +56,7 @@ pub(in crate::control) fn cron_workspace_write_path(
     let _ = effective_permission_profile(state.settings(), provider, permission_limits)?;
     if !matches!(
         provider.kind,
-        AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek
+        AgentMode::Codex | AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini
     ) {
         return Ok(None);
     }

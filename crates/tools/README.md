@@ -70,7 +70,7 @@ assert_eq!(profiles.resolve("deepseek", "my-model-id").tools().len(), 1);
 // Assign profiles to LLMClientConfig.tool_sets before constructing the client.
 ```
 
-The public OpenAI/DeepSeek Session path now uses the existing `RunCoordinator`
+The public OpenAI/DeepSeek/Gemini Session path now uses the existing `RunCoordinator`
 with `HostToolFactory`. After exact provider/model selection, the adapter advertises
 only executable functions: `read`, `grep`, `glob`, and `bash` where the OS backend
 is available; writable Runs also get `write` and `edit`. Unsupported options are

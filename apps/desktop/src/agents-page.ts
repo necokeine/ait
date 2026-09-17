@@ -108,7 +108,7 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   const render = (updated: AgentsPageView): void => {
     view = updated;
     get("#agents-provider-list").innerHTML = view.providers.map((provider) => {
-      const remote = ["openai", "deepseek"].includes(provider.kind);
+      const remote = ["openai", "deepseek", "gemini"].includes(provider.kind);
       return `<article class="provider-card"><header><strong>${escape(provider.name)}</strong><span class="catalog-badge${remote && !provider.has_secret ? " needs-setup" : ""}">${remote ? provider.has_secret ? "Secret saved" : "Needs secret" : "Built-in"}</span></header>
         <p class="provider-endpoint">${escape(provider.url ?? (remote ? "Official API endpoint" : provider.kind === "codex" ? "Host sign-in" : "Built-in provider"))}</p>
         <details><summary>${provider.models.length} enabled models</summary><ul>${provider.models.map((model) => `<li><strong>${escape(model.name)}</strong><code>${escape(model.id)}</code><small>${model.reasoning_efforts.length ? escape(model.reasoning_efforts.join(" · ")) : "Default reasoning"}</small></li>`).join("") || "<li>No models selected.</li>"}</ul></details>

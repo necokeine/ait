@@ -128,7 +128,7 @@ npm run typecheck
 npm test
 ```
 
-- `bins/worker/tests/process_providers.rs`：真实 worker + 拆分 SQLite + 离线 OpenAI/DeepSeek HTTP；
+- `bins/worker/tests/process_providers.rs`：真实 worker + 拆分 SQLite + 离线 OpenAI/DeepSeek/Gemini HTTP；
   ToolUse → ToolResult → final，18 个 API ACK kill 边界、durable receipt 重放/冲突/旧 fence，
   各类敏感 ToolUse 对全局/Project DB/WAL、事件、checkpoint、export 的回归。
 - `bins/worker/tests/process_codex.rs`：9 个 native checkpoint/integration/finished kill 边界，

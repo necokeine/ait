@@ -46,6 +46,7 @@ fn client_with_secret(provider: &AgentProvider, secret: String) -> Result<LLMCli
     let kind = match provider.kind {
         ProviderKind::OpenAI => LLMProvider::OpenAI,
         ProviderKind::DeepSeek => LLMProvider::DeepSeek,
+        ProviderKind::Gemini => LLMProvider::Gemini,
         _ => {
             return Err(DomainError::invariant(
                 ErrorCode::InvalidConfiguration,
@@ -209,7 +210,11 @@ mod tests {
             model: "fixture-model".into(),
             ..Default::default()
         };
-        for provider in [LLMProvider::DeepSeek, LLMProvider::OpenAI] {
+        for provider in [
+            LLMProvider::DeepSeek,
+            LLMProvider::Gemini,
+            LLMProvider::OpenAI,
+        ] {
             let client = LLMClient::new(LLMClientConfig::new(provider, "fixture-key")).unwrap();
             let messages = [
                 ("system", "Project instructions"),

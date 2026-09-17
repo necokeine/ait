@@ -46,7 +46,10 @@ impl LocalControlService {
             if secret.0.trim().is_empty() {
                 return Err(invalid("provider secret cannot be empty"));
             }
-            if !matches!(provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+            if !matches!(
+                provider.kind,
+                AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini
+            ) {
                 return Err(invalid("this provider uses host authentication"));
             }
             let reference = Uuid::new_v4().to_string();
@@ -152,7 +155,10 @@ impl LocalControlService {
             validate_provider(&provider)?;
             return Ok(CommandResult::ProviderModels(provider.models));
         }
-        if !matches!(provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+        if !matches!(
+            provider.kind,
+            AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini
+        ) {
             return Err(invalid("this provider does not expose model discovery"));
         }
         let state = self

@@ -291,6 +291,7 @@ impl RunDispatcher for WorkerSupervisor {
         let provider = match request.provider.kind {
             ProviderKind::OpenAI => "openai",
             ProviderKind::DeepSeek => "deepseek",
+            ProviderKind::Gemini => "gemini",
             #[allow(clippy::match_wildcard_for_single_variants)]
             _ => return Err(failure()),
         };

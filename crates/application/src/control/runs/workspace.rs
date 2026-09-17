@@ -132,7 +132,10 @@ impl LocalControlService {
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
-        if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+        if matches!(
+            run.provider.kind,
+            AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini
+        ) {
             return self
                 .execute_api_run(&run, control.cancellation.clone())
                 .await;
@@ -160,10 +163,12 @@ impl LocalControlService {
             // before invoking either provider after startup recovery.
             validate_run_permission_ceiling(run.permission_profile, self.permission_limits)?;
             match run.provider.kind {
-                AgentMode::OpenAI | AgentMode::DeepSeek => Err(DomainError::invariant(
-                    ErrorCode::InvalidRun,
-                    "API Run must use the host coordinator",
-                )),
+                AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini => {
+                    Err(DomainError::invariant(
+                        ErrorCode::InvalidRun,
+                        "API Run must use the host coordinator",
+                    ))
+                }
                 AgentMode::Codex => {
                     self.invoke_codex_workspace_checkpointed(
                         &state,

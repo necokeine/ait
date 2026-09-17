@@ -164,6 +164,7 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
                 let provider = match provider.as_str() {
                     "openai" => ait_agent_adapters::LLMProvider::OpenAI,
                     "deepseek" => ait_agent_adapters::LLMProvider::DeepSeek,
+                    "gemini" => ait_agent_adapters::LLMProvider::Gemini,
                     _ => return Err(ProtocolError::InvalidFrame),
                 };
                 let mut config = ait_agent_adapters::LLMClientConfig::new(provider, credential.0);

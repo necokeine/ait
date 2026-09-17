@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-309/adr-001-gemini-api-provider.md`：Gemini 原生 GenerateContent / 模型发现适配、全入口 Provider kind、worker 工具循环与无 provider call ID 的关联规则。
+
 - `decisions/NEC-304/adr-001-cron-sessions-and-desktop.md`：Cron 的 Desktop 配置入口，以及每个 occurrence 原子创建独立 Session 与 Run 的当前语义；修订 NEC-150 与 ADR-013 的 Sessionless Cron 条款。
 
 - `decisions/NEC-301/adr-001-global-default-and-small-agents.md`：全局 Default Agent 回退、Small Agent 短调用选择，以及暂不参与 prompt 组装的 Agent system prompt 保留字段。
