@@ -24,10 +24,10 @@ pub use run::{
     CompositeRunTool, DenyWorkspaceApprovals, GeneratedSessionTitle, RunAgent, RunApproval,
     RunClock, RunIdGenerator, RunStore, RunStoreError, RunTool, RunToolFactory, RunToolInteraction,
     SessionTitleGenerator, SessionTitleRequest, ToolInvocation, ToolOutcome, ToolRecovery,
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
-    WorkspaceApprovalDecision, WorkspaceApprovalRequest, WorkspaceIntegrationCheckpoint,
-    WorkspaceIntegrationGate, WorkspaceOperation, WorkspaceOutputItem, WorkspaceProgressEvent,
-    WorkspaceProgressReporter, WorkspaceResultSink,
+    ToolUsageRecorder, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceApproval, WorkspaceApprovalDecision, WorkspaceApprovalRequest,
+    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
 };
 pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,

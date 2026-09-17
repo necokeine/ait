@@ -22,7 +22,7 @@ function questions(interaction: ToolInteraction): Question[] {
 export function renderToolInteractions(run: DesktopRun): string {
   return (run.toolInteractions ?? []).filter((interaction) => interaction.status === "pending").map((interaction) => {
     const live = interaction.expiresAt > Date.now() && ["running", "waiting_approval"].includes(run.status);
-    if (interaction.toolName === "exit_plan_mode") {
+    if (interaction.toolName === "plan_exit") {
       const plan = typeof interaction.request.plan === "string" ? interaction.request.plan : "Plan unavailable.";
       return `<section class="native-approval tool-interaction" data-run-id="${escape(run.id)}" data-interaction-id="${escape(interaction.id)}">
         <header><strong>Review implementation plan</strong><span>${live ? "Response required" : "expired"}</span></header>

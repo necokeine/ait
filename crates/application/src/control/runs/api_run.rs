@@ -21,7 +21,7 @@ use ait_domain::{
 use ait_ports::{
     AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, CompletionResult,
     ControlStoreError, RunAgent, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome,
-    ToolRecovery,
+    ToolRecovery, ToolUsageRecorder,
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
@@ -635,7 +635,7 @@ impl RunStore for ControlRunStore {
                     execution_id: ait_domain::ToolExecutionId::new(execution_id),
                     tool_name,
                     arguments,
-                    message_path: Vec::new(),
+                    usage: ToolUsageRecorder::default(),
                     cancellation: connection.child_token(),
                 },
                 Some(lease),

@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use ait_domain::{
     ApprovalGrantScope, DomainError, Message, MessageId, NativeApprovalKind, NativeApprovalTarget,
@@ -626,6 +629,58 @@ pub trait WorkspaceAgent: Send + Sync {
     }
 }
 
+/// Accumulates nested provider/tool usage even when a tool later fails,
+/// is cancelled, or exceeds a limit.
+#[derive(Clone, Default)]
+pub struct ToolUsageRecorder(Arc<Mutex<RunUsage>>);
+
+impl ToolUsageRecorder {
+    /// Adds known nested usage using saturating arithmetic.
+    pub fn record(&self, delta: &RunUsage) {
+        let mut total = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
+        total.cached_input_tokens = total
+            .cached_input_tokens
+            .saturating_add(delta.cached_input_tokens);
+        total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
+        total.tool_executions = total.tool_executions.saturating_add(delta.tool_executions);
+        total.cost = match (total.cost, delta.cost) {
+            (None, None) => None,
+            (left, right) => Some(ait_domain::CostMicros(
+                left.map_or(0, ait_domain::CostMicros::get)
+                    .saturating_add(right.map_or(0, ait_domain::CostMicros::get)),
+            )),
+        };
+    }
+
+    /// Returns all usage recorded so far.
+    #[must_use]
+    pub fn snapshot(&self) -> RunUsage {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl std::fmt::Debug for ToolUsageRecorder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("ToolUsageRecorder")
+            .field(&self.snapshot())
+            .finish()
+    }
+}
+
+impl PartialEq for ToolUsageRecorder {
+    fn eq(&self, other: &Self) -> bool {
+        self.snapshot() == other.snapshot()
+    }
+}
+
 /// A tool invocation with stable host-assigned idempotency identity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolInvocation {
@@ -639,11 +694,8 @@ pub struct ToolInvocation {
     pub tool_name: String,
     /// Canonical arguments.
     pub arguments: Value,
-    /// Immutable conversation path visible before this tool call.
-    ///
-    /// Ordinary tools ignore this. Context-inheriting delegation tools use it
-    /// without reaching back into persistence or mutating Message history.
-    pub message_path: Vec<ProjectedMessage>,
+    /// Nested usage sink observed by the coordinator on every exit path.
+    pub usage: ToolUsageRecorder,
     /// Cooperative cancellation shared with the Run supervisor.
     pub cancellation: CancellationToken,
 }

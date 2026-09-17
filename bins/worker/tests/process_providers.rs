@@ -433,35 +433,33 @@ async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
             vec![
-                "ask_user_question",
                 "bash",
                 "edit",
-                "exit_plan_mode",
                 "glob",
                 "grep",
+                "plan_exit",
+                "question",
                 "read",
                 "skill",
-                "subagent",
-                "subagent_fork",
-                "todo_write",
-                "web_fetch",
-                "web_search",
+                "task",
+                "todowrite",
+                "webfetch",
+                "websearch",
                 "write",
             ]
         } else {
             vec![
-                "ask_user_question",
                 "edit",
-                "exit_plan_mode",
                 "glob",
                 "grep",
+                "plan_exit",
+                "question",
                 "read",
                 "skill",
-                "subagent",
-                "subagent_fork",
-                "todo_write",
-                "web_fetch",
-                "web_search",
+                "task",
+                "todowrite",
+                "webfetch",
+                "websearch",
                 "write",
             ]
         };

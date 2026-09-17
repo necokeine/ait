@@ -19,7 +19,7 @@ function run(interaction: ToolInteraction): DesktopRun {
 test("renders escaped questions and explicit response actions", () => {
   const html = renderToolInteractions(run({
     id: "interaction-a",
-    toolName: "ask_user_question",
+    toolName: "question",
     request: {
       questions: [{
         id: "choice",
@@ -41,7 +41,7 @@ test("renders escaped questions and explicit response actions", () => {
 test("plan review renders only approve, deny, and cancellation decisions", () => {
   const html = renderToolInteractions(run({
     id: "plan-a",
-    toolName: "exit_plan_mode",
+    toolName: "plan_exit",
     request: { plan: "# Ship safely\n\nDo <work>." },
     status: "pending",
     expiresAt: Date.now() + 10_000,

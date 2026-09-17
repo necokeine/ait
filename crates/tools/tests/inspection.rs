@@ -13,7 +13,7 @@ fn call(name: &str, arguments: Value) -> ToolInvocation {
         execution_id: ToolExecutionId::new("execution"),
         tool_name: name.into(),
         arguments,
-        message_path: Vec::new(),
+        usage: Default::default(),
         cancellation: CancellationToken::new(),
     }
 }

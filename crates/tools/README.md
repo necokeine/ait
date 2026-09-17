@@ -4,7 +4,7 @@ Codex uses a separate native profile described below; none of its instructions
 or tools are added to this API catalog.
 
 `ait-tools` owns provider-neutral function definitions and the Ait system prompt.
-`ToolSet::default()` supplies 28 functions on each host; Windows selects `pwsh`,
+`ToolSet::default()` supplies 27 functions on each host; Windows selects `pwsh`,
 other hosts select `bash`. Definitions are sorted by name for stable requests.
 `ToolSetRegistry` supports exact `(provider, model)` overrides with a shared
 default fallback. It does not infer capabilities from model-name substrings.
@@ -20,12 +20,12 @@ Codex/Claude plugins are outside that default composition.
 | Shell | `bash` / `pwsh` |
 | Files and search | `read`, `read_image`, `write`, `edit`, `glob`, `grep`, `str_replace_editor` |
 | Background jobs | `job_list`, `job_output`, `job_kill` |
-| User interaction and planning | `ask_user_question`, `exit_plan_mode`, `todo_write` |
+| User interaction and planning | `question`, `plan_exit`, `todowrite` |
 | Skills | `skill` |
 | Goals | `get_goal`, `create_goal`, `update_goal` |
-| Delegation | `subagent`, `subagent_fork`, `list_subagent_models`, `list_agents`, `send_message`, `interrupt_agent` |
+| Delegation | `task`, `list_subagent_models`, `list_agents`, `send_message`, `interrupt_agent` |
 | Orchestration | `workflow`, `ralph` |
-| Web | `web_search`, `web_fetch` |
+| Web | `websearch`, `webfetch` |
 
 ## Source mapping
 
@@ -34,7 +34,7 @@ at the pinned upstream commit:
 
 - `packages/preset/agent-presets/presets/standard/agent.cordis.yml`: enabled Standard packages and options.
 - `snapshots/web/fresh-round-trip/tool-schemas.expected.json`: Standard function arguments.
-- `snapshots/sdk/subagent-dsh-sdk-dynamic-route/tool-schemas.expected.json`: `list_subagent_models` and model-selection fields on `subagent`.
+- `snapshots/sdk/subagent-dsh-sdk-dynamic-route/tool-schemas.expected.json`: `list_subagent_models` and model-selection fields adapted for `task`.
 - `snapshots/web/minimal-preset/tool-schemas.expected.json`: `str_replace_editor`.
 - `snapshots/session/pwsh-tool-turn/tool-schemas.expected.json`: Windows shell variant.
 - `packages/core/system-prompt/src/index.ts` and `snapshots/web/fresh-round-trip/system-prompt.expected.md`: ordered instructions, separate schemas, and tool-use guidance.
@@ -73,17 +73,16 @@ assert_eq!(profiles.resolve("deepseek", "my-model-id").tools().len(), 1);
 The public OpenAI/DeepSeek/Gemini/MiniMax Session path now uses the existing `RunCoordinator`
 with `HostToolFactory`. After exact provider/model selection, the adapter advertises
 only executable functions. The local family contains `read`, `grep`, `glob`, `write`,
-`edit`, `skill`, `todo_write`, `web_fetch`, `web_search`, and `bash` where the OS
-backend is available. The Agent extension adds `ask_user_question`, `exit_plan_mode`,
-`subagent`, and `subagent_fork`, for 14 executable functions on a Unix host with a
-usable shell (13 without one). Unsupported options are removed from schemas and
-rejected by the executor; legacy spellings such as `webfetch`, `question`, `task`,
-and `plan_exit` are not aliases.
+`edit`, `skill`, `todowrite`, `webfetch`, `websearch`, and `bash` where the OS
+backend is available. The Agent extension adds `question`, `plan_exit`, and `task`,
+for 13 executable functions on a Unix host with a usable shell (12 without one).
+Unsupported options are removed from schemas and rejected by the executor; the
+former snake-case and subagent spellings are not aliases.
 
 `skill` reads a named `SKILL.md` without following symlinks from Project-local
-`.agents/skills`, `.opencode/skills`, `.ait/skills`, or `skills`. `todo_write`
+`.agents/skills`, `.opencode/skills`, `.ait/skills`, or `skills`. `todowrite`
 returns the complete validated replacement list in its persisted ToolResult.
-`web_fetch` and `web_search` accept bounded text only, pin public DNS resolutions,
+`webfetch` and `websearch` accept bounded text only, pin public DNS resolutions,
 reject credentials and local/private/link-local targets on every redirect, and mark
 all returned material as external untrusted input. Search currently uses DuckDuckGo's
 public HTML endpoint and therefore has no provider SLA.
@@ -91,9 +90,10 @@ public HTML endpoint and therefore has no provider SLA.
 Questions and plan reviews are durable Run records. They cross the private worker
 protocol, appear in Session and Runs views, expire with the Run/worker deadline, and
 resume exactly one waiting ToolUse after an explicit desktop response. Foreground
-subagents reuse the current provider/model route, run at most eight model rounds and
-16 nested tool calls, inherit completed context only for `subagent_fork`, and charge
-nested token/cost/tool usage to the parent Run. Recursive and background delegation
+`task` uses a self-contained prompt and the current provider/model route, runs at
+most eight model rounds and 16 nested tool calls, and charges known nested
+token/cost/tool usage to the parent Run even when it later fails, is cancelled, or
+hits a limit. Recursive, inherited-context, and background delegation
 are not advertised. Cross-provider/model child routing and durable background child
 jobs remain intentionally unsupported until Ait has a first-class child-Run aggregate.
 

@@ -9,7 +9,7 @@ use ait_domain::{
 use ait_ports::{
     AgentInvocation, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent, RunApproval,
     RunClock, RunIdGenerator, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome,
-    ToolRecovery,
+    ToolRecovery, ToolUsageRecorder,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -581,6 +581,7 @@ impl RunCoordinator {
         Ok(ToolLoop::Continue(run))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_parallel_tools(
         &self,
         mut run: Run,
@@ -621,24 +622,33 @@ impl RunCoordinator {
         }
         // Every intent is durable before any future is polled. Join preserves
         // proposal order even if the executors finish in the opposite order.
-        let results = futures_util::future::join_all(executions.iter().map(|e| {
-            self.controlled_tool(
-                self.tools.execute(ToolInvocation {
-                    run_id: run.id.clone(),
-                    call_id: e.call_id.clone(),
-                    execution_id: e.id.clone(),
-                    tool_name: e.tool_name.clone(),
-                    arguments: e.arguments.clone(),
-                    message_path: Vec::new(),
-                    cancellation: cancellation.clone(),
-                }),
-                &run,
-                &cancellation,
-            )
-        }))
+        let nested_usages = executions
+            .iter()
+            .map(|_| ToolUsageRecorder::default())
+            .collect::<Vec<_>>();
+        let results = futures_util::future::join_all(executions.iter().zip(&nested_usages).map(
+            |(e, usage)| {
+                self.controlled_tool(
+                    self.tools.execute(ToolInvocation {
+                        run_id: run.id.clone(),
+                        call_id: e.call_id.clone(),
+                        execution_id: e.id.clone(),
+                        tool_name: e.tool_name.clone(),
+                        arguments: e.arguments.clone(),
+                        usage: usage.clone(),
+                        cancellation: cancellation.clone(),
+                    }),
+                    &run,
+                    &cancellation,
+                )
+            },
+        ))
         .await;
         let mut timed_out = false;
-        for (mut execution, result) in executions.into_iter().zip(results) {
+        for ((mut execution, result), nested_usage) in
+            executions.into_iter().zip(results).zip(nested_usages)
+        {
+            add_usage(&mut run.usage, &nested_usage.snapshot());
             match result {
                 Controlled::Returned(Ok(outcome)) => {
                     add_usage(&mut run.usage, &outcome.usage);
@@ -851,12 +861,7 @@ impl RunCoordinator {
                 .store
                 .save_tool_execution(run, execution.clone())
                 .await?;
-            // Capture the path at the latest durable head. After an earlier
-            // serial tool result, the assistant message is no longer the Run
-            // head, and the completed result is part of the context visible to
-            // a later delegation call.
-            let message_path_head = run.last_message_id.unwrap_or(run.base_message_id);
-            let message_path = self.store.load_message_path(&message_path_head).await?;
+            let nested_usage = ToolUsageRecorder::default();
             let result = self
                 .controlled_tool(
                     async {
@@ -866,7 +871,7 @@ impl RunCoordinator {
                             execution_id: execution.id.clone(),
                             tool_name: tool_use.tool_name.clone(),
                             arguments: execution.arguments.clone(),
-                            message_path,
+                            usage: nested_usage.clone(),
                             cancellation: cancellation.clone(),
                         };
                         if let Some(grant) = operation_grant {
@@ -885,6 +890,7 @@ impl RunCoordinator {
                     &cancellation,
                 )
                 .await;
+            add_usage(&mut run.usage, &nested_usage.snapshot());
             let forced_stop = match result {
                 Controlled::Returned(Ok(ToolOutcome { output, usage })) => {
                     add_usage(&mut run.usage, &usage);

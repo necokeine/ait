@@ -4,7 +4,7 @@ use ait_ports::ToolInvocation;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::OnceLock,
     time::Duration,
 };
@@ -52,40 +52,71 @@ fn safe_url(value: &str) -> Result<Url, DomainError> {
     Ok(url)
 }
 
+fn ipv4_prefix(address: Ipv4Addr, network: Ipv4Addr, bits: u32) -> bool {
+    let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+    u32::from(address) & mask == u32::from(network) & mask
+}
+
+fn ipv6_prefix(address: Ipv6Addr, network: Ipv6Addr, bits: u32) -> bool {
+    let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+    u128::from(address) & mask == u128::from(network) & mask
+}
+
+fn public_ipv4(address: Ipv4Addr) -> bool {
+    const DENIED: &[(Ipv4Addr, u32)] = &[
+        (Ipv4Addr::UNSPECIFIED, 8),
+        (Ipv4Addr::new(10, 0, 0, 0), 8),
+        (Ipv4Addr::new(100, 64, 0, 0), 10),
+        (Ipv4Addr::new(127, 0, 0, 0), 8),
+        (Ipv4Addr::new(169, 254, 0, 0), 16),
+        (Ipv4Addr::new(172, 16, 0, 0), 12),
+        (Ipv4Addr::new(192, 0, 0, 0), 24),
+        (Ipv4Addr::new(192, 0, 2, 0), 24),
+        (Ipv4Addr::new(192, 88, 99, 0), 24),
+        (Ipv4Addr::new(192, 168, 0, 0), 16),
+        (Ipv4Addr::new(198, 18, 0, 0), 15),
+        (Ipv4Addr::new(198, 51, 100, 0), 24),
+        (Ipv4Addr::new(203, 0, 113, 0), 24),
+        (Ipv4Addr::new(224, 0, 0, 0), 4),
+        (Ipv4Addr::new(240, 0, 0, 0), 4),
+    ];
+    !DENIED
+        .iter()
+        .any(|(network, bits)| ipv4_prefix(address, *network, *bits))
+}
+
 fn public_ip(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(address) => {
-            let [a, b, c, _] = address.octets();
-            !(a == 0
-                || a == 10
-                || a == 127
-                || a >= 224
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 0 && c == 2)
-                || (a == 192 && b == 168)
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 198 && b == 51 && c == 100)
-                || (a == 203 && b == 0 && c == 113))
-        }
+        IpAddr::V4(address) => public_ipv4(address),
         IpAddr::V6(address) => {
-            // Cover both IPv4-mapped and deprecated IPv4-compatible forms;
-            // otherwise `::127.0.0.1` could bypass the IPv4 policy.
-            if let Some(mapped) = address.to_ipv4() {
-                return public_ip(IpAddr::V4(mapped));
+            const GLOBAL_UNICAST: Ipv6Addr = Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0);
+            const DENIED: &[(Ipv6Addr, u32)] = &[
+                (Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0), 32),
+                (Ipv6Addr::new(0x2002, 0, 0, 0, 0, 0, 0, 0), 16),
+                (Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 0), 20),
+            ];
+            // Cover both IPv4-mapped and deprecated IPv4-compatible forms.
+            if let Some(embedded) = address.to_ipv4() {
+                return public_ipv4(embedded);
             }
-            let segments = address.segments();
-            !address.is_loopback()
-                && !address.is_unspecified()
-                && !address.is_multicast()
-                && (segments[0] & 0xfe00) != 0xfc00
-                && (segments[0] & 0xffc0) != 0xfe80
-                && (segments[0] & 0xffc0) != 0xfec0
-                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+            // Only native global unicast is eligible. Deny special-use ranges
+            // within it, including transition mechanisms that can encode a
+            // private IPv4 destination.
+            ipv6_prefix(address, GLOBAL_UNICAST, 3)
+                && !DENIED
+                    .iter()
+                    .any(|(network, bits)| ipv6_prefix(address, *network, *bits))
         }
     }
+}
+
+fn public_addresses(addresses: &[SocketAddr]) -> bool {
+    !addresses.is_empty() && addresses.iter().all(|address| public_ip(address.ip()))
+}
+
+fn redirect_target(base: &Url, location: &str) -> Result<Url, DomainError> {
+    safe_url(base.join(location).map_err(|_| failed())?.as_str())
 }
 
 async fn resolve(url: &Url) -> Result<(String, Vec<SocketAddr>), DomainError> {
@@ -96,7 +127,7 @@ async fn resolve(url: &Url) -> Result<(String, Vec<SocketAddr>), DomainError> {
         .map_err(|_| web_failure(true))?
         .take(16)
         .collect();
-    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
+    if !public_addresses(&addresses) {
         return Err(web_failure(false));
     }
     Ok((host, addresses))
@@ -138,7 +169,7 @@ async fn fetch(mut url: Url) -> Result<(Url, u16, String, Vec<u8>, bool), Domain
             .get(reqwest::header::LOCATION)
             .and_then(|value| value.to_str().ok())
             .ok_or_else(|| web_failure(false))?;
-        url = safe_url(url.join(location).map_err(|_| failed())?.as_str())?;
+        url = redirect_target(&url, location)?;
         redirects = redirects.saturating_add(1);
     };
     let final_url = safe_url(response.url().as_str())?;
@@ -275,7 +306,7 @@ impl HostTools {
     pub(super) async fn web(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
         self.check(request)?;
         match request.tool_name.as_str() {
-            "web_fetch" => {
+            "webfetch" => {
                 let url = safe_url(string(&request.arguments, "url")?)?;
                 let (url, status, content_type, bytes, truncated) = fetch(url).await?;
                 self.check(request)?;
@@ -295,7 +326,7 @@ impl HostTools {
                     "external_untrusted": true,
                 }))
             }
-            "web_search" => {
+            "websearch" => {
                 let queries = request.arguments["queries"].as_array().ok_or_else(failed)?;
                 let mut results = Vec::new();
                 for query in queries {
@@ -335,6 +366,43 @@ mod tests {
             assert!(safe_url(value).is_err(), "{value}");
         }
         assert_eq!(safe_url("https://example.com/a").unwrap().scheme(), "https");
+    }
+
+    #[test]
+    fn ip_policy_rejects_special_ipv6_and_embedded_private_destinations() {
+        for address in [
+            "64:ff9b::10.0.0.1",
+            "64:ff9b:1::a00:1",
+            "100::1",
+            "2001:2::1",
+            "2001:db8::1",
+            "2002:a00:1::1",
+            "3fff::1",
+            "5f00::1",
+            "::ffff:10.0.0.1",
+            "::10.0.0.1",
+        ] {
+            assert!(!public_ip(address.parse().unwrap()), "{address}");
+        }
+        for address in ["1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(public_ip(address.parse().unwrap()), "{address}");
+        }
+    }
+
+    #[test]
+    fn dns_and_redirect_checks_reject_any_private_target() {
+        let addresses = [
+            "93.184.216.34:443".parse().unwrap(),
+            "127.0.0.1:443".parse().unwrap(),
+        ];
+        assert!(!public_addresses(&addresses));
+        assert!(
+            redirect_target(
+                &Url::parse("https://example.com/start").unwrap(),
+                "http://169.254.169.254/latest/meta-data"
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -492,14 +492,14 @@ impl LocalControlService {
                 return Err(invalid());
             }
             let output = match (record.tool_name.as_str(), action, response.as_ref()) {
-                ("ask_user_question", ToolInteractionAction::Submit, Some(answers)) => {
+                ("question", ToolInteractionAction::Submit, Some(answers)) => {
                     validate_answers(&record.request, answers)?;
                     json!({"answers": answers})
                 }
-                ("exit_plan_mode", ToolInteractionAction::Approve, None) => {
+                ("plan_exit", ToolInteractionAction::Approve, None) => {
                     json!({"approved":true})
                 }
-                ("exit_plan_mode", ToolInteractionAction::Deny, None) => {
+                ("plan_exit", ToolInteractionAction::Deny, None) => {
                     json!({"approved":false})
                 }
                 _ => return Err(invalid()),

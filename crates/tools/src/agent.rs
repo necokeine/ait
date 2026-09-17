@@ -18,22 +18,6 @@ use std::sync::Arc;
 const MAX_CHILD_ROUNDS: u32 = 8;
 const MAX_CHILD_TOOL_CALLS: u32 = 16;
 
-fn add_usage(total: &mut RunUsage, delta: &RunUsage) {
-    total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
-    total.cached_input_tokens = total
-        .cached_input_tokens
-        .saturating_add(delta.cached_input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
-    total.tool_executions = total.tool_executions.saturating_add(delta.tool_executions);
-    total.cost = match (total.cost, delta.cost) {
-        (None, None) => None,
-        (left, right) => Some(ait_domain::CostMicros(
-            left.map_or(0, ait_domain::CostMicros::get)
-                .saturating_add(right.map_or(0, ait_domain::CostMicros::get)),
-        )),
-    };
-}
-
 fn failed(message: &'static str) -> DomainError {
     DomainError::invariant(ErrorCode::ToolExecutionFailed, message)
 }
@@ -54,34 +38,11 @@ fn timestamp() -> TimestampMs {
     TimestampMs(i64::try_from(millis).unwrap_or(i64::MAX))
 }
 
-fn project(path: &[ProjectedMessage]) -> ProjectId {
-    path.iter()
-        .rev()
-        .find_map(|entry| match entry {
-            ProjectedMessage::Visible(message) => Some(message.project_id.clone()),
-            ProjectedMessage::Redacted { .. } => None,
-        })
-        .unwrap_or_else(|| ProjectId::new("subagent"))
-}
-
 fn parent(path: &[ProjectedMessage]) -> Option<MessageId> {
     path.iter().rev().find_map(|entry| match entry {
         ProjectedMessage::Visible(message) => Some(message.id),
         ProjectedMessage::Redacted { .. } => None,
     })
-}
-
-fn child_path(request: &mut ToolInvocation) -> Vec<ProjectedMessage> {
-    if request.tool_name != "subagent_fork" {
-        return Vec::new();
-    }
-    let mut inherited = std::mem::take(&mut request.message_path);
-    if inherited.last().is_some_and(|entry| {
-        matches!(entry, ProjectedMessage::Visible(message) if message.role == MessageRole::Assistant)
-    }) {
-        inherited.pop();
-    }
-    inherited
 }
 
 fn child_prompt(request: &ToolInvocation) -> Result<String, DomainError> {
@@ -90,9 +51,7 @@ fn child_prompt(request: &ToolInvocation) -> Result<String, DomainError> {
         .get("run_in_background")
         .is_some_and(|value| value != &Value::Bool(false))
     {
-        return Err(failed(
-            "background subagents are not supported by this host",
-        ));
+        return Err(failed("background tasks are not supported by this host"));
     }
     request
         .arguments
@@ -100,7 +59,7 @@ fn child_prompt(request: &ToolInvocation) -> Result<String, DomainError> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty() && value.len() <= MAX_BYTES)
         .map(str::to_owned)
-        .ok_or_else(|| failed("subagent prompt is invalid"))
+        .ok_or_else(|| failed("task prompt is invalid"))
 }
 
 fn user_message(
@@ -207,7 +166,6 @@ struct ChildState {
     project: ProjectId,
     sequence: u32,
     path: Vec<ProjectedMessage>,
-    usage: RunUsage,
     tool_calls: u32,
 }
 
@@ -235,7 +193,8 @@ impl AgentTools {
     ) -> Result<(), DomainError> {
         state.sequence = state.sequence.saturating_add(1);
         let arguments = serde_json::from_str(&call.arguments)
-            .map_err(|_| failed("subagent returned invalid tool arguments"))?;
+            .map_err(|_| failed("task returned invalid tool arguments"))?;
+        let child_usage = ait_ports::ToolUsageRecorder::default();
         let result = if self
             .child_tools
             .executable_tools()
@@ -252,16 +211,20 @@ impl AgentTools {
                     )),
                     tool_name: call.tool_name.clone(),
                     arguments,
-                    message_path: state.path.clone(),
+                    usage: child_usage.clone(),
                     cancellation: request.cancellation.clone(),
                 })
                 .await
         } else {
-            Err(failed("subagent requested an unavailable tool"))
+            Err(failed("task requested an unavailable tool"))
         };
-        state.usage.tool_executions = state.usage.tool_executions.saturating_add(1);
+        request.usage.record(&child_usage.snapshot());
+        request.usage.record(&RunUsage {
+            tool_executions: 1,
+            ..RunUsage::default()
+        });
         if let Ok(outcome) = &result {
-            add_usage(&mut state.usage, &outcome.usage);
+            request.usage.record(&outcome.usage);
         }
         let message = tool_result_message(
             state.run.as_str(),
@@ -276,15 +239,15 @@ impl AgentTools {
         Ok(())
     }
 
-    async fn subagent(&self, mut request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+    async fn task(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
         let prompt = child_prompt(&request)?;
         let child_run = RunId::new(format!(
-            "{}:subagent:{}",
+            "{}:task:{}",
             request.run_id.as_str(),
             request.execution_id.as_str()
         ));
-        let mut path = child_path(&mut request);
-        let project_id = project(&path);
+        let mut path = Vec::new();
+        let project_id = ProjectId::new("task");
         let initial = user_message(
             child_run.as_str(),
             1,
@@ -299,14 +262,13 @@ impl AgentTools {
             project: project_id,
             sequence: 1,
             path,
-            usage: RunUsage::default(),
             tool_calls: 0,
         };
         for round in 1..=MAX_CHILD_ROUNDS {
             if request.cancellation.is_cancelled() {
                 return Err(DomainError::invariant(
                     ErrorCode::RunCancelled,
-                    "subagent cancelled",
+                    "task cancelled",
                 ));
             }
             let response = self
@@ -322,7 +284,7 @@ impl AgentTools {
                     cancellation: request.cancellation.clone(),
                 })
                 .await?;
-            add_usage(&mut state.usage, &response.usage);
+            request.usage.record(&response.usage);
             state.sequence = state.sequence.saturating_add(1);
             let assistant = assistant_message(
                 state.run.as_str(),
@@ -352,39 +314,34 @@ impl AgentTools {
             state.path.push(ProjectedMessage::Visible(assistant));
             if calls.is_empty() {
                 if final_text.trim().is_empty() || final_text.len() > MAX_BYTES {
-                    return Err(failed("subagent returned an invalid final response"));
+                    return Err(failed("task returned an invalid final response"));
                 }
                 return Ok(ToolOutcome {
                     output: json!({"content": final_text, "rounds": round}),
-                    usage: state.usage,
+                    usage: RunUsage::default(),
                 });
             }
             state.tool_calls = state
                 .tool_calls
                 .saturating_add(u32::try_from(calls.len()).unwrap_or(u32::MAX));
             if state.tool_calls > MAX_CHILD_TOOL_CALLS {
-                return Err(failed("subagent exceeded its tool-call limit"));
+                return Err(failed("task exceeded its tool-call limit"));
             }
             for call in calls {
                 self.execute_child_call(&request, &mut state, call).await?;
             }
         }
-        Err(failed("subagent exceeded its round limit"))
+        Err(failed("task exceeded its round limit"))
     }
 }
 
 #[async_trait]
 impl RunTool for AgentTools {
     fn executable_tools(&self) -> Vec<String> {
-        [
-            "ask_user_question",
-            "exit_plan_mode",
-            "subagent",
-            "subagent_fork",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+        ["plan_exit", "question", "task"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn requires_approval(&self, _: &str, _: &Value) -> bool {
@@ -400,7 +357,7 @@ impl RunTool for AgentTools {
         {
             return Err(failed("tool arguments are invalid"));
         }
-        if request.tool_name == "ask_user_question" {
+        if request.tool_name == "question" {
             let mut ids = std::collections::HashSet::new();
             if !request.arguments["questions"]
                 .as_array()
@@ -432,7 +389,7 @@ impl RunTool for AgentTools {
                 return Err(failed("question ids must be unique"));
             }
         }
-        if request.tool_name == "exit_plan_mode"
+        if request.tool_name == "plan_exit"
             && !request.arguments["plan"]
                 .as_str()
                 .is_some_and(|plan| plan.trim_start().starts_with("# "))
@@ -440,8 +397,8 @@ impl RunTool for AgentTools {
             return Err(failed("plan must start with a markdown heading"));
         }
         match request.tool_name.as_str() {
-            "ask_user_question" | "exit_plan_mode" => self.interactions.request(request).await,
-            "subagent" | "subagent_fork" => self.subagent(request).await,
+            "plan_exit" | "question" => self.interactions.request(request).await,
+            "task" => self.task(request).await,
             _ => Err(failed("tool is unavailable")),
         }
     }
@@ -451,10 +408,7 @@ impl RunTool for AgentTools {
     }
 
     async fn reconcile(&self, execution: &ToolExecution) -> Result<ToolRecovery, DomainError> {
-        if matches!(
-            execution.tool_name.as_str(),
-            "ask_user_question" | "exit_plan_mode"
-        ) {
+        if matches!(execution.tool_name.as_str(), "plan_exit" | "question") {
             self.interactions.reconcile(execution).await
         } else {
             Ok(ToolRecovery::Unknown)
@@ -470,7 +424,7 @@ mod tests {
     use std::{collections::VecDeque, sync::Mutex};
 
     struct ScriptedAgent {
-        responses: Mutex<VecDeque<AgentResponse>>,
+        responses: Mutex<VecDeque<Result<AgentResponse, DomainError>>>,
         paths: Mutex<Vec<Vec<ProjectedMessage>>>,
     }
 
@@ -478,7 +432,7 @@ mod tests {
     impl RunAgent for ScriptedAgent {
         async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError> {
             self.paths.lock().unwrap().push(request.message_path);
-            Ok(self.responses.lock().unwrap().pop_front().unwrap())
+            self.responses.lock().unwrap().pop_front().unwrap()
         }
     }
 
@@ -524,23 +478,27 @@ mod tests {
         }
     }
 
-    fn call(name: &str, arguments: Value, message_path: Vec<ProjectedMessage>) -> ToolInvocation {
-        ToolInvocation {
-            run_id: RunId::new("parent"),
-            call_id: "call".into(),
-            execution_id: ToolExecutionId::new("execution"),
-            tool_name: name.into(),
-            arguments,
-            message_path,
-            cancellation: tokio_util::sync::CancellationToken::new(),
-        }
+    fn call(name: &str, arguments: Value) -> (ToolInvocation, ait_ports::ToolUsageRecorder) {
+        let usage = ait_ports::ToolUsageRecorder::default();
+        (
+            ToolInvocation {
+                run_id: RunId::new("parent"),
+                call_id: "call".into(),
+                execution_id: ToolExecutionId::new("execution"),
+                tool_name: name.into(),
+                arguments,
+                usage: usage.clone(),
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            },
+            usage,
+        )
     }
 
     #[tokio::test]
-    async fn foreground_subagent_runs_tools_and_charges_nested_usage() {
+    async fn foreground_task_runs_tools_and_charges_nested_usage() {
         let agent = Arc::new(ScriptedAgent {
             responses: Mutex::new(VecDeque::from([
-                AgentResponse {
+                Ok(AgentResponse {
                     sub_messages: vec![SubMessage::ToolUse(ToolUse {
                         call_id: "child-read".into(),
                         tool_name: "read".into(),
@@ -552,8 +510,8 @@ mod tests {
                         output_tokens: 2,
                         ..RunUsage::default()
                     },
-                },
-                AgentResponse {
+                }),
+                Ok(AgentResponse {
                     sub_messages: vec![SubMessage::Text {
                         text: "done".into(),
                     }],
@@ -562,7 +520,7 @@ mod tests {
                         output_tokens: 1,
                         ..RunUsage::default()
                     },
-                },
+                }),
             ])),
             paths: Mutex::new(Vec::new()),
         });
@@ -571,18 +529,16 @@ mod tests {
             Arc::new(ChildTools),
             Arc::new(Interactions::default()),
         );
-        let outcome = tools
-            .execute(call(
-                "subagent",
-                json!({"description":"Inspect input","prompt":"Read input and report.","run_in_background":false}),
-                Vec::new(),
-            ))
-            .await
-            .unwrap();
+        let (request, usage) = call(
+            "task",
+            json!({"description":"Inspect input","prompt":"Read input and report.","run_in_background":false}),
+        );
+        let outcome = tools.execute(request).await.unwrap();
         assert_eq!(outcome.output["content"], "done");
-        assert_eq!(outcome.usage.input_tokens, 8);
-        assert_eq!(outcome.usage.output_tokens, 3);
-        assert_eq!(outcome.usage.tool_executions, 1);
+        assert_eq!(outcome.usage, RunUsage::default());
+        assert_eq!(usage.snapshot().input_tokens, 8);
+        assert_eq!(usage.snapshot().output_tokens, 3);
+        assert_eq!(usage.snapshot().tool_executions, 1);
         let paths = agent.paths.lock().unwrap();
         assert_eq!(paths.len(), 2);
         assert!(matches!(
@@ -592,56 +548,129 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fork_inherits_context_and_questions_use_the_interaction_port() {
+    async fn task_is_self_contained_and_questions_use_the_interaction_port() {
         let agent = Arc::new(ScriptedAgent {
-            responses: Mutex::new(VecDeque::from([AgentResponse {
+            responses: Mutex::new(VecDeque::from([Ok(AgentResponse {
                 sub_messages: vec![SubMessage::Text {
-                    text: "forked".into(),
+                    text: "completed".into(),
                 }],
                 usage: RunUsage::default(),
-            }])),
+            })])),
             paths: Mutex::new(Vec::new()),
         });
         let interactions = Arc::new(Interactions::default());
         let tools = AgentTools::new(agent.clone(), Arc::new(ChildTools), interactions.clone());
-        let inherited = user_message(
-            "inherited",
-            1,
-            ProjectId::new("project"),
-            None,
-            &RunId::new("parent"),
-            "prior context".into(),
+        let (request, _) = call(
+            "task",
+            json!({"description":"Continue task","prompt":"Finish it.","run_in_background":false}),
         );
-        let outcome = tools
-            .execute(call(
-                "subagent_fork",
-                json!({"description":"Continue task","prompt":"Finish it.","run_in_background":false}),
-                vec![ProjectedMessage::Visible(inherited)],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(outcome.output["content"], "forked");
-        assert_eq!(agent.paths.lock().unwrap()[0].len(), 2);
+        let outcome = tools.execute(request).await.unwrap();
+        assert_eq!(outcome.output["content"], "completed");
+        {
+            let paths = agent.paths.lock().unwrap();
+            assert_eq!(paths[0].len(), 1);
+            assert!(matches!(
+                &paths[0][0],
+                ProjectedMessage::Visible(message)
+                    if message.role == MessageRole::User
+                        && matches!(message.sub_messages.as_slice(), [SubMessage::Text { text }] if text == "Finish it.")
+            ));
+        }
 
-        let answer = tools
-            .execute(call(
-                "ask_user_question",
-                json!({"questions":[{"id":"choice","question":"Choose?"}]}),
-                Vec::new(),
-            ))
-            .await
-            .unwrap();
+        let (request, _) = call(
+            "question",
+            json!({"questions":[{"id":"choice","question":"Choose?"}]}),
+        );
+        let answer = tools.execute(request).await.unwrap();
         assert_eq!(answer.output["answers"]["choice"], "Safe");
-        assert_eq!(*interactions.0.lock().unwrap(), ["ask_user_question"]);
-        assert!(
-            tools
-                .execute(call(
-                    "subagent",
-                    json!({"description":"Background","prompt":"Wait.","run_in_background":true}),
-                    Vec::new(),
-                ))
-                .await
-                .is_err()
+        assert_eq!(*interactions.0.lock().unwrap(), ["question"]);
+        let (request, _) = call(
+            "task",
+            json!({"description":"Background","prompt":"Wait.","run_in_background":true}),
+        );
+        assert!(tools.execute(request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn task_preserves_known_usage_when_a_later_agent_turn_fails() {
+        let agent = Arc::new(ScriptedAgent {
+            responses: Mutex::new(VecDeque::from([
+                Ok(AgentResponse {
+                    sub_messages: vec![SubMessage::ToolUse(ToolUse {
+                        call_id: "child-read".into(),
+                        tool_name: "read".into(),
+                        arguments: json!({"file_path":"input"}).to_string(),
+                        provider_metadata: None,
+                    })],
+                    usage: RunUsage {
+                        input_tokens: 3,
+                        output_tokens: 2,
+                        ..RunUsage::default()
+                    },
+                }),
+                Err(failed("provider failed")),
+            ])),
+            paths: Mutex::new(Vec::new()),
+        });
+        let tools = AgentTools::new(
+            agent,
+            Arc::new(ChildTools),
+            Arc::new(Interactions::default()),
+        );
+        let (request, usage) = call(
+            "task",
+            json!({"description":"Inspect input","prompt":"Read input and report.","run_in_background":false}),
+        );
+
+        assert!(tools.execute(request).await.is_err());
+        assert_eq!(
+            usage.snapshot(),
+            RunUsage {
+                input_tokens: 3,
+                output_tokens: 2,
+                tool_executions: 1,
+                ..RunUsage::default()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn task_preserves_usage_when_it_exceeds_the_round_limit() {
+        let response = || {
+            Ok(AgentResponse {
+                sub_messages: vec![SubMessage::ToolUse(ToolUse {
+                    call_id: "child-read".into(),
+                    tool_name: "read".into(),
+                    arguments: json!({"file_path":"input"}).to_string(),
+                    provider_metadata: None,
+                })],
+                usage: RunUsage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    ..RunUsage::default()
+                },
+            })
+        };
+        let agent = Arc::new(ScriptedAgent {
+            responses: Mutex::new((0..MAX_CHILD_ROUNDS).map(|_| response()).collect()),
+            paths: Mutex::new(Vec::new()),
+        });
+        let tools = AgentTools::new(
+            agent,
+            Arc::new(ChildTools),
+            Arc::new(Interactions::default()),
+        );
+        let (request, usage) = call(
+            "task",
+            json!({"description":"Inspect input","prompt":"Keep inspecting.","run_in_background":false}),
+        );
+
+        assert!(tools.execute(request).await.is_err());
+        assert_eq!(usage.snapshot().input_tokens, u64::from(MAX_CHILD_ROUNDS));
+        assert_eq!(usage.snapshot().output_tokens, u64::from(MAX_CHILD_ROUNDS));
+        assert_eq!(
+            usage.snapshot().tool_executions,
+            u64::from(MAX_CHILD_ROUNDS)
         );
     }
 }

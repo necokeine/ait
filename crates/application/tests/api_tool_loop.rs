@@ -335,35 +335,33 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
             vec![
-                "ask_user_question",
                 "bash",
                 "edit",
-                "exit_plan_mode",
                 "glob",
                 "grep",
+                "plan_exit",
+                "question",
                 "read",
                 "skill",
-                "subagent",
-                "subagent_fork",
-                "todo_write",
-                "web_fetch",
-                "web_search",
+                "task",
+                "todowrite",
+                "webfetch",
+                "websearch",
                 "write",
             ]
         } else {
             vec![
-                "ask_user_question",
                 "edit",
-                "exit_plan_mode",
                 "glob",
                 "grep",
+                "plan_exit",
+                "question",
                 "read",
                 "skill",
-                "subagent",
-                "subagent_fork",
-                "todo_write",
-                "web_fetch",
-                "web_search",
+                "task",
+                "todowrite",
+                "webfetch",
+                "websearch",
                 "write",
             ]
         };
@@ -438,7 +436,7 @@ async fn questions_and_plan_review_wait_for_one_durable_member_response() {
                 kind,
                 &[(
                     "question",
-                    "ask_user_question",
+                    "question",
                     json!({"questions":[{"id":"mode","header":"Mode","question":"Choose a mode","options":[{"label":"Safe"},{"label":"Fast"}]}]}),
                 )],
             ),
@@ -446,7 +444,7 @@ async fn questions_and_plan_review_wait_for_one_durable_member_response() {
                 kind,
                 &[(
                     "plan",
-                    "exit_plan_mode",
+                    "plan_exit",
                     json!({"plan":"# Implement safely\n\nRun the verified change."}),
                 )],
             ),
@@ -484,7 +482,7 @@ async fn questions_and_plan_review_wait_for_one_durable_member_response() {
                 panic!()
             };
             if let Some(interaction) = run.tool_interactions.iter().find(|interaction| {
-                interaction.tool_name == "ask_user_question" && interaction.status == "pending"
+                interaction.tool_name == "question" && interaction.status == "pending"
             }) {
                 break interaction.id.clone();
             }
@@ -517,7 +515,7 @@ async fn questions_and_plan_review_wait_for_one_durable_member_response() {
                 panic!()
             };
             if let Some(interaction) = run.tool_interactions.iter().find(|interaction| {
-                interaction.tool_name == "exit_plan_mode" && interaction.status == "pending"
+                interaction.tool_name == "plan_exit" && interaction.status == "pending"
             }) {
                 break interaction.id.clone();
             }

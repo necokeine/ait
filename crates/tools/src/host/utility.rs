@@ -94,7 +94,7 @@ impl HostTools {
     pub(super) fn utility(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
         self.check(request)?;
         match request.tool_name.as_str() {
-            "todo_write" => Ok(json!({
+            "todowrite" => Ok(json!({
                 "updated": true,
                 "todos": request.arguments.get("todos").cloned().ok_or_else(failed)?,
             })),

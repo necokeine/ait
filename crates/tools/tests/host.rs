@@ -66,7 +66,7 @@ fn call(name: &str, args: Value) -> ToolInvocation {
         execution_id: ToolExecutionId::new("execution"),
         tool_name: name.into(),
         arguments: args,
-        message_path: Vec::new(),
+        usage: Default::default(),
         cancellation: CancellationToken::new(),
     }
 }
@@ -200,16 +200,17 @@ async fn aligned_utility_and_web_tools_are_real_and_bounded() {
         )
         .unwrap();
     let names = tools.executable_tools();
-    for name in ["skill", "todo_write", "web_fetch", "web_search"] {
+    for name in ["skill", "todowrite", "webfetch", "websearch"] {
         assert!(names.contains(&name.to_owned()), "missing {name}");
     }
     for legacy in [
-        "webfetch",
-        "websearch",
-        "question",
-        "todowrite",
-        "task",
-        "plan_exit",
+        "web_fetch",
+        "web_search",
+        "ask_user_question",
+        "todo_write",
+        "subagent",
+        "subagent_fork",
+        "exit_plan_mode",
     ] {
         assert!(
             !names.contains(&legacy.to_owned()),
@@ -228,19 +229,19 @@ async fn aligned_utility_and_web_tools_are_real_and_bounded() {
         {"content":"Verify tools","status":"pending"}
     ]);
     let updated = tools
-        .execute(call("todo_write", json!({"todos":todos})))
+        .execute(call("todowrite", json!({"todos":todos})))
         .await
         .unwrap();
     assert_eq!(updated.output["todos"], todos);
     assert!(
         tools
             .execute(call(
-                "web_fetch",
+                "webfetch",
                 json!({"url":"http://169.254.169.254/latest/meta-data"})
             ))
             .await
             .is_err(),
-        "web_fetch must reject link-local metadata endpoints before connecting"
+        "webfetch must reject link-local metadata endpoints before connecting"
     );
 }
 #[cfg(unix)]

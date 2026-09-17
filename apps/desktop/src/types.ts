@@ -144,7 +144,7 @@ export interface ToolApproval {
 
 export interface ToolInteraction {
   id: string;
-  toolName: "ask_user_question" | "exit_plan_mode";
+  toolName: "question" | "plan_exit";
   request: Record<string, unknown>;
   response?: unknown;
   status: "pending" | "answered" | "approved" | "denied" | "cancelled" | "expired";

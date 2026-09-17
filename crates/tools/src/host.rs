@@ -146,13 +146,13 @@ fn open_project_root(root: &Path) -> Result<Dir, DomainError> {
 }
 
 fn narrow_aligned_schema(name: &str, schema: &mut Value) -> Option<()> {
-    if name == "subagent" {
+    if name == "task" {
         schema["properties"].as_object_mut()?.retain(|key, _| {
             matches!(key.as_str(), "description" | "prompt" | "run_in_background")
         });
     }
     match name {
-        "ask_user_question" => {
+        "question" => {
             schema["properties"]["questions"]["minItems"] = json!(1);
             schema["properties"]["questions"]["maxItems"] = json!(10);
             let question = &mut schema["properties"]["questions"]["items"]["properties"];
@@ -161,7 +161,7 @@ fn narrow_aligned_schema(name: &str, schema: &mut Value) -> Option<()> {
             question["question"]["minLength"] = json!(1);
             question["question"]["maxLength"] = json!(4096);
         }
-        "exit_plan_mode" => {
+        "plan_exit" => {
             schema["properties"]["plan"]["minLength"] = json!(1);
             schema["properties"]["plan"]["maxLength"] = json!(MAX_BYTES);
         }
@@ -169,24 +169,24 @@ fn narrow_aligned_schema(name: &str, schema: &mut Value) -> Option<()> {
             schema["properties"]["name"]["minLength"] = json!(1);
             schema["properties"]["name"]["maxLength"] = json!(100);
         }
-        "subagent" | "subagent_fork" => {
+        "task" => {
             schema["properties"]["description"]["minLength"] = json!(1);
             schema["properties"]["description"]["maxLength"] = json!(200);
             schema["properties"]["prompt"]["minLength"] = json!(1);
             schema["properties"]["prompt"]["maxLength"] = json!(MAX_BYTES);
             schema["properties"]["run_in_background"]["const"] = json!(false);
         }
-        "todo_write" => {
+        "todowrite" => {
             schema["properties"]["todos"]["maxItems"] = json!(100);
             let content = &mut schema["properties"]["todos"]["items"]["properties"]["content"];
             content["minLength"] = json!(1);
             content["maxLength"] = json!(4096);
         }
-        "web_fetch" => {
+        "webfetch" => {
             schema["properties"]["url"]["minLength"] = json!(1);
             schema["properties"]["url"]["maxLength"] = json!(2048);
         }
-        "web_search" => {
+        "websearch" => {
             schema["properties"]["queries"]["items"]["maxLength"] = json!(1024);
         }
         _ => return None,
@@ -233,8 +233,7 @@ pub fn parameters(name: &str) -> Option<Value> {
             "sandbox_permissions",
             "justification",
         ],
-        "ask_user_question" | "exit_plan_mode" | "skill" | "subagent" | "subagent_fork"
-        | "todo_write" | "web_fetch" | "web_search" => {
+        "plan_exit" | "question" | "skill" | "task" | "todowrite" | "webfetch" | "websearch" => {
             narrow_aligned_schema(name, &mut schema)?;
             return Some(schema);
         }
@@ -475,9 +474,9 @@ impl RunTool for HostTools {
             "grep",
             "glob",
             "skill",
-            "todo_write",
-            "web_fetch",
-            "web_search",
+            "todowrite",
+            "webfetch",
+            "websearch",
         ];
         if self.shell_available() {
             names.push("bash");
@@ -488,7 +487,7 @@ impl RunTool for HostTools {
     fn parallel_safe(&self, name: &str, args: &Value) -> bool {
         matches!(
             name,
-            "read" | "grep" | "glob" | "skill" | "web_fetch" | "web_search"
+            "read" | "grep" | "glob" | "skill" | "webfetch" | "websearch"
         ) && !self.requires_approval(name, args)
     }
     fn requires_approval(&self, name: &str, args: &Value) -> bool {
@@ -540,13 +539,13 @@ impl RunTool for HostTools {
             })
             .await
             .map_err(|_| failed())??
-        } else if matches!(request.tool_name.as_str(), "web_fetch" | "web_search") {
+        } else if matches!(request.tool_name.as_str(), "webfetch" | "websearch") {
             let _guard = guard;
             host.web(&request).await?
         } else {
             tokio::task::spawn_blocking(move || {
                 let _guard = guard;
-                if matches!(request.tool_name.as_str(), "skill" | "todo_write") {
+                if matches!(request.tool_name.as_str(), "skill" | "todowrite") {
                     host.utility(&request)
                 } else {
                     host.filesystem(&request)

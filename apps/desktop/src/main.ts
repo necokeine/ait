@@ -63,7 +63,7 @@ interface DaemonData {
     permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
     tool_approvals?: import("./types.js").ToolApproval[];
     tool_interactions?: Array<{
-      id: string; tool_name: "ask_user_question" | "exit_plan_mode";
+      id: string; tool_name: "question" | "plan_exit";
       request: Record<string, unknown>; response?: unknown; status: string;
       expires_at: number; created_at: number; decided_at?: number;
     }>;
