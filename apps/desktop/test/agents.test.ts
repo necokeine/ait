@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { projectAgent } from "../src/agents.js";
 import { providerChoices } from "../src/agent-settings.js";
@@ -51,4 +52,15 @@ test("DeepSeek adapter capabilities reach the conversation reasoning selector", 
   };
   const summary = projectAgent({ ...agent, config: { provider_id: deepseek.id, model: "deepseek-v4-flash", reasoning_effort: "high" } }, [deepseek]);
   assert.deepEqual(summary.supportedReasoningEfforts, ["off", "low", "high", "max"]);
+});
+
+test("Agent settings expose global roles and persist a reserved system prompt", async () => {
+  const [agentsPage, renderer] = await Promise.all([
+    readFile(new URL("../src/agents-page.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(agentsPage, /agent-config-system-prompt/);
+  assert.match(agentsPage, /system_prompt: systemPrompt\.trim\(\) \? systemPrompt : null/);
+  assert.match(renderer, /definition\.kind\.type === "agent_reference"/);
+  assert.match(renderer, /agents\.small_agent/);
 });

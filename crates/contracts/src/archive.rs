@@ -85,6 +85,7 @@ impl TryFrom<ArchiveInput> for ProjectExport {
                     provider_id: id,
                     model: legacy.model,
                     reasoning_effort: None,
+                    system_prompt: None,
                 },
                 owner_session_id: None,
                 revision: legacy.revision,

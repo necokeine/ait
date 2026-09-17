@@ -241,6 +241,7 @@ async fn register_agent(
 struct CreateSessionRequest {
     id: String,
     project_id: String,
+    #[serde(default)]
     agent_id: String,
     #[serde(default)]
     at_message_id: Option<String>,
@@ -384,6 +385,7 @@ async fn submit_message(
 struct ForkSessionRequest {
     id: String,
     project_id: String,
+    #[serde(default)]
     agent_id: String,
     at_message_id: String,
     text: String,
@@ -429,6 +431,7 @@ struct DeriveSessionRequest {
     id: String,
     project_id: String,
     source_session_id: String,
+    #[serde(default)]
     agent_id: String,
     at_message_id: String,
     text: String,
@@ -567,6 +570,7 @@ struct CreateCronRequest {
     name: String,
     project_id: String,
     base_message_id: String,
+    #[serde(default)]
     agent_id: String,
     schedule: String,
     timezone: String,

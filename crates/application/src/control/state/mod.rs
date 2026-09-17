@@ -340,9 +340,12 @@ context!(RunControlContext {
 
 context!(CronCreateContext {
     crons: Vec<CronState>,
+    projects: Vec<ProjectState>,
     messages: Vec<MessageState>,
     agents: Vec<AgentState>,
-} [ "crons" => Cron, "messages" => Message, "agents" => Agent ]);
+    settings: SettingsDocument,
+    settings_revision: u64,
+} [ "crons" => Cron, "projects" => Project, "messages" => Message, "agents" => Agent, "settings" => Settings ]);
 
 context!(CronsContext {
     crons: Vec<CronState>,
@@ -371,9 +374,10 @@ context!(ArchiveContext {
 } [ "projects" => Project, "agents" => Agent, "providers" => Provider, "sessions" => Session, "messages" => Message ]);
 
 context!(SettingsContext {
+    agents: Vec<AgentState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "settings" => Settings ]);
+} [ "agents" => Agent, "settings" => Settings ]);
 
 context!(ApiRunContext {
     runs: Vec<RunState>,
@@ -386,7 +390,9 @@ context!(NewSessionContext {
     sessions: Vec<SessionState>,
     agents: Vec<AgentState>,
     messages: Vec<MessageState>,
-} [ "projects" => Project, "sessions" => Session, "agents" => Agent, "messages" => Message ]);
+    settings: SettingsDocument,
+    settings_revision: u64,
+} [ "projects" => Project, "sessions" => Session, "agents" => Agent, "messages" => Message, "settings" => Settings ]);
 
 context!(SessionBindingContext {
     sessions: Vec<SessionState>,
@@ -395,10 +401,15 @@ context!(SessionBindingContext {
 
 context!(SessionTitleContext {
     projects: Vec<ProjectState>,
+    agents: Vec<AgentState>,
+    providers: Vec<ProviderState>,
+    provider_credentials: HashMap<String, String>,
     sessions: Vec<SessionState>,
     messages: Vec<MessageState>,
     runs: Vec<RunState>,
-} [ "projects" => Project, "sessions" => Session, "messages" => Message, "runs" => Run ]);
+    settings: SettingsDocument,
+    settings_revision: u64,
+} [ "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "sessions" => Session, "messages" => Message, "runs" => Run, "settings" => Settings ]);
 
 #[cfg(test)]
 mod tests;

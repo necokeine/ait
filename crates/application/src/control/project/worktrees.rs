@@ -12,6 +12,8 @@ use crate::control::errors::project_error;
 use crate::control::project::archive::{validate_import_conflicts, validate_project_export};
 use crate::control::project::git::PreparedProject;
 use crate::control::project::{require_project_view, validate_project_workdir};
+use crate::control::settings::resolve_project_agent_id;
+use crate::control::state::HasSettings;
 use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 use ait_contracts::{ApiError, Command, ProjectExport};
 use ait_domain::ErrorCode;
@@ -93,7 +95,7 @@ pub(in crate::control) fn run_workdir(
 pub(in crate::control) async fn prepare_command_session_worktrees(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
+    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions + HasSettings),
     command: &Command,
     created: &mut Vec<PathBuf>,
 ) -> Result<(), ApiError> {
@@ -108,13 +110,14 @@ pub(in crate::control) async fn prepare_command_session_worktrees(
             let message_id = at_message_id
                 .as_deref()
                 .unwrap_or(project.root_message_id.as_str());
+            let agent_id = resolve_project_agent_id(state, project_id, agent_id)?;
             prepare_new_session_worktree(
                 workspace,
                 lease.clone(),
                 state,
                 id,
                 project_id,
-                agent_id,
+                &agent_id,
                 message_id,
                 created,
             )
@@ -128,13 +131,14 @@ pub(in crate::control) async fn prepare_command_session_worktrees(
             text,
         } => {
             validate_message_text(text)?;
+            let agent_id = resolve_project_agent_id(state, project_id, agent_id)?;
             prepare_new_session_worktree(
                 workspace,
                 lease.clone(),
                 state,
                 id,
                 project_id,
-                agent_id,
+                &agent_id,
                 at_message_id,
                 created,
             )
@@ -148,6 +152,7 @@ pub(in crate::control) async fn prepare_command_session_worktrees(
             at_message_id,
             text,
         } => {
+            let agent_id = resolve_project_agent_id(state, project_id, agent_id)?;
             prepare_derived_session_worktree(
                 workspace,
                 lease.clone(),
@@ -155,7 +160,7 @@ pub(in crate::control) async fn prepare_command_session_worktrees(
                 id,
                 project_id,
                 source_session_id,
-                agent_id,
+                &agent_id,
                 at_message_id,
                 text,
                 created,

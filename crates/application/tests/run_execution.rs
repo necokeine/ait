@@ -675,6 +675,7 @@ fn config() -> ait_contracts::AgentConfiguration {
         provider_id: "builtin-codex".into(),
         model: "gpt-5.6-sol".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     }
 }
 

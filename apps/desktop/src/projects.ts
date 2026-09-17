@@ -39,14 +39,14 @@ export function groupProjects(view: DesktopState): ProjectGroup[] {
 export interface ProjectCreationInput {
   name: string;
   workdir?: string;
-  agentId: string;
+  agentId?: string;
   repoUrl?: string;
 }
 
-export function projectCreationInput(name: string, workdir: string, agentId: string): ProjectCreationInput {
+export function projectCreationInput(name: string, workdir: string, agentId = ""): ProjectCreationInput {
   const resolvedName = name.trim() || projectNameFromWorkdir(workdir);
-  if (!resolvedName || !agentId) throw new Error("Enter a project name or choose a directory, and select a backend.");
-  return { name: resolvedName, ...(workdir ? { workdir } : {}), agentId };
+  if (!resolvedName) throw new Error("Enter a project name or choose a directory.");
+  return { name: resolvedName, ...(workdir ? { workdir } : {}), ...(agentId ? { agentId } : {}) };
 }
 
 export async function registerDesktopProject(
@@ -57,7 +57,9 @@ export async function registerDesktopProject(
   await post("/v1/project/register", "project", {
     id, name: input.name, workdir: input.workdir, repo_url: input.repoUrl,
   });
-  await post("/v1/project/set-default-agent", "project", {
-    project_id: id, agent_id: input.agentId,
-  });
+  if (input.agentId) {
+    await post("/v1/project/set-default-agent", "project", {
+      project_id: id, agent_id: input.agentId,
+    });
+  }
 }

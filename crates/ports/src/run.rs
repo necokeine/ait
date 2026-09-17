@@ -495,6 +495,12 @@ pub struct SessionTitleRequest {
     pub request_id: String,
     /// At most 2,000 user-prompt characters, without transport instructions.
     pub user_prompt: String,
+    /// Fixed Small Agent configuration selected by the application.
+    pub config: ait_domain::AgentConfiguration,
+    /// Provider resolved from the selected Small Agent.
+    pub provider: ait_domain::AgentProvider,
+    /// Opaque credential reference for API providers; never a secret.
+    pub credential_ref: Option<String>,
     /// Canonical Project root used only as the harness working directory.
     pub cwd: PathBuf,
     /// Cooperative cancellation shared with the caller.

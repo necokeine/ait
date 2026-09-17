@@ -7,6 +7,7 @@ fn api_state() -> RunState {
         provider_id: "api".into(),
         model: "fixture".into(),
         reasoning_effort: None,
+        system_prompt: None,
     };
     let mut state: RunState = serde_json::from_value(json!({
         "id": "run", "project_id": "project", "base_message_id": MessageId::from_u128(1),

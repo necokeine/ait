@@ -9,6 +9,7 @@ use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
 use crate::control::project::git::GitBaseline;
+use crate::control::settings::resolve_project_agent_id;
 use crate::control::state::{
     HasAgents, HasCrons, HasMessages, HasProjects, HasProviderCredentials, HasProviders,
     HasRunCredentials, HasRuns, HasSessions, HasSettings,
@@ -29,12 +30,12 @@ pub(in crate::control) fn cron_session_id(cron_id: &str, scheduled_at: i64) -> S
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::control) fn create_cron(
-    state: &mut (impl HasAgents + HasCrons + HasMessages),
+    state: &mut (impl HasAgents + HasCrons + HasMessages + HasProjects + HasSettings),
     id: String,
     name: String,
     project_id: String,
     base_message_id: String,
-    agent_id: String,
+    agent_id: &str,
     schedule: String,
     timezone: String,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
@@ -45,6 +46,7 @@ pub(in crate::control) fn create_cron(
             false,
         ));
     }
+    let agent_id = resolve_project_agent_id(state, &project_id, agent_id)?;
     let base = state
         .messages()
         .iter()

@@ -72,6 +72,8 @@ pub enum Command {
     CreateSession {
         id: String,
         project_id: String,
+        /// Empty/omitted resolves Project override, then the global Default Agent.
+        #[serde(default)]
         agent_id: String,
         #[serde(default)]
         at_message_id: Option<String>,
@@ -95,6 +97,8 @@ pub enum Command {
     ForkSession {
         id: String,
         project_id: String,
+        /// Empty/omitted resolves Project override, then the global Default Agent.
+        #[serde(default)]
         agent_id: String,
         at_message_id: String,
         text: String,
@@ -103,6 +107,8 @@ pub enum Command {
         id: String,
         project_id: String,
         source_session_id: String,
+        /// Empty/omitted resolves Project override, then the global Default Agent.
+        #[serde(default)]
         agent_id: String,
         at_message_id: String,
         text: String,
@@ -125,6 +131,8 @@ pub enum Command {
         name: String,
         project_id: String,
         base_message_id: String,
+        /// Empty/omitted resolves Project override, then the global Default Agent.
+        #[serde(default)]
         agent_id: String,
         schedule: String,
         timezone: String,

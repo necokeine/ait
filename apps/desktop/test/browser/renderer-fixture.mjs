@@ -84,13 +84,13 @@ export function installRendererFixture() {
       if (f.updateFailure) throw new Error("Project update failed");
       const project = projects.find((p) => p.id === input.projectId);
       project.name = input.name;
-      if (input.agentId) project.defaultAgentId = input.agentId;
+      if ("agentId" in input) project.defaultAgentId = input.agentId || null;
       return f.catalogRead();
     },
     createSession: async (input) => {
       f.created.push(input);
       const created = session(input.projectId, "created", "Created Session");
-      created.agentId = input.agentId;
+      created.agentId = projects.find((project) => project.id === input.projectId).defaultAgentId ?? "agent";
       f.sessions.push(created);
       return { project: f.view(input.projectId), selectedSessionId: created.id };
     },
