@@ -176,7 +176,7 @@ async fn settings(app: &Router, sandbox: &str) -> Value {
 
 #[tokio::test]
 async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() {
-    for kind in ["codex", "openai", "deepseek"] {
+    for kind in ["codex", "openai", "deepseek", "minimax"] {
         for (setting, snapshot, wire) in [
             (None, "workspace_write", SandboxMode::WorkspaceWrite),
             (Some("read_only"), "read_only", SandboxMode::ReadOnly),
@@ -251,7 +251,7 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
 
 #[tokio::test]
 async fn http_unknown_settings_and_excessive_run_permissions_have_no_side_effects() {
-    for kind in ["codex", "openai", "deepseek"] {
+    for kind in ["codex", "openai", "deepseek", "minimax"] {
         let fixture = fixture(kind, SandboxAccess::ReadOnly).await;
         let before = ok(&fixture.app, "/v1/message/list?project_id=p", None).await;
         for invalid in ["unknown", "danger-full-access", "fixture-secret"] {

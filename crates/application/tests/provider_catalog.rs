@@ -63,6 +63,7 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
         AgentMode::OpenAI,
         AgentMode::DeepSeek,
         AgentMode::Gemini,
+        AgentMode::MiniMax,
     ] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());

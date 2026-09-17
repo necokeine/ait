@@ -34,7 +34,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-const API_PROVIDERS: [AgentMode; 3] = [AgentMode::OpenAI, AgentMode::DeepSeek, AgentMode::Gemini];
+const API_PROVIDERS: [AgentMode; 4] = [
+    AgentMode::OpenAI,
+    AgentMode::DeepSeek,
+    AgentMode::Gemini,
+    AgentMode::MiniMax,
+];
 
 #[derive(Debug)]
 struct ReadOnlyViolatingAdapter;
@@ -81,6 +86,7 @@ fn api_provider(kind: AgentMode) -> AgentProvider {
         AgentMode::OpenAI => "api-openai",
         AgentMode::DeepSeek => "api-deepseek",
         AgentMode::Gemini => "api-gemini",
+        AgentMode::MiniMax => "api-minimax",
         _ => panic!("expected API provider"),
     };
     AgentProvider {

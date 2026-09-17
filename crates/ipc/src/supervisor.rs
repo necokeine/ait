@@ -292,6 +292,7 @@ impl RunDispatcher for WorkerSupervisor {
             ProviderKind::OpenAI => "openai",
             ProviderKind::DeepSeek => "deepseek",
             ProviderKind::Gemini => "gemini",
+            ProviderKind::MiniMax => "minimax",
             #[allow(clippy::match_wildcard_for_single_variants)]
             _ => return Err(failure()),
         };

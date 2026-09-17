@@ -48,7 +48,7 @@ impl LocalControlService {
             }
             if !matches!(
                 provider.kind,
-                AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini
+                AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini | AgentMode::MiniMax
             ) {
                 return Err(invalid("this provider uses host authentication"));
             }
@@ -157,7 +157,7 @@ impl LocalControlService {
         }
         if !matches!(
             provider.kind,
-            AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini
+            AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini | AgentMode::MiniMax
         ) {
             return Err(invalid("this provider does not expose model discovery"));
         }

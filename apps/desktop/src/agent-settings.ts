@@ -6,7 +6,7 @@ export const catalogOption = (id: string, name: string, selected = ""): string =
 const field = (label: string, control: string): string => `<label class="catalog-field"><span>${label}</span>${control}</label>`;
 
 export function providerChoices(providers: AgentProvider[]): AgentProvider[] {
-  return providers.filter((provider) => ["codex", "openai", "deepseek", "gemini", "mock"].includes(provider.kind));
+  return providers.filter((provider) => ["codex", "openai", "deepseek", "gemini", "minimax", "mock"].includes(provider.kind));
 }
 
 export function renderProviderSettings(
@@ -48,7 +48,7 @@ export function renderProviderSettings(
       kind: existing?.kind ?? "openai", url: existing?.url ?? null,
       models: existing?.models ?? [],
     };
-    const remote = !existing || ["openai", "deepseek", "gemini"].includes(existing.kind);
+    const remote = !existing || ["openai", "deepseek", "gemini", "minimax"].includes(existing.kind);
     let choices: ModelChoice[] = [];
     let query = "";
     const live = (): boolean => !disposed && generation === version;
@@ -64,7 +64,7 @@ export function renderProviderSettings(
       panel.innerHTML = `<button id="provider-back-list" class="catalog-back" type="button">‹ All providers</button><h3>${existing ? "Configure provider" : "Add provider"}</h3>${steps(1)}
         <form id="provider-connection">
           ${field("Name", `<input id="provider-name" value="${escapeCatalog(provider.name)}" required placeholder="My provider" autocomplete="off"/>`)}
-          ${field("API", `<select id="provider-kind"${existing ? " disabled" : ""}>${remote ? catalogOption("openai", "OpenAI", provider.kind) + catalogOption("deepseek", "DeepSeek", provider.kind) + catalogOption("gemini", "Gemini", provider.kind) : catalogOption(provider.kind, existing!.name, provider.kind)}</select>`)}
+          ${field("API", `<select id="provider-kind"${existing ? " disabled" : ""}>${remote ? catalogOption("openai", "OpenAI", provider.kind) + catalogOption("deepseek", "DeepSeek", provider.kind) + catalogOption("gemini", "Gemini", provider.kind) + catalogOption("minimax", "MiniMax", provider.kind) : catalogOption(provider.kind, existing!.name, provider.kind)}</select>`)}
           ${remote ? field("API URL", `<input id="provider-url" type="url" value="${escapeCatalog(provider.url ?? "")}" placeholder="Leave blank for the official endpoint" autocomplete="url"/>`)
             + field("Secret", `<input id="provider-secret" type="password" autocomplete="new-password"${existing?.has_secret ? "" : " required"} placeholder="${existing?.has_secret ? "Saved · leave blank to keep" : "Enter API key"}"/>`)
             + '<p class="catalog-help">The next step connects to this API and loads its model list. The connection is saved after you choose models.</p>'

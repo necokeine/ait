@@ -54,7 +54,7 @@ Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命�
 新建和重置设置默认是 `permissions.sandbox=workspace_write`、`permissions.approval=on_request`。
 已有权限选择会保留；需要修改时按 [WF-08](workflows/08-settings.md#设置新-run-的权限)
 读取 settings 的最新 revision，用 `settings set --expected-revision <revision> --input <完整values文件>` 保存。
-新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek/Gemini 使用
+新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek/Gemini/MiniMax 使用
 宿主工具循环，按精确 provider+model 目录与 HostTools 可执行能力求交。API 首版文件操作始终
 限制在 Project 根内，`full_access` 也不能越出此边界；执行范围见 [WF-13](workflows/13-api-provider-tool-loop.md)。
 CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md) 与
@@ -62,6 +62,9 @@ CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md) 
 Gemini 使用原生 GenerateContent API；可在 Desktop 的 Settings → Models 中选择 Gemini，或用
 `agent provider save --kind gemini --secret-stdin` 保存连接。省略 `--url` 时使用官方 API 根，
 随后通过 `agent provider discover-models` 或 `refresh-models` 获取可选模型。
+MiniMax 使用官方 OpenAI-compatible Chat Completions API；用
+`agent provider save --kind minimax --secret-stdin` 保存连接。省略 `--url` 时使用国际 API 根
+`https://api.minimax.io/v1`；中国区可显式设置 `https://api.minimaxi.com/v1`。
 
 GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait** 的桌面产物；
 版本准备、打标签、产物校验和故障恢复见 [发布操作指南](docs/operations/releasing.md)。

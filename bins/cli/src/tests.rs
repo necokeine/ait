@@ -463,6 +463,29 @@ fn gemini_provider_kind_maps_to_the_domain_contract() {
 }
 
 #[test]
+fn minimax_provider_kind_maps_to_the_domain_contract() {
+    let Action::Execute(Command::SaveAgentProvider { provider, secret }) = action(
+        &[
+            "agent",
+            "provider",
+            "save",
+            "--id",
+            "minimax",
+            "--name",
+            "MiniMax",
+            "--kind",
+            "minimax",
+            "--secret-stdin",
+        ],
+        "fixture-secret\n",
+    ) else {
+        panic!("expected Provider operation");
+    };
+    assert_eq!(provider.kind, AgentMode::MiniMax);
+    assert_eq!(secret, Some(ProviderSecret("fixture-secret".into())));
+}
+
+#[test]
 fn approval_requires_a_scope_and_provider_stdin_is_not_shared() {
     assert!(
         Arguments::try_parse_from([

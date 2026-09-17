@@ -91,6 +91,14 @@ fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
             };
             json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
         }
+        ProviderKind::MiniMax => {
+            let message = if calls.is_empty() {
+                json!({"role":"assistant","content":"Verified hello.py"})
+            } else {
+                json!({"role":"assistant","content":"<think>Use the host tools.</think>","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
+            };
+            json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+        }
         ProviderKind::Gemini => {
             let parts = if calls.is_empty() {
                 vec![json!({"text":"Verified hello.py"})]
@@ -285,6 +293,7 @@ async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
         ProviderKind::OpenAI,
         ProviderKind::DeepSeek,
         ProviderKind::Gemini,
+        ProviderKind::MiniMax,
     ] {
         let f = Fixture::new(
             kind,
@@ -382,6 +391,9 @@ async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
         let requests = f.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 3);
         let wire = requests[2].to_string();
+        if kind == ProviderKind::MiniMax {
+            assert!(wire.contains("<think>Use the host tools.</think>"));
+        }
         if kind == ProviderKind::Gemini {
             for part in requests[2]["contents"]
                 .as_array()
@@ -412,7 +424,7 @@ async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
         let names = definitions
             .iter()
             .map(|t| {
-                if kind == ProviderKind::DeepSeek {
+                if matches!(kind, ProviderKind::DeepSeek | ProviderKind::MiniMax) {
                     t["function"]["name"].as_str().unwrap()
                 } else {
                     t["name"].as_str().unwrap()

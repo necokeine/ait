@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-310/adr-001-minimax-api-provider.md`：MiniMax OpenAI-compatible Chat Completions、模型发现、全入口 Provider kind 与 worker 工具循环。
+
 - `decisions/NEC-309/adr-001-gemini-api-provider.md`：Gemini 原生 GenerateContent / 模型发现适配、全入口 Provider kind、worker 工具循环与无 provider call ID 的关联规则。
 
 - `decisions/NEC-304/adr-001-cron-sessions-and-desktop.md`：Cron 的 Desktop 配置入口，以及每个 occurrence 原子创建独立 Session 与 Run 的当前语义；修订 NEC-150 与 ADR-013 的 Sessionless Cron 条款。
