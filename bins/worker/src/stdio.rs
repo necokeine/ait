@@ -9,7 +9,7 @@ use ait_ipc::{
     mapping::Wire,
     rpc::{Call, RemoteStore},
 };
-use ait_ports::{AgentInvocation, AgentResponse, RunAgent};
+use ait_ports::{AgentInvocation, AgentResponse, RunAgent, RunTool};
 use async_trait::async_trait;
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::{
@@ -47,6 +47,8 @@ impl RunAgent for ApiAgent {
 struct ScriptedAgent {
     replies: Vec<Vec<SubMessage>>,
 }
+
+type ComposedAgentTools = (Arc<dyn RunTool>, Arc<dyn RunAgent>);
 #[async_trait]
 impl RunAgent for ScriptedAgent {
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError> {
@@ -77,6 +79,79 @@ fn validate_tool_arguments(response: &AgentResponse) -> Result<(), DomainError> 
     }
     Ok(())
 }
+
+fn compose_agent_tools(
+    bootstrap: &Bootstrap,
+    primary_tools: Arc<dyn RunTool>,
+    store: Arc<RemoteStore>,
+) -> Result<ComposedAgentTools, ProtocolError> {
+    match bootstrap.executor.clone() {
+        Executor::Workspace { .. } => Err(ProtocolError::InvalidFrame),
+        Executor::Api {
+            provider,
+            endpoint,
+            model,
+            reasoning_effort,
+            credential,
+        } => {
+            let provider = match provider.as_str() {
+                "openai" => ait_agent_adapters::LLMProvider::OpenAI,
+                "deepseek" => ait_agent_adapters::LLMProvider::DeepSeek,
+                "gemini" => ait_agent_adapters::LLMProvider::Gemini,
+                "minimax" => ait_agent_adapters::LLMProvider::MiniMax,
+                _ => return Err(ProtocolError::InvalidFrame),
+            };
+            let mut config = ait_agent_adapters::LLMClientConfig::new(provider, credential.0);
+            config.base_url = endpoint;
+            let client = ait_agent_adapters::LLMClient::new(config)
+                .map_err(|_| ProtocolError::InvalidFrame)?;
+            let agent_config = AgentConfiguration {
+                provider_id: String::new(),
+                model,
+                reasoning_effort,
+                system_prompt: None,
+            };
+            let requires_verified_cost = bootstrap.limits.max_cost_micros.is_some();
+            let child: Arc<dyn RunAgent> = Arc::new(ApiAgent {
+                client: client.clone(),
+                config: agent_config.clone(),
+                names: primary_tools.executable_tools(),
+                requires_verified_cost,
+            });
+            let extension: Arc<dyn RunTool> = Arc::new(ait_tools::agent::AgentTools::new(
+                child,
+                primary_tools.clone(),
+                store,
+            ));
+            let tools: Arc<dyn RunTool> =
+                Arc::new(ait_ports::CompositeRunTool::new(primary_tools, extension));
+            let parent: Arc<dyn RunAgent> = Arc::new(ApiAgent {
+                client,
+                config: agent_config,
+                names: tools.executable_tools(),
+                requires_verified_cost,
+            });
+            Ok((tools, parent))
+        }
+        Executor::Scripted { replies } => {
+            let scripted: Arc<dyn RunAgent> = Arc::new(ScriptedAgent {
+                replies: replies
+                    .into_iter()
+                    .map(Vec::<SubMessage>::from_wire)
+                    .collect::<Result<_, _>>()?,
+            });
+            let extension: Arc<dyn RunTool> = Arc::new(ait_tools::agent::AgentTools::new(
+                scripted.clone(),
+                primary_tools.clone(),
+                store,
+            ));
+            let tools: Arc<dyn RunTool> =
+                Arc::new(ait_ports::CompositeRunTool::new(primary_tools, extension));
+            Ok((tools, scripted))
+        }
+    }
+}
+
 /// Runs a handshake and a Run, then joins tools and protocol pumps.
 /// # Errors
 /// Returns stable codes without credentials, input, or SDK diagnostics.
@@ -144,7 +219,7 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
         let factory = ait_sandbox::SandboxToolFactory {
             maximum: ait_domain::SandboxAccess::from_wire(bootstrap.maximum_sandbox)?,
         };
-        let tools = factory
+        let primary_tools = factory
             .create_bounded(
                 Path::new(&bootstrap.workdir),
                 profile,
@@ -152,47 +227,9 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
                 bootstrap.limits.max_tool_concurrency,
             )
             .map_err(|_| ProtocolError::ResourceLimit)?;
-        let agent: Arc<dyn RunAgent> = match bootstrap.executor.clone() {
-            Executor::Workspace { .. } => return Err(ProtocolError::InvalidFrame),
-            Executor::Api {
-                provider,
-                endpoint,
-                model,
-                reasoning_effort,
-                credential,
-            } => {
-                let provider = match provider.as_str() {
-                    "openai" => ait_agent_adapters::LLMProvider::OpenAI,
-                    "deepseek" => ait_agent_adapters::LLMProvider::DeepSeek,
-                    "gemini" => ait_agent_adapters::LLMProvider::Gemini,
-                    "minimax" => ait_agent_adapters::LLMProvider::MiniMax,
-                    _ => return Err(ProtocolError::InvalidFrame),
-                };
-                let mut config = ait_agent_adapters::LLMClientConfig::new(provider, credential.0);
-                config.base_url = endpoint;
-                let client = ait_agent_adapters::LLMClient::new(config)
-                    .map_err(|_| ProtocolError::InvalidFrame)?;
-                Arc::new(ApiAgent {
-                    client,
-                    config: AgentConfiguration {
-                        provider_id: String::new(),
-                        model,
-                        reasoning_effort,
-                        system_prompt: None,
-                    },
-                    names: tools.executable_tools(),
-                    requires_verified_cost: bootstrap.limits.max_cost_micros.is_some(),
-                })
-            }
-            Executor::Scripted { replies } => Arc::new(ScriptedAgent {
-                replies: replies
-                    .into_iter()
-                    .map(Vec::<SubMessage>::from_wire)
-                    .collect::<Result<_, _>>()?,
-            }),
-        };
         let (store, mut calls) = RemoteStore::channel();
         let store = Arc::new(store);
+        let (tools, agent) = compose_agent_tools(&bootstrap, primary_tools, store.clone())?;
         let worker = crate::RunWorker::new(
             store.clone(),
             agent,

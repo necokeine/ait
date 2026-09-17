@@ -465,7 +465,7 @@ def read():
     length=struct.unpack('>I',sys.stdin.buffer.read(4))[0]
     return json.loads(sys.stdin.buffer.read(length))
 major=2 if mode=='version' else 1
-capabilities=['run-store-v1','commit-ack-v1','lease-v1','tool-grants-v1']
+capabilities=['run-store-v1','commit-ack-v1','lease-v1','tool-grants-v1','tool-interactions-v1']
 send(1,None,dict(type='hello',protocol_major=major,protocol_minor=0,minimum_protocol_minor=0,capabilities=capabilities,required_capabilities=['unknown'] if mode=='capability' else capabilities,max_frame_bytes=1048576,pid=os.getpid()),major=major)
 read();bootstrap=read()
 lease=bootstrap['lease']

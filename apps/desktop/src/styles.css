@@ -161,6 +161,12 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .tool-approval dd { white-space: normal; overflow-wrap: anywhere; }
 .tool-approval pre { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
 .tool-approval header strong { color: var(--text); }
+.tool-interaction fieldset { border: 0; margin: 12px 0; padding: 0; }
+.tool-interaction legend { color: var(--text); font-weight: 700; }
+.tool-interaction label { align-items: flex-start; display: flex; gap: 8px; margin: 8px 0; }
+.tool-interaction label small { display: block; }
+.tool-interaction input[type="text"] { box-sizing: border-box; width: 100%; }
+.tool-interaction > pre { max-height: 320px; overflow: auto; white-space: pre-wrap; }
 #run-detail { margin-top: 24px; }
 #run-detail h2 { font-size: 16px; overflow-wrap: anywhere; }
 .run-detail-status { color: var(--text-soft); font-size: 12px; }

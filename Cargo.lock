@@ -327,6 +327,7 @@ dependencies = [
  "libc",
  "process-wrap",
  "regex",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -334,6 +335,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]

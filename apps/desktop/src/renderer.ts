@@ -25,6 +25,7 @@ import {
 } from "./desktop-slices.js";
 import { expireToolApprovalCards } from "./tool-approval-ui.js";
 import { isApprovalEvent, renderPendingApprovals } from "./approval-ui.js";
+import { interactionResponse } from "./tool-interaction-ui.js";
 import type {
   AgentCatalog,
   DesktopMessage,
@@ -120,6 +121,7 @@ const runsPage = createRunsPage($("#runs-page"), {
   read: () => window.ait.activeRuns(),
   project: (id) => window.ait.project(id),
   resolve: (input) => window.ait.resolveToolApproval(input),
+  resolveInteraction: (input) => window.ait.resolveToolInteraction(input),
   agents: () => view?.agents ?? [],
   openSession: async (projectId, sessionId) => {
     const generation = pageGeneration;
@@ -274,6 +276,24 @@ function bindInteractions(): void {
     });
   });
   conversation.addEventListener("click", (event) => {
+    const interactionButton = (event.target as Element).closest<HTMLButtonElement>("[data-interaction-action]");
+    const interactionCard = interactionButton?.closest<HTMLElement>("[data-interaction-id][data-run-id]");
+    if (interactionButton && interactionCard) {
+      const action = interactionButton.dataset.interactionAction;
+      if (action !== "submit" && action !== "approve" && action !== "deny" && action !== "cancel") return;
+      let response: Record<string, string | string[]> | undefined;
+      try {
+        if (action === "submit") response = interactionResponse(interactionCard);
+      } catch (error) {
+        showToast(errorMessage(error), true);
+        return;
+      }
+      interactionButton.closest("footer")?.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => {
+        candidate.disabled = true;
+      });
+      void resolveToolInteraction(interactionCard.dataset.runId!, interactionCard.dataset.interactionId!, action, response);
+      return;
+    }
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-approval-action]");
     const card = button?.closest<HTMLElement>("[data-approval-id][data-run-id]");
     if (!button || !card) return;
@@ -713,6 +733,28 @@ async function resolveApproval(
       approvalId,
       action,
       ...(scope ? { scope } : {}),
+    });
+    if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
+    renderAll();
+  } catch (error) {
+    projectViews.discardMutation(mutation);
+    showToast(errorMessage(error), true);
+    scheduleViewRefresh();
+  }
+}
+
+async function resolveToolInteraction(
+  runId: string,
+  interactionId: string,
+  action: "submit" | "approve" | "deny" | "cancel",
+  response?: Record<string, string | string[]>,
+): Promise<void> {
+  const projectId = selectedProjectId;
+  if (!projectId) return;
+  const mutation = projectViews.beginMutation(projectId);
+  try {
+    const updated = await window.ait.resolveToolInteraction({
+      runId, projectId, interactionId, action, ...(response ? { response } : {}),
     });
     if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
     renderAll();

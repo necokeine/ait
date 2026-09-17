@@ -19,8 +19,10 @@ libc = "0.2"
 regex = "1"
 globset = "0.4"
 process-wrap = { version = "10", features = ["tokio1"] }
-tokio = { version = "1", features = ["process", "io-util", "time", "macros", "rt", "sync"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+tokio = { version = "1", features = ["process", "io-util", "time", "macros", "net", "rt", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+url = "2"
 
 jsonschema = { version = "0.33", default-features = false }
 

@@ -26,6 +26,7 @@ pub(in crate::control) mod runs;
 pub(in crate::control) mod settings;
 pub(in crate::control) mod state;
 pub(in crate::control) mod tool_approvals;
+pub(in crate::control) mod tool_interactions;
 
 pub use permissions::PermissionPolicyLimits;
 pub use runs::recovery::StartupRecoveryPlan;
@@ -44,6 +45,7 @@ pub struct LocalControlService {
     tool_approval_timeout: std::time::Duration,
     permission_limits: PermissionPolicyLimits,
     tool_approval_waiters: Arc<Mutex<HashMap<String, tool_approvals::ToolApprovalWaiter>>>,
+    tool_interaction_waiters: Arc<Mutex<HashMap<String, tool_interactions::ToolInteractionWaiter>>>,
     provider_gateway: Option<Arc<dyn AgentProviderGateway>>,
     api_tools: Option<Arc<dyn ait_ports::RunToolFactory>>,
     run_dispatcher: Option<Arc<dyn ait_ports::RunDispatcher>>,
@@ -81,6 +83,7 @@ impl LocalControlService {
             tool_approval_timeout: std::time::Duration::from_mins(2),
             permission_limits: PermissionPolicyLimits::default(),
             tool_approval_waiters: Arc::new(Mutex::new(HashMap::new())),
+            tool_interaction_waiters: Arc::new(Mutex::new(HashMap::new())),
             provider_gateway: None,
             api_tools: None,
             run_dispatcher: None,
@@ -110,6 +113,7 @@ impl LocalControlService {
             tool_approval_timeout: std::time::Duration::from_mins(2),
             permission_limits: PermissionPolicyLimits::default(),
             tool_approval_waiters: Arc::new(Mutex::new(HashMap::new())),
+            tool_interaction_waiters: Arc::new(Mutex::new(HashMap::new())),
             provider_gateway: None,
             api_tools: None,
             run_dispatcher: None,

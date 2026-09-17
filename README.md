@@ -57,6 +57,9 @@ Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命�
 新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek/Gemini/MiniMax 使用
 宿主工具循环，按精确 provider+model 目录与 HostTools 可执行能力求交。API 首版文件操作始终
 限制在 Project 根内，`full_access` 也不能越出此边界；执行范围见 [WF-13](workflows/13-api-provider-tool-loop.md)。
+API Agent 现在也执行 `webfetch` / `websearch`、Project-local `skill`、`todowrite`、
+持久化 `question` / `plan_exit` 与有界前台 `task`；
+命名、恢复和当前不支持的后台/跨模型子任务边界见 [NEC-313 ADR](docs/decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。
 CLI 边界决策见 [NEC-241 ADR](docs/decisions/NEC-241/adr-001-entity-cli.md) 与
 [NEC-257 修订](docs/decisions/NEC-257/adr-001-cli-command-and-address-simplification.md)。
 Gemini 使用原生 GenerateContent API；可在 Desktop 的 Settings → Models 中选择 Gemini，或用

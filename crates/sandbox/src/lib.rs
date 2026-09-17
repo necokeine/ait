@@ -142,6 +142,21 @@ impl RunToolFactory for SandboxToolFactory {
         // an OS-sandboxed shell; full_access explicitly removes OS restrictions.
         self.create_bounded(root, profile, 65_536, 4)
     }
+    fn extend_agent_tools(
+        &self,
+        primary: Arc<dyn RunTool>,
+        child_agent: Arc<dyn ait_ports::RunAgent>,
+        interactions: Arc<dyn ait_ports::RunToolInteraction>,
+    ) -> Arc<dyn RunTool> {
+        Arc::new(ait_ports::CompositeRunTool::new(
+            primary.clone(),
+            Arc::new(ait_tools::agent::AgentTools::new(
+                child_agent,
+                primary,
+                interactions,
+            )),
+        ))
+    }
 }
 
 /// Spawn a worker in an owned Unix process group or Windows kill-on-close Job.

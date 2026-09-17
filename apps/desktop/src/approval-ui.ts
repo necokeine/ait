@@ -1,5 +1,6 @@
 import type { DesktopRun, NativeApproval } from "./types.js";
 import { renderToolApprovals } from "./tool-approval-ui.js";
+import { renderToolInteractions } from "./tool-interaction-ui.js";
 
 export type ApprovalAction = "approve" | "deny" | "cancel";
 export type ApprovalScope = "one_shot" | "turn" | "session";
@@ -21,7 +22,8 @@ export function approvalScope(value: unknown, action: ApprovalAction): ApprovalS
 export function isApprovalEvent(kind: string): boolean {
   return kind === "run.approval_requested"
     || kind === "run.approval_resolved"
-    || kind === "run.approval_expired" || kind.startsWith("run.tool_approval_");
+    || kind === "run.approval_expired" || kind.startsWith("run.tool_approval_")
+    || kind.startsWith("run.tool_interaction_");
 }
 
 export function renderPendingApprovals(run: DesktopRun | undefined): string {
@@ -29,7 +31,7 @@ export function renderPendingApprovals(run: DesktopRun | undefined): string {
   return run.nativeApprovals
     .filter((approval) => approval.status === "pending")
     .map((approval) => renderApproval(run, approval))
-    .join("") + renderToolApprovals(run);
+    .join("") + renderToolApprovals(run) + renderToolInteractions(run);
 }
 
 function renderApproval(run: DesktopRun, approval: NativeApproval): string {

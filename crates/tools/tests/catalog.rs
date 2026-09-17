@@ -17,10 +17,8 @@ fn catalog_covers_standard_plus_minimal_editor_with_valid_schemas() {
     // Audited against the pinned Standard composition, including dynamically
     // registered list_subagent_models, plus Minimal's str_replace_editor.
     let mut expected = vec![
-        "ask_user_question",
         "create_goal",
         "edit",
-        "exit_plan_mode",
         "get_goal",
         "glob",
         "grep",
@@ -33,15 +31,16 @@ fn catalog_covers_standard_plus_minimal_editor_with_valid_schemas() {
         "ralph",
         "read",
         "read_image",
+        "question",
+        "plan_exit",
         "send_message",
         "skill",
         "str_replace_editor",
-        "subagent",
-        "subagent_fork",
-        "todo_write",
+        "task",
+        "todowrite",
         "update_goal",
-        "web_fetch",
-        "web_search",
+        "webfetch",
+        "websearch",
         "workflow",
         "write",
     ];
@@ -92,12 +91,12 @@ fn schemas_accept_real_arguments_and_reject_bad_calls() {
             json!({"command":"delete","path":"/repo/a.rs"}),
         ),
         (
-            "web_search",
+            "websearch",
             json!({"queries":["Rust async"]}),
             json!({"queries":[]}),
         ),
         (
-            "todo_write",
+            "todowrite",
             json!({"todos":[{"content":"Inspect","status":"in_progress"}]}),
             json!({"todos":[{"content":"Inspect","status":"done"}]}),
         ),
@@ -107,7 +106,7 @@ fn schemas_accept_real_arguments_and_reject_bad_calls() {
             json!({"goal_id":"goal-1","revision":1.5,"action":"complete"}),
         ),
         (
-            "subagent",
+            "task",
             json!({"description":"Inspect parser errors","prompt":"Review the parser","provider":"deepseek","model":"fixture-model"}),
             json!({"prompt":"Review the parser"}),
         ),
@@ -119,8 +118,34 @@ fn schemas_accept_real_arguments_and_reject_bad_calls() {
             "{name} accepted invalid arguments"
         );
     }
-    let search = jsonschema::validator_for(&catalog.get("web_search").unwrap().parameters).unwrap();
+    let search = jsonschema::validator_for(&catalog.get("websearch").unwrap().parameters).unwrap();
     assert!(!search.is_valid(&json!({"queries":["a","b","c","d","e"]})));
+}
+
+#[test]
+fn aligned_tools_use_opencode_names_without_legacy_aliases() {
+    let catalog = ToolSet::default();
+    for name in [
+        "question",
+        "plan_exit",
+        "task",
+        "todowrite",
+        "webfetch",
+        "websearch",
+    ] {
+        assert!(catalog.get(name).is_some(), "missing {name}");
+    }
+    for name in [
+        "ask_user_question",
+        "exit_plan_mode",
+        "subagent",
+        "subagent_fork",
+        "todo_write",
+        "web_fetch",
+        "web_search",
+    ] {
+        assert!(catalog.get(name).is_none(), "legacy alias {name} remains");
+    }
 }
 
 #[test]

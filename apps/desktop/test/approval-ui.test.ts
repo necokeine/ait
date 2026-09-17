@@ -81,5 +81,7 @@ test("approval lifecycle events force a durable view resync", () => {
   assert.equal(isApprovalEvent("run.approval_requested"), true);
   assert.equal(isApprovalEvent("run.approval_resolved"), true);
   assert.equal(isApprovalEvent("run.approval_expired"), true);
+  assert.equal(isApprovalEvent("run.tool_interaction_requested"), true);
+  assert.equal(isApprovalEvent("run.tool_interaction_resolved"), true);
   assert.equal(isApprovalEvent("run.progress"), false);
 });

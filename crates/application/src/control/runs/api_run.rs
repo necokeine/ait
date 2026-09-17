@@ -21,7 +21,7 @@ use ait_domain::{
 use ait_ports::{
     AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, CompletionResult,
     ControlStoreError, RunAgent, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome,
-    ToolRecovery,
+    ToolRecovery, ToolUsageRecorder,
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
@@ -64,6 +64,7 @@ fn status(run: &Run) -> LifecycleStatus {
     run.status.into()
 }
 
+#[derive(Clone)]
 struct ProviderAgent {
     gateway: Arc<dyn AgentProviderGateway>,
     view: RunState,
@@ -242,7 +243,7 @@ impl LocalControlService {
             details: None,
             cause_id: None,
         })?;
-        let tools = match &self.api_tools {
+        let primary_tools = match &self.api_tools {
             Some(factory) => {
                 let factory = factory.clone();
                 let profile = view.permission_profile;
@@ -273,6 +274,22 @@ impl LocalControlService {
                     "provider credential is missing",
                 )
             })?;
+        let child_agent = ProviderAgent {
+            gateway: gateway.clone(),
+            view: view.clone(),
+            credential: credential.clone(),
+            names: primary_tools.executable_tools(),
+        };
+        let tools = self.api_tools.as_ref().map_or_else(
+            || primary_tools.clone(),
+            |factory| {
+                factory.extend_agent_tools(
+                    primary_tools.clone(),
+                    Arc::new(child_agent),
+                    Arc::new(self.clone()),
+                )
+            },
+        );
         let agent = ProviderAgent {
             gateway,
             view: view.clone(),
@@ -285,9 +302,9 @@ impl LocalControlService {
 fn api_domain_error_reverse(e: DomainError) -> ApiError {
     error(e.code, e.message, e.retryable)
 }
-struct ControlRunStore {
-    service: LocalControlService,
-    worker_deadline: std::sync::atomic::AtomicI64,
+pub(in crate::control) struct ControlRunStore {
+    pub(in crate::control) service: LocalControlService,
+    pub(in crate::control) worker_deadline: std::sync::atomic::AtomicI64,
     worker_connection: Mutex<Option<WorkerConnection>>,
     records: crate::control::state::records::RecordAccess,
     id: String,
@@ -321,7 +338,7 @@ fn validate_worker_transition(
 }
 
 impl ControlRunStore {
-    fn live_connection(
+    pub(in crate::control) fn live_connection(
         &self,
         lease: &ait_ports::WorkerLease,
     ) -> Option<tokio_util::sync::CancellationToken> {
@@ -331,6 +348,10 @@ impl ControlRunStore {
             .as_ref()
             .filter(|connection| connection.lease == *lease && !connection.closed.is_cancelled())
             .map(|connection| connection.closed.clone())
+    }
+    pub(in crate::control) fn worker_deadline(&self) -> i64 {
+        self.worker_deadline
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
     async fn latest_view(&self) -> Result<RunState, ApiError> {
         self.records
@@ -592,6 +613,47 @@ impl ControlRunStore {
 }
 #[async_trait]
 impl RunStore for ControlRunStore {
+    async fn request_tool_interaction(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        call_id: String,
+        execution_id: String,
+        tool_name: String,
+        arguments: Value,
+    ) -> Result<ToolOutcome, DomainError> {
+        let Some(connection) = self.live_connection(lease) else {
+            return Err(DomainError::invariant(
+                ErrorCode::RunRecoveryFailed,
+                "worker connection is unavailable",
+            ));
+        };
+        self.service
+            .request_api_tool_interaction(
+                ToolInvocation {
+                    run_id: lease.run_id.clone(),
+                    call_id,
+                    execution_id: ait_domain::ToolExecutionId::new(execution_id),
+                    tool_name,
+                    arguments,
+                    usage: ToolUsageRecorder::default(),
+                    cancellation: connection.child_token(),
+                },
+                Some(lease),
+                self.worker_deadline(),
+                connection,
+            )
+            .await
+            .map_err(crate::control::errors::api_domain_error)
+    }
+    async fn recover_tool_interaction(
+        &self,
+        execution: &ToolExecution,
+    ) -> Result<ToolRecovery, DomainError> {
+        self.service
+            .recover_api_tool_interaction(execution)
+            .await
+            .map_err(crate::control::errors::api_domain_error)
+    }
     async fn request_tool_approval(
         &self,
         lease: &ait_ports::WorkerLease,
@@ -634,6 +696,8 @@ impl RunStore for ControlRunStore {
         }
         self.service
             .interrupt_api_tool_approvals(lease.run_id.as_str(), lease.epoch);
+        self.service
+            .interrupt_tool_interactions(lease.run_id.as_str(), lease.epoch);
     }
     fn set_worker_deadline(&self, deadline: i64) {
         self.worker_deadline

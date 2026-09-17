@@ -13,6 +13,7 @@ fn call(name: &str, arguments: Value) -> ToolInvocation {
         execution_id: ToolExecutionId::new("execution"),
         tool_name: name.into(),
         arguments,
+        usage: Default::default(),
         cancellation: CancellationToken::new(),
     }
 }

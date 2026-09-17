@@ -220,6 +220,7 @@ pub(in crate::control) fn trigger_cron(
         permission_profile,
         native_approvals: Vec::new(),
         tool_approvals: Vec::new(),
+        tool_interactions: Vec::new(),
         trigger: ait_domain::RunTrigger::Cron,
         cron_id: Some(cron.id),
         scheduled_at: Some(scheduled_at),
