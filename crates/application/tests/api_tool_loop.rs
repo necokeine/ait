@@ -366,6 +366,42 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             ]
         };
         assert_eq!(names, expected);
+        let task = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                if kind == ProviderKind::OpenAI {
+                    tool
+                } else {
+                    &tool["function"]
+                }
+            })
+            .find(|tool| tool["name"] == "task")
+            .unwrap();
+        assert_eq!(
+            task["description"],
+            "Run one bounded foreground child agent with a complete, self-contained prompt on the current provider and model route. The child does not inherit this conversation, and the call returns its final text inline."
+        );
+        let task_properties = task["parameters"]["properties"].as_object().unwrap();
+        assert_eq!(
+            task_properties
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["description", "prompt"]
+        );
+        let final_request = first.to_string();
+        for unsupported in [
+            "list_subagent_models",
+            "run_in_background",
+            "background id",
+            "list_agents",
+            "send_message",
+            "interrupt_agent",
+        ] {
+            assert!(!final_request.contains(unsupported), "{unsupported}");
+        }
         let result_ids = if kind == ProviderKind::OpenAI {
             requests[2]["input"]
                 .as_array()

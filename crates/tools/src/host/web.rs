@@ -89,7 +89,45 @@ fn public_ip(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => public_ipv4(address),
         IpAddr::V6(address) => {
-            const GLOBAL_UNICAST: Ipv6Addr = Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0);
+            // Keep this fail-closed allowlist aligned with IANA's allocated
+            // IPv6 Global Unicast Address Space table. Unlisted 2000::/3
+            // space is reserved for future allocation and is not fetchable.
+            const ALLOCATED: &[(Ipv6Addr, u32)] = &[
+                (Ipv6Addr::new(0x2001, 0x0200, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x0400, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x0600, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x0800, 0, 0, 0, 0, 0, 0), 22),
+                (Ipv6Addr::new(0x2001, 0x0c00, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x0e00, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x1200, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x1400, 0, 0, 0, 0, 0, 0), 22),
+                (Ipv6Addr::new(0x2001, 0x1800, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x1a00, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x1c00, 0, 0, 0, 0, 0, 0), 22),
+                (Ipv6Addr::new(0x2001, 0x2000, 0, 0, 0, 0, 0, 0), 19),
+                (Ipv6Addr::new(0x2001, 0x4000, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x4200, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x4400, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x4600, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x4800, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x4a00, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x4c00, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2001, 0x5000, 0, 0, 0, 0, 0, 0), 20),
+                (Ipv6Addr::new(0x2001, 0x8000, 0, 0, 0, 0, 0, 0), 19),
+                (Ipv6Addr::new(0x2001, 0xa000, 0, 0, 0, 0, 0, 0), 20),
+                (Ipv6Addr::new(0x2001, 0xb000, 0, 0, 0, 0, 0, 0), 20),
+                (Ipv6Addr::new(0x2003, 0, 0, 0, 0, 0, 0, 0), 18),
+                (Ipv6Addr::new(0x2400, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2410, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2600, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2610, 0, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2620, 0, 0, 0, 0, 0, 0, 0), 23),
+                (Ipv6Addr::new(0x2630, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2800, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2a00, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2a10, 0, 0, 0, 0, 0, 0, 0), 12),
+                (Ipv6Addr::new(0x2c00, 0, 0, 0, 0, 0, 0, 0), 12),
+            ];
             const DENIED: &[(Ipv6Addr, u32)] = &[
                 (Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0), 23),
                 (Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0), 32),
@@ -100,10 +138,9 @@ fn public_ip(address: IpAddr) -> bool {
             if let Some(embedded) = address.to_ipv4() {
                 return public_ipv4(embedded);
             }
-            // Only native global unicast is eligible. Deny special-use ranges
-            // within it, including transition mechanisms that can encode a
-            // private IPv4 destination.
-            ipv6_prefix(address, GLOBAL_UNICAST, 3)
+            ALLOCATED
+                .iter()
+                .any(|(network, bits)| ipv6_prefix(address, *network, *bits))
                 && !DENIED
                     .iter()
                     .any(|(network, bits)| ipv6_prefix(address, *network, *bits))
@@ -379,12 +416,24 @@ mod tests {
             "2002:a00:1::1",
             "3fff::1",
             "5f00::1",
+            "2200::1",
+            "2d00::1",
+            "3000::1",
             "::ffff:10.0.0.1",
             "::10.0.0.1",
         ] {
             assert!(!public_ip(address.parse().unwrap()), "{address}");
         }
-        for address in ["1.1.1.1", "2606:4700:4700::1111"] {
+        for address in [
+            "1.1.1.1",
+            "2001:4860:4860::8888",
+            "2003::1",
+            "2400::1",
+            "2606:4700:4700::1111",
+            "2800::1",
+            "2a00::1",
+            "2c00::1",
+        ] {
             assert!(public_ip(address.parse().unwrap()), "{address}");
         }
     }

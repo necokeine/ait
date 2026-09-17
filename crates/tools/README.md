@@ -84,8 +84,10 @@ former snake-case and subagent spellings are not aliases.
 returns the complete validated replacement list in its persisted ToolResult.
 `webfetch` and `websearch` accept bounded text only, pin public DNS resolutions,
 reject credentials and local/private/link-local targets on every redirect, and mark
-all returned material as external untrusted input. Search currently uses DuckDuckGo's
-public HTML endpoint and therefore has no provider SLA.
+all returned material as external untrusted input. IPv6 destinations are admitted
+only from prefixes currently allocated in IANA's Global Unicast registry; unlisted
+and reserved `2000::/3` space fails closed. Search currently uses DuckDuckGo's public
+HTML endpoint and therefore has no provider SLA.
 
 Questions and plan reviews are durable Run records. They cross the private worker
 protocol, appear in Session and Runs views, expire with the Run/worker deadline, and
@@ -93,9 +95,11 @@ resume exactly one waiting ToolUse after an explicit desktop response. Foregroun
 `task` uses a self-contained prompt and the current provider/model route, runs at
 most eight model rounds and 16 nested tool calls, and charges known nested
 token/cost/tool usage to the parent Run even when it later fails, is cancelled, or
-hits a limit. Recursive, inherited-context, and background delegation
-are not advertised. Cross-provider/model child routing and durable background child
-jobs remain intentionally unsupported until Ait has a first-class child-Run aggregate.
+hits a limit. It validates each complete assistant turn before executing tools and
+rejects reused tool-call identities across the entire child run. Recursive,
+inherited-context, and background delegation are not advertised. Cross-provider/model
+child routing and durable background child jobs remain intentionally unsupported
+until Ait has a first-class child-Run aggregate.
 
 Structured file tools use workspace-relative, non-hidden capability directory
 handles without following symlinks. Writes atomically replace files with a 64 KiB

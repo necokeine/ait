@@ -167,6 +167,23 @@ struct ChildState {
     sequence: u32,
     path: Vec<ProjectedMessage>,
     tool_calls: u32,
+    call_ids: std::collections::HashSet<String>,
+}
+
+fn record_child_call_ids(state: &mut ChildState, calls: &[ToolUse]) -> Result<(), DomainError> {
+    if calls
+        .iter()
+        .any(|call| state.call_ids.contains(&call.call_id))
+    {
+        return Err(DomainError::invariant(
+            ErrorCode::ToolCallDuplicate,
+            "task returned a duplicate tool-call identity",
+        ));
+    }
+    state
+        .call_ids
+        .extend(calls.iter().map(|call| call.call_id.clone()));
+    Ok(())
 }
 
 impl AgentTools {
@@ -263,6 +280,7 @@ impl AgentTools {
             sequence: 1,
             path,
             tool_calls: 0,
+            call_ids: std::collections::HashSet::new(),
         };
         for round in 1..=MAX_CHILD_ROUNDS {
             if request.cancellation.is_cancelled() {
@@ -294,6 +312,7 @@ impl AgentTools {
                 &state.run,
                 response.sub_messages,
             );
+            assistant.validate().map_err(DomainError::from)?;
             let calls: Vec<_> = assistant
                 .sub_messages
                 .iter()
@@ -302,6 +321,7 @@ impl AgentTools {
                     _ => None,
                 })
                 .collect();
+            record_child_call_ids(&mut state, &calls)?;
             let final_text: String = assistant
                 .sub_messages
                 .iter()
@@ -436,7 +456,8 @@ mod tests {
         }
     }
 
-    struct ChildTools;
+    #[derive(Default)]
+    struct ChildTools(Mutex<Vec<String>>);
 
     #[async_trait]
     impl RunTool for ChildTools {
@@ -448,7 +469,8 @@ mod tests {
             false
         }
 
-        async fn execute(&self, _: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+            self.0.lock().unwrap().push(request.call_id);
             Ok(ToolOutcome {
                 output: json!({"text":"child input"}),
                 usage: RunUsage::default(),
@@ -526,12 +548,12 @@ mod tests {
         });
         let tools = AgentTools::new(
             agent.clone(),
-            Arc::new(ChildTools),
+            Arc::new(ChildTools::default()),
             Arc::new(Interactions::default()),
         );
         let (request, usage) = call(
             "task",
-            json!({"description":"Inspect input","prompt":"Read input and report.","run_in_background":false}),
+            json!({"description":"Inspect input","prompt":"Read input and report."}),
         );
         let outcome = tools.execute(request).await.unwrap();
         assert_eq!(outcome.output["content"], "done");
@@ -559,10 +581,14 @@ mod tests {
             paths: Mutex::new(Vec::new()),
         });
         let interactions = Arc::new(Interactions::default());
-        let tools = AgentTools::new(agent.clone(), Arc::new(ChildTools), interactions.clone());
+        let tools = AgentTools::new(
+            agent.clone(),
+            Arc::new(ChildTools::default()),
+            interactions.clone(),
+        );
         let (request, _) = call(
             "task",
-            json!({"description":"Continue task","prompt":"Finish it.","run_in_background":false}),
+            json!({"description":"Continue task","prompt":"Finish it."}),
         );
         let outcome = tools.execute(request).await.unwrap();
         assert_eq!(outcome.output["content"], "completed");
@@ -614,12 +640,12 @@ mod tests {
         });
         let tools = AgentTools::new(
             agent,
-            Arc::new(ChildTools),
+            Arc::new(ChildTools::default()),
             Arc::new(Interactions::default()),
         );
         let (request, usage) = call(
             "task",
-            json!({"description":"Inspect input","prompt":"Read input and report.","run_in_background":false}),
+            json!({"description":"Inspect input","prompt":"Read input and report."}),
         );
 
         assert!(tools.execute(request).await.is_err());
@@ -636,10 +662,10 @@ mod tests {
 
     #[tokio::test]
     async fn task_preserves_usage_when_it_exceeds_the_round_limit() {
-        let response = || {
+        let response = |index| {
             Ok(AgentResponse {
                 sub_messages: vec![SubMessage::ToolUse(ToolUse {
-                    call_id: "child-read".into(),
+                    call_id: format!("child-read-{index}"),
                     tool_name: "read".into(),
                     arguments: json!({"file_path":"input"}).to_string(),
                     provider_metadata: None,
@@ -652,17 +678,17 @@ mod tests {
             })
         };
         let agent = Arc::new(ScriptedAgent {
-            responses: Mutex::new((0..MAX_CHILD_ROUNDS).map(|_| response()).collect()),
+            responses: Mutex::new((0..MAX_CHILD_ROUNDS).map(response).collect()),
             paths: Mutex::new(Vec::new()),
         });
         let tools = AgentTools::new(
             agent,
-            Arc::new(ChildTools),
+            Arc::new(ChildTools::default()),
             Arc::new(Interactions::default()),
         );
         let (request, usage) = call(
             "task",
-            json!({"description":"Inspect input","prompt":"Keep inspecting.","run_in_background":false}),
+            json!({"description":"Inspect input","prompt":"Keep inspecting."}),
         );
 
         assert!(tools.execute(request).await.is_err());
@@ -672,5 +698,71 @@ mod tests {
             usage.snapshot().tool_executions,
             u64::from(MAX_CHILD_ROUNDS)
         );
+    }
+
+    #[tokio::test]
+    async fn task_rejects_same_turn_duplicate_call_ids_before_any_tool_executes() {
+        let duplicate = || {
+            SubMessage::ToolUse(ToolUse {
+                call_id: "duplicate".into(),
+                tool_name: "read".into(),
+                arguments: json!({"file_path":"input"}).to_string(),
+                provider_metadata: None,
+            })
+        };
+        let agent = Arc::new(ScriptedAgent {
+            responses: Mutex::new(VecDeque::from([Ok(AgentResponse {
+                sub_messages: vec![duplicate(), duplicate()],
+                usage: RunUsage::default(),
+            })])),
+            paths: Mutex::new(Vec::new()),
+        });
+        let child_tools = Arc::new(ChildTools::default());
+        let tools = AgentTools::new(
+            agent,
+            child_tools.clone(),
+            Arc::new(Interactions::default()),
+        );
+        let (request, _) = call(
+            "task",
+            json!({"description":"Inspect input","prompt":"Read input."}),
+        );
+
+        let error = tools.execute(request).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidSubmessageKind);
+        assert!(child_tools.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn task_rejects_cross_round_duplicate_call_ids_without_replaying_the_tool() {
+        let response = || {
+            Ok(AgentResponse {
+                sub_messages: vec![SubMessage::ToolUse(ToolUse {
+                    call_id: "duplicate".into(),
+                    tool_name: "read".into(),
+                    arguments: json!({"file_path":"input"}).to_string(),
+                    provider_metadata: None,
+                })],
+                usage: RunUsage::default(),
+            })
+        };
+        let agent = Arc::new(ScriptedAgent {
+            responses: Mutex::new(VecDeque::from([response(), response()])),
+            paths: Mutex::new(Vec::new()),
+        });
+        let child_tools = Arc::new(ChildTools::default());
+        let tools = AgentTools::new(
+            agent,
+            child_tools.clone(),
+            Arc::new(Interactions::default()),
+        );
+        let (request, _) = call(
+            "task",
+            json!({"description":"Inspect input","prompt":"Read input twice."}),
+        );
+
+        let error = tools.execute(request).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::ToolCallDuplicate);
+        assert_eq!(*child_tools.0.lock().unwrap(), ["duplicate"]);
     }
 }

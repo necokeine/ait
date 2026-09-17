@@ -27,7 +27,7 @@
 
 - `skill` 只读取 Session worktree 内 `.agents/skills`、`.opencode/skills`、`.ait/skills` 或 `skills` 下精确名称的 `SKILL.md`，目录与文件均不跟随符号链接，结果受 64 KiB 上限约束。
 - `todowrite` 校验并返回完整替换列表。该列表作为普通 ToolResult 持久化并进入后续模型上下文，不另建第二份 Todo 聚合状态。
-- `webfetch` 仅接受 HTTP(S) 文本。每一跳都解析并固定 DNS 地址，拒绝凭据、本机、私网、链路本地、保留、文档、转换和隧道地址，禁用环境代理，限制跳转、时间、下载量与返回文本量。
+- `webfetch` 仅接受 HTTP(S) 文本。每一跳都解析并固定 DNS 地址，拒绝凭据、本机、私网、链路本地、保留、文档、转换和隧道地址；IPv6 仅放行 IANA Global Unicast 登记表当前标为 ALLOCATED 的前缀，`2000::/3` 内未列出及 RESERVED 空间均 fail closed。执行器禁用环境代理，并限制跳转、时间、下载量与返回文本量。
 - `websearch` 使用 DuckDuckGo 公共 HTML 入口，返回有界的标题、URL、摘要，并把结果标记为外部不可信内容；重要结论仍应使用 `webfetch` 检查来源。
 
 ### 用户交互
@@ -38,7 +38,7 @@
 
 ### 子 Agent
 
-`task` 只从自包含 prompt 开始，不继承父 Run 的 Message path。它使用当前 Agent 的 provider/model 配置，在前台最多执行八个模型轮次和 16 个嵌套工具调用，并共享父 Run 的取消与 runtime deadline。子调用不暴露递归 delegation 工具；每次已知的 token、cost 与嵌套工具用量立即累计到父 Run，即使后续模型调用失败、任务取消或超过限制也不会丢失。
+`task` 只从自包含 prompt 开始，不继承父 Run 的 Message path。它使用当前 Agent 的 provider/model 配置，在前台最多执行八个模型轮次和 16 个嵌套工具调用，并共享父 Run 的取消与 runtime deadline。每轮执行任何工具前先验证完整 Assistant 消息，并在整个 child run 内拒绝重复 tool-call ID，防止同批或跨轮重放副作用。子调用不暴露递归 delegation 工具；每次已知的 token、cost 与嵌套工具用量立即累计到父 Run，即使后续模型调用失败、任务取消或超过限制也不会丢失。
 
 ## 当前明确限制
 

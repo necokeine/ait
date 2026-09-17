@@ -147,9 +147,9 @@ fn open_project_root(root: &Path) -> Result<Dir, DomainError> {
 
 fn narrow_aligned_schema(name: &str, schema: &mut Value) -> Option<()> {
     if name == "task" {
-        schema["properties"].as_object_mut()?.retain(|key, _| {
-            matches!(key.as_str(), "description" | "prompt" | "run_in_background")
-        });
+        schema["properties"]
+            .as_object_mut()?
+            .retain(|key, _| matches!(key.as_str(), "description" | "prompt"));
     }
     match name {
         "question" => {
@@ -174,7 +174,6 @@ fn narrow_aligned_schema(name: &str, schema: &mut Value) -> Option<()> {
             schema["properties"]["description"]["maxLength"] = json!(200);
             schema["properties"]["prompt"]["minLength"] = json!(1);
             schema["properties"]["prompt"]["maxLength"] = json!(MAX_BYTES);
-            schema["properties"]["run_in_background"]["const"] = json!(false);
         }
         "todowrite" => {
             schema["properties"]["todos"]["maxItems"] = json!(100);

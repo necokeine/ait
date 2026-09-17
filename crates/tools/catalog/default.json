@@ -563,7 +563,7 @@
   },
   {
     "name": "task",
-    "description": "Start a bounded child task with a complete self-contained prompt. Optional provider and model must be supplied together. Retain any returned background id and collect results before relying on them; run_in_background false waits for the result.",
+    "description": "Run one bounded foreground child agent with a complete, self-contained prompt on the current provider and model route. The child does not inherit this conversation, and the call returns its final text inline.",
     "parameters": {
       "type": "object",
       "properties": {
