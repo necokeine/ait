@@ -23,6 +23,13 @@ test("Gemini providers are selectable in desktop Agent configuration", () => {
   };
   assert.deepEqual(providerChoices([gemini]), [gemini]);
 });
+test("MiniMax providers are selectable in desktop Agent configuration", () => {
+  const minimax: AgentProvider = {
+    id: "minimax", name: "MiniMax", kind: "minimax", url: null, has_secret: true,
+    models: [{ id: "MiniMax-M2.7", name: "MiniMax M2.7", reasoning_efforts: [] }],
+  };
+  assert.deepEqual(providerChoices([minimax]), [minimax]);
+});
 test("development Mock providers remain selectable when the backend advertises them", () => {
   const mock: AgentProvider = {
     id: "builtin-mock", name: "Mock (Development)", kind: "mock", url: null,

@@ -437,7 +437,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.sandbox",
             SettingCategory::Permissions,
             "Sandbox profile",
-            "Default workspace_write permits Agent writes within the workspace. Codex uses its native sandbox and isolated Project; full_access requires administrator permission. OpenAI/DeepSeek/Gemini file tools stay within the Session workspace. On macOS/Linux, Shell follows the Run permission: read_only forbids writes, workspace_write permits writes only in the workspace, and full_access removes the OS sandbox. Restricted Shell requires an available OS sandbox; the administrator ceiling always applies. Legacy strict is a read_only alias.",
+            "Default workspace_write permits Agent writes within the workspace. Codex uses its native sandbox and isolated Project; full_access requires administrator permission. OpenAI/DeepSeek/Gemini/MiniMax file tools stay within the Session workspace. On macOS/Linux, Shell follows the Run permission: read_only forbids writes, workspace_write permits writes only in the workspace, and full_access removes the OS sandbox. Restricted Shell requires an available OS sandbox; the administrator ceiling always applies. Legacy strict is a read_only alias.",
             SettingKind::Select {
                 options: vec![
                     "read_only".into(),

@@ -419,6 +419,7 @@ pub(crate) enum ProviderKind {
     Openai,
     Deepseek,
     Gemini,
+    Minimax,
     /// Development-only deterministic Provider.
     #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
     Mock,
@@ -431,6 +432,7 @@ impl From<ProviderKind> for AgentMode {
             ProviderKind::Openai => Self::OpenAI,
             ProviderKind::Deepseek => Self::DeepSeek,
             ProviderKind::Gemini => Self::Gemini,
+            ProviderKind::Minimax => Self::MiniMax,
             #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
             ProviderKind::Mock => Self::Mock,
         }

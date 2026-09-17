@@ -13,6 +13,8 @@ pub enum ProviderKind {
     #[serde(rename = "deepseek")]
     DeepSeek,
     Gemini,
+    #[serde(rename = "minimax")]
+    MiniMax,
     /// Deterministic local provider compiled only into development builds.
     #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
     Mock,
@@ -61,6 +63,13 @@ mod tests {
         let kind: ProviderKind = serde_json::from_str(r#""gemini""#).unwrap();
         assert_eq!(kind, ProviderKind::Gemini);
         assert_eq!(serde_json::to_string(&kind).unwrap(), r#""gemini""#);
+    }
+
+    #[test]
+    fn minimax_provider_kind_round_trips() {
+        let kind: ProviderKind = serde_json::from_str(r#""minimax""#).unwrap();
+        assert_eq!(kind, ProviderKind::MiniMax);
+        assert_eq!(serde_json::to_string(&kind).unwrap(), r#""minimax""#);
     }
 
     #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]

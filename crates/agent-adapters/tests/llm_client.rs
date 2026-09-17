@@ -19,10 +19,11 @@ use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 
 const TEST_KEY: &str = "local-fixture-key";
-const PROVIDERS: [LLMProvider; 3] = [
+const PROVIDERS: [LLMProvider; 4] = [
     LLMProvider::OpenAI,
     LLMProvider::DeepSeek,
     LLMProvider::Gemini,
+    LLMProvider::MiniMax,
 ];
 
 #[test]
@@ -30,8 +31,10 @@ fn deepseek_advertises_its_adapter_owned_reasoning_efforts() {
     let openai = LLMClient::new(LLMClientConfig::new(LLMProvider::OpenAI, TEST_KEY)).unwrap();
     let deepseek = LLMClient::new(LLMClientConfig::new(LLMProvider::DeepSeek, TEST_KEY)).unwrap();
     let gemini = LLMClient::new(LLMClientConfig::new(LLMProvider::Gemini, TEST_KEY)).unwrap();
+    let minimax = LLMClient::new(LLMClientConfig::new(LLMProvider::MiniMax, TEST_KEY)).unwrap();
     assert!(openai.supported_reasoning_efforts().is_empty());
     assert!(gemini.supported_reasoning_efforts().is_empty());
+    assert!(minimax.supported_reasoning_efforts().is_empty());
     assert_eq!(
         deepseek.supported_reasoning_efforts(),
         ["off", "low", "high", "max"]
@@ -164,7 +167,7 @@ fn completion(provider: LLMProvider) -> Value {
             }],
             "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
         }),
-        LLMProvider::DeepSeek => json!({
+        LLMProvider::DeepSeek | LLMProvider::MiniMax => json!({
             "id": "chatcmpl_fixture", "object": "chat.completion", "created": 0,
             "model": "fixture-model",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
@@ -184,7 +187,7 @@ fn completion(provider: LLMProvider) -> Value {
 fn completion_path(provider: LLMProvider, model: &str) -> String {
     match provider {
         LLMProvider::OpenAI => "responses".into(),
-        LLMProvider::DeepSeek => "chat/completions".into(),
+        LLMProvider::DeepSeek | LLMProvider::MiniMax => "chat/completions".into(),
         LLMProvider::Gemini => format!("v1beta/models/{model}:generateContent"),
     }
 }
@@ -278,6 +281,18 @@ async fn all_providers_send_one_rig_completion_and_preserve_content_and_usage() 
                 assert_eq!(body["messages"][1]["content"], "be brief");
                 assert_eq!(body["messages"][2]["content"], "hi");
             }
+            LLMProvider::MiniMax => {
+                assert_eq!(body["model"], "fixture-model");
+                assert_eq!(body["temperature"], 0.5);
+                assert_ne!(body["stream"], true);
+                assert_eq!(body["max_tokens"], 64);
+                assert_eq!(
+                    body["messages"][0]["content"][0]["text"],
+                    DEFAULT_SYSTEM_PROMPT
+                );
+                assert_eq!(body["messages"][1]["content"][0]["text"], "be brief");
+                assert_eq!(body["messages"][2]["content"], "hi");
+            }
             LLMProvider::Gemini => {
                 assert_eq!(body["generationConfig"]["temperature"], 0.5);
                 assert_eq!(body["generationConfig"]["maxOutputTokens"], 64);
@@ -356,6 +371,17 @@ fn reasoning_effort_rejects_invalid_local_request_values() {
             .kind,
         AdapterErrorKind::InvalidConfiguration
     );
+    for provider in [LLMProvider::Gemini, LLMProvider::MiniMax] {
+        let client = LLMClient::new(LLMClientConfig::new(provider, TEST_KEY)).unwrap();
+        let mut request = client.text_request("fixture-model", "hi");
+        assert_eq!(
+            client
+                .apply_reasoning_effort(&mut request, "high")
+                .unwrap_err()
+                .kind,
+            AdapterErrorKind::InvalidConfiguration
+        );
+    }
 }
 
 #[tokio::test]
@@ -521,7 +547,7 @@ async fn tool_calls_are_returned_without_executing_an_agent_loop() {
                     "name": "lookup", "arguments": "{\"query\":\"hello\"}", "status": "completed"
                 }]);
             }
-            LLMProvider::DeepSeek => {
+            LLMProvider::DeepSeek | LLMProvider::MiniMax => {
                 body["choices"][0]["message"] = json!({
                     "role": "assistant", "content": "", "tool_calls": [{
                         "id": "call_fixture", "type": "function", "index": 0,
@@ -624,7 +650,7 @@ async fn default_catalog_and_ordered_prompt_reach_all_provider_apis() {
         assert_eq!(functions.len(), catalog.tools().len());
         for (wire, definition) in functions.iter().zip(catalog.tools()) {
             let function = match provider {
-                LLMProvider::DeepSeek => &wire["function"],
+                LLMProvider::DeepSeek | LLMProvider::MiniMax => &wire["function"],
                 LLMProvider::OpenAI | LLMProvider::Gemini => wire,
             };
             if provider != LLMProvider::Gemini {
@@ -671,6 +697,16 @@ async fn default_catalog_and_ordered_prompt_reach_all_provider_apis() {
                     json!({"role":"system","content":"Project instructions"})
                 );
                 assert_eq!(messages[4], json!({"role":"user","content":user}));
+            }
+            LLMProvider::MiniMax => {
+                let messages = body["messages"].as_array().unwrap();
+                assert_eq!(messages.len(), 5);
+                assert_eq!(messages[0]["role"], "system");
+                assert_eq!(messages[0]["content"][0]["text"], DEFAULT_SYSTEM_PROMPT);
+                assert_eq!(messages[1]["role"], "system");
+                assert_eq!(messages[1]["content"][0]["text"], "Project instructions");
+                assert_eq!(messages[4]["role"], "user");
+                assert_eq!(messages[4]["content"], user);
             }
             LLMProvider::OpenAI => {
                 let input = body["input"].as_array().unwrap();

@@ -32,6 +32,8 @@ pub enum LLMProvider {
     DeepSeek,
     /// Google Gemini `GenerateContent` API.
     Gemini,
+    /// `MiniMax` OpenAI-compatible Chat Completions API.
+    MiniMax,
 }
 
 const DEEPSEEK_REASONING_EFFORTS: [&str; 4] = ["off", "low", "high", "max"];
@@ -82,9 +84,10 @@ enum RigClient {
     OpenAI(openai::Client),
     DeepSeek(deepseek::Client<DeepSeekHttp>),
     Gemini(gemini::Client),
+    MiniMax(openai::CompletionsClient),
 }
 
-/// A reusable Rig client for `OpenAI`, `DeepSeek` or Gemini.
+/// A reusable Rig client for `OpenAI`, `DeepSeek`, Gemini or `MiniMax`.
 ///
 /// Each operation issues one request with no agent loop or automatic retries.
 /// Dropping its future cancels the in-flight operation.
@@ -141,6 +144,7 @@ impl LLMClient {
             LLMProvider::OpenAI => "https://api.openai.com/v1",
             LLMProvider::DeepSeek => "https://api.deepseek.com",
             LLMProvider::Gemini => "https://generativelanguage.googleapis.com",
+            LLMProvider::MiniMax => "https://api.minimax.io/v1",
         });
         let url = reqwest::Url::parse(base_url)
             .map_err(|_| invalid("base URL must be an absolute HTTP(S) API root"))?;
@@ -187,6 +191,15 @@ impl LLMClient {
                     .build()
                     .map_err(|_| invalid("could not build Gemini client"))?,
             ),
+            LLMProvider::MiniMax => RigClient::MiniMax(
+                openai::Client::builder()
+                    .api_key(config.api_key)
+                    .base_url(base_url)
+                    .http_client(http)
+                    .build()
+                    .map_err(|_| invalid("could not build MiniMax client"))?
+                    .completions_api(),
+            ),
         };
         Ok(Self {
             inner,
@@ -201,6 +214,7 @@ impl LLMClient {
             RigClient::OpenAI(_) => LLMProvider::OpenAI,
             RigClient::DeepSeek(_) => LLMProvider::DeepSeek,
             RigClient::Gemini(_) => LLMProvider::Gemini,
+            RigClient::MiniMax(_) => LLMProvider::MiniMax,
         }
     }
 
@@ -214,7 +228,7 @@ impl LLMClient {
     pub fn supported_reasoning_efforts(&self) -> &'static [&'static str] {
         match self.provider() {
             LLMProvider::DeepSeek => &DEEPSEEK_REASONING_EFFORTS,
-            LLMProvider::OpenAI | LLMProvider::Gemini => &[],
+            LLMProvider::OpenAI | LLMProvider::Gemini | LLMProvider::MiniMax => &[],
         }
     }
 
@@ -228,6 +242,7 @@ impl LLMClient {
             RigClient::OpenAI(client) => client.list_models().await,
             RigClient::DeepSeek(client) => client.list_models().await,
             RigClient::Gemini(client) => client.list_models().await,
+            RigClient::MiniMax(client) => client.list_models().await,
         }
         .map_err(|error| match error {
             ModelListingError::ApiError { status_code, .. } => http_error(status_code),
@@ -265,6 +280,7 @@ impl LLMClient {
                 LLMProvider::OpenAI => "openai",
                 LLMProvider::DeepSeek => "deepseek",
                 LLMProvider::Gemini => "gemini",
+                LLMProvider::MiniMax => "minimax",
             },
             model,
         );
@@ -280,6 +296,11 @@ impl LLMClient {
                 .model(model)
                 .build(),
             RigClient::Gemini(client) => client
+                .completion_model(model)
+                .completion_request(prompt)
+                .model(model)
+                .build(),
+            RigClient::MiniMax(client) => client
                 .completion_model(model)
                 .completion_request(prompt)
                 .model(model)
@@ -363,6 +384,9 @@ impl LLMClient {
             LLMProvider::Gemini => {
                 return Err(invalid("Gemini reasoning effort is not supported"));
             }
+            LLMProvider::MiniMax => {
+                return Err(invalid("MiniMax reasoning effort is not supported"));
+            }
         }
         Ok(())
     }
@@ -388,6 +412,7 @@ impl LLMClient {
             RigClient::OpenAI(client) => client.completion_model(model).completion(request).await,
             RigClient::DeepSeek(client) => client.completion_model(model).completion(request).await,
             RigClient::Gemini(client) => client.completion_model(model).completion(request).await,
+            RigClient::MiniMax(client) => client.completion_model(model).completion(request).await,
         }
         .map_err(|error| completion_error(&error))
     }

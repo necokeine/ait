@@ -170,7 +170,7 @@ the `.p12`, its password, or an Apple app-specific password to the repository.
 
 ## Providers and Agent presets
 
-Settings → Models manages shared Codex/OpenAI/DeepSeek/Gemini provider connections, API
+Settings → Models manages shared Codex/OpenAI/DeepSeek/Gemini/MiniMax provider connections, API
 keys, model discovery and per-model reasoning levels. DeepSeek discovery supplies
 the adapter-owned `off`, `low`, `high`, `max` levels, so a selected DeepSeek model
 shows the same conversation reasoning control as a reasoning-capable Codex model.
