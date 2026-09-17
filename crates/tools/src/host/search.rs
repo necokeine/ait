@@ -146,9 +146,12 @@ impl HostTools {
                 results.push(name);
             }
             let next = offset.saturating_add(results.len());
-            return Ok(
-                json!({"entries":results,"truncated":scan_truncated || next < total,"scan_truncated":scan_truncated,"next_offset":next+1}),
-            );
+            return Ok(json!({
+                "entries": results,
+                "truncated": scan_truncated || next < total,
+                "scan_truncated": scan_truncated,
+                "next_offset": next + 1
+            }));
         }
         let file = self.open_read(path, request)?;
         let mut reader = BufReader::new(file);
@@ -184,11 +187,17 @@ impl HostTools {
             text.push_str(&formatted);
             returned += 1;
         };
-        Ok(
-            json!({"text":text,"truncated":truncated,"next_offset":offset.saturating_add(returned).saturating_add(1)}),
-        )
+        Ok(json!({
+            "text": text,
+            "truncated": truncated,
+            "next_offset": offset.saturating_add(returned).saturating_add(1)
+        }))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "search keeps one bounded traversal loop"
+    )]
     pub(super) fn search(&self, request: &ToolInvocation) -> Result<Value, DomainError> {
         let args = &request.arguments;
         let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
@@ -270,7 +279,12 @@ impl HostTools {
                 if regex.is_match(text) {
                     line_count += 1;
                     if mode == "content" {
-                        push(json!({"path":path,"line":line,"text":text.chars().take(2000).collect::<String>(),"text_truncated":text.chars().count()>2000}));
+                        push(json!({
+                            "path": path,
+                            "line": line,
+                            "text": text.chars().take(2000).collect::<String>(),
+                            "text_truncated": text.chars().count() > 2000
+                        }));
                     }
                 }
             });
@@ -287,9 +301,16 @@ impl HostTools {
             }
         }
         let next = offset.saturating_add(results.len());
-        Ok(
-            json!({"matches":results,"total_count":total_count,"total_results":total_results,"truncated":truncated || skipped>0,"scan_truncated":scan_truncated,"count_complete":!scan_truncated && skipped==0,"skipped_files":skipped,"next_offset":next}),
-        )
+        Ok(json!({
+            "matches": results,
+            "total_count": total_count,
+            "total_results": total_results,
+            "truncated": truncated || skipped > 0,
+            "scan_truncated": scan_truncated,
+            "count_complete": !scan_truncated && skipped == 0,
+            "skipped_files": skipped,
+            "next_offset": next
+        }))
     }
 
     fn scan_lines(

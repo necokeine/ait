@@ -316,8 +316,16 @@ impl LocalControlService {
             biased;
             () = connection.cancelled() => Status::Expired,
             () = cancellation.cancelled() => Status::Cancelled,
-            () = tokio::time::sleep(Duration::from_millis(u64::try_from(record.grant.expires_at.saturating_sub(now())).unwrap_or(0))) => Status::Expired,
-            changed = receiver.changed() => { if changed.is_err() { Status::Expired } else { receiver.borrow_and_update().unwrap_or(Status::Expired) } },
+            () = tokio::time::sleep(Duration::from_millis(
+                u64::try_from(record.grant.expires_at.saturating_sub(now())).unwrap_or(0)
+            )) => Status::Expired,
+            changed = receiver.changed() => {
+                if changed.is_err() {
+                    Status::Expired
+                } else {
+                    receiver.borrow_and_update().unwrap_or(Status::Expired)
+                }
+            },
         };
         if matches!(signal, Status::Expired | Status::Cancelled) {
             self.invalidate_api_tool_grant(&record.grant, signal)

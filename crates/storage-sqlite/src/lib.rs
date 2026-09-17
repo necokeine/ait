@@ -299,8 +299,12 @@ impl ControlStore for SqliteControlStore {
         append_retained_events(&transaction, events)?;
         transaction
             .execute(
-                "INSERT INTO run_progress(run_id, body_json, updated_at) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(run_id) DO UPDATE SET body_json = excluded.body_json, updated_at = excluded.updated_at",
+                concat!(
+                    "INSERT INTO run_progress(run_id, body_json, updated_at) ",
+                    "VALUES(?1, ?2, ?3)\n",
+                    "ON CONFLICT(run_id) DO UPDATE SET body_json = excluded.body_json, ",
+                    "updated_at = excluded.updated_at"
+                ),
                 params![
                     checkpoint.run_id,
                     serde_json::to_string(&checkpoint.body).map_err(json_error)?,
@@ -410,7 +414,11 @@ fn read_filter(
         ),
         ControlFilter::ProjectWorkdir { workdir } => (
             ControlRecordKind::Project,
-            "SELECT id, project_id, body_json FROM projects WHERE json_extract(body_json, '$.workdir') = ?1".into(),
+            concat!(
+                "SELECT id, project_id, body_json FROM projects ",
+                "WHERE json_extract(body_json, '$.workdir') = ?1"
+            )
+            .into(),
             Some(workdir.as_str()),
         ),
         ControlFilter::MessageAncestors { head_id } => (
@@ -512,8 +520,12 @@ fn apply_change(
         ControlChange::Put(record) => {
             let table = table(record.kind);
             let sql = format!(
-                "INSERT INTO {table}(id, project_id, body_json) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, body_json = excluded.body_json"
+                concat!(
+                    "INSERT INTO {table}(id, project_id, body_json) VALUES(?1, ?2, ?3)\n",
+                    "ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id, ",
+                    "body_json = excluded.body_json"
+                ),
+                table = table
             );
             transaction
                 .execute(
@@ -761,8 +773,14 @@ fn legacy_records(value: &Value) -> Result<Vec<ControlRecord>, ControlStoreError
             id: "settings".into(),
             project_id: None,
             value: serde_json::json!({
-                "values": object.get("settings").cloned().unwrap_or_else(|| serde_json::json!({})),
-                "revision": object.get("settings_revision").cloned().unwrap_or_else(|| serde_json::json!(1)),
+                "values": object
+                    .get("settings")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                "revision": object
+                    .get("settings_revision")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!(1)),
             }),
         });
     }
@@ -774,10 +792,20 @@ fn append_retained_events(
     events: Vec<PendingEvent>,
 ) -> Result<(), ControlStoreError> {
     for event in events {
-        transaction.execute(
-            "INSERT INTO durable_events(kind, entity_id, body_json, created_at) VALUES(?1, ?2, ?3, ?4)",
-            params![event.kind, event.entity_id, serde_json::to_string(&event.body).map_err(json_error)?, event.created_at],
-        ).map_err(sql_error)?;
+        transaction
+            .execute(
+                concat!(
+                    "INSERT INTO durable_events(kind, entity_id, body_json, created_at) ",
+                    "VALUES(?1, ?2, ?3, ?4)"
+                ),
+                params![
+                    event.kind,
+                    event.entity_id,
+                    serde_json::to_string(&event.body).map_err(json_error)?,
+                    event.created_at
+                ],
+            )
+            .map_err(sql_error)?;
     }
     transaction
         .execute(
@@ -806,9 +834,12 @@ fn replay_locked(
     cursor: u64,
     limit: usize,
 ) -> Result<Vec<DurableEvent>, ControlStoreError> {
-    let mut statement = connection.prepare(
-        "SELECT cursor, kind, entity_id, body_json, created_at FROM durable_events WHERE cursor > ?1 ORDER BY cursor LIMIT ?2",
-    ).map_err(sql_error)?;
+    let mut statement = connection
+        .prepare(concat!(
+            "SELECT cursor, kind, entity_id, body_json, created_at FROM durable_events ",
+            "WHERE cursor > ?1 ORDER BY cursor LIMIT ?2"
+        ))
+        .map_err(sql_error)?;
     let rows = statement
         .query_map(params![cursor, limit], |row| {
             Ok((

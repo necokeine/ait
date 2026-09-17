@@ -7,12 +7,15 @@ use crate::{ProviderError, ProviderErrorKind, RetryDirective};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
+/// Opaque identifier used to resolve a credential at invocation time.
 pub struct CredentialRef(pub String);
 
 #[derive(Clone, PartialEq, Eq)]
+/// Secret plaintext value whose debug representation is always redacted.
 pub struct SecretValue(String);
 
 impl SecretValue {
+    /// Wraps credential plaintext in a redacting value.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
@@ -31,7 +34,13 @@ impl fmt::Debug for SecretValue {
 }
 
 #[async_trait]
+/// Resolves credential references at the provider invocation boundary.
 pub trait CredentialResolver: Send + Sync {
+    /// Resolves a reference to its secret value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a provider authentication error when the reference cannot be resolved.
     async fn resolve(&self, reference: &CredentialRef) -> Result<SecretValue, ProviderError>;
 }
 

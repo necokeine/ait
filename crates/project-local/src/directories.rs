@@ -60,13 +60,28 @@ impl DocumentsProjectDirectory {
         let unavailable = |message| {
             DomainError::invariant(ErrorCode::ProjectDefaultDirectoryUnavailable, message)
         };
-        let documents = (self.resolve)().filter(|path| path.is_absolute()).ok_or_else(|| {
-            unavailable("The current user's Documents directory is unavailable; choose an existing directory explicitly.".to_owned())
-        })?;
+        let documents = (self.resolve)()
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| {
+                unavailable(
+                    concat!(
+                        "The current user's Documents directory is unavailable; choose an ",
+                        "existing directory explicitly."
+                    )
+                    .to_owned(),
+                )
+            })?;
         check()?;
-        let documents = documents.canonicalize().map_err(|failure| unavailable(format!(
-            "Cannot access Documents directory {}: {failure}; choose an existing directory explicitly.", documents.display(),
-        )))?;
+        let documents = documents.canonicalize().map_err(|failure| {
+            unavailable(format!(
+                concat!(
+                    "Cannot access Documents directory {}: {failure}; choose an existing ",
+                    "directory explicitly."
+                ),
+                documents.display(),
+                failure = failure,
+            ))
+        })?;
         if !documents.is_dir() || documents.to_str().is_none() {
             return Err(unavailable(format!(
                 "Documents path {} must be a directory with a UTF-8 path.",
@@ -81,15 +96,28 @@ impl DocumentsProjectDirectory {
         // mkdir is the exclusive allocation boundary, including for dangling
         // symlinks. Never precheck then create_dir_all, reuse, or clean up a target.
         fs::create_dir(&target).map_err(|failure| {
-            if let Some(ctx) = context { ctx.forget_retained(&target); }
+            if let Some(ctx) = context {
+                ctx.forget_retained(&target);
+            }
             if failure.kind() == ErrorKind::AlreadyExists {
-                DomainError::invariant(ErrorCode::ProjectPathAlreadyExists, format!(
-                    "Project directory already exists: {}. Choose another name or explicitly select the existing directory.", target.display(),
-                ))
+                DomainError::invariant(
+                    ErrorCode::ProjectPathAlreadyExists,
+                    format!(
+                        concat!(
+                            "Project directory already exists: {}. Choose another name or ",
+                            "explicitly select the existing directory."
+                        ),
+                        target.display(),
+                    ),
+                )
             } else {
-                DomainError::invariant(ErrorCode::ProjectDirectoryCreationFailed, format!(
-                    "Cannot create Project directory {}: {failure}", target.display(),
-                ))
+                DomainError::invariant(
+                    ErrorCode::ProjectDirectoryCreationFailed,
+                    format!(
+                        "Cannot create Project directory {}: {failure}",
+                        target.display(),
+                    ),
+                )
             }
         })?;
         if let Some(ctx) = context {
@@ -124,7 +152,11 @@ fn validate_directory_name(name: &str) -> Result<(), DomainError> {
     {
         return Err(DomainError::invariant(
             ErrorCode::InvalidProject,
-            "Project name must be a nonempty portable folder name (at most 255 UTF-8 bytes), without path separators, reserved names, surrounding whitespace, or a trailing dot.",
+            concat!(
+                "Project name must be a nonempty portable folder name (at most 255 UTF-8 ",
+                "bytes), without path separators, reserved names, surrounding whitespace, or ",
+                "a trailing dot."
+            ),
         ));
     }
     Ok(())

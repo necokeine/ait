@@ -8,12 +8,19 @@ pub const MAX_PRIVATE_TOOL_ARGUMENT_BYTES: usize = 16_384;
 /// Stable policy reason. It deliberately carries no peer-controlled text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SensitiveArgumentReason {
+    /// Selects the `InvalidJson` variant.
     InvalidJson,
+    /// Selects the `Oversized` variant.
     Oversized,
+    /// Selects the `SensitiveField` variant.
     SensitiveField,
+    /// Selects the `CredentialMarker` variant.
     CredentialMarker,
+    /// Selects the `UriUserInfo` variant.
     UriUserInfo,
+    /// Selects the `PemPrivateKey` variant.
     PemPrivateKey,
+    /// Selects the `AccessKeyPattern` variant.
     AccessKeyPattern,
 }
 

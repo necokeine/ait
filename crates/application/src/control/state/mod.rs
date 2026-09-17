@@ -318,7 +318,17 @@ context!(ConversationContext {
     runs: Vec<RunState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "run_credentials" => RunCredential, "sessions" => Session, "messages" => Message, "runs" => Run, "settings" => Settings ]);
+} [
+    "projects" => Project,
+    "agents" => Agent,
+    "providers" => Provider,
+    "provider_credentials" => ProviderCredential,
+    "run_credentials" => RunCredential,
+    "sessions" => Session,
+    "messages" => Message,
+    "runs" => Run,
+    "settings" => Settings
+]);
 
 context!(RunContext {
     projects: Vec<ProjectState>,
@@ -329,14 +339,27 @@ context!(RunContext {
     run_credentials: HashMap<String, String>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "projects" => Project, "sessions" => Session, "messages" => Message, "runs" => Run, "workspace_run_journals" => WorkspaceRunJournal, "run_credentials" => RunCredential, "settings" => Settings ]);
+} [
+    "projects" => Project,
+    "sessions" => Session,
+    "messages" => Message,
+    "runs" => Run,
+    "workspace_run_journals" => WorkspaceRunJournal,
+    "run_credentials" => RunCredential,
+    "settings" => Settings
+]);
 
 context!(RunControlContext {
     projects: Vec<ProjectState>,
     sessions: Vec<SessionState>,
     runs: Vec<RunState>,
     workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
-} [ "projects" => Project, "sessions" => Session, "runs" => Run, "workspace_run_journals" => WorkspaceRunJournal ]);
+} [
+    "projects" => Project,
+    "sessions" => Session,
+    "runs" => Run,
+    "workspace_run_journals" => WorkspaceRunJournal
+]);
 
 context!(CronCreateContext {
     crons: Vec<CronState>,
@@ -345,7 +368,13 @@ context!(CronCreateContext {
     agents: Vec<AgentState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "crons" => Cron, "projects" => Project, "messages" => Message, "agents" => Agent, "settings" => Settings ]);
+} [
+    "crons" => Cron,
+    "projects" => Project,
+    "messages" => Message,
+    "agents" => Agent,
+    "settings" => Settings
+]);
 
 context!(CronsContext {
     crons: Vec<CronState>,
@@ -363,7 +392,18 @@ context!(CronTriggerContext {
     runs: Vec<RunState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "crons" => Cron, "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "run_credentials" => RunCredential, "sessions" => Session, "messages" => Message, "runs" => Run, "settings" => Settings ]);
+} [
+    "crons" => Cron,
+    "projects" => Project,
+    "agents" => Agent,
+    "providers" => Provider,
+    "provider_credentials" => ProviderCredential,
+    "run_credentials" => RunCredential,
+    "sessions" => Session,
+    "messages" => Message,
+    "runs" => Run,
+    "settings" => Settings
+]);
 
 context!(ArchiveContext {
     projects: Vec<ProjectState>,
@@ -371,7 +411,13 @@ context!(ArchiveContext {
     providers: Vec<ProviderState>,
     sessions: Vec<SessionState>,
     messages: Vec<MessageState>,
-} [ "projects" => Project, "agents" => Agent, "providers" => Provider, "sessions" => Session, "messages" => Message ]);
+} [
+    "projects" => Project,
+    "agents" => Agent,
+    "providers" => Provider,
+    "sessions" => Session,
+    "messages" => Message
+]);
 
 context!(SettingsContext {
     agents: Vec<AgentState>,
@@ -392,7 +438,13 @@ context!(NewSessionContext {
     messages: Vec<MessageState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "projects" => Project, "sessions" => Session, "agents" => Agent, "messages" => Message, "settings" => Settings ]);
+} [
+    "projects" => Project,
+    "sessions" => Session,
+    "agents" => Agent,
+    "messages" => Message,
+    "settings" => Settings
+]);
 
 context!(SessionBindingContext {
     sessions: Vec<SessionState>,
@@ -409,7 +461,16 @@ context!(SessionTitleContext {
     runs: Vec<RunState>,
     settings: SettingsDocument,
     settings_revision: u64,
-} [ "projects" => Project, "agents" => Agent, "providers" => Provider, "provider_credentials" => ProviderCredential, "sessions" => Session, "messages" => Message, "runs" => Run, "settings" => Settings ]);
+} [
+    "projects" => Project,
+    "agents" => Agent,
+    "providers" => Provider,
+    "provider_credentials" => ProviderCredential,
+    "sessions" => Session,
+    "messages" => Message,
+    "runs" => Run,
+    "settings" => Settings
+]);
 
 #[cfg(test)]
 mod tests;

@@ -7,9 +7,13 @@ use futures_util::StreamExt;
 use crate::{ProviderAdapter, ProviderError, ProviderEvent, ProviderInvocation, StopReason, Usage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Summary of a provider stream that passed contract validation.
 pub struct ContractReport {
+    /// Number of events observed in the stream.
     pub events: usize,
+    /// Most recently reported token usage, if any.
     pub usage: Option<Usage>,
+    /// Terminal stop reason emitted by the provider.
     pub stop_reason: StopReason,
 }
 

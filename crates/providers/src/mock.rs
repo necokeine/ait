@@ -18,6 +18,7 @@ pub struct ScriptedProvider {
 
 impl ScriptedProvider {
     #[must_use]
+    /// Creates a provider that emits the supplied event script.
     pub fn new(
         capabilities: ProviderCapabilities,
         script: Vec<Result<ProviderEvent, ProviderError>>,
@@ -30,6 +31,7 @@ impl ScriptedProvider {
     }
 
     #[must_use]
+    /// Configures a delay before each scripted event is emitted.
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = delay;
         self

@@ -9,16 +9,24 @@ use crate::{
     ProviderRequest, Role, SecretValue,
 };
 
+/// Asynchronous stream of normalized provider events.
 pub type ProviderStream =
     Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderError>> + Send + 'static>>;
 
 #[derive(Clone)]
+/// Fully resolved input passed to one provider adapter invocation.
 pub struct ProviderInvocation {
+    /// Correlation identifier for the invocation.
     pub request_id: String,
+    /// Provider model identifier.
     pub model: String,
+    /// Optional provider endpoint override.
     pub endpoint: Option<String>,
+    /// Resolved credential scoped to this invocation.
     pub credential: Option<SecretValue>,
+    /// Provider-neutral request payload.
     pub request: ProviderRequest,
+    /// Token used to cancel the in-flight invocation.
     pub cancellation: CancellationToken,
 }
 
@@ -36,10 +44,18 @@ impl std::fmt::Debug for ProviderInvocation {
 }
 
 #[async_trait]
+/// Adapter boundary implemented by each supported provider driver.
 pub trait ProviderAdapter: Send + Sync {
+    /// Returns the stable driver identifier.
     fn driver(&self) -> &'static str;
+    /// Returns capabilities supported by this adapter.
     fn capabilities(&self) -> ProviderCapabilities;
 
+    /// Starts an invocation and returns its normalized event stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns a provider-neutral error when validation or stream creation fails.
     async fn stream(&self, invocation: ProviderInvocation)
     -> Result<ProviderStream, ProviderError>;
 }

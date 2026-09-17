@@ -7,6 +7,10 @@ use super::{
 
 pub(super) const PROJECT_APPLICATION_ID: u32 = 0x4149_5031; // AIP1
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "opening validates the complete Project database identity"
+)]
 pub(super) fn open_project(
     target: &ProjectTarget,
     owner: &str,
@@ -91,8 +95,13 @@ pub(super) fn open_project(
         }
     } else if version != 1 || application != PROJECT_APPLICATION_ID {
         return Err(other(format!(
-            "unsupported Project database format for {} (application={application}, version={version})",
-            target.id
+            concat!(
+                "unsupported Project database format for {} ",
+                "(application={application}, version={version})"
+            ),
+            target.id,
+            application = application,
+            version = version
         )));
     }
     let (identity, coordinator): (String, String) = connection
@@ -104,7 +113,10 @@ pub(super) fn open_project(
         .map_err(sql_error)?;
     if identity != target.id || coordinator != owner {
         return Err(other(format!(
-            "Project database identity/coordinator mismatch for {}; use an explicit import into a new directory",
+            concat!(
+                "Project database identity/coordinator mismatch for {}; use an explicit import ",
+                "into a new directory"
+            ),
             target.id
         )));
     }
@@ -195,13 +207,36 @@ pub(super) fn apply_batch(
         apply_change(transaction, change.clone())?;
     }
     for event in &batch.events {
-        transaction.execute("INSERT INTO durable_events(cursor,kind,entity_id,body_json,created_at) VALUES(?1,?2,?3,?4,?5)", params![event.cursor,event.kind,event.entity_id,event.body.to_string(),event.created_at]).map_err(sql_error)?;
+        transaction
+            .execute(
+                concat!(
+                    "INSERT INTO durable_events(cursor,kind,entity_id,body_json,created_at) ",
+                    "VALUES(?1,?2,?3,?4,?5)"
+                ),
+                params![
+                    event.cursor,
+                    event.kind,
+                    event.entity_id,
+                    event.body.to_string(),
+                    event.created_at
+                ],
+            )
+            .map_err(sql_error)?;
     }
     for checkpoint in &batch.progress {
-        transaction.execute(
-            "INSERT INTO run_progress VALUES(?1, ?2, ?3) ON CONFLICT(run_id) DO UPDATE SET body_json=excluded.body_json, updated_at=excluded.updated_at",
-            params![checkpoint.run_id, checkpoint.body.to_string(), checkpoint.updated_at],
-        ).map_err(sql_error)?;
+        transaction
+            .execute(
+                concat!(
+                    "INSERT INTO run_progress VALUES(?1, ?2, ?3) ON CONFLICT(run_id) ",
+                    "DO UPDATE SET body_json=excluded.body_json, updated_at=excluded.updated_at"
+                ),
+                params![
+                    checkpoint.run_id,
+                    checkpoint.body.to_string(),
+                    checkpoint.updated_at
+                ],
+            )
+            .map_err(sql_error)?;
     }
     for run_id in &batch.clear_progress {
         transaction
@@ -220,10 +255,18 @@ pub(super) fn prepare_project(
     let validation = connection.transaction().map_err(sql_error)?;
     apply_batch(&validation, batch)?;
     validation.rollback().map_err(sql_error)?;
-    connection.execute(
-        "INSERT INTO prepared_commit VALUES(1, ?1, ?2) ON CONFLICT(singleton) DO UPDATE SET operation_id=excluded.operation_id, body_json=excluded.body_json",
-        params![operation_id, serde_json::to_string(batch).map_err(json_error)?],
-    ).map_err(sql_error)?;
+    connection
+        .execute(
+            concat!(
+                "INSERT INTO prepared_commit VALUES(1, ?1, ?2) ON CONFLICT(singleton) ",
+                "DO UPDATE SET operation_id=excluded.operation_id, body_json=excluded.body_json"
+            ),
+            params![
+                operation_id,
+                serde_json::to_string(batch).map_err(json_error)?
+            ],
+        )
+        .map_err(sql_error)?;
     Ok(())
 }
 

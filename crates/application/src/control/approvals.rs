@@ -473,7 +473,10 @@ async fn validate_native_approval_grant(
         {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                "command approval requires an explicitly selected full_access Run; sandbox confinement cannot be proven",
+                concat!(
+                    "command approval requires an explicitly selected full_access Run; ",
+                    "sandbox confinement cannot be proven"
+                ),
                 false,
             ));
         }

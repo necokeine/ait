@@ -314,9 +314,10 @@ fn parse_search(query: &str, html: &str) -> Vec<Value> {
     static RESULT: OnceLock<Regex> = OnceLock::new();
     static SNIPPET: OnceLock<Regex> = OnceLock::new();
     let pattern = RESULT.get_or_init(|| {
-        Regex::new(
-            r#"(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>(.*?)(?:<a[^>]*class="[^"]*result__a|$)"#,
-        )
+        Regex::new(concat!(
+            r#"(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>"#,
+            r#"(.*?)</a>(.*?)(?:<a[^>]*class="[^"]*result__a|$)"#
+        ))
         .expect("search result regex must be valid")
     });
     let snippet = SNIPPET.get_or_init(|| {

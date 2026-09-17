@@ -40,7 +40,11 @@ fn selected_project_agent_id(
             error(
                 ErrorCode::InvalidAgentConfiguration,
                 format!(
-                    "no Agent selected and global setting {DEFAULT_AGENT_SETTING_ID} is not configured"
+                    concat!(
+                        "no Agent selected and global setting ",
+                        "{DEFAULT_AGENT_SETTING_ID} is not configured"
+                    ),
+                    DEFAULT_AGENT_SETTING_ID = DEFAULT_AGENT_SETTING_ID
                 ),
                 false,
             )

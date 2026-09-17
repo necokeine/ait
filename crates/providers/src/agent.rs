@@ -5,35 +5,59 @@ use serde::{Deserialize, Serialize};
 use crate::{CredentialRef, ProviderCapabilities, ProviderParameters};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Configures one named provider-backed agent.
 pub struct AgentDefinition {
+    /// Stable identifier used to publish and resolve revisions.
     pub id: String,
+    /// Human-readable display name.
     pub name: String,
+    /// Provider adapter driver identifier.
     pub driver: String,
+    /// Model identifier supplied to the provider.
     pub model: String,
+    /// Optional provider endpoint override.
     pub endpoint: Option<String>,
+    /// Optional reference resolved to a credential at invocation time.
     pub credential_ref: Option<CredentialRef>,
+    /// Capabilities declared for this agent definition.
     pub capabilities: ProviderCapabilities,
     #[serde(default)]
+    /// Default request parameters applied to invocations.
     pub default_parameters: ProviderParameters,
+    /// Whether new runs may resolve this definition.
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One immutable revision of an agent definition.
 pub struct AgentRevision {
+    /// Identifier of the versioned agent.
     pub agent_id: String,
+    /// Monotonically increasing revision number.
     pub revision: u64,
+    /// Definition stored at this revision.
     pub definition: AgentDefinition,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+/// Errors produced while publishing or resolving catalog entries.
 pub enum CatalogError {
     #[error("agent id cannot be empty")]
+    /// The submitted definition has a blank identifier.
     EmptyId,
     #[error("agent not found: {0}")]
+    /// No revisions exist for the requested agent identifier.
     NotFound(String),
     #[error("agent revision not found: {agent_id}@{revision}")]
-    RevisionNotFound { agent_id: String, revision: u64 },
+    /// The requested agent revision does not exist.
+    RevisionNotFound {
+        /// Identifier of the requested agent.
+        agent_id: String,
+        /// Missing revision number.
+        revision: u64,
+    },
     #[error("agent is disabled: {0}")]
+    /// The resolved definition is disabled.
     Disabled(String),
 }
 

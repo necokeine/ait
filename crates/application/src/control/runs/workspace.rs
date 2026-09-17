@@ -272,7 +272,7 @@ impl LocalControlService {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the invocation keeps immutable admission, finalization, and progress context together"
+        reason = "the invocation keeps immutable execution context together"
     )]
     async fn invoke_codex_workspace_checkpointed(
         &self,

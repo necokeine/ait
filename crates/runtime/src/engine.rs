@@ -1164,9 +1164,14 @@ fn pending_tool_assistant<'a>(path: &'a [ProjectedMessage], run_id: &RunId) -> O
         .collect();
     path.iter().rev().find_map(|projected| match projected {
         ProjectedMessage::Visible(message)
-            if message.role == MessageRole::Assistant && message.run_id.as_ref() == Some(run_id)
+            if message.role == MessageRole::Assistant
+                && message.run_id.as_ref() == Some(run_id)
                 && message.sub_messages.iter().any(|part| {
-                    matches!(part, SubMessage::ToolUse(tool_use) if !resolved.contains(tool_use.call_id.as_str()))
+                    matches!(
+                        part,
+                        SubMessage::ToolUse(tool_use)
+                            if !resolved.contains(tool_use.call_id.as_str())
+                    )
                 }) =>
         {
             Some(message)

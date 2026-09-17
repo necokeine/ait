@@ -336,7 +336,10 @@ impl LocalControlService {
                             &mut state,
                             index,
                             LifecycleStatus::Interrupted,
-                            "checkpointed workspace result is incomplete; recovery material was preserved for review",
+                            concat!(
+                                "checkpointed workspace result is incomplete; recovery material ",
+                                "was preserved for review"
+                            ),
                         )?;
                         WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                     }
@@ -346,7 +349,10 @@ impl LocalControlService {
                         &mut state,
                         index,
                         LifecycleStatus::Interrupted,
-                        "run effects are not proven replay-safe; isolated workspace recovery material was preserved for review",
+                        concat!(
+                            "run effects are not proven replay-safe; isolated workspace recovery ",
+                            "material was preserved for review"
+                        ),
                     )?;
                     WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }

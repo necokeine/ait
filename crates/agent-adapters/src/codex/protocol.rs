@@ -171,7 +171,8 @@ where
         "cwd": request.cwd,
         "sandbox": request.sandbox.as_wire_value(),
         "approvalPolicy": request.approval_policy.as_wire_value(),
-        "developerInstructions": CodexToolSet.developer_instructions(request.project_instructions.as_deref()),
+        "developerInstructions": CodexToolSet
+            .developer_instructions(request.project_instructions.as_deref()),
     });
     let thread_method;
     if let Some(thread_id) = &request.resume_thread_id {
@@ -262,8 +263,13 @@ where
                 () = request.cancellation.cancelled() => {
                     write_message(
                         &mut writer,
-                        &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
-                    ).await?;
+                        &json!({
+                            "method": "turn/interrupt",
+                            "id": 3,
+                            "params": {"threadId": thread_id, "turnId": turn_id}
+                        }),
+                    )
+                    .await?;
                     approval_tasks.abort_all();
                     expire_protocol_approvals(&approvals, &mut pending_approvals).await;
                     return Err(AdapterError::cancelled());
@@ -275,13 +281,19 @@ where
                     };
                     match resolution {
                         Ok(resolution) => {
-                            let Some(pending) = pending_approvals.remove(&resolution.request_key) else {
+                            let Some(pending) =
+                                pending_approvals.remove(&resolution.request_key)
+                            else {
                                 continue;
                             };
                             if resolution.decision == ApprovalDecision::Cancel {
                                 write_message(
                                     &mut writer,
-                                    &json!({"method": "turn/interrupt", "id": 3, "params": {"threadId": thread_id, "turnId": turn_id}}),
+                                    &json!({
+                                        "method": "turn/interrupt",
+                                        "id": 3,
+                                        "params": {"threadId": thread_id, "turnId": turn_id}
+                                    }),
                                 )
                                 .await?;
                                 approvals.resolved(&pending.request).await;
@@ -306,7 +318,9 @@ where
                                                 resolution.method, error.message
                                             ),
                                             retrying: false,
-                                            code: Some("CODEX_SERVER_REQUEST_INVALID_RESPONSE".into()),
+                                            code: Some(
+                                                "CODEX_SERVER_REQUEST_INVALID_RESPONSE".into(),
+                                            ),
                                         },
                                     )
                                     .await?;
@@ -1389,7 +1403,10 @@ pub(super) fn approval_response(
             ApprovalDecision::Accept | ApprovalDecision::AcceptForSession => {
                 Err(AdapterError::new(
                     AdapterErrorKind::Protocol,
-                    "permission approvals require ApprovalDecision::Raw with an explicit permission profile",
+                    concat!(
+                        "permission approvals require ApprovalDecision::Raw with an explicit ",
+                        "permission profile"
+                    ),
                     false,
                 ))
             }

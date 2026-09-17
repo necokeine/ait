@@ -14,7 +14,15 @@ pub trait Wire: Sized {
     /// Rejects invalid identifiers.
     fn from_wire(value: Self::Value) -> Result<Self, ProtocolError>;
 }
-macro_rules! scalar { ($($t:ty),*) => { $(impl Wire for $t { type Value=Self; fn to_wire(&self)->Self {self.clone()} fn from_wire(v:Self)->Result<Self,ProtocolError>{Ok(v)} })* }; }
+macro_rules! scalar {
+    ($($t:ty),*) => {
+        $(impl Wire for $t {
+            type Value = Self;
+            fn to_wire(&self) -> Self { self.clone() }
+            fn from_wire(value: Self) -> Result<Self, ProtocolError> { Ok(value) }
+        })*
+    };
+}
 scalar!(String, u64, u32, i64, bool, serde_json::Value);
 impl<T: Wire> Wire for Option<T> {
     type Value = Option<T::Value>;
@@ -57,7 +65,21 @@ impl<T: Wire> Wire for BTreeMap<String, T> {
             .collect()
     }
 }
-macro_rules! id { ($($t:ident),*) => { $(impl Wire for d::$t { type Value=String; fn to_wire(&self)->String {self.as_str().into()} fn from_wire(v:String)->Result<Self,ProtocolError>{if v.is_empty() || v.len()>256 {Err(ProtocolError::InvalidFrame)} else {Ok(Self::new(v))}} })* }; }
+macro_rules! id {
+    ($($t:ident),*) => {
+        $(impl Wire for d::$t {
+            type Value = String;
+            fn to_wire(&self) -> String { self.as_str().into() }
+            fn from_wire(value: String) -> Result<Self, ProtocolError> {
+                if value.is_empty() || value.len() > 256 {
+                    Err(ProtocolError::InvalidFrame)
+                } else {
+                    Ok(Self::new(value))
+                }
+            }
+        })*
+    };
+}
 id!(
     RunId,
     RunAttemptId,
@@ -88,10 +110,47 @@ impl Wire for d::GitCommit {
         Self::parse(v).map_err(|_| ProtocolError::InvalidFrame)
     }
 }
-macro_rules! wrapper { ($($t:ident : $v:ty),*) => { $(impl Wire for d::$t { type Value=$v; fn to_wire(&self)->Self::Value{self.0.clone()} fn from_wire(v:Self::Value)->Result<Self,ProtocolError>{Ok(Self(v))} })* }; }
-wrapper!(TimestampMs:i64,DurationMs:u64,CostMicros:u64,DomainMetadata:BTreeMap<String,serde_json::Value>);
-macro_rules! record { ($t:ident {$($field:ident),* $(,)?}) => { impl Wire for d::$t {type Value=w::$t; fn to_wire(&self)->Self::Value {w::$t {$($field:self.$field.to_wire()),*}} fn from_wire(v:Self::Value)->Result<Self,ProtocolError>{Ok(Self {$($field:Wire::from_wire(v.$field)?),*})} } }; }
-macro_rules! enumeration { ($t:ident {$($variant:ident),* $(,)?}) => { impl Wire for d::$t {type Value=w::$t; fn to_wire(&self)->Self::Value {match self {$(Self::$variant=>w::$t::$variant),*}} fn from_wire(v:Self::Value)->Result<Self,ProtocolError>{Ok(match v {$(w::$t::$variant=>Self::$variant),*})} } }; }
+macro_rules! wrapper {
+    ($($t:ident : $v:ty),*) => {
+        $(impl Wire for d::$t {
+            type Value = $v;
+            fn to_wire(&self) -> Self::Value { self.0.clone() }
+            fn from_wire(value: Self::Value) -> Result<Self, ProtocolError> { Ok(Self(value)) }
+        })*
+    };
+}
+wrapper!(
+    TimestampMs: i64,
+    DurationMs: u64,
+    CostMicros: u64,
+    DomainMetadata: BTreeMap<String, serde_json::Value>
+);
+macro_rules! record {
+    ($t:ident {$($field:ident),* $(,)?}) => {
+        impl Wire for d::$t {
+            type Value = w::$t;
+            fn to_wire(&self) -> Self::Value {
+                w::$t { $($field: self.$field.to_wire()),* }
+            }
+            fn from_wire(value: Self::Value) -> Result<Self, ProtocolError> {
+                Ok(Self { $($field: Wire::from_wire(value.$field)?),* })
+            }
+        }
+    };
+}
+macro_rules! enumeration {
+    ($t:ident {$($variant:ident),* $(,)?}) => {
+        impl Wire for d::$t {
+            type Value = w::$t;
+            fn to_wire(&self) -> Self::Value {
+                match self { $(Self::$variant => w::$t::$variant),* }
+            }
+            fn from_wire(value: Self::Value) -> Result<Self, ProtocolError> {
+                Ok(match value { $(w::$t::$variant => Self::$variant),* })
+            }
+        }
+    };
+}
 record!(Run {
     id,
     project_id,

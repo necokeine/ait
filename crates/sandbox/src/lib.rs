@@ -90,10 +90,16 @@ impl RunTool for LimitedTools {
         &self,
         request: ait_ports::ToolInvocation,
     ) -> Result<ait_ports::ToolOutcome, DomainError> {
-        let permit=tokio::select!{
-            ()=request.cancellation.cancelled()=>return Err(DomainError::invariant(ErrorCode::RunCancelled,"tool cancelled")),
-            permit=self.slots.acquire()=>permit,
-        }.map_err(|_|DomainError::invariant(ErrorCode::RunCancelled,"tool executor closed"))?;
+        let permit = tokio::select! {
+            () = request.cancellation.cancelled() => {
+                return Err(DomainError::invariant(
+                    ErrorCode::RunCancelled,
+                    "tool cancelled",
+                ));
+            }
+            permit = self.slots.acquire() => permit,
+        }
+        .map_err(|_| DomainError::invariant(ErrorCode::RunCancelled, "tool executor closed"))?;
         let result = self.inner.execute(request).await?;
         drop(permit);
         if serde_json::to_vec(&result.output).map_or(true, |b| b.len() > self.output_bytes) {

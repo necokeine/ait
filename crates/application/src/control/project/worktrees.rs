@@ -214,7 +214,10 @@ pub(in crate::control) async fn prepare_import_session_worktrees(
             return Err(error(
                 ErrorCode::InvalidSession,
                 format!(
-                    "retained Session worktree at {} does not match the import HEAD; inspect it before retrying",
+                    concat!(
+                        "retained Session worktree at {} does not match the import HEAD; ",
+                        "inspect it before retrying"
+                    ),
                     worktree.display()
                 ),
                 false,
