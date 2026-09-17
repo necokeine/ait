@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+## 工程规范
+
+- [Rust style guide](policy/rust.md)：所有 Rust 修改必须遵循的代码规范，包括测试模块拆分与项目报告中的测试覆盖率要求。
+
 ## 当前基线
 
 - `decisions/NEC-313/adr-001-aligned-api-agent-tools.md`：API Agent 对齐 Ait/OpenCode 的工具命名，并实现 Web、Project-local Skill、Todo、持久化用户交互及有界前台 Subagent；同时固定当前不支持的后台与跨模型子任务边界。
