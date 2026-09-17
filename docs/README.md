@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+## 工程规范
+
+- [Rust style guide](policy/rust.md)：所有 Rust 修改必须遵循的代码规范，包括测试模块拆分与项目报告中的测试覆盖率要求。
+
 ## 当前基线
 
 - `decisions/NEC-310/adr-001-minimax-api-provider.md`：MiniMax OpenAI-compatible Chat Completions、模型发现、全入口 Provider kind 与 worker 工具循环。

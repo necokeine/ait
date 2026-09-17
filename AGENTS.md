@@ -3,6 +3,8 @@
 Before changing domain boundaries, read `docs/README.md` and the authoritative ADR-001 v4.
 
 - Rust is the fixed implementation language; keep the root Cargo workspace buildable.
+- Before any Rust change, read and follow [the Rust style guide](docs/policy/rust.md). All Rust changes, including tests and refactors, MUST comply with it.
+- Put test modules in separate child files and include test coverage in project reports, as specified in the Rust style guide.
 - `domain` must remain free of Tokio, SQLx, HTTP, IPC, UI, and provider dependencies.
 - Dependencies point inward: adapters implement ports; application coordinates domain behavior.
 - Message history is immutable. Session is a movable pointer into the Message tree, not the tree itself.
