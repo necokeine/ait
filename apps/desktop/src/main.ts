@@ -35,7 +35,7 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.create", "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
-  "run.resolve-approval", "run.resolve-tool-approval", "run.active",
+  "run.resolve-approval", "run.resolve-tool-approval", "run.resolve-tool-interaction", "run.active",
   "cron.list", "cron.create", "cron.set-enabled", "cron.trigger",
 ]);
 interface DaemonResponse {
@@ -62,6 +62,11 @@ interface DaemonData {
     base_message_id: string; last_message_id: string | null; status: string;
     permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
     tool_approvals?: import("./types.js").ToolApproval[];
+    tool_interactions?: Array<{
+      id: string; tool_name: "ask_user_question" | "exit_plan_mode";
+      request: Record<string, unknown>; response?: unknown; status: string;
+      expires_at: number; created_at: number; decided_at?: number;
+    }>;
     provider?: { name: string };
     native_approvals?: Array<{
       id: string; run_id: string; protocol_request_id: string | number; method: string; kind: string;
@@ -314,6 +319,25 @@ class DaemonClient {
       }
       assertProject(await this.post("/v1/run/get", "run", { run_id: runId }), projectId);
       const run = await this.post("/v1/run/tool-approval/resolve", "run", { run_id: runId, approval_id: approvalId, action });
+      assertProject(run, projectId);
+      return this.projectView(projectId);
+    }
+    if (method === "run.resolve-tool-interaction") {
+      const projectId = boundedId(params.projectId, "Project");
+      const runId = boundedId(params.runId, "Run");
+      const interactionId = boundedId(params.interactionId, "interaction");
+      const action = String(params.action);
+      if (!["submit", "approve", "deny", "cancel"].includes(action)
+        || Object.keys(params).some((key) => !["projectId", "runId", "interactionId", "action", "response"].includes(key))) {
+        throw new Error("Tool interaction response is invalid.");
+      }
+      assertProject(await this.post("/v1/run/get", "run", { run_id: runId }), projectId);
+      const run = await this.post("/v1/run/tool-interaction/resolve", "run", {
+        run_id: runId,
+        interaction_id: interactionId,
+        action,
+        ...(params.response === undefined ? {} : { response: params.response }),
+      });
       assertProject(run, projectId);
       return this.projectView(projectId);
     }
@@ -629,6 +653,16 @@ class DaemonClient {
         status: run.status,
         permissionProfile: run.permission_profile,
         toolApprovals: run.tool_approvals ?? [],
+        toolInteractions: (run.tool_interactions ?? []).map((interaction) => ({
+          id: interaction.id,
+          toolName: interaction.tool_name,
+          request: interaction.request,
+          ...(interaction.response === undefined ? {} : { response: interaction.response }),
+          status: interaction.status as import("./types.js").ToolInteraction["status"],
+          expiresAt: interaction.expires_at,
+          createdAt: interaction.created_at,
+          ...(interaction.decided_at === undefined ? {} : { decidedAt: interaction.decided_at }),
+        })),
         agentName: agents.find((agent) => agent.id === run.agent_id)?.name ?? run.agent_id,
         providerName: run.provider?.name ?? "API Provider",
         nativeApprovals: (run.native_approvals ?? []).map((approval) => ({

@@ -319,6 +319,7 @@ impl RunTool for ScriptedTools {
             .unwrap_or_else(|| {
                 Ok(ToolOutcome {
                     output: json!(null),
+                    usage: RunUsage::default(),
                 })
             })
     }
@@ -638,8 +639,24 @@ async fn executes_multiple_tools_and_appends_results_in_tool_use_order() {
         Ok(text("finished")),
     ]));
     let tools = Arc::new(ScriptedTools::with_outcomes([
-        ("second", Ok(ToolOutcome { output: json!(2) })),
-        ("first", Ok(ToolOutcome { output: json!(1) })),
+        (
+            "second",
+            Ok(ToolOutcome {
+                output: json!(2),
+                usage: RunUsage {
+                    input_tokens: 7,
+                    tool_executions: 4,
+                    ..RunUsage::default()
+                },
+            }),
+        ),
+        (
+            "first",
+            Ok(ToolOutcome {
+                output: json!(1),
+                usage: RunUsage::default(),
+            }),
+        ),
     ]));
     let engine = coordinator(
         store.clone(),
@@ -654,7 +671,12 @@ async fn executes_multiple_tools_and_appends_results_in_tool_use_order() {
         .await
         .unwrap();
 
-    assert!(matches!(outcome, DriveOutcome::Completed(_)));
+    let DriveOutcome::Completed(completed) = outcome else {
+        panic!("expected completion")
+    };
+    assert_eq!(completed.usage.input_tokens, 9);
+    assert_eq!(completed.usage.output_tokens, 3);
+    assert_eq!(completed.usage.tool_executions, 6);
     assert_eq!(*tools.calls.lock().unwrap(), ["call-b", "call-a"]);
     let paths = agent.paths.lock().unwrap();
     let second_path = &paths[1];
@@ -758,6 +780,7 @@ async fn waits_for_approval_then_resumes_without_a_second_tool_intent() {
         "guarded",
         Ok(ToolOutcome {
             output: json!("ok"),
+            usage: RunUsage::default(),
         }),
     )]);
     tool_adapter.approval_names.insert("guarded".into());
@@ -1075,6 +1098,7 @@ impl RunTool for ParallelTools {
         }
         Ok(ToolOutcome {
             output: json!(request.call_id),
+            usage: RunUsage::default(),
         })
     }
     async fn reconcile(&self, _: &ToolExecution) -> Result<ToolRecovery, DomainError> {

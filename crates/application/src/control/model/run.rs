@@ -1,5 +1,5 @@
 //! Application Run aggregate. Transport projections are built only at boundaries.
-use super::NativeApprovalState;
+use super::{NativeApprovalState, ToolInteractionState};
 use ait_contracts::{ApiError, RunView, WorkerCommitReceipt};
 use ait_domain::{
     AgentConfiguration, AgentProvider, LifecyclePhase, LifecycleStatus, RunPermissionProfile,
@@ -25,6 +25,7 @@ pub(in crate::control) struct RunState {
     /// Codex-native approval audit records. They are not Ait ToolUse/ToolResult.
     pub native_approvals: Vec<NativeApprovalState>,
     pub tool_approvals: Vec<ait_domain::ToolApprovalRecord>,
+    pub tool_interactions: Vec<ToolInteractionState>,
     pub trigger: ait_domain::RunTrigger,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
@@ -250,6 +251,11 @@ impl RunState {
             provider: self.provider.clone(),
             permission_profile: self.permission_profile,
             tool_approvals: self.tool_approvals.clone(),
+            tool_interactions: self
+                .tool_interactions
+                .iter()
+                .map(ToolInteractionState::view)
+                .collect(),
             native_approvals: self
                 .native_approvals
                 .iter()
@@ -328,6 +334,7 @@ impl<'de> Deserialize<'de> for RunState {
             provider: view.provider,
             permission_profile: view.permission_profile,
             tool_approvals: view.tool_approvals,
+            tool_interactions: view.tool_interactions.into_iter().map(Into::into).collect(),
             native_approvals: view.native_approvals.into_iter().map(Into::into).collect(),
             trigger: serde_json::from_value(serde_json::Value::String(view.trigger))
                 .map_err(|_| serde::de::Error::custom("unknown Run trigger"))?,

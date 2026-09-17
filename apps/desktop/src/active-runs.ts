@@ -12,6 +12,7 @@ interface RunRecord {
   trigger: string;
   native_approvals?: Array<{ status: string }>;
   tool_approvals?: Array<{ status: string }>;
+  tool_interactions?: Array<{ status: string }>;
 }
 
 interface SessionRecord {
@@ -71,7 +72,7 @@ export async function loadActiveRuns(
           status: run.status,
           phase: run.phase ?? null,
           trigger: run.trigger,
-          pendingApprovals: [...(run.native_approvals ?? []), ...(run.tool_approvals ?? [])].filter((approval) => approval.status === "pending").length,
+          pendingApprovals: [...(run.native_approvals ?? []), ...(run.tool_approvals ?? []), ...(run.tool_interactions ?? [])].filter((approval) => approval.status === "pending").length,
         })));
       } catch {
         catalog.unavailableProjects.push({

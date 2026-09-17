@@ -2,6 +2,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-313/adr-001-aligned-api-agent-tools.md`：API Agent 对齐 Ait/OpenCode 的工具命名，并实现 Web、Project-local Skill、Todo、持久化用户交互及有界前台 Subagent；同时固定当前不支持的后台与跨模型子任务边界。
+
 - `decisions/NEC-310/adr-001-minimax-api-provider.md`：MiniMax OpenAI-compatible Chat Completions、模型发现、全入口 Provider kind 与 worker 工具循环。
 
 - `decisions/NEC-309/adr-001-gemini-api-provider.md`：Gemini 原生 GenerateContent / 模型发现适配、全入口 Provider kind、worker 工具循环与无 provider call ID 的关联规则。

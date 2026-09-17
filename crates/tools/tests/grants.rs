@@ -35,6 +35,7 @@ fn call(e: &ToolExecution) -> ToolInvocation {
         execution_id: e.id.clone(),
         tool_name: e.tool_name.clone(),
         arguments: e.arguments.clone(),
+        message_path: Vec::new(),
         cancellation: tokio_util::sync::CancellationToken::new(),
     }
 }

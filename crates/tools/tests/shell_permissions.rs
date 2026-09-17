@@ -14,6 +14,7 @@ fn call(command: String) -> ToolInvocation {
         execution_id: ToolExecutionId::new("execution"),
         tool_name: "bash".into(),
         arguments: json!({"command":command,"description":"Exercise shell permissions"}),
+        message_path: Vec::new(),
         cancellation: CancellationToken::new(),
     }
 }

@@ -100,6 +100,73 @@ impl ait_ports::RunApproval for RemoteStore {
 }
 
 #[async_trait]
+impl ait_ports::RunToolInteraction for RemoteStore {
+    async fn request(
+        &self,
+        request: ait_ports::ToolInvocation,
+    ) -> Result<ait_ports::ToolOutcome, ait_domain::DomainError> {
+        let failed = || {
+            ait_domain::DomainError::invariant(
+                ait_domain::ErrorCode::ToolExecutionFailed,
+                "daemon tool interaction channel unavailable",
+            )
+        };
+        match self
+            .call(StoreRequest::ToolInteraction {
+                request: Box::new(ait_contracts::worker::ToolInteractionRequest {
+                    run_id: request.run_id.as_str().into(),
+                    call_id: request.call_id,
+                    execution_id: request.execution_id.as_str().into(),
+                    tool_name: request.tool_name,
+                    arguments: request.arguments,
+                }),
+            })
+            .await
+            .map_err(|_| failed())?
+        {
+            StoreResponse::ToolInteraction { output } => Ok(ait_ports::ToolOutcome {
+                output,
+                usage: ait_domain::RunUsage::default(),
+            }),
+            _ => Err(failed()),
+        }
+    }
+
+    async fn reconcile(
+        &self,
+        execution: &ToolExecution,
+    ) -> Result<ait_ports::ToolRecovery, ait_domain::DomainError> {
+        let failed = || {
+            ait_domain::DomainError::invariant(
+                ait_domain::ErrorCode::RunRecoveryFailed,
+                "daemon tool interaction recovery unavailable",
+            )
+        };
+        match self
+            .call(StoreRequest::ToolInteractionRecovery {
+                execution: Box::new(execution.to_wire()),
+            })
+            .await
+            .map_err(|_| failed())?
+        {
+            StoreResponse::ToolRecovery { recovery, output } if recovery == "completed" => {
+                Ok(ait_ports::ToolRecovery::Completed(ait_ports::ToolOutcome {
+                    output: output.ok_or_else(failed)?,
+                    usage: ait_domain::RunUsage::default(),
+                }))
+            }
+            StoreResponse::ToolRecovery { recovery, .. } if recovery == "retry_safe" => {
+                Ok(ait_ports::ToolRecovery::RetrySafe)
+            }
+            StoreResponse::ToolRecovery { recovery, .. } if recovery == "unknown" => {
+                Ok(ait_ports::ToolRecovery::Unknown)
+            }
+            _ => Err(failed()),
+        }
+    }
+}
+
+#[async_trait]
 impl RunStore for RemoteStore {
     async fn load_run(&self, _: &RunId) -> Result<Run, RunStoreError> {
         self.run(StoreRequest::LoadRun).await
@@ -382,6 +449,53 @@ impl StoreServer {
                     decision: if consumed { "consumed" } else { "denied" }.into(),
                 });
             }
+            StoreRequest::ToolInteraction { request } => {
+                if request.run_id != lease.run_id {
+                    return Err(ProtocolError::WrongRun);
+                }
+                let output = self
+                    .store
+                    .request_tool_interaction(
+                        &WorkerLease {
+                            run_id: id,
+                            instance_id: lease.worker_instance_id.clone(),
+                            epoch: lease.lease_epoch,
+                        },
+                        request.call_id,
+                        request.execution_id,
+                        request.tool_name,
+                        request.arguments,
+                    )
+                    .await
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
+                return Ok(StoreResponse::ToolInteraction {
+                    output: output.output,
+                });
+            }
+            StoreRequest::ToolInteractionRecovery { execution } => {
+                if execution.run_id != lease.run_id {
+                    return Err(ProtocolError::WrongRun);
+                }
+                let recovery = self
+                    .store
+                    .recover_tool_interaction(&ToolExecution::from_wire(*execution)?)
+                    .await
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
+                return Ok(match recovery {
+                    ait_ports::ToolRecovery::Completed(outcome) => StoreResponse::ToolRecovery {
+                        recovery: "completed".into(),
+                        output: Some(outcome.output),
+                    },
+                    ait_ports::ToolRecovery::RetrySafe => StoreResponse::ToolRecovery {
+                        recovery: "retry_safe".into(),
+                        output: None,
+                    },
+                    ait_ports::ToolRecovery::Unknown => StoreResponse::ToolRecovery {
+                        recovery: "unknown".into(),
+                        output: None,
+                    },
+                });
+            }
             StoreRequest::SaveRun { run } => RunMutation::SaveRun(Run::from_wire(*run)?),
             StoreRequest::SaveAttempt { run, attempt } => {
                 RunMutation::SaveAttempt(Run::from_wire(*run)?, RunAttempt::from_wire(attempt)?)
@@ -451,6 +565,11 @@ fn validate_private_input(request: &StoreRequest) -> Result<(), ProtocolError> {
             validate_wire_message_tool_inputs(value)
         }
         StoreRequest::SaveTool { tool: value, .. } => validate_wire_tool_input(value),
+        StoreRequest::ToolInteraction { request } => {
+            ait_contracts::sensitive::validate_tool_argument_value(&request.arguments)
+                .map_err(|_| ProtocolError::InvalidTransition)
+        }
+        StoreRequest::ToolInteractionRecovery { execution } => validate_wire_tool_input(execution),
         StoreRequest::AppendToolResult {
             tool: execution,
             message: result,

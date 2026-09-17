@@ -432,9 +432,38 @@ async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
             })
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
-            vec!["bash", "edit", "glob", "grep", "read", "write"]
+            vec![
+                "ask_user_question",
+                "bash",
+                "edit",
+                "exit_plan_mode",
+                "glob",
+                "grep",
+                "read",
+                "skill",
+                "subagent",
+                "subagent_fork",
+                "todo_write",
+                "web_fetch",
+                "web_search",
+                "write",
+            ]
         } else {
-            vec!["edit", "glob", "grep", "read", "write"]
+            vec![
+                "ask_user_question",
+                "edit",
+                "exit_plan_mode",
+                "glob",
+                "grep",
+                "read",
+                "skill",
+                "subagent",
+                "subagent_fork",
+                "todo_write",
+                "web_fetch",
+                "web_search",
+                "write",
+            ]
         };
         assert_eq!(names, expected);
         assert!(

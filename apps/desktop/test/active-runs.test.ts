@@ -8,6 +8,7 @@ function run(project: string, id: string, status = "running", session: string | 
     id, project_id: project, session_id: session, agent_id: "agent", config: { model: "pinned-model" },
     status, phase: "calling_agent", trigger: session ? "manual" : "cron",
     native_approvals: [{ status: "pending" }, { status: "approved" }],
+    tool_interactions: [{ status: "pending" }],
     execution: { private_payload: "must not reach renderer" },
     provider: { url: "must not reach renderer" },
   };
@@ -34,8 +35,8 @@ test("aggregates all Projects including Sessionless Runs with a narrow, scoped p
     throw new Error(`Unexpected ${path}`);
   });
   assert.deepEqual(catalog.runs, [
-    { id: "active", projectId: "p/a b", projectName: "Code", sessionId: "session", sessionTitle: "Member name", agentId: "agent", model: "pinned-model", status: "running", phase: "calling_agent", trigger: "manual", pendingApprovals: 1 },
-    { id: "scheduled", projectId: "p2", projectName: "Scheduled", sessionId: null, sessionTitle: null, agentId: "agent", model: "pinned-model", status: "retry_wait", phase: "calling_agent", trigger: "cron", pendingApprovals: 1 },
+    { id: "active", projectId: "p/a b", projectName: "Code", sessionId: "session", sessionTitle: "Member name", agentId: "agent", model: "pinned-model", status: "running", phase: "calling_agent", trigger: "manual", pendingApprovals: 2 },
+    { id: "scheduled", projectId: "p2", projectName: "Scheduled", sessionId: null, sessionTitle: null, agentId: "agent", model: "pinned-model", status: "retry_wait", phase: "calling_agent", trigger: "cron", pendingApprovals: 2 },
   ]);
   assert.deepEqual(catalog.unavailableProjects, []);
   assert.deepEqual(calls.toSorted(), ["/v1/project/list", "/v1/run/list?project_id=p%2Fa%20b", "/v1/run/list?project_id=p2", "/v1/session/list?project_id=p%2Fa%20b"].toSorted());

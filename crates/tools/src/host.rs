@@ -18,6 +18,8 @@ use tokio_util::sync::CancellationToken;
 mod approval;
 mod search;
 mod shell;
+mod utility;
+mod web;
 
 /// Maximum input file, argument or output bytes accepted by host tools.
 pub const MAX_BYTES: usize = 65_536;
@@ -68,6 +70,21 @@ impl RunToolFactory for ObservedFactory {
             workers: Arc::new(Workers::default()),
         }))
     }
+    fn extend_agent_tools(
+        &self,
+        primary: Arc<dyn RunTool>,
+        child_agent: Arc<dyn ait_ports::RunAgent>,
+        interactions: Arc<dyn ait_ports::RunToolInteraction>,
+    ) -> Arc<dyn RunTool> {
+        Arc::new(ait_ports::CompositeRunTool::new(
+            primary.clone(),
+            Arc::new(crate::agent::AgentTools::new(
+                child_agent,
+                primary,
+                interactions,
+            )),
+        ))
+    }
 }
 impl RunToolFactory for HostToolFactory {
     fn review(
@@ -93,6 +110,21 @@ impl RunToolFactory for HostToolFactory {
             workers: Arc::new(Workers::default()),
         }))
     }
+    fn extend_agent_tools(
+        &self,
+        primary: Arc<dyn RunTool>,
+        child_agent: Arc<dyn ait_ports::RunAgent>,
+        interactions: Arc<dyn ait_ports::RunToolInteraction>,
+    ) -> Arc<dyn RunTool> {
+        Arc::new(ait_ports::CompositeRunTool::new(
+            primary.clone(),
+            Arc::new(crate::agent::AgentTools::new(
+                child_agent,
+                primary,
+                interactions,
+            )),
+        ))
+    }
 }
 fn open_project_root(root: &Path) -> Result<Dir, DomainError> {
     if !root.is_absolute() {
@@ -111,6 +143,56 @@ fn open_project_root(root: &Path) -> Result<Dir, DomainError> {
         }
     }
     Ok(directory)
+}
+
+fn narrow_aligned_schema(name: &str, schema: &mut Value) -> Option<()> {
+    if name == "subagent" {
+        schema["properties"].as_object_mut()?.retain(|key, _| {
+            matches!(key.as_str(), "description" | "prompt" | "run_in_background")
+        });
+    }
+    match name {
+        "ask_user_question" => {
+            schema["properties"]["questions"]["minItems"] = json!(1);
+            schema["properties"]["questions"]["maxItems"] = json!(10);
+            let question = &mut schema["properties"]["questions"]["items"]["properties"];
+            question["id"]["minLength"] = json!(1);
+            question["id"]["maxLength"] = json!(100);
+            question["question"]["minLength"] = json!(1);
+            question["question"]["maxLength"] = json!(4096);
+        }
+        "exit_plan_mode" => {
+            schema["properties"]["plan"]["minLength"] = json!(1);
+            schema["properties"]["plan"]["maxLength"] = json!(MAX_BYTES);
+        }
+        "skill" => {
+            schema["properties"]["name"]["minLength"] = json!(1);
+            schema["properties"]["name"]["maxLength"] = json!(100);
+        }
+        "subagent" | "subagent_fork" => {
+            schema["properties"]["description"]["minLength"] = json!(1);
+            schema["properties"]["description"]["maxLength"] = json!(200);
+            schema["properties"]["prompt"]["minLength"] = json!(1);
+            schema["properties"]["prompt"]["maxLength"] = json!(MAX_BYTES);
+            schema["properties"]["run_in_background"]["const"] = json!(false);
+        }
+        "todo_write" => {
+            schema["properties"]["todos"]["maxItems"] = json!(100);
+            let content = &mut schema["properties"]["todos"]["items"]["properties"]["content"];
+            content["minLength"] = json!(1);
+            content["maxLength"] = json!(4096);
+        }
+        "web_fetch" => {
+            schema["properties"]["url"]["minLength"] = json!(1);
+            schema["properties"]["url"]["maxLength"] = json!(2048);
+        }
+        "web_search" => {
+            schema["properties"]["queries"]["items"]["maxLength"] = json!(1024);
+        }
+        _ => return None,
+    }
+    schema["additionalProperties"] = Value::Bool(false);
+    Some(())
 }
 
 /// Narrows the bundled schema to the options implemented by this host slice.
@@ -151,6 +233,11 @@ pub fn parameters(name: &str) -> Option<Value> {
             "sandbox_permissions",
             "justification",
         ],
+        "ask_user_question" | "exit_plan_mode" | "skill" | "subagent" | "subagent_fork"
+        | "todo_write" | "web_fetch" | "web_search" => {
+            narrow_aligned_schema(name, &mut schema)?;
+            return Some(schema);
+        }
         _ => return None,
     };
     schema["properties"]
@@ -383,7 +470,15 @@ impl HostTools {
 #[async_trait]
 impl RunTool for HostTools {
     fn executable_tools(&self) -> Vec<String> {
-        let mut names = vec!["read", "grep", "glob"];
+        let mut names = vec![
+            "read",
+            "grep",
+            "glob",
+            "skill",
+            "todo_write",
+            "web_fetch",
+            "web_search",
+        ];
         if self.shell_available() {
             names.push("bash");
         }
@@ -391,7 +486,10 @@ impl RunTool for HostTools {
         names.into_iter().map(str::to_owned).collect()
     }
     fn parallel_safe(&self, name: &str, args: &Value) -> bool {
-        matches!(name, "read" | "grep" | "glob") && !self.requires_approval(name, args)
+        matches!(
+            name,
+            "read" | "grep" | "glob" | "skill" | "web_fetch" | "web_search"
+        ) && !self.requires_approval(name, args)
     }
     fn requires_approval(&self, name: &str, args: &Value) -> bool {
         approval::requested(name, args, self.profile.sandbox)
@@ -442,10 +540,17 @@ impl RunTool for HostTools {
             })
             .await
             .map_err(|_| failed())??
+        } else if matches!(request.tool_name.as_str(), "web_fetch" | "web_search") {
+            let _guard = guard;
+            host.web(&request).await?
         } else {
             tokio::task::spawn_blocking(move || {
                 let _guard = guard;
-                host.filesystem(&request)
+                if matches!(request.tool_name.as_str(), "skill" | "todo_write") {
+                    host.utility(&request)
+                } else {
+                    host.filesystem(&request)
+                }
             })
             .await
             .map_err(|_| failed())??
@@ -453,7 +558,10 @@ impl RunTool for HostTools {
         if output.to_string().len() > MAX_BYTES {
             return Err(failed());
         }
-        Ok(ToolOutcome { output })
+        Ok(ToolOutcome {
+            output,
+            usage: ait_domain::RunUsage::default(),
+        })
     }
     async fn cancel_and_drain(&self) {
         self.workers.stopping.cancel();

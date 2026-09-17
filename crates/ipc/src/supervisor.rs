@@ -418,6 +418,8 @@ fn request_method(request: &ait_contracts::worker::StoreRequest) -> &'static str
     match request {
         StoreRequest::Approval { .. } => "tool_approval",
         StoreRequest::ConsumeToolGrant { .. } => "tool_grant",
+        StoreRequest::ToolInteraction { .. } => "tool_interaction",
+        StoreRequest::ToolInteractionRecovery { .. } => "tool_interaction_recovery",
         StoreRequest::AppendMessage { .. } => "append_message",
         StoreRequest::SaveTool { tool, .. } => match tool.status {
             ToolExecutionStatus::Pending => "tool_intent",

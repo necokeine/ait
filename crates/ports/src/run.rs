@@ -49,6 +49,29 @@ pub enum CompletionResult {
 /// preconditions and return [`RunStoreError::Conflict`] for stale writes.
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    /// Present a member-facing tool interaction for this exact worker lease.
+    async fn request_tool_interaction(
+        &self,
+        _lease: &crate::WorkerLease,
+        _call_id: String,
+        _execution_id: String,
+        _tool_name: String,
+        _arguments: Value,
+    ) -> Result<ToolOutcome, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::ToolExecutionFailed,
+            "tool interaction port unavailable",
+        ))
+    }
+
+    /// Reconcile a previously persisted member interaction.
+    async fn recover_tool_interaction(
+        &self,
+        _execution: &ToolExecution,
+    ) -> Result<ToolRecovery, DomainError> {
+        Ok(ToolRecovery::Unknown)
+    }
+
     /// Ask the application to authorize this exact persisted intent under a live lease.
     async fn request_tool_approval(
         &self,
@@ -616,6 +639,11 @@ pub struct ToolInvocation {
     pub tool_name: String,
     /// Canonical arguments.
     pub arguments: Value,
+    /// Immutable conversation path visible before this tool call.
+    ///
+    /// Ordinary tools ignore this. Context-inheriting delegation tools use it
+    /// without reaching back into persistence or mutating Message history.
+    pub message_path: Vec<ProjectedMessage>,
     /// Cooperative cancellation shared with the Run supervisor.
     pub cancellation: CancellationToken,
 }
@@ -625,6 +653,8 @@ pub struct ToolInvocation {
 pub struct ToolOutcome {
     /// Bounded structured output suitable for a `ToolResult` Message.
     pub output: Value,
+    /// Provider usage incurred inside this tool, such as a foreground child Agent.
+    pub usage: RunUsage,
 }
 
 /// Reconciliation result for an execution interrupted after dispatch.
@@ -676,6 +706,106 @@ pub trait RunTool: Send + Sync {
 
     /// Reconciles a persisted Running execution after process recovery.
     async fn reconcile(&self, execution: &ToolExecution) -> Result<ToolRecovery, DomainError>;
+}
+
+/// Application-owned interaction boundary used by tools that must wait for a
+/// member decision. The request identity is the durable `ToolExecution` id, so
+/// reconnects and worker retries observe one answer rather than creating a
+/// second prompt.
+#[async_trait]
+pub trait RunToolInteraction: Send + Sync {
+    /// Present a bounded question or plan review request and wait for its answer.
+    async fn request(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError>;
+
+    /// Reconcile an interrupted request without replaying a member-visible prompt.
+    async fn reconcile(&self, execution: &ToolExecution) -> Result<ToolRecovery, DomainError>;
+
+    /// Release outstanding waits owned by this executor.
+    async fn cancel_and_drain(&self) {}
+}
+
+/// Combines independently implemented tool families behind one executor.
+pub struct CompositeRunTool {
+    primary: Arc<dyn RunTool>,
+    extension: Arc<dyn RunTool>,
+}
+
+impl CompositeRunTool {
+    /// Creates a deterministic union; the extension owns any duplicate name.
+    #[must_use]
+    pub fn new(primary: Arc<dyn RunTool>, extension: Arc<dyn RunTool>) -> Self {
+        Self { primary, extension }
+    }
+
+    fn extension_owns(&self, name: &str) -> bool {
+        self.extension
+            .executable_tools()
+            .iter()
+            .any(|candidate| candidate == name)
+    }
+}
+
+#[async_trait]
+impl RunTool for CompositeRunTool {
+    fn executable_tools(&self) -> Vec<String> {
+        let mut names = self.primary.executable_tools();
+        for name in self.extension.executable_tools() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        names
+    }
+
+    fn parallel_safe(&self, name: &str, arguments: &Value) -> bool {
+        if self.extension_owns(name) {
+            self.extension.parallel_safe(name, arguments)
+        } else {
+            self.primary.parallel_safe(name, arguments)
+        }
+    }
+
+    fn requires_approval(&self, name: &str, arguments: &Value) -> bool {
+        if self.extension_owns(name) {
+            self.extension.requires_approval(name, arguments)
+        } else {
+            self.primary.requires_approval(name, arguments)
+        }
+    }
+
+    async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        if self.extension_owns(&request.tool_name) {
+            self.extension.execute(request).await
+        } else {
+            self.primary.execute(request).await
+        }
+    }
+
+    async fn execute_granted(
+        &self,
+        request: ToolInvocation,
+        grant: ait_domain::ToolGrant,
+    ) -> Result<ToolOutcome, DomainError> {
+        if self.extension_owns(&request.tool_name) {
+            self.extension.execute_granted(request, grant).await
+        } else {
+            self.primary.execute_granted(request, grant).await
+        }
+    }
+
+    async fn cancel_and_drain(&self) {
+        self.primary.cancel_and_drain().await;
+        self.extension.cancel_and_drain().await;
+    }
+
+    async fn reconcile(&self, execution: &ToolExecution) -> Result<ToolRecovery, DomainError> {
+        if self.extension_owns(&execution.tool_name) {
+            self.extension.reconcile(execution).await
+        } else {
+            self.primary.reconcile(execution).await
+        }
+    }
 }
 
 /// Human/policy approval request for a persisted `ToolExecution`.
@@ -757,4 +887,15 @@ pub trait RunToolFactory: Send + Sync {
         root: &std::path::Path,
         profile: RunPermissionProfile,
     ) -> Result<Arc<dyn RunTool>, DomainError>;
+
+    /// Layer Agent-backed delegation and member interactions over host tools.
+    /// Factories without those capabilities keep the primary executor unchanged.
+    fn extend_agent_tools(
+        &self,
+        primary: Arc<dyn RunTool>,
+        _child_agent: Arc<dyn RunAgent>,
+        _interactions: Arc<dyn RunToolInteraction>,
+    ) -> Arc<dyn RunTool> {
+        primary
+    }
 }

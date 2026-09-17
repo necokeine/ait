@@ -4,7 +4,9 @@ mod api_tool_faults;
 mod support;
 use ait_agent_adapters::{LLMClient, LLMClientConfig, LLMProvider, provider_turn};
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult, ProviderSecret, default_settings};
+use ait_contracts::{
+    Command, CommandResult, ProviderSecret, ToolInteractionAction, default_settings,
+};
 use ait_domain::{AgentConfiguration, AgentProvider, DomainError, ProviderKind, ProviderModel};
 use ait_ports::{AgentInvocation, AgentProviderGateway, AgentResponse, ProviderMessage};
 use ait_storage_sqlite::SqliteControlStore;
@@ -332,9 +334,38 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             })
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
-            vec!["bash", "edit", "glob", "grep", "read", "write"]
+            vec![
+                "ask_user_question",
+                "bash",
+                "edit",
+                "exit_plan_mode",
+                "glob",
+                "grep",
+                "read",
+                "skill",
+                "subagent",
+                "subagent_fork",
+                "todo_write",
+                "web_fetch",
+                "web_search",
+                "write",
+            ]
         } else {
-            vec!["edit", "glob", "grep", "read", "write"]
+            vec![
+                "ask_user_question",
+                "edit",
+                "exit_plan_mode",
+                "glob",
+                "grep",
+                "read",
+                "skill",
+                "subagent",
+                "subagent_fork",
+                "todo_write",
+                "web_fetch",
+                "web_search",
+                "write",
+            ]
         };
         assert_eq!(names, expected);
         let result_ids = if kind == ProviderKind::OpenAI {
@@ -379,7 +410,7 @@ async fn denied_invalid_unknown_failed_and_approval_results_continue_without_sid
     let f=Fixture::new(kind,vec![response(kind,&[
         ("bad_path","write",json!({"file_path":"../escape","content":"bad"})),
         ("bad_args","read",json!({"file_path":10})),
-        ("unknown","web_search",json!({})),
+        ("unknown","definitely_unknown",json!({})),
         ("missing","read",json!({"file_path":"missing"})),
         ("approval","write",json!({"file_path":"denied","content":"bad","sandbox_permissions":"danger-full-access","justification":"escape"})),
     ]),response(kind,&[])],"workspace_write").await;
@@ -394,6 +425,145 @@ async fn denied_invalid_unknown_failed_and_approval_results_continue_without_sid
     );
     assert_eq!(tools[4].status, ait_domain::ToolExecutionStatus::Denied);
     assert!(!f.worktree().join("denied").exists());
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn questions_and_plan_review_wait_for_one_durable_member_response() {
+    let kind = ProviderKind::DeepSeek;
+    let mut f = Fixture::new(
+        kind,
+        vec![
+            response(
+                kind,
+                &[(
+                    "question",
+                    "ask_user_question",
+                    json!({"questions":[{"id":"mode","header":"Mode","question":"Choose a mode","options":[{"label":"Safe"},{"label":"Fast"}]}]}),
+                )],
+            ),
+            response(
+                kind,
+                &[(
+                    "plan",
+                    "exit_plan_mode",
+                    json!({"plan":"# Implement safely\n\nRun the verified change."}),
+                )],
+            ),
+            response(kind, &[]),
+        ],
+        "workspace_write",
+    )
+    .await;
+    f.service = f
+        .service
+        .clone()
+        .with_tool_approval_timeout(std::time::Duration::from_secs(5));
+    let service = Arc::new(f.service.clone());
+    let accepted = service
+        .submit(Command::SendMessage {
+            session_id: "session".into(),
+            text: "Ask and propose a plan.".into(),
+        })
+        .await;
+    assert!(accepted.ok, "{:?}", accepted.error);
+    let CommandResult::Run(initial) = accepted.result.unwrap() else {
+        panic!()
+    };
+
+    let question = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let CommandResult::Run(run) = ok(
+                &service,
+                Command::GetRun {
+                    run_id: initial.id.clone(),
+                },
+            )
+            .await
+            else {
+                panic!()
+            };
+            if let Some(interaction) = run.tool_interactions.iter().find(|interaction| {
+                interaction.tool_name == "ask_user_question" && interaction.status == "pending"
+            }) {
+                break interaction.id.clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let answered = service
+        .resolve_tool_interaction(
+            &initial.id,
+            &question,
+            ToolInteractionAction::Submit,
+            Some(json!({"mode":"Safe"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answered.tool_interactions[0].status, "answered");
+
+    let plan = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let CommandResult::Run(run) = ok(
+                &service,
+                Command::GetRun {
+                    run_id: initial.id.clone(),
+                },
+            )
+            .await
+            else {
+                panic!()
+            };
+            if let Some(interaction) = run.tool_interactions.iter().find(|interaction| {
+                interaction.tool_name == "exit_plan_mode" && interaction.status == "pending"
+            }) {
+                break interaction.id.clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    service
+        .resolve_tool_interaction(&initial.id, &plan, ToolInteractionAction::Approve, None)
+        .await
+        .unwrap();
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let CommandResult::Run(run) = ok(
+                &service,
+                Command::GetRun {
+                    run_id: initial.id.clone(),
+                },
+            )
+            .await
+            else {
+                panic!()
+            };
+            if run.status == "completed" {
+                break run;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(completed.tool_interactions.len(), 2);
+    assert_eq!(
+        completed.tool_interactions[0].response,
+        Some(json!({"answers":{"mode":"Safe"}}))
+    );
+    assert_eq!(
+        completed.tool_interactions[1].response,
+        Some(json!({"approved":true}))
+    );
+    let wire = f.requests.lock().unwrap().to_vec();
+    assert_eq!(wire.len(), 3);
+    assert!(wire[1].to_string().contains("Safe"));
+    assert!(wire[2].to_string().contains("approved"));
     f.finish().await;
 }
 #[tokio::test]

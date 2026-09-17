@@ -144,4 +144,4 @@ npm test
 
 ## API 工具审批
 
-私有协议 minor 2 要求 `tool-grants-v1`。Approval RPC 等待期间心跳/控制面继续服务；决定与单次 grant 消费由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，Running 工具的未知结果不重放。审批期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md) 和 [NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md)。
+私有协议 minor 3 要求 `tool-grants-v1` 与 `tool-interactions-v1`。Approval、提问与计划审阅 RPC 等待期间心跳/控制面继续服务；决定、单次 grant 消费及交互答案由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，交互按原 ToolExecution ID 恢复，Running 工具的未知结果不重放。等待期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md)、[NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md) 和 [NEC-313 ADR](../decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。

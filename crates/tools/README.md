@@ -72,9 +72,30 @@ assert_eq!(profiles.resolve("deepseek", "my-model-id").tools().len(), 1);
 
 The public OpenAI/DeepSeek/Gemini/MiniMax Session path now uses the existing `RunCoordinator`
 with `HostToolFactory`. After exact provider/model selection, the adapter advertises
-only executable functions: `read`, `grep`, `glob`, and `bash` where the OS backend
-is available; writable Runs also get `write` and `edit`. Unsupported options are
-removed from schemas and rejected by the executor.
+only executable functions. The local family contains `read`, `grep`, `glob`, `write`,
+`edit`, `skill`, `todo_write`, `web_fetch`, `web_search`, and `bash` where the OS
+backend is available. The Agent extension adds `ask_user_question`, `exit_plan_mode`,
+`subagent`, and `subagent_fork`, for 14 executable functions on a Unix host with a
+usable shell (13 without one). Unsupported options are removed from schemas and
+rejected by the executor; legacy spellings such as `webfetch`, `question`, `task`,
+and `plan_exit` are not aliases.
+
+`skill` reads a named `SKILL.md` without following symlinks from Project-local
+`.agents/skills`, `.opencode/skills`, `.ait/skills`, or `skills`. `todo_write`
+returns the complete validated replacement list in its persisted ToolResult.
+`web_fetch` and `web_search` accept bounded text only, pin public DNS resolutions,
+reject credentials and local/private/link-local targets on every redirect, and mark
+all returned material as external untrusted input. Search currently uses DuckDuckGo's
+public HTML endpoint and therefore has no provider SLA.
+
+Questions and plan reviews are durable Run records. They cross the private worker
+protocol, appear in Session and Runs views, expire with the Run/worker deadline, and
+resume exactly one waiting ToolUse after an explicit desktop response. Foreground
+subagents reuse the current provider/model route, run at most eight model rounds and
+16 nested tool calls, inherit completed context only for `subagent_fork`, and charge
+nested token/cost/tool usage to the parent Run. Recursive and background delegation
+are not advertised. Cross-provider/model child routing and durable background child
+jobs remain intentionally unsupported until Ait has a first-class child-Run aggregate.
 
 Structured file tools use workspace-relative, non-hidden capability directory
 handles without following symlinks. Writes atomically replace files with a 64 KiB
@@ -113,7 +134,8 @@ all workers before terminal state or Session release; an OS call already in flig
 may delay that acknowledgment, but cannot outlive it. Commands are killed and reaped.
 Successful tool rounds keep the same attempt. Unknown crash outcomes are never
 replayed. API changes remain uncommitted for member review. See
-[NEC-247](../../docs/decisions/NEC-247/adr-001-api-provider-host-tool-loop.md) and
+[NEC-247](../../docs/decisions/NEC-247/adr-001-api-provider-host-tool-loop.md),
+[NEC-313](../../docs/decisions/NEC-313/adr-001-aligned-api-agent-tools.md), and
 [WF-13](../../workflows/13-api-provider-tool-loop.md).
 
 `LLMClient::prompt` and `text_request` remain explicit text-only helpers.

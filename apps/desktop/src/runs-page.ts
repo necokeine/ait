@@ -3,11 +3,13 @@ import { ActiveRunsMonitor, type ActiveRunsState } from "./active-runs-monitor.j
 import type { ActiveRunsCatalog, ActiveRunSummary, AgentSummary } from "./types.js";
 import type { ProjectView } from "./types.js";
 import { renderToolApprovals } from "./tool-approval-ui.js";
+import { interactionResponse, renderToolInteractions } from "./tool-interaction-ui.js";
 
 interface RunsPageActions {
   read(): Promise<ActiveRunsCatalog>;
   project(id: string): Promise<ProjectView>;
   resolve(input: { projectId: string; runId: string; approvalId: string; action: "approve" | "deny" | "cancel" }): Promise<ProjectView>;
+  resolveInteraction(input: { projectId: string; runId: string; interactionId: string; action: "submit" | "approve" | "deny" | "cancel"; response?: Record<string, string | string[]> }): Promise<ProjectView>;
   agents(): AgentSummary[];
   openSession(projectId: string, sessionId: string): Promise<void>;
   notify(message: string, failure?: boolean): void;
@@ -63,7 +65,7 @@ export function createRunsPage(container: Element, actions: RunsPageActions) {
       if (!run) { detail.textContent = "Run unavailable."; return; }
       const result = project.messages.find((message) => message.id === run.lastMessageId);
       const text = result?.parts.map((part) => part.type === "text" ? part.text : part.type === "tool_result" ? `Tool result: ${part.status}` : "").join("\n") ?? "";
-      detail.innerHTML = `<header><h2>Run ${escape(run.id)}</h2><p class="run-detail-status">${escape(labels[run.status] ?? run.status)}</p></header>${renderToolApprovals(run)}<pre class="run-detail-result">${escape(text)}</pre>`;
+      detail.innerHTML = `<header><h2>Run ${escape(run.id)}</h2><p class="run-detail-status">${escape(labels[run.status] ?? run.status)}</p></header>${renderToolApprovals(run)}${renderToolInteractions(run)}<pre class="run-detail-result">${escape(text)}</pre>`;
     } catch { if (generation === detailGeneration) detail.textContent = "Could not refresh this Run. Use Refresh to try again."; }
   };
   const render = (state: ActiveRunsState): void => {
@@ -97,6 +99,25 @@ export function createRunsPage(container: Element, actions: RunsPageActions) {
   const monitor = new ActiveRunsMonitor(actions.read, render);
   refreshButton.addEventListener("click", () => void monitor.refresh());
   detail.addEventListener("click", (event) => {
+    const interactionButton = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-interaction-action]") : null;
+    const interactionCard = interactionButton?.closest<HTMLElement>("[data-interaction-id]");
+    const interactionAction = interactionButton?.dataset.interactionAction;
+    if (interactionCard && selected && !deciding && ["submit", "approve", "deny", "cancel"].includes(interactionAction ?? "")) {
+      let response: Record<string, string | string[]> | undefined;
+      try {
+        if (interactionAction === "submit") response = interactionResponse(interactionCard);
+      } catch (error) {
+        actions.notify(error instanceof Error ? error.message : "Answer is invalid.", true);
+        return;
+      }
+      deciding = true;
+      ++detailGeneration;
+      detail.querySelectorAll<HTMLButtonElement>("button").forEach((button) => { button.disabled = true; });
+      void actions.resolveInteraction({ ...selected, interactionId: interactionCard.dataset.interactionId!, action: interactionAction as "submit" | "approve" | "deny" | "cancel", ...(response ? { response } : {}) })
+        .catch((error: unknown) => actions.notify(error instanceof Error ? error.message : "Response failed.", true))
+        .finally(() => { deciding = false; void refreshDetail(); void monitor.refresh(); });
+      return;
+    }
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-approval-action]") : null;
     const card = button?.closest<HTMLElement>("[data-approval-id]");
     const action = button?.dataset.approvalAction;

@@ -108,6 +108,7 @@ export interface DesktopRun {
   };
   nativeApprovals: NativeApproval[];
   toolApprovals?: ToolApproval[];
+  toolInteractions?: ToolInteraction[];
   agentName?: string;
   providerName?: string;
   error?: { code?: string; message: string };
@@ -139,6 +140,17 @@ export interface ToolApproval {
       requested: "read_only" | "workspace_write" | "full_access" };
   };
   status: "pending" | "approved" | "consumed" | "denied" | "cancelled" | "expired";
+}
+
+export interface ToolInteraction {
+  id: string;
+  toolName: "ask_user_question" | "exit_plan_mode";
+  request: Record<string, unknown>;
+  response?: unknown;
+  status: "pending" | "answered" | "approved" | "denied" | "cancelled" | "expired";
+  expiresAt: number;
+  createdAt: number;
+  decidedAt?: number;
 }
 
 export interface NativeApproval {
@@ -366,6 +378,13 @@ export interface AitDesktopApi {
   }): Promise<ProjectView>;
   resolveToolApproval(input: {
     runId: string; projectId: string; approvalId: string; action: "approve" | "deny" | "cancel";
+  }): Promise<ProjectView>;
+  resolveToolInteraction(input: {
+    runId: string;
+    projectId: string;
+    interactionId: string;
+    action: "submit" | "approve" | "deny" | "cancel";
+    response?: Record<string, string | string[]>;
   }): Promise<ProjectView>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {

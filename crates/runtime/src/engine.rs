@@ -629,6 +629,7 @@ impl RunCoordinator {
                     execution_id: e.id.clone(),
                     tool_name: e.tool_name.clone(),
                     arguments: e.arguments.clone(),
+                    message_path: Vec::new(),
                     cancellation: cancellation.clone(),
                 }),
                 &run,
@@ -640,6 +641,7 @@ impl RunCoordinator {
         for (mut execution, result) in executions.into_iter().zip(results) {
             match result {
                 Controlled::Returned(Ok(outcome)) => {
+                    add_usage(&mut run.usage, &outcome.usage);
                     execution.status = ToolExecutionStatus::Succeeded;
                     execution.result = Some(outcome.output);
                 }
@@ -849,6 +851,12 @@ impl RunCoordinator {
                 .store
                 .save_tool_execution(run, execution.clone())
                 .await?;
+            // Capture the path at the latest durable head. After an earlier
+            // serial tool result, the assistant message is no longer the Run
+            // head, and the completed result is part of the context visible to
+            // a later delegation call.
+            let message_path_head = run.last_message_id.unwrap_or(run.base_message_id);
+            let message_path = self.store.load_message_path(&message_path_head).await?;
             let result = self
                 .controlled_tool(
                     async {
@@ -858,6 +866,7 @@ impl RunCoordinator {
                             execution_id: execution.id.clone(),
                             tool_name: tool_use.tool_name.clone(),
                             arguments: execution.arguments.clone(),
+                            message_path,
                             cancellation: cancellation.clone(),
                         };
                         if let Some(grant) = operation_grant {
@@ -877,7 +886,8 @@ impl RunCoordinator {
                 )
                 .await;
             let forced_stop = match result {
-                Controlled::Returned(Ok(ToolOutcome { output })) => {
+                Controlled::Returned(Ok(ToolOutcome { output, usage })) => {
+                    add_usage(&mut run.usage, &usage);
                     execution.status = ToolExecutionStatus::Succeeded;
                     execution.result = Some(output);
                     None

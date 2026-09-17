@@ -337,6 +337,16 @@ pub enum NativeFileSystemAccess {
     Deny,
 }
 
+/// Member action on a pending API tool interaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolInteractionAction {
+    Submit,
+    Approve,
+    Deny,
+    Cancel,
+}
+
 /// Provider path vocabulary retained without granting renderer filesystem authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -400,6 +410,27 @@ pub struct NativeApprovalView {
     pub decided_at: Option<i64>,
 }
 
+/// Durable member response requested by an API host tool.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToolInteractionView {
+    /// Stable interaction and `ToolExecution` identity.
+    pub id: String,
+    pub run_id: String,
+    pub tool_name: String,
+    /// Bounded request arguments shown to the member.
+    pub request: serde_json::Value,
+    /// Submitted answer or plan decision, once resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<serde_json::Value>,
+    /// `pending`, `answered`, `approved`, `denied`, `cancelled`, or `expired`.
+    pub status: String,
+    pub lease_epoch: u64,
+    pub expires_at: i64,
+    pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
+}
+
 /// Run result or query snapshot; this DTO never requests execution.
 /// Synchronous command routes return the final state. Explicit asynchronous
 /// submission routes and queries can expose an intermediate state.
@@ -427,6 +458,9 @@ pub struct RunView {
     /// Independent, durable API host-tool requests and one-operation grants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_approvals: Vec<ait_domain::ToolApprovalRecord>,
+    /// API tool questions and plan reviews awaiting or retaining a member response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_interactions: Vec<ToolInteractionView>,
     pub trigger: String,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
