@@ -72,22 +72,37 @@ impl AgentProviderGateway for Gateway {
     }
 }
 fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
-    if kind == ProviderKind::OpenAI {
-        let output = if calls.is_empty() {
-            vec![
-                json!({"type":"message","id":"msg_final","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"text":"Verified hello.py"}]}),
-            ]
-        } else {
-            calls.iter().map(|(id,name,args)|json!({"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect()
-        };
-        json!({"id":"resp_fixture","object":"response","created_at":0,"status":"completed","model":"fixture-model","tools":[],"output":output,"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}})
-    } else {
-        let message = if calls.is_empty() {
-            json!({"role":"assistant","content":"Verified hello.py"})
-        } else {
-            json!({"role":"assistant","content":null,"reasoning_content":"Use the host tools.","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
-        };
-        json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+    match kind {
+        ProviderKind::OpenAI => {
+            let output = if calls.is_empty() {
+                vec![
+                    json!({"type":"message","id":"msg_final","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"text":"Verified hello.py"}]}),
+                ]
+            } else {
+                calls.iter().map(|(id,name,args)|json!({"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect()
+            };
+            json!({"id":"resp_fixture","object":"response","created_at":0,"status":"completed","model":"fixture-model","tools":[],"output":output,"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}})
+        }
+        ProviderKind::DeepSeek => {
+            let message = if calls.is_empty() {
+                json!({"role":"assistant","content":"Verified hello.py"})
+            } else {
+                json!({"role":"assistant","content":null,"reasoning_content":"Use the host tools.","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
+            };
+            json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+        }
+        ProviderKind::Gemini => {
+            let parts = if calls.is_empty() {
+                vec![json!({"text":"Verified hello.py"})]
+            } else {
+                calls
+                    .iter()
+                    .map(|(_, name, args)| json!({"functionCall":{"name":name,"args":args}}))
+                    .collect()
+            };
+            json!({"candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"fixture-model","responseId":"resp_fixture"})
+        }
+        ProviderKind::Codex => unreachable!(),
     }
 }
 fn openai_response_with_raw_tool_arguments(arguments: &str) -> Value {
@@ -265,8 +280,12 @@ impl Fixture {
     }
 }
 #[tokio::test]
-async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receipts() {
-    for kind in [ProviderKind::OpenAI, ProviderKind::DeepSeek] {
+async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
+    for kind in [
+        ProviderKind::OpenAI,
+        ProviderKind::DeepSeek,
+        ProviderKind::Gemini,
+    ] {
         let f = Fixture::new(
             kind,
             vec![
@@ -348,26 +367,55 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
             assert_eq!(message["parent_message_id"], parent);
             parent = message["id"].as_str().unwrap().into();
         }
-        assert_eq!(generated[1]["tool_result"]["call_id"], "write_1");
-        assert_eq!(generated[3]["tool_result"]["call_id"], "read_2");
-        assert_eq!(generated[4]["tool_result"]["call_id"], "search_2");
+        let result_call_ids = [
+            generated[1]["tool_result"]["call_id"].as_str().unwrap(),
+            generated[3]["tool_result"]["call_id"].as_str().unwrap(),
+            generated[4]["tool_result"]["call_id"].as_str().unwrap(),
+        ];
+        if kind == ProviderKind::Gemini {
+            assert!(result_call_ids.iter().all(|id| !id.is_empty()));
+            assert_ne!(result_call_ids[0], result_call_ids[1]);
+            assert_ne!(result_call_ids[1], result_call_ids[2]);
+        } else {
+            assert_eq!(result_call_ids, ["write_1", "read_2", "search_2"]);
+        }
         let requests = f.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 3);
         let wire = requests[2].to_string();
-        for id in ["write_1", "read_2", "search_2"] {
-            assert!(wire.contains(id));
+        if kind == ProviderKind::Gemini {
+            for part in requests[2]["contents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|message| message["parts"].as_array().into_iter().flatten())
+            {
+                if part.get("functionCall").is_some() {
+                    assert!(part["functionCall"]["id"].is_null());
+                }
+                if part.get("functionResponse").is_some() {
+                    assert!(part["functionResponse"]["id"].is_null());
+                }
+            }
+        } else {
+            for id in result_call_ids {
+                assert!(wire.contains(id));
+            }
         }
         assert!(wire.contains("1: print('hello')"));
         let first = &requests[0];
-        let names = first["tools"]
-            .as_array()
-            .unwrap()
+        let tools = first["tools"].as_array().unwrap();
+        let definitions = if kind == ProviderKind::Gemini {
+            tools[0]["functionDeclarations"].as_array().unwrap()
+        } else {
+            tools
+        };
+        let names = definitions
             .iter()
             .map(|t| {
-                if kind == ProviderKind::OpenAI {
-                    t["name"].as_str().unwrap()
-                } else {
+                if kind == ProviderKind::DeepSeek {
                     t["function"]["name"].as_str().unwrap()
+                } else {
+                    t["name"].as_str().unwrap()
                 }
             })
             .collect::<Vec<_>>();
@@ -388,24 +436,35 @@ async fn subprocess_openai_and_deepseek_keep_tool_result_order_and_sqlite_receip
             .unwrap();
         assert!(primary.status.success());
         assert!(primary.stdout.is_empty(), "Project main checkout is dirty");
-        let result_ids = if kind == ProviderKind::OpenAI {
-            requests[2]["input"]
+        if kind == ProviderKind::Gemini {
+            let result_names = requests[2]["contents"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|m| m["type"] == "function_call_output")
-                .map(|m| m["call_id"].as_str().unwrap())
-                .collect::<Vec<_>>()
+                .flat_map(|message| message["parts"].as_array().into_iter().flatten())
+                .filter_map(|part| part["functionResponse"]["name"].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(result_names, ["write", "read", "grep"]);
         } else {
-            requests[2]["messages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|m| m["role"] == "tool")
-                .map(|m| m["tool_call_id"].as_str().unwrap())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(result_ids, ["write_1", "read_2", "search_2"]);
+            let result_ids = if kind == ProviderKind::OpenAI {
+                requests[2]["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m["type"] == "function_call_output")
+                    .map(|m| m["call_id"].as_str().unwrap())
+                    .collect::<Vec<_>>()
+            } else {
+                requests[2]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m["role"] == "tool")
+                    .map(|m| m["tool_call_id"].as_str().unwrap())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(result_ids, ["write_1", "read_2", "search_2"]);
+        }
         assert!(
             after
                 .messages

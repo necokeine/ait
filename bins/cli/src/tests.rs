@@ -440,6 +440,29 @@ fn response_redaction_preserves_json_even_for_escaped_secrets() {
 }
 
 #[test]
+fn gemini_provider_kind_maps_to_the_domain_contract() {
+    let Action::Execute(Command::SaveAgentProvider { provider, secret }) = action(
+        &[
+            "agent",
+            "provider",
+            "save",
+            "--id",
+            "gemini",
+            "--name",
+            "Gemini",
+            "--kind",
+            "gemini",
+            "--secret-stdin",
+        ],
+        "fixture-secret\n",
+    ) else {
+        panic!("expected Provider operation");
+    };
+    assert_eq!(provider.kind, AgentMode::Gemini);
+    assert_eq!(secret, Some(ProviderSecret("fixture-secret".into())));
+}
+
+#[test]
 fn approval_requires_a_scope_and_provider_stdin_is_not_shared() {
     assert!(
         Arguments::try_parse_from([

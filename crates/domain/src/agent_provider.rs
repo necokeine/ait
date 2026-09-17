@@ -12,6 +12,7 @@ pub enum ProviderKind {
     OpenAI,
     #[serde(rename = "deepseek")]
     DeepSeek,
+    Gemini,
     /// Deterministic local provider compiled only into development builds.
     #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
     Mock,
@@ -54,6 +55,13 @@ pub struct AgentConfiguration {
 #[cfg(test)]
 mod tests {
     use super::ProviderKind;
+
+    #[test]
+    fn gemini_provider_kind_round_trips() {
+        let kind: ProviderKind = serde_json::from_str(r#""gemini""#).unwrap();
+        assert_eq!(kind, ProviderKind::Gemini);
+        assert_eq!(serde_json::to_string(&kind).unwrap(), r#""gemini""#);
+    }
 
     #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
     #[test]

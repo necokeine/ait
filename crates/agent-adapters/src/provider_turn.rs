@@ -71,7 +71,7 @@ pub async fn complete_turn(
             AssistantContent::Text(text) => SubMessage::Text { text: text.text },
             AssistantContent::ToolCall(call) => {
                 let call_id = call.wire_call_id().to_owned();
-                if call.provider.is_none() || call_id.len() > 256 || call.function.name.len() > 64 {
+                if call_id.len() > 256 || call.function.name.len() > 64 {
                     return Err(invalid());
                 }
                 SubMessage::ToolUse(ToolUse {

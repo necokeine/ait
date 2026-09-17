@@ -58,7 +58,12 @@ impl HostProviderModelCatalog for HostCatalog {
 
 #[tokio::test]
 async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named_codex() {
-    for kind in [AgentMode::Codex, AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in [
+        AgentMode::Codex,
+        AgentMode::OpenAI,
+        AgentMode::DeepSeek,
+        AgentMode::Gemini,
+    ] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());
         let native = Arc::new(CapturingWorkspaceAgent::default());
