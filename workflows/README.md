@@ -94,7 +94,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | `message` | `list`（要求 `--project-id`） |
 | `run` | `list`、`get`、`cancel`、`approval approve/deny/cancel` |
 | `cron` | `list`、`create`、`enable`、`disable`、`trigger` |
-| `settings` | `get`、`set`、`reset` |
+| `config` | `get`、`set`、`reset` |
 | `event` | `list --after <cursor>`（durable SSE 回放） |
 
 事件只通过 `event list` 读取。保留 `export`、`import` 顶层快捷入口，行为分别等同于 `project export`、`project import`。

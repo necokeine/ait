@@ -119,8 +119,8 @@ ait session rename --session-id hello-world --name 'DeepSeek Hello World'
 真实工作流测试先在 Project 目录外创建 `prompt with spaces.txt`，写入多行 UTF-8 指令，
 随后实际执行 `ait session send --session-id hello-world --text-file "$WF_ROOT/prompt with spaces.txt"`。
 手工执行时也应先准备该文件；或者选择 `--text-stdin`。
-发送前读取 `ait settings get`，将完整 values 文档的 `permissions.sandbox` 改为
-`workspace_write`，用 `ait settings set --expected-revision <revision> --input <file>` 保存。
+发送前读取 `ait config get`，将完整 values 文档的 `permissions.sandbox` 改为
+`workspace_write`，用 `ait config set --expected-revision <revision> --input <file>` 保存。
 指令要求工具创建并读取 `hello.py`：无参数 `main()` 只打印字面值 `Hello, world!`，
 仅在 `if __name__ == "__main__"` 中调用；无依赖、导入或其他行为。
 模型仅返回源码文本不能通过验收；必须有成功的 write/read ToolExecution 和真实文件。

@@ -67,8 +67,8 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         command: CronCommand,
     },
-    /// Manage Settings operations.
-    Settings {
+    /// Manage configuration operations.
+    Config {
         #[command(subcommand)]
         command: SettingsCommand,
     },
@@ -585,7 +585,7 @@ impl CliCommand {
             Self::Message { command } => command.into(),
             Self::Run { command } => command.into(),
             Self::Cron { command } => command.into(),
-            Self::Settings { command } => command.into_command(stdin)?,
+            Self::Config { command } => command.into_command(stdin)?,
             Self::Event {
                 command: EventCommand::List { after },
             } => return Ok(Action::Events { after }),

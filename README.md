@@ -45,7 +45,7 @@ daemon 按实体与操作暴露本地 HTTP API，例如 `POST /v1/project/regist
 按用户目标组织的操作步骤、失败恢复和当前行为差距见 [CLI 用户流程](workflows/README.md)。
 对应验收测试运行 `cargo test -p ait-cli --test workflows`，覆盖真实 CLI 到 HTTP/SQLite 的完整路径。
 
-CLI 按 `project`、`agent`、`session`、`message`、`run`、`cron`、`settings`、`event`
+CLI 按 `project`、`agent`、`session`、`message`、`run`、`cron`、`config`、`event`
 分组，每一级都提供 `--help`；标量通过 flags 输入，多行文本支持 `--text-file` / `--text-stdin`。
 Provider 操作位于 `agent provider`。CLI 使用全局 `--host` / `--port` 连接 daemon，默认 `127.0.0.1:7314`，协议固定 HTTP。
 Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命令行。
@@ -53,7 +53,7 @@ Provider 凭据使用 `agent provider save --secret-stdin`，不得粘贴到命�
 
 新建和重置设置默认是 `permissions.sandbox=workspace_write`、`permissions.approval=on_request`。
 已有权限选择会保留；需要修改时按 [WF-08](workflows/08-settings.md#设置新-run-的权限)
-读取 settings 的最新 revision，用 `settings set --expected-revision <revision> --input <完整values文件>` 保存。
+读取 settings 的最新 revision，用 `config set --expected-revision <revision> --input <完整values文件>` 保存。
 新 Run 固定权限快照，仍受管理员上限约束。Codex 使用 native harness；OpenAI/DeepSeek/Gemini/MiniMax 使用
 宿主工具循环，按精确 provider+model 目录与 HostTools 可执行能力求交。API 首版文件操作始终
 限制在 Project 根内，`full_access` 也不能越出此边界；执行范围见 [WF-13](workflows/13-api-provider-tool-loop.md)。

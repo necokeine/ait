@@ -642,7 +642,7 @@ async fn wf07_export_and_import_project_archive() {
 #[tokio::test]
 async fn wf08_save_reset_and_recover_settings() {
     let mut workspace = Workspace::new().await;
-    let initial = workspace.call(&["settings", "get"]).await;
+    let initial = workspace.call(&["config", "get"]).await;
     assert_eq!(initial["values"]["permissions.sandbox"], "workspace_write");
     assert_eq!(initial["values"]["permissions.approval"], "on_request");
     let mut values = initial["values"].clone();
@@ -650,7 +650,7 @@ async fn wf08_save_reset_and_recover_settings() {
     values["permissions.sandbox"] = json!("read_only");
     let revision = initial["revision"].to_string();
     let args = [
-        "settings",
+        "config",
         "set",
         "--expected-revision",
         &revision,
@@ -674,7 +674,7 @@ async fn wf08_save_reset_and_recover_settings() {
             &workspace
                 .cli_stdin(
                     &[
-                        "settings",
+                        "config",
                         "set",
                         "--expected-revision",
                         &saved["revision"].to_string(),
@@ -687,14 +687,14 @@ async fn wf08_save_reset_and_recover_settings() {
             "INVALID_CONFIGURATION",
         );
     }
-    assert_eq!(workspace.call(&["settings", "get"]).await, saved);
+    assert_eq!(workspace.call(&["config", "get"]).await, saved);
     workspace.restart().await;
-    assert_eq!(workspace.call(&["settings", "get"]).await, saved);
-    let reset = workspace.call(&["settings", "reset"]).await;
+    assert_eq!(workspace.call(&["config", "get"]).await, saved);
+    let reset = workspace.call(&["config", "reset"]).await;
     assert_eq!(reset["values"], initial["values"]);
     assert_eq!(reset["revision"], saved["revision"].as_u64().unwrap() + 1);
     workspace.restart().await;
-    assert_eq!(workspace.call(&["settings", "get"]).await, reset);
+    assert_eq!(workspace.call(&["config", "get"]).await, reset);
     workspace.stop().await;
 }
 
@@ -707,7 +707,7 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     assert_eq!(help.status.code(), Some(0));
     let help_text = String::from_utf8(help.stdout).unwrap();
     for command in [
-        "project", "agent", "session", "message", "run", "cron", "settings", "event", "export",
+        "project", "agent", "session", "message", "run", "cron", "config", "event", "export",
         "import", "--host", "--port",
     ] {
         assert!(
@@ -743,6 +743,7 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         vec!["command"],
         vec!["events"],
         vec!["agent-provider", "list"],
+        vec!["settings", "get"],
         vec!["project", "list", "--endpoint", "http://127.0.0.1:7314"],
         vec!["project", "list", "--host", "https://localhost"],
         vec!["project", "list", "--port", "65536"],
@@ -754,7 +755,7 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     std::fs::write(workspace.path("malformed.json"), "{").unwrap();
     for arguments in [
         vec![
-            "settings",
+            "config",
             "set",
             "--expected-revision",
             "1",

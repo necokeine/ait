@@ -500,7 +500,7 @@ async fn wf11_real_deepseek_python_hello_world() {
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["current_message_id"], project["root_message_id"]);
     let settings = workflow
-        .cli("settings-before", &["settings", "get"], 20)
+        .cli("settings-before", &["config", "get"], 20)
         .await;
     let mut values = settings["values"].clone();
     values["permissions.sandbox"] = json!("workspace_write");
@@ -510,7 +510,7 @@ async fn wf11_real_deepseek_python_hello_world() {
         .cli(
             "permissions",
             &[
-                "settings",
+                "config",
                 "set",
                 "--expected-revision",
                 &settings["revision"].to_string(),

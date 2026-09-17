@@ -113,11 +113,11 @@ ait agent create --id codex --name Codex --provider-id builtin-codex \
 ait session create --id hello-world --project-id example-project --agent-id codex \
   | tee "$WF_ROOT/session.json"
 # 新建设置默认 workspace_write；为兼容已保存的 Readonly，发送前显式设置工作区写入权限
-ait settings get > "$WF_ROOT/settings.json"
+ait config get > "$WF_ROOT/settings.json"
 REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
 jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request"}' \
   "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
-ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+ait config set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
 ait session send --session-id hello-world --text \
   'Create a minimal Rust binary package named example-project at the repository root, with Cargo.toml, Cargo.lock, src/main.rs and .gitignore ignoring /target/. Use no external dependencies. cargo run --offline --quiet must print exactly Hello, world! followed by a newline. Verify it. Do not create a Git commit; AIT will commit your changes.' \
   | tee "$WF_ROOT/run.json"

@@ -6,17 +6,17 @@
 ## 操作
 
 ```bash
-ait settings get > "$WF_ROOT/settings.json"
+ait config get > "$WF_ROOT/settings.json"
 REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
 jq '.result.value.values + {"interface.theme":"dark"}' \
   "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
-ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
-ait settings get
+ait config set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+ait config get
 # 预期拒绝：重复使用已过期的 revision
-ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+ait config set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
 # 重置全部设置
-ait settings reset
-ait settings get
+ait config reset
+ait config get
 ```
 
 ## 验收与失败恢复
@@ -41,11 +41,11 @@ schema 中的 `restartRequired` 表示相应配置是否需要重启生效，保
 已有设置保留原权限选择；例如要从 Readonly 切换到 Workspace Write，在发送输入前读取最新 settings 并保存：
 
 ```bash
-ait settings get > "$WF_ROOT/settings.json"
+ait config get > "$WF_ROOT/settings.json"
 REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
 jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request"}' \
   "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
-ait settings set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
+ait config set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
 ```
 
 `--input` 仅含完整 values 对象；`--expected-revision` 单独传入，不能传响应信封。

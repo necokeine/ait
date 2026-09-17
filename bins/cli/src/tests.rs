@@ -90,8 +90,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     case!(&["cron", "enable", "--cron-id", "cron_id"] => SetCronEnabled { cron_id: "cron_id".into(), enabled: true });
     case!(&["cron", "disable", "--cron-id", "cron_id"] => SetCronEnabled { cron_id: "cron_id".into(), enabled: false });
     case!(&["cron", "trigger", "--cron-id", "cron_id", "--scheduled-at", "1788480000000"] => TriggerCron { cron_id: "cron_id".into(), scheduled_at: 1_788_480_000_000 });
-    case!(&["settings", "get"] => GetSettings);
-    case!(&["settings", "reset"] => ResetSettings);
+    case!(&["config", "get"] => GetSettings);
+    case!(&["config", "reset"] => ResetSettings);
     let provider = AgentProvider {
         id: "provider".into(),
         name: "Provider".into(),
@@ -109,7 +109,7 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     case!(&["agent", "provider", "discover-models", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => DiscoverProviderModels { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
     case!(&["project", "export", "--project-id", "p", "--output", "archive with spaces.json"] => ExportProject { project_id: "p".into() });
     case!(&["project", "import", "--input", archive_path.to_str().unwrap(), "--workdir", "path with spaces"] => ImportProject { archive: archive, workdir: "path with spaces".into() });
-    case!(&["settings", "set", "--expected-revision", "42", "--input", settings_path.to_str().unwrap()] => SaveSettings { expected_revision: 42, values: settings });
+    case!(&["config", "set", "--expected-revision", "42", "--input", settings_path.to_str().unwrap()] => SaveSettings { expected_revision: 42, values: settings });
     case!(&["run", "approval", "approve", "--run-id", "r", "--approval-id", "a", "--scope", "turn"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Approve, scope: Some(ApprovalGrantScope::Turn) });
     case!(&["run", "approval", "deny", "--run-id", "r", "--approval-id", "a"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Deny, scope: None });
     case!(&["run", "approval", "cancel", "--run-id", "r", "--approval-id", "a"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Cancel, scope: None });
@@ -246,7 +246,7 @@ fn required_parameters_and_typed_values_fail_before_io() {
         ],
         vec!["event", "list", "--after", "-1"],
         vec![
-            "settings",
+            "config",
             "set",
             "--input",
             "-",
