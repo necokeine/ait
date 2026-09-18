@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "ait-agent-adapters"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "ait-ports",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "ait-api-http"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-agent-adapters",
  "ait-application",
@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "ait-application"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-agent-adapters",
  "ait-contracts",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "ait-cli"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-api-http",
  "ait-application",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "ait-contracts"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "serde",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "ait-daemon"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-agent-adapters",
  "ait-api-http",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "ait-domain"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "ait-ipc"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-contracts",
  "ait-domain",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "ait-observability"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "ait-ports"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "async-trait",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "ait-project-local"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-application",
  "ait-contracts",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "ait-providers"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -256,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "ait-runtime"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "ait-ports",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "ait-sandbox"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "ait-ports",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "ait-scheduler"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "ait-ports",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "ait-storage-sqlite"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "ait-ports",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "ait-tools"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-domain",
  "ait-ports",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "ait-worker"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "ait-agent-adapters",
  "ait-application",
