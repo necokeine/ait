@@ -3,9 +3,10 @@
 use crate::control::runs::finalization::RunControl;
 use ait_contracts::{Command, Response};
 use ait_ports::{
-    AgentProviderGateway, ControlStore, HostProviderModelCatalog, ProjectDirectoryCreator,
-    SessionTitleGenerator, WorkspaceAgent, WorkspaceApprovalDecision,
+    AgentProviderGateway, ControlStore, HostProviderModelCatalog, SessionTitleGenerator,
+    WorkspaceAgent, WorkspaceApprovalDecision,
 };
+use ait_workspace::{ProjectDirectoryCreator, ProjectWorkspace};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, Weak};
@@ -36,7 +37,7 @@ pub struct LocalControlService {
     store: Arc<dyn ControlStore>,
     project_directory_creator: Option<Arc<dyn ProjectDirectoryCreator>>,
     session_leases: Arc<Mutex<HashMap<String, Weak<()>>>>,
-    project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
+    project_workspace: Arc<dyn ProjectWorkspace>,
     cancellations: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     run_controls: Arc<Mutex<HashMap<String, Weak<RunControl>>>>,
     approval_waiters:
@@ -68,10 +69,7 @@ impl LocalControlService {
 
     #[must_use]
     /// Creates a control service backed by the supplied workspace and store ports.
-    pub fn new(
-        project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
-        store: Arc<dyn ControlStore>,
-    ) -> Self {
+    pub fn new(project_workspace: Arc<dyn ProjectWorkspace>, store: Arc<dyn ControlStore>) -> Self {
         Self {
             store,
             project_directory_creator: None,
@@ -98,7 +96,7 @@ impl LocalControlService {
     /// Creates a service that can execute real workspace-scoped coding Agents.
     #[must_use]
     pub fn with_workspace_agent(
-        project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
+        project_workspace: Arc<dyn ProjectWorkspace>,
         store: Arc<dyn ControlStore>,
         workspace_agent: Arc<dyn WorkspaceAgent>,
     ) -> Self {

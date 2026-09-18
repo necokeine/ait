@@ -1,6 +1,6 @@
 use super::{blocking::BlockingContext, canonical_path, error, git_line};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::GitBaseline;
+use ait_workspace::GitBaseline;
 use std::path::{Path, PathBuf};
 
 impl BlockingContext {

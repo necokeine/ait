@@ -35,7 +35,8 @@ use crate::control::persistence::transaction::RecordTransaction;
 use crate::control::settings::{SettingsContext, reset_settings, save_settings, settings_view};
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::ErrorCode;
-use ait_ports::{ControlChange, PendingEvent, ProjectWorkspace, WorkspaceLease};
+use ait_ports::{ControlChange, PendingEvent};
+use ait_workspace::{ProjectWorkspace, WorkspaceLease};
 use std::sync::Arc;
 
 pub(in crate::control) enum CommandTransaction {

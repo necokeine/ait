@@ -260,7 +260,7 @@ impl Fixture {
         let project = tempfile::tempdir().unwrap();
         let store = Arc::new(SqliteControlStore::open(directory.path().join("ait.db")).unwrap());
         let service = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
         )
         .with_provider_gateway(Arc::new(Gateway))
@@ -422,7 +422,7 @@ async fn subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts() {
         assert!(python.status.success());
         assert_eq!(python.stdout, b"hello\n");
         let reopened = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
         );
         let after = support::workspace_with_runs(
@@ -877,7 +877,7 @@ async fn receipts_survive_sqlite_commit_and_reject_stale_or_changed_replays() {
             .is_err()
     );
     let reopened = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
     assert_eq!(

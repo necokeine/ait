@@ -224,7 +224,7 @@ async fn cancellation_holds_the_workspace_lease_until_adapter_settlement() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(SettlingCancellationAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -272,7 +272,7 @@ async fn dropping_the_execute_future_keeps_leases_and_terminal_persistence_super
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -327,7 +327,7 @@ async fn cancellation_wins_the_finalization_gate_before_integration() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(FinalizationRaceAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -383,7 +383,7 @@ async fn integration_wins_the_finalization_gate_and_its_output_is_persisted() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(FinalizationRaceAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -454,7 +454,7 @@ async fn integration_keeps_finalization_and_workspace_admission_until_terminal_s
     });
     let agent = Arc::new(FinalizationRaceAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
@@ -549,7 +549,7 @@ async fn verify_running_transition_failure_reaches_terminal(
     });
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
@@ -663,7 +663,7 @@ async fn verify_result_checkpoint_failure_never_claims_integration(
     });
     let agent = Arc::new(FinalizationRaceAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));

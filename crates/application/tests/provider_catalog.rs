@@ -69,7 +69,7 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
         let gateway = Arc::new(Gateway::default());
         let native = Arc::new(CapturingWorkspaceAgent::default());
         let service = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             native.clone(),
         )
@@ -152,7 +152,7 @@ async fn codex_discovery_uses_the_host_catalog_without_persisting_results() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let catalog = Arc::new(HostCatalog::default());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_host_provider_catalog(catalog.clone());
@@ -209,7 +209,7 @@ async fn discovery_previews_draft_credentials_without_saving_or_enabling_models(
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let gateway = Arc::new(Gateway::default());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_provider_gateway(gateway.clone());
@@ -335,7 +335,7 @@ async fn failed_or_invalid_discovery_has_no_partial_configuration() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let gateway = Arc::new(Gateway::default());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_provider_gateway(gateway.clone());
@@ -379,7 +379,7 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let gateway = Arc::new(Gateway::default());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_provider_gateway(gateway.clone());
@@ -480,7 +480,7 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
     assert!(!json.contains("secret"));
     let destination = tempfile::tempdir().unwrap();
     let imported = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
     );
     ok(
@@ -506,7 +506,7 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
 #[tokio::test]
 async fn fresh_workspace_exposes_only_the_codex_builtin() {
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
     );
     let providers = view(&service).await.providers;
@@ -528,7 +528,7 @@ async fn development_mock_is_selectable_and_persists_without_external_executors(
     // No Provider gateway or Codex workspace harness is installed. A completed
     // result therefore proves the Mock invocation stayed on its local branch.
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let providers = view(&service).await.providers;
@@ -603,7 +603,7 @@ async fn development_mock_is_selectable_and_persists_without_external_executors(
     let reopened_store =
         Arc::new(ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap());
     let reopened_service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         reopened_store,
     );
     let persisted = view(&reopened_service).await;

@@ -17,7 +17,7 @@ use std::sync::Arc;
 async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let _directory = setup(&service, config("high")).await;
@@ -34,7 +34,7 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
         .unwrap();
 
     let reopened = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let after = view(&reopened).await;
@@ -57,7 +57,7 @@ async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     assert_eq!(view(&reopened).await.providers, before.providers);
     assert_eq!(
         view(&LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store
         ))
         .await
@@ -72,7 +72,7 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
         for reference in ["agent", "run", "credential", "custom", "url"] {
             let store = Arc::new(SqliteControlStore::in_memory().unwrap());
             let service = LocalControlService::new(
-                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 store.clone(),
             );
             let _directory = setup(&service, config("high")).await;
@@ -110,7 +110,7 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
                 _ => unreachable!(),
             };
             let rejected = LocalControlService::new(
-                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 store.clone(),
             )
             .execute(command)
@@ -139,7 +139,7 @@ fn retired_provider(kind: &str) -> serde_json::Value {
 async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let _directory = setup(&service, config("high")).await;
@@ -162,7 +162,7 @@ async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
         .await
         .unwrap();
     let migrated = view(&LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
     ))
     .await;
@@ -176,7 +176,7 @@ async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
 #[tokio::test]
 async fn v2_archive_import_migrates_legacy_agents_without_credentials() {
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
     );
     let _directory = setup(&service, config("high")).await;
@@ -203,7 +203,7 @@ async fn v2_archive_import_migrates_legacy_agents_without_credentials() {
     assert_eq!(upgraded.format_version, 3);
     let destination = tempfile::tempdir().unwrap();
     let target = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
     );
     ok(

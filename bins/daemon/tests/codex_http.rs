@@ -44,7 +44,7 @@ async fn startup_scan_defers_an_offline_project_without_losing_its_run() {
     let database = temporary.path().join("global.sqlite3");
     seed_queued_run(&database, &project).await;
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(&database).unwrap()),
     );
     assert_eq!(service.prepare_startup_recovery().await.unwrap().len(), 1);
@@ -464,7 +464,7 @@ async fn bind_failure_does_not_claim_or_fence_a_queued_recovery() {
 async fn seed_queued_run(database: &Path, project: &Path) -> String {
     let store = Arc::new(SqliteControlStore::open(database).unwrap());
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         Arc::new(SeedAgent),
     );

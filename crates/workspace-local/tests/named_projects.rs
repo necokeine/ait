@@ -16,10 +16,10 @@ use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
     ControlChange, ControlFilter, ControlRead, ControlRecordKind, ControlStore, ControlStoreError,
     DurableEvent, DurableEventPage, EventBounds, PendingEvent, ProgressCheckpoint,
-    ProjectDirectoryCreator,
 };
-use ait_project_local::DocumentsProjectDirectory;
 use ait_storage_sqlite::SqliteControlStore;
+use ait_workspace::ProjectDirectoryCreator;
+use ait_workspace_local::DocumentsProjectDirectory;
 use async_trait::async_trait;
 use tempfile::TempDir;
 
@@ -75,7 +75,7 @@ async fn name_only_creates_git_head_and_atomic_project_root_and_rejects_duplicat
     let root = TempDir::new().unwrap();
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_project_directory_creator(Arc::new(creator(root.path())));
@@ -125,7 +125,7 @@ async fn name_only_creates_git_head_and_atomic_project_root_and_rejects_duplicat
 async fn explicit_workdirs_keep_existing_semantics_and_never_resolve_documents() {
     let root = TempDir::new().unwrap();
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
     )
     .with_project_directory_creator(Arc::new(DocumentsProjectDirectory::with_resolver(|| {
@@ -169,7 +169,7 @@ async fn invalid_registration_and_unavailable_documents_do_not_write_state() {
     let root = TempDir::new().unwrap();
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_project_directory_creator(Arc::new(creator(root.path())));
@@ -198,7 +198,7 @@ async fn invalid_registration_and_unavailable_documents_do_not_write_state() {
         ErrorCode::InvalidProject,
     );
     let unavailable = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_project_directory_creator(Arc::new(DocumentsProjectDirectory::with_resolver(|| None)));
@@ -237,7 +237,7 @@ async fn git_init_and_head_failures_preserve_files_without_registering() {
         let root = TempDir::new().unwrap();
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let service = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
         )
         .with_project_directory_creator(Arc::new(GitFailure {
@@ -339,7 +339,7 @@ async fn cas_retry_reuses_only_this_requests_allocation() {
         fail: false,
     });
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .with_project_directory_creator(Arc::new(creator(root.path())));
@@ -373,7 +373,7 @@ async fn persistence_failure_and_exhausted_cas_retain_git_without_half_registrat
         });
         let before = records(store.as_ref()).await;
         let service = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
         )
         .with_project_directory_creator(Arc::new(creator(root.path())));

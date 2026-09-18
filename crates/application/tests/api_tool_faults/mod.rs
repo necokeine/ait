@@ -185,7 +185,7 @@ async fn failed_effect_is_settled(fault: u8) {
     // Replace the effect externally; an unsafe replay would overwrite this marker.
     std::fs::write(f.worktree().join("once"), "external marker").unwrap();
     let restarted = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();
@@ -301,7 +301,7 @@ async fn durable_cancel_survives_a_crash_after_an_intermediate_tool_save() {
     // No gateway or tool factory is installed: recovery must consume cancellation
     // without even preparing an executor or requesting credentials.
     let restarted = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(&restore_path).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();
@@ -374,7 +374,7 @@ async fn startup_repairs_old_terminal_projection_without_stealing_a_moved_sessio
             .unwrap();
         drop(restore);
         let restarted = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::open(&path).unwrap()),
         );
         restarted.recover_interrupted_runs().await.unwrap();
@@ -422,7 +422,7 @@ async fn panic_with_running_attempt_settles_before_session_release() {
             .is_none()
     );
     let restarted = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();
@@ -479,7 +479,7 @@ async fn lost_outcome_ack_keeps_stable_tool_result_order() {
         "terminal repair must sort by ToolUse position, not last-updated storage order"
     );
     let restarted = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
     );
     restarted.recover_interrupted_runs().await.unwrap();

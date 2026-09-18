@@ -505,7 +505,7 @@ async fn post_gate_git_failures_never_turn_an_unpublished_result_into_completed(
         let adapter = Arc::new(ScriptedAdapter::default());
         let agent = wrapped_agent(adapter, Arc::new(FaultGate { failures }));
         let service = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             agent,
         );
@@ -589,7 +589,7 @@ async fn ambiguous_git_recovery_interrupts_only_its_run_and_healthy_recovery_con
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let adapter = Arc::new(ScriptedAdapter::default());
         let initial = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             Arc::new(production_agent(adapter.clone())),
         );
@@ -605,7 +605,7 @@ async fn ambiguous_git_recovery_interrupts_only_its_run_and_healthy_recovery_con
         inject_recovery_mismatch(mismatch, &bad_worktree, &bad, &bad_commit);
         let calls = adapter.calls.load(Ordering::SeqCst);
         let recovery = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             Arc::new(production_agent(adapter.clone())),
         );
@@ -635,7 +635,7 @@ async fn already_published_recovery_claims_finalization_before_cancel_can_win() 
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let adapter = Arc::new(ScriptedAdapter::default());
     let initial = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         Arc::new(production_agent(adapter.clone())),
     );
@@ -646,7 +646,7 @@ async fn already_published_recovery_claims_finalization_before_cancel_can_win() 
     let before_cursor = store.event_bounds().await.unwrap().latest.unwrap_or(0);
     let pause = Arc::new(PausingGate::new(PauseAt::Begin));
     let recovery = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         wrapped_agent(adapter.clone(), pause.clone()),
     ));
@@ -664,7 +664,7 @@ async fn already_published_recovery_claims_finalization_before_cancel_can_win() 
     assert_eq!(run.phase.as_deref(), Some("integrating"));
 
     let independent = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let cancelled = independent
@@ -712,7 +712,7 @@ async fn startup_recovery_cannot_steal_a_live_publishers_lease() {
         WorkspaceIntegrationCheckpoint::BeforeIndexLock,
     )));
     let owner = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         wrapped_agent(adapter.clone(), pause.clone()),
     ));
@@ -730,7 +730,7 @@ async fn startup_recovery_cannot_steal_a_live_publishers_lease() {
     assert_eq!(before.value["runs"][0]["phase"], "integrating");
 
     let contender = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         Arc::new(production_agent(adapter.clone())),
     );
@@ -771,7 +771,7 @@ async fn stale_result_sink_is_fenced_after_cancel_without_git_side_effects() {
         release: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
@@ -788,7 +788,7 @@ async fn stale_result_sink_is_fenced_after_cancel_without_git_side_effects() {
     assert_eq!(active.status, "running");
 
     let independent = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let cancelled = independent

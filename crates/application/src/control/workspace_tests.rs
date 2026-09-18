@@ -4,8 +4,8 @@ use super::LocalControlService;
 use ait_contracts::{AgentConfiguration, Command};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::ControlStore;
-use ait_ports::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
 use ait_storage_sqlite::SqliteControlStore;
+use ait_workspace::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 

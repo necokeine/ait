@@ -28,7 +28,7 @@ ait-agent-adapters = { path = "../agent-adapters" }
 ait-ports = { path = "../ports" }
 async-trait = "0.1"
 futures-util = "0.3"
-ait-project-local = { path = "../project-local" }
+ait-workspace-local = { path = "../workspace-local" }
 ait-storage-sqlite = { path = "../storage-sqlite" }
 http-body-util = "0.1"
 tempfile = "3"

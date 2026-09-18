@@ -3,16 +3,17 @@
 - 状态：待代码审查
 - 日期：2026-09-13
 - 依赖：ADR-001 v4、NEC-154 ADR-002、NEC-209、NEC-212、NEC-252、ADR-013
+- 源码位置：经 ADR-015 修订为 `ait-workspace` 契约与 `ait-workspace-local` 本机实现
 
 ## 决策
 
-新增 `ait_ports::ProjectWorkspace`，由 `ait_project_local::LocalProjectWorkspace`
-实现。已有同步 `ProjectEnvironment` 服务于指令读取/早期 ProjectService，继续兼容；
-不将控制面 lease、Session worktree 和异步取消语义塞入该同步接口。
+`ait_workspace::ProjectWorkspace` 由
+`ait_workspace_local::LocalProjectWorkspace` 实现。旧同步 `ProjectEnvironment` 已随未接入生产的
+早期 ProjectService 删除；控制面 lease、Session worktree 和异步取消语义统一由该异步接口表达。
 
 `LocalControlService` 的两个构造器显式接收 `Arc<dyn ProjectWorkspace>`，daemon
-composition root 注入本地实现。application 的 production dependencies 不包含
-project-local；storage/provider 也不因本次改动依赖具体 Project adapter。
+composition root 注入本地实现。application 的 production dependencies 只包含
+`ait-workspace`，不包含 `ait-workspace-local`；storage/provider 也不依赖具体 Project adapter。
 
 | adapter 负责 | application 负责 |
 | --- | --- |
@@ -23,8 +24,8 @@ project-local；storage/provider 也不因本次改动依赖具体 Project adapt
 
 适配器返回 `DomainError` 的稳定 code/retryable，application 转换为 `ApiError`。
 没有通用 shell/Git 命令执行 port，调用方只能使用具名 Project 操作。
-`ProjectDirectoryCreator` 同时改为异步 port；本地实现保留同步兼容入口，生产调用
-通过下述阻塞边界执行 Documents 解析和独占 mkdir。
+`ProjectDirectoryCreator` 同样是 `ait-workspace` 的异步契约；生产调用通过下述阻塞边界执行
+Documents 解析和独占 mkdir。
 
 ## 安全与一致性
 
@@ -52,7 +53,7 @@ Git 对账歧义仍仅中断所属 Run，不猜测用户工作区状态。
 
 ## 阻塞、取消和限制
 
-- 所有新异步 Project 操作在 project-local 的 `spawn_blocking` 边界运行；进程级
+- 所有异步 Project 操作在 workspace-local 的 `spawn_blocking` 边界运行；进程级
   semaphore 最多允许 4 个已接纳操作，独立 adapter 实例共享该预算。
 - 每次 public port 调用进入时创建一个 absolute deadline（30 秒），贯穿 capacity
   queue、canonicalize、同进程 lease queue、file lock 和全部 Git/文件子阶段。
@@ -90,8 +91,8 @@ Git 对账歧义仍仅中断所属 Run，不猜测用户工作区状态。
 
 ## 验证
 
-- ports 的 `contract-tests` feature 提供可复用 contract kit，由真实临时 Git adapter 运行。
-- project-local 验证 unborn/staged/dirty、既有 worktree 保留、canonical alias、真实
+- `ait-workspace` 的 `contract-tests` feature 提供可复用 contract kit，由真实临时 Git adapter 运行。
+- workspace-local 验证 unborn/staged/dirty、既有 worktree 保留、canonical alias、真实
   子进程竞争、dangling/non-UTF-8 路径、HEAD/index 确定性竞态、Git deadline 和
   future drop 后已启动 worker 的 lease 持续到阻塞调用排空；`max_blocking_threads(1)`
   饱和队列测试验证 public future drop 在不释放 blocker 前就归还 queued closure 的

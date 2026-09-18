@@ -13,7 +13,7 @@ use ait_domain::ErrorCode;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-pub(in crate::control) type WorkspaceWriteLease = Arc<dyn ait_ports::WorkspaceLease>;
+pub(in crate::control) type WorkspaceWriteLease = Arc<dyn ait_workspace::WorkspaceLease>;
 
 pub(in crate::control) fn workspace_write_path(
     state: &(impl HasProjects + HasSessions),

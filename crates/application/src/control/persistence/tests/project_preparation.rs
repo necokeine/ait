@@ -126,7 +126,7 @@ async fn cas_rechecks_project_head_without_repeating_preparation() {
             *observed.lock().unwrap() = Some(snapshot(&path));
         }));
         let service = LocalControlService::new(
-            Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
         );
         let request = command(target.path(), import);
@@ -160,7 +160,7 @@ async fn cas_does_not_reinitialize_a_disappeared_git_root() {
         std::fs::rename(path.join(".git"), path.join("retained-git")).unwrap();
     }));
     let response = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .execute(command(target.path(), false))
@@ -185,7 +185,7 @@ async fn unchanged_preparation_survives_cas_without_new_files_or_duplicate_event
         *observed.lock().unwrap() = Some(snapshot(&path));
     }));
     let response = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .execute(command(target.path(), true))
@@ -217,7 +217,7 @@ async fn derive_rejects_a_default_agent_change_after_worktree_preparation() {
     let target = tempfile::tempdir().unwrap();
     let store = Probe::new(vec![]);
     let service = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let CommandResult::Project(project) = service
@@ -329,7 +329,7 @@ async fn cas_rechecks_canonical_target_even_when_head_is_unchanged() {
         assert_eq!(git(&path, &["rev-parse", "HEAD"]), head);
     }));
     let response = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     )
     .execute(command(&target, false))
@@ -348,7 +348,7 @@ async fn cas_rechecks_canonical_target_even_when_head_is_unchanged() {
 async fn assert_alias_import_has_no_side_effects(target: &Path, alias: &Path) {
     let store = Probe::new(vec![]);
     let service = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let existing = Command::RegisterProject {

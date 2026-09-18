@@ -26,7 +26,7 @@ API Run 的 `domain::Run` 是唯一执行状态权威。公开 status/phase、�
 - facade 通过 `ExecuteRun` → `supervise_run` → `drive_run` 进入同一个既有监督路径。`RunControl`、终结提交、startup recovery 和 worker dispatcher 继续共享所有权、lease 与 finalization gate；API 调用原 RunCoordinator，Workspace 调用原 checkpoint/integration 路径。
 - durable JSON 形状保持兼容：写入时从权威状态生成旧外层字段。decode 检测历史漂移，record transaction 在正常 revision CAS 中写回 canonical 投影。已经 terminal 的领域执行优先；旧 terminal 投影加未结束的领域执行进入失败/取消结算，旧外层 completed 不得授予 Run 完成资格。迁移继续结算未完成子记录，不重放未知工具效果，也不能夺取已移动的 Session。
 - `GetRun`、list、同步命令结果以及恢复结果明确省略 `execution`（contracts 本来已将其标为可选内部字段）；内部审计/worker receipt 保留在 durable record。API 故障和进程测试从真实存储读取审计数据，并单独断言公开结果没有 execution。事件继续使用原版本化脱敏规则。
-- 删除未被 adapter/生产调用的 `MessageStore`、`SessionStore`、`ProjectStore` 及仅服务旧 service 的输入结构；保留仍有消费者的 `ProjectEnvironment` 与 NEC-253 `ProjectWorkspace`。NEC-147 中旧 MessageService 的分步 append/CAS 方案由当前 ControlStore 原子 transaction 取代，历史 ADR 不改写。
+- 删除未被 adapter/生产调用的 `MessageStore`、`SessionStore`、`ProjectStore` 及仅服务旧 service 的输入结构。`ProjectWorkspace` 的生产边界保留并经 ADR-015 迁入 `ait-workspace`；无生产消费者的旧同步 `ProjectEnvironment` 一并删除。NEC-147 中旧 MessageService 的分步 append/CAS 方案由当前 ControlStore 原子 transaction 取代，历史 ADR 不改写。
 
 ## 验证位置
 

@@ -74,8 +74,8 @@ dependencies = [
  "ait-domain",
  "ait-observability",
  "ait-ports",
- "ait-project-local",
  "ait-storage-sqlite",
+ "ait-workspace-local",
  "async-stream",
  "async-trait",
  "axum",
@@ -97,11 +97,12 @@ dependencies = [
  "ait-contracts",
  "ait-domain",
  "ait-ports",
- "ait-project-local",
  "ait-runtime",
  "ait-scheduler",
  "ait-storage-sqlite",
  "ait-tools",
+ "ait-workspace",
+ "ait-workspace-local",
  "async-trait",
  "axum",
  "criterion",
@@ -126,8 +127,8 @@ dependencies = [
  "ait-contracts",
  "ait-domain",
  "ait-ports",
- "ait-project-local",
  "ait-storage-sqlite",
+ "ait-workspace-local",
  "async-trait",
  "axum",
  "clap",
@@ -160,9 +161,9 @@ dependencies = [
  "ait-ipc",
  "ait-observability",
  "ait-ports",
- "ait-project-local",
  "ait-storage-sqlite",
  "ait-tools",
+ "ait-workspace-local",
  "async-trait",
  "axum",
  "clap",
@@ -216,24 +217,6 @@ dependencies = [
  "async-trait",
  "serde",
  "serde_json",
- "tokio-util",
-]
-
-[[package]]
-name = "ait-project-local"
-version = "0.0.4"
-dependencies = [
- "ait-application",
- "ait-contracts",
- "ait-domain",
- "ait-ports",
- "ait-storage-sqlite",
- "async-trait",
- "dirs",
- "nix",
- "serde_json",
- "tempfile",
- "tokio",
  "tokio-util",
 ]
 
@@ -348,12 +331,12 @@ dependencies = [
  "ait-domain",
  "ait-ipc",
  "ait-ports",
- "ait-project-local",
  "ait-providers",
  "ait-runtime",
  "ait-sandbox",
  "ait-storage-sqlite",
  "ait-tools",
+ "ait-workspace-local",
  "async-trait",
  "axum",
  "futures-util",
@@ -362,6 +345,33 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+]
+
+[[package]]
+name = "ait-workspace"
+version = "0.0.4"
+dependencies = [
+ "ait-domain",
+ "async-trait",
+]
+
+[[package]]
+name = "ait-workspace-local"
+version = "0.0.4"
+dependencies = [
+ "ait-application",
+ "ait-contracts",
+ "ait-domain",
+ "ait-ports",
+ "ait-storage-sqlite",
+ "ait-workspace",
+ "async-trait",
+ "dirs",
+ "nix",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

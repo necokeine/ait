@@ -20,7 +20,7 @@ use std::time::Duration;
 async fn session_config_is_private_reused_and_copied_when_opening_another_session() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let _directory = setup(&service, config("high")).await;
@@ -126,7 +126,7 @@ async fn session_config_is_private_reused_and_copied_when_opening_another_sessio
         ErrorCode::InvalidAgentConfiguration
     );
     let restarted = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
     );
     assert_eq!(view(&restarted).await, after);
@@ -137,7 +137,7 @@ async fn cancelling_an_active_call_releases_the_session_and_discards_its_output(
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -175,7 +175,7 @@ async fn cancelling_an_active_call_releases_the_session_and_discards_its_output(
 async fn unrelated_malformed_project_record_does_not_block_session_update() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let _directory = setup(&service, config("high")).await;
@@ -220,7 +220,7 @@ async fn unrelated_malformed_project_record_does_not_block_session_update() {
 async fn project_edits_are_atomic_persisted_and_preserve_existing_sessions_and_provenance() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let service = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let _directory = setup(&service, config("high")).await;
@@ -367,7 +367,7 @@ async fn project_edits_are_atomic_persisted_and_preserve_existing_sessions_and_p
     assert_eq!(cron.agent_id, "preset");
     let after = view(&service).await;
     let restarted = LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
     );
     assert_eq!(view(&restarted).await, after);

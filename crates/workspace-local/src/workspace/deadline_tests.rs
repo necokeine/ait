@@ -1,7 +1,7 @@
 //! Faults are injected at OS boundaries, but assertions use only public port results.
 use super::*;
 use crate::DocumentsProjectDirectory;
-use ait_ports::ProjectDirectoryCreator;
+use ait_workspace::ProjectDirectoryCreator;
 use std::{
     sync::atomic::Ordering,
     time::{Duration, Instant},

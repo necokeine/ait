@@ -4,7 +4,7 @@ mod git;
 mod worktrees;
 
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
+use ait_workspace::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
 use blocking::{Operation, OperationOptions};
 use std::{
     collections::HashMap,

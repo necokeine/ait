@@ -239,7 +239,7 @@ async fn tool_approval_disconnect_before_registration_and_across_commit_never_au
                     })
                 };
             f.service = LocalControlService::new(
-                Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 store,
             )
             .with_provider_gateway(Arc::new(Gateway))

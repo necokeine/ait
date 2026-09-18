@@ -178,7 +178,7 @@ impl Fixture {
             SqliteControlStore::open(directory.path().join("ait.db")).unwrap(),
         ));
         let service = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
         )
         .with_provider_gateway(Arc::new(Gateway(LLMClient::new(config).unwrap())))
@@ -335,7 +335,7 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
         assert!(python.status.success());
         assert_eq!(python.stdout, b"hello\n");
         let reopened = LocalControlService::new(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::open(f.directory.path().join("ait.db")).unwrap()),
         );
         let after = support::workspace_with_runs(&reopened, f.store.as_ref()).await;

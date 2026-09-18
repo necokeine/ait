@@ -1,8 +1,8 @@
 //! Real Git/OS coverage for the ProjectWorkspace port.
 #![allow(clippy::pedantic)]
 use ait_domain::ErrorCode;
-use ait_ports::ProjectWorkspace;
-use ait_project_local::LocalProjectWorkspace;
+use ait_workspace::{ProjectWorkspace, workspace_contract};
+use ait_workspace_local::LocalProjectWorkspace;
 use std::{path::Path, process::Command, sync::Arc};
 
 fn git(root: &Path, args: &[&str]) {
@@ -23,7 +23,7 @@ fn git(root: &Path, args: &[&str]) {
 async fn shared_port_contract() {
     let root = tempfile::tempdir().unwrap();
     let other = tempfile::tempdir().unwrap();
-    ait_ports::workspace_contract::assert_workspace_contract(
+    workspace_contract::assert_workspace_contract(
         &LocalProjectWorkspace::default(),
         &LocalProjectWorkspace::default(),
         root.path(),

@@ -1,7 +1,7 @@
 //! Ready workspace facts for the application submission/progress latency contract.
 //! Native Git, path validation and OS lease behavior have separate adapter tests.
 use ait_domain::DomainError;
-use ait_ports::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
+use ait_workspace::{GitBaseline, ProjectWorkspace, WorkspaceLease, WorkspacePathFacts};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

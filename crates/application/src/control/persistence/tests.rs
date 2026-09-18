@@ -428,7 +428,7 @@ async fn unrelated_corrupt_records_do_not_block_typed_session_commit() {
         .await
         .unwrap();
     let service = crate::control::LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let result = service
@@ -490,7 +490,7 @@ async fn get_run_reads_only_run_even_with_corrupt_related_records() {
     };
     assert_eq!(found.id, "r");
     let service = crate::control::LocalControlService::new(
-        Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     );
     let response = service.execute(command).await;

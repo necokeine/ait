@@ -285,7 +285,7 @@ impl Fixture {
             fail: AtomicBool::new(false),
         });
         let service = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             agent.clone(),
         );
@@ -532,7 +532,7 @@ async fn startup_recovery_executes_a_queued_run_once_without_query_side_effects(
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "queued").await;
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         fixture.store.clone(),
         fixture.agent.clone(),
     );
@@ -561,7 +561,7 @@ async fn startup_recovery_finalizes_a_checkpoint_without_reinvoking_the_agent() 
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "settling").await;
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         fixture.store.clone(),
         fixture.agent.clone(),
     );
@@ -593,7 +593,7 @@ async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_se
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "running").await;
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         fixture.store.clone(),
         fixture.agent.clone(),
     );
@@ -627,7 +627,7 @@ async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
             .unwrap();
         let calls = fixture.agent.calls.load(Ordering::Relaxed);
         let service = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             fixture.store.clone(),
             fixture.agent.clone(),
         );
@@ -1029,7 +1029,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         entered: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
@@ -1253,7 +1253,7 @@ async fn recovery_rechecks_administrator_ceiling_without_changing_snapshot() {
         let completed = run(&fixture.service, send_message()).await;
         rewind_completed_run(&fixture.store, &completed, phase).await;
         let service = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             fixture.store.clone(),
             fixture.agent.clone(),
         )

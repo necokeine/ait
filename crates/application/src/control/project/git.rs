@@ -10,10 +10,10 @@ use crate::control::project::worktrees::session_worktree_path;
 use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
-use ait_ports::ProjectWorkspace;
+use ait_workspace::ProjectWorkspace;
 use std::path::{Path, PathBuf};
 
-pub(in crate::control) use ait_ports::GitBaseline;
+pub(in crate::control) use ait_workspace::GitBaseline;
 
 pub(in crate::control) fn require_user_git_baseline(
     baseline: Option<&GitBaseline>,

@@ -1,10 +1,11 @@
-//! Local Project facts and resource ownership, independent of transport and storage.
+//! Project workspace capabilities consumed by the application layer.
 
-use ait_domain::DomainError;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+
+use ait_domain::DomainError;
 
 /// Stable, clean HEAD/index snapshot captured with checks on both sides of status.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,8 +41,8 @@ pub trait WorkspaceLease: Send + Sync {
 /// calls retain their permits and any supplied lease until they stop. Filesystem
 /// syscalls cannot be forcibly interrupted. Partial initialization/worktrees are
 /// retained for inspection, never automatically reset/cleaned or rolled back.
-/// Each public call shares one deadline across admission and nested phases (including
-/// implicit lease acquisition). A timeout uses the operation's Project error code
+/// Each public call shares one deadline across admission and nested phases, including
+/// implicit lease acquisition. A timeout uses the operation's Project error code
 /// and `details.reason = "timeout"`. If a business mutation may have started, errors
 /// include `details.retained_paths` entries with `path` and `state`, repeat them in
 /// the message for API callers, and disable blind retries (`retryable = false`).
@@ -49,50 +50,78 @@ pub trait WorkspaceLease: Send + Sync {
 /// No method grants permission, moves a Session, publishes a Run, or writes storage.
 #[async_trait::async_trait]
 pub trait ProjectWorkspace: Send + Sync {
-    /// Prepare and verify an exact canonical Git root (nested roots are allowed).
+    /// Prepare and verify an exact canonical Git root; nested roots are allowed.
+    ///
     /// If supplied, `expected_root` must still be the canonical target before mutation.
+    ///
     /// # Errors
-    /// Stable Project path/init errors; non-UTF-8 paths fail closed. A rebound
-    /// expected target returns retryable `RunQueueConflict` before mutation.
+    ///
+    /// Returns stable Project path/init errors. Non-UTF-8 paths fail closed, and a
+    /// rebound expected target returns retryable `RunQueueConflict` before mutation.
     async fn prepare_git_root(
         &self,
         path: &Path,
         expected_root: Option<&Path>,
     ) -> Result<PathBuf, DomainError>;
+
     /// Verify an unchanged canonical exact Git root without initialization or repair.
+    ///
     /// # Errors
-    /// Stable Project path/init errors when the root is missing, rebound or nested.
+    ///
+    /// Returns stable Project path/init errors when the root is missing, rebound, or nested.
     async fn verify_git_root(&self, expected_root: &Path) -> Result<(), DomainError>;
-    /// Read HEAD, creating only an empty initial commit for an unstaged unborn repo.
+
+    /// Read HEAD, creating only an empty initial commit for an unstaged unborn repository.
+    ///
     /// # Errors
-    /// Stable HEAD errors, including a staged unborn index.
+    ///
+    /// Returns stable HEAD errors, including a staged unborn index.
     async fn ensure_git_head(&self, path: &Path) -> Result<String, DomainError>;
+
     /// Read a full HEAD object identity; `None` denotes an unborn HEAD.
+    ///
     /// # Errors
-    /// Stable HEAD errors for failed inspection or malformed output.
+    ///
+    /// Returns stable HEAD errors for failed inspection or malformed output.
     async fn git_head(&self, path: &Path) -> Result<Option<String>, DomainError>;
-    /// Compare HEAD and index before/after status, then require index == HEAD tree.
+
+    /// Compare HEAD and index before/after status, then require index to equal the HEAD tree.
+    ///
     /// # Errors
-    /// Dirty, unborn, moved HEAD/index, or unavailable Git errors.
+    ///
+    /// Returns dirty, unborn, moved HEAD/index, or unavailable Git errors.
     async fn clean_baseline(&self, path: &Path) -> Result<GitBaseline, DomainError>;
+
     /// Return the symbolic HEAD, or `None` for detached HEAD.
+    ///
     /// # Errors
-    /// Stable HEAD errors, including invalid Git output.
+    ///
+    /// Returns stable HEAD errors, including invalid Git output.
     async fn symbolic_head(&self, path: &Path) -> Result<Option<String>, DomainError>;
+
     /// Resolve the absolute Git metadata directory.
+    ///
     /// # Errors
-    /// Stable HEAD errors for unavailable or unresolvable Git metadata.
+    ///
+    /// Returns stable HEAD errors for unavailable or unresolvable Git metadata.
     async fn git_dir(&self, path: &Path) -> Result<PathBuf, DomainError>;
+
     /// Acquire canonical in-process admission and a nonblocking cross-process lock.
+    ///
     /// # Errors
-    /// Stable Project path or retryable workspace-busy failures.
+    ///
+    /// Returns stable Project path or retryable workspace-busy failures.
     async fn acquire_lease(&self, path: &Path) -> Result<Arc<dyn WorkspaceLease>, DomainError>;
+
     /// Ensure a linked Session worktree, returning whether it was created.
+    ///
     /// Only a newly created manager-owned worktree may be populated at `baseline`.
     /// An existing directory must be its own Git root and must never be reset.
     /// The supplied lease must protect `primary`; absent leases are acquired here.
+    ///
     /// # Errors
-    /// Stable path/Git/Session errors; partial worktrees are retained on failure.
+    ///
+    /// Returns stable path/Git/Session errors. Partial worktrees are retained on failure.
     async fn ensure_session_worktree(
         &self,
         primary: &Path,
@@ -100,8 +129,11 @@ pub trait ProjectWorkspace: Send + Sync {
         baseline: &str,
         lease: Option<Arc<dyn WorkspaceLease>>,
     ) -> Result<bool, DomainError>;
+
     /// Observe canonical root and nearest existing ancestor without granting access.
+    ///
     /// # Errors
+    ///
     /// Unresolvable paths, dangling symlinks, or non-UTF-8 paths fail closed.
     async fn path_facts(
         &self,
@@ -109,3 +141,27 @@ pub trait ProjectWorkspace: Send + Sync {
         destination: &Path,
     ) -> Result<WorkspacePathFacts, DomainError>;
 }
+
+/// Allocates a new workdir for a Project whose caller supplied only a name.
+/// Platform default-directory resolution and filename rules belong to the adapter.
+#[async_trait::async_trait]
+pub trait ProjectDirectoryCreator: Send + Sync {
+    /// Creates exactly one new directory and returns its absolute path.
+    ///
+    /// Existing entries, including files and symlinks, must fail without mutation.
+    /// No parent directories may be implicitly created. Once returned, the path
+    /// is retained even if Git preparation or registration subsequently fails.
+    /// Async admission and filesystem phases consume one deadline. A timed-out
+    /// creation returns [`ait_domain::ErrorCode::ProjectDirectoryCreationFailed`] with
+    /// `reason = "timeout"`. If `mkdir` completed across that deadline, the error
+    /// includes its retained path/state and is not automatically retryable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable Project failure for invalid names, unavailable default
+    /// directories, existing targets, or failed directory creation.
+    async fn create_workdir(&self, name: &str) -> Result<PathBuf, DomainError>;
+}
+
+#[cfg(feature = "contract-tests")]
+pub mod workspace_contract;

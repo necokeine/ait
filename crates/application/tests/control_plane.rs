@@ -52,7 +52,7 @@ impl WorkspaceAgent for FixtureCodex {
 
 fn fixture_service(store: Arc<dyn ait_ports::ControlStore>) -> LocalControlService {
     LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         Arc::new(FixtureCodex),
     )
@@ -561,7 +561,7 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         Arc::new(SuccessfulCodex),
     );
@@ -889,7 +889,7 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
 
     drop(service);
     let recovered = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap()),
     );
     let workspace = workspace(&recovered).await;
@@ -1012,7 +1012,7 @@ async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persiste
         }
     }
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         Arc::new(FailingCodex),
     );
@@ -1194,7 +1194,7 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
     );
 
     let target = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
     );
     run(
@@ -1307,7 +1307,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
     drop(service);
 
     let recovered = LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap()),
     );
     let workspace = workspace(&recovered).await;

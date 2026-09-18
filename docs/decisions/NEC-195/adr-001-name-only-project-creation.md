@@ -66,7 +66,7 @@ Desktop 只负责可选路径输入、展示提示和转发后端错误；不在
 
 ## 验证与限制
 
-- `ait-project-local`：临时目录下成功分配、Unicode/空格、文件/目录/链接冲突、并发分配、
+- `ait-workspace-local`：临时目录下成功分配、Unicode/空格、文件/目录/链接冲突、并发分配、
   无效名称、不可用 Documents、Unix 权限失败；真实 Git 与 SQLite 验证注册、显式目录兼容、
   Git init/HEAD 故障、CAS 重试/耗尽和存储失败后的无半注册/内容保留。
 - HTTP 测试覆盖 `null` 与稳定错误信封；CLI WF-01 覆盖省略路径、冲突无副作用与重启恢复；

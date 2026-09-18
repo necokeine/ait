@@ -82,12 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         CodexSessionTitleGenerator::new(adapter).with_provider_gateway(provider_gateway.clone()),
     );
     let mut service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         codex,
     )
     .with_project_directory_creator(Arc::new(
-        ait_project_local::DocumentsProjectDirectory::default(),
+        ait_workspace_local::DocumentsProjectDirectory::default(),
     ))
     .with_permission_limits(PermissionPolicyLimits {
         max_sandbox: arguments.max_sandbox.into(),

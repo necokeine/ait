@@ -119,7 +119,7 @@ async fn fixture(kind: &str, max_sandbox: SandboxAccess) -> Fixture {
     let native = Arc::new(Native::default());
     let text = Arc::new(TextGateway::default());
     let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         Arc::new(CodexWorkspaceAgent::new(native.clone())),
     )

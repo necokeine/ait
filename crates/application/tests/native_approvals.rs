@@ -118,7 +118,7 @@ async fn native_approval_wait_is_nonblocking_durable_and_duplicate_safe() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::CommandExecution));
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -235,7 +235,7 @@ esac
         .unwrap(),
     );
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
@@ -263,7 +263,7 @@ esac
 
     // A desktop reconnect obtains fresh Project-scoped slices from the same durable daemon state.
     let reconnected_service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     );
@@ -334,7 +334,7 @@ async fn denial_is_not_approval_and_session_grants_respect_administrator_policy(
     let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::Permissions));
     let service = Arc::new(
         LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             agent.clone(),
         )
@@ -416,7 +416,7 @@ async fn reject_permission_write_for_read_only_run(max_sandbox: SandboxAccess) {
     let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::Permissions));
     let service = Arc::new(
         LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             agent.clone(),
         )
@@ -480,7 +480,7 @@ async fn workspace_write_permission_grants_cannot_escape_the_project() {
         outside.path().join("escaped.txt").to_string_lossy(),
     ));
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -560,7 +560,7 @@ async fn cancelling_each_native_approval_kind_cancels_the_run_without_hanging() 
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let agent = Arc::new(ApprovalAgent::new(kind));
         let service = Arc::new(LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             agent.clone(),
         ));
@@ -654,7 +654,7 @@ async fn file_and_command_approvals_respect_each_run_sandbox() {
         ] {
             let agent = Arc::new(ApprovalAgent::new(kind));
             let service = Arc::new(LocalControlService::with_workspace_agent(
-                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 Arc::new(SqliteControlStore::in_memory().unwrap()),
                 agent.clone(),
             ));
@@ -755,7 +755,7 @@ async fn workspace_file_grants_reject_outside_and_ambiguous_paths() {
             });
             let agent = Arc::new(fixture);
             let service = Arc::new(LocalControlService::with_workspace_agent(
-                std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+                std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 Arc::new(SqliteControlStore::in_memory().unwrap()),
                 agent.clone(),
             ));
@@ -778,7 +778,7 @@ async fn workspace_file_grants_reject_symlinks_including_dangling_targets() {
         });
         let agent = Arc::new(fixture);
         let service = Arc::new(LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::in_memory().unwrap()),
             agent.clone(),
         ));

@@ -2,7 +2,7 @@ use std::{fs, io::ErrorKind, path::PathBuf, sync::Arc};
 
 use crate::workspace::blocking::{BlockingContext, Operation, OperationOptions};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::ProjectDirectoryCreator;
+use ait_workspace::ProjectDirectoryCreator;
 
 /// Creates named Project directories beneath the current host user's Documents.
 #[derive(Clone)]

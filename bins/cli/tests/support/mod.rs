@@ -75,12 +75,12 @@ impl Workspace {
         let documents = self.directory.path().join("Documents");
         std::fs::create_dir_all(&documents).unwrap();
         let mut service = LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(store),
             Arc::new(FixtureCodex),
         )
         .with_project_directory_creator(Arc::new(
-            ait_project_local::DocumentsProjectDirectory::with_resolver(move || {
+            ait_workspace_local::DocumentsProjectDirectory::with_resolver(move || {
                 Some(documents.clone())
             }),
         ));

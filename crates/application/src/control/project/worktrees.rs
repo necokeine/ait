@@ -17,7 +17,7 @@ use crate::control::project::{require_project_view, validate_project_workdir};
 use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{ApiError, Command, ProjectExport};
 use ait_domain::ErrorCode;
-use ait_ports::{ProjectWorkspace, WorkspaceLease};
+use ait_workspace::{ProjectWorkspace, WorkspaceLease};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

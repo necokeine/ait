@@ -6,6 +6,10 @@
 
 ## 当前基线
 
+- `decisions/adr-015-workspace-capability.md`：Project Workspace 文件/Git/lease 能力独立为
+  `ait-workspace`，本机实现为 `ait-workspace-local`；Run execution 的 Workspace 协议仍留在
+  `ait-ports`，并删除无生产消费者的旧同步 ProjectEnvironment 边界。
+
 - `decisions/adr-014-application-vertical-slices.md`：application record 与 typed context 按
   Catalog、Project、Conversation、Cron、Run、Settings 业务能力归属；通用 persistence 仅保留
   codec/access/transaction，命令路由与读取计划显式归入 use-case 层。

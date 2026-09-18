@@ -82,7 +82,7 @@ impl Fixture {
         let workdir = temporary.path().join("project");
         std::fs::create_dir(&workdir).unwrap();
         let service = Arc::new(LocalControlService::with_workspace_agent(
-            std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::in_memory().unwrap()),
             agent,
         ));

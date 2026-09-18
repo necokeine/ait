@@ -100,7 +100,7 @@ async fn active_session_rejects_competitors_and_same_project_writers_are_seriali
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -210,7 +210,7 @@ async fn codex_writers_for_unrelated_projects_enter_concurrently() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -275,12 +275,12 @@ async fn a_second_service_cannot_bypass_the_process_wide_workspace_lease() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
     let first_service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
     let second_service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     );
@@ -327,12 +327,12 @@ async fn canonical_path_aliases_share_the_same_process_wide_lease() {
     std::os::unix::fs::symlink(&project, &alias).unwrap();
     let agent = Arc::new(BlockingAgent::new());
     let first_service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         agent.clone(),
     ));
     let second_service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         agent.clone(),
     );
@@ -393,7 +393,7 @@ async fn serialized_session_worktrees_keep_independent_baselines_and_commits() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(CommittingAgent::new());
     let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
     ));
@@ -511,7 +511,7 @@ async fn pessimistic_admission_rejects_a_competing_send_before_the_first_run_is_
         release: Semaphore::new(0),
     });
     let service = Arc::new(LocalControlService::new(
-        std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
+        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
     ));
     let _directory = setup(&service, config("high")).await;

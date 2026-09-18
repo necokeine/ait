@@ -15,11 +15,11 @@ use ait_domain::{
     ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, NativeApprovalStatus,
     NativeApprovalTarget, RunPermissionProfile, SandboxAccess,
 };
-use ait_ports::ProjectWorkspace;
 use ait_ports::{
     ControlStoreError, PendingEvent, WorkspaceApproval, WorkspaceApprovalDecision,
     WorkspaceApprovalRequest,
 };
+use ait_workspace::ProjectWorkspace;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

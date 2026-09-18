@@ -1,6 +1,6 @@
 use super::*;
 use crate::LocalProjectWorkspace;
-use ait_ports::ProjectWorkspace;
+use ait_workspace::ProjectWorkspace;
 use std::{
     path::Path,
     sync::atomic::{AtomicBool, Ordering},

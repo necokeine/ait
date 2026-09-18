@@ -79,9 +79,10 @@ Project 的无凭证 JSON 归档使用 `ait-cli project export` / `ait-cli proje
 ## Workspace
 
 - `crates/domain`：纯领域模型与不变量。
-- `crates/contracts`、`crates/ports`：进程无关契约与端口。
+- `crates/contracts`、`crates/ports`：进程无关契约与跨能力端口。
 - `crates/application`：用例编排。
-- `crates/project-local`：Project 路径事实、指令读取、Git/Session worktree 与跨进程 lease 适配器；控制面通过异步 `ProjectWorkspace` port 注入，见 [NEC-253 ADR](docs/decisions/NEC-253/adr-001-project-workspace-port.md)。
+- `crates/workspace`：Project Workspace 的路径事实、Git baseline、Session worktree、lease 与目录创建契约。
+- `crates/workspace-local`：上述契约的本机文件系统和 Git 适配器；边界见 [ADR-015](docs/decisions/adr-015-workspace-capability.md) 与 [NEC-253 ADR](docs/decisions/NEC-253/adr-001-project-workspace-port.md)。
 - `crates/runtime`、`crates/scheduler`：Run 与调度生命周期。
 - `crates/storage-sqlite`：SQLite 持久化适配器。
 - `crates/providers`：统一 Provider 契约、契约测试工具、Mock 与 OpenAI-compatible Adapter。

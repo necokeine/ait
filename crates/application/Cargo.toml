@@ -16,6 +16,7 @@ ait-domain = { path = "../domain" }
 ait-ports = { path = "../ports" }
 ait-runtime = { path = "../runtime" }
 ait-scheduler = { path = "../scheduler" }
+ait-workspace = { path = "../workspace" }
 async-trait = "0.1"
 futures-util = "0.3"
 sha2 = "0.10"
@@ -28,7 +29,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
-ait-project-local = { path = "../project-local" }
+ait-workspace-local = { path = "../workspace-local" }
 ait-tools = { path = "../tools" }
 axum = "0.8"
 ait-agent-adapters = { path = "../agent-adapters" }

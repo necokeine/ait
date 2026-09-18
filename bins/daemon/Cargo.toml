@@ -18,7 +18,7 @@ ait-api-http = { path = "../../crates/api-http" }
 ait-domain = { path = "../../crates/domain" }
 ait-ipc = { path = "../../crates/ipc" }
 ait-observability = { path = "../../crates/observability" }
-ait-project-local = { path = "../../crates/project-local" }
+ait-workspace-local = { path = "../../crates/workspace-local" }
 ait-ports = { path = "../../crates/ports" }
 ait-storage-sqlite = { path = "../../crates/storage-sqlite" }
 axum = "0.8"
