@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 fn message(role: MessageRole) -> Message {
     Message {
@@ -114,4 +115,77 @@ fn human_user_message_requires_exclusive_valid_git_provenance() {
     );
 
     assert!(serde_json::from_str::<GitCommit>("\"short\"").is_err());
+}
+
+#[test]
+fn path_checks_missing_cycles_ownership_and_root_without_mutating_history() {
+    let root = message_node(1, None, MessageRole::System);
+    let child = message_node(2, Some(1), MessageRole::User);
+    let mut messages = HashMap::from([(root.id, root), (child.id, child)]);
+    let head = MessageId::from_u128(2);
+    let ids: Vec<_> = message_path(head, &messages)
+        .expect("valid path")
+        .iter()
+        .map(|message| message.id)
+        .collect();
+    assert_eq!(ids, vec![MessageId::from_u128(1), head]);
+    assert_eq!(
+        message_path(MessageId::from_u128(3), &messages)
+            .expect_err("unknown head must fail")
+            .code,
+        ErrorCode::MessageNotFound
+    );
+
+    messages.get_mut(&head).expect("child exists").project_id = ProjectId::new("another");
+    assert_eq!(
+        message_path(head, &messages)
+            .expect_err("cross-project path must fail")
+            .code,
+        ErrorCode::SessionMessageProjectMismatch
+    );
+
+    messages.get_mut(&head).expect("child exists").project_id = ProjectId::new("p");
+    messages
+        .get_mut(&MessageId::from_u128(1))
+        .expect("root exists")
+        .parent_message_id = Some(head);
+    assert_eq!(
+        message_path(head, &messages)
+            .expect_err("cycle must fail")
+            .code,
+        ErrorCode::InvalidMessageId
+    );
+
+    let root = messages
+        .get_mut(&MessageId::from_u128(1))
+        .expect("root exists");
+    root.parent_message_id = None;
+    root.role = MessageRole::User;
+    let original = messages.clone();
+    assert_eq!(
+        message_path(head, &messages)
+            .expect_err("non-system root must fail")
+            .code,
+        ErrorCode::InvalidMessageRole
+    );
+    assert_eq!(messages, original);
+}
+
+fn message_node(id: u128, parent: Option<u128>, role: MessageRole) -> Message {
+    Message {
+        id: MessageId::from_u128(id),
+        project_id: ProjectId::new("p"),
+        parent_message_id: parent.map(MessageId::from_u128),
+        role,
+        kind: MessageKind::Standard,
+        origin: MessageOrigin::Agent,
+        sub_messages: Vec::new(),
+        created_by_session_id: None,
+        run_id: None,
+        run_seq: None,
+        tool_result: None,
+        git_commit: None,
+        metadata: DomainMetadata::default(),
+        created_at: TimestampMs(0),
+    }
 }

@@ -1,27 +1,12 @@
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DomainError, DomainMetadata, ErrorCode, GitCommit, MessageId, ProjectId, SessionId, TimestampMs,
+    DomainError, DomainMetadata, ErrorCode, GitCommit, MessageId, ProjectId, RunId, SessionId,
+    TimestampMs,
 };
-
-/// Stable identity of a Run that produced a Message.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct RunId(String);
-
-impl RunId {
-    /// Creates an externally assigned Run identity.
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// Returns the string representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 /// Role of an immutable Message.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -384,6 +369,53 @@ impl Message {
             _ => Ok(()),
         }
     }
+}
+
+/// Resolves one root-to-head path, checking cycles, ownership, and the root role.
+///
+/// # Errors
+///
+/// Returns a stable domain error for a missing node, cycle, cross-Project parent,
+/// or invalid root.
+pub fn message_path<S: BuildHasher>(
+    head: MessageId,
+    messages: &HashMap<MessageId, Message, S>,
+) -> Result<Vec<&Message>, DomainError> {
+    let mut path = Vec::new();
+    let mut seen = HashSet::new();
+    let mut cursor = Some(head);
+    let mut project = None;
+    while let Some(id) = cursor {
+        if !seen.insert(id) {
+            return Err(DomainError::invariant(
+                ErrorCode::InvalidMessageId,
+                "message path contains a cycle",
+            ));
+        }
+        let message = messages.get(&id).ok_or_else(|| {
+            DomainError::invariant(ErrorCode::MessageNotFound, "message path is incomplete")
+        })?;
+        if project.is_some_and(|project_id| project_id != &message.project_id) {
+            return Err(DomainError::invariant(
+                ErrorCode::SessionMessageProjectMismatch,
+                "message path belongs to another project",
+            ));
+        }
+        project = Some(&message.project_id);
+        cursor = message.parent_message_id;
+        path.push(message);
+    }
+    path.reverse();
+    if path
+        .first()
+        .is_none_or(|message| message.role != MessageRole::System)
+    {
+        return Err(DomainError::invariant(
+            ErrorCode::InvalidMessageRole,
+            "message path must begin with a system root",
+        ));
+    }
+    Ok(path)
 }
 
 /// Stable local validation failures for Message construction.

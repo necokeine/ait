@@ -11,8 +11,6 @@ pub mod cron;
 pub mod error;
 /// Immutable Message protocol and projections.
 pub mod message;
-/// Immutable Message tree traversal policy.
-pub mod message_path;
 /// Run permission snapshots and native approval audit vocabulary.
 pub mod permission;
 /// Project instruction snapshots and movable Session references.
@@ -44,7 +42,7 @@ pub use error::{DomainError, ErrorCode};
 
 pub use message::{
     Message, MessageKind, MessageOrigin, MessageRole, MessageValidationError, ProjectedMessage,
-    RunId, StoredMessage, SubMessage, ToolResult, ToolResultStatus, ToolUse,
+    StoredMessage, SubMessage, ToolResult, ToolResultStatus, ToolUse, message_path,
 };
 pub use permission::{
     ApprovalGrantScope, ApprovalMode, NativeApprovalFileChange, NativeApprovalFileChangeKind,
@@ -59,7 +57,7 @@ pub use project::{
 };
 pub use run::{
     CheckpointId, RetryPolicy, Run, RunAttempt, RunAttemptId, RunAttemptReason, RunAttemptStatus,
-    RunBudget, RunPhase, RunQueueItem, RunQueueItemId, RunQueueItemKind, RunQueueItemStatus,
+    RunBudget, RunId, RunPhase, RunQueueItem, RunQueueItemId, RunQueueItemKind, RunQueueItemStatus,
     RunStatus, RunStopReason, RunTerminationBlocker, RunTerminationReadiness, RunTrigger, RunUsage,
 };
 pub use tool::{ToolApprovalStatus, ToolExecution, ToolExecutionId, ToolExecutionStatus};
