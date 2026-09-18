@@ -66,15 +66,31 @@ impl HostTools {
                 tokio::try_join!(capture(stdout), capture(stderr), async {
                     child.wait().await.map_err(|_| failed())
                 })?;
-            Ok(
-                json!({"stdout":stdout,"stderr":stderr,"exit_status":status.code(),"stdout_truncated":stdout_truncated,"stderr_truncated":stderr_truncated,"truncated":stdout_truncated || stderr_truncated}),
-            )
+            Ok(json!({
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_status": status.code(),
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "truncated": stdout_truncated || stderr_truncated
+            }))
         };
         let result = tokio::select! {
             biased;
-            () = request.cancellation.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled,"tool cancelled")),
-            () = self.workers.stopping.cancelled() => Err(DomainError::invariant(ErrorCode::RunCancelled,"host tools stopped")),
-            result = tokio::time::timeout(Duration::from_millis(timeout), work) => result.unwrap_or_else(|_| Err(DomainError::invariant(ErrorCode::RunLimitExceeded,"tool timeout elapsed"))),
+            () = request.cancellation.cancelled() => {
+                Err(DomainError::invariant(ErrorCode::RunCancelled, "tool cancelled"))
+            },
+            () = self.workers.stopping.cancelled() => {
+                Err(DomainError::invariant(ErrorCode::RunCancelled, "host tools stopped"))
+            },
+            result = tokio::time::timeout(Duration::from_millis(timeout), work) => {
+                result.unwrap_or_else(|_| {
+                    Err(DomainError::invariant(
+                        ErrorCode::RunLimitExceeded,
+                        "tool timeout elapsed",
+                    ))
+                })
+            },
         };
         // Always terminate the group, including any background descendants left
         // after the shell exits. Collect the child before releasing the worker guard.

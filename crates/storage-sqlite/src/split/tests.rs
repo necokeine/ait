@@ -43,7 +43,14 @@ async fn legacy_blob_migrates_directly_to_project_files() {
     git_project(&root);
     let database = temp.path().join("legacy.sqlite3");
     let connection = Connection::open(&database).unwrap();
-    connection.execute_batch("CREATE TABLE control_state(singleton INTEGER PRIMARY KEY,revision INTEGER NOT NULL,body_json TEXT NOT NULL);").unwrap();
+    connection
+        .execute_batch(concat!(
+            "CREATE TABLE control_state(",
+            "singleton INTEGER PRIMARY KEY,",
+            "revision INTEGER NOT NULL,",
+            "body_json TEXT NOT NULL);",
+        ))
+        .unwrap();
     connection
         .execute(
             "INSERT INTO control_state VALUES(1,7,?1)",
@@ -193,19 +200,36 @@ fn project_records(root: &Path, id: &str) -> Vec<ControlChange> {
             ControlRecordKind::Message,
             &format!("{id}-root"),
             Some(id),
-            json!({"id":format!("{id}-root"),"project_id":id,"parent_message_id":null,"text":format!("private history {id}")}),
+            json!({
+                "id": format!("{id}-root"),
+                "project_id": id,
+                "parent_message_id": null,
+                "text": format!("private history {id}"),
+            }),
         ),
         put(
             ControlRecordKind::Session,
             &format!("{id}-session"),
             Some(id),
-            json!({"id":format!("{id}-session"),"project_id":id,"current_message_id":format!("{id}-root"),"version":0}),
+            json!({
+                "id": format!("{id}-session"),
+                "project_id": id,
+                "current_message_id": format!("{id}-root"),
+                "version": 0,
+            }),
         ),
         put(
             ControlRecordKind::Run,
             &format!("{id}-run"),
             Some(id),
-            json!({"id":format!("{id}-run"),"project_id":id,"session_id":format!("{id}-session"),"cron_id":"cron","status":"queued","config":{"model":"snapshot-model"}}),
+            json!({
+                "id": format!("{id}-run"),
+                "project_id": id,
+                "session_id": format!("{id}-session"),
+                "cron_id": "cron",
+                "status": "queued",
+                "config": {"model": "snapshot-model"},
+            }),
         ),
         put(
             ControlRecordKind::RunCredential,
@@ -299,7 +323,11 @@ async fn histories_events_progress_and_backups_are_physically_separate() {
     assert_eq!(
         count(
             &global,
-            "SELECT count(*) FROM sqlite_master WHERE name IN ('messages','sessions','runs','workspace_run_journals','run_credentials','run_progress')"
+            concat!(
+                "SELECT count(*) FROM sqlite_master WHERE name IN ",
+                "('messages','sessions','runs','workspace_run_journals',",
+                "'run_credentials','run_progress')",
+            )
         ),
         0
     );
@@ -318,7 +346,11 @@ async fn histories_events_progress_and_backups_are_physically_separate() {
         assert_eq!(
             count(
                 &project,
-                "SELECT count(*) FROM sqlite_master WHERE name IN ('projects','agents','agent_providers','provider_credentials','settings','crons')"
+                concat!(
+                    "SELECT count(*) FROM sqlite_master WHERE name IN ",
+                    "('projects','agents','agent_providers','provider_credentials',",
+                    "'settings','crons')",
+                )
             ),
             0
         );

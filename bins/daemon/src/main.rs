@@ -7,7 +7,9 @@ use ait_agent_adapters::codex::{
 };
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_domain::SandboxAccess;
-use ait_ports::{HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent};
+use ait_ports::{
+    AgentProviderGateway, HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent,
+};
 use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use clap::{Parser, ValueEnum};
 
@@ -74,7 +76,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let adapter = Arc::new(CodexAppServerAdapter::new(CodexAppServerConfig::default())?);
     let codex: Arc<dyn WorkspaceAgent> = supervisor.clone();
     let catalog: Arc<dyn HostProviderModelCatalog> = adapter.clone();
-    let titles: Arc<dyn SessionTitleGenerator> = Arc::new(CodexSessionTitleGenerator::new(adapter));
+    let provider_gateway: Arc<dyn AgentProviderGateway> =
+        Arc::new(ait_agent_adapters::RigProviderGateway);
+    let titles: Arc<dyn SessionTitleGenerator> = Arc::new(
+        CodexSessionTitleGenerator::new(adapter).with_provider_gateway(provider_gateway.clone()),
+    );
     let mut service = LocalControlService::with_workspace_agent(
         std::sync::Arc::new(ait_project_local::LocalProjectWorkspace::default()),
         store,
@@ -87,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_sandbox: arguments.max_sandbox.into(),
         allow_session_approvals: !arguments.deny_session_approvals,
     })
-    .with_provider_gateway(Arc::new(ait_agent_adapters::RigProviderGateway))
+    .with_provider_gateway(provider_gateway)
     .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
     .with_run_dispatcher(supervisor.clone())
     .with_host_provider_catalog(catalog);
@@ -125,14 +131,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut recovery_done = false;
     loop {
         tokio::select! {
-            result=&mut server=>{result?;break;},
-            ()=shutdown_signal()=>break,
-            result=&mut recovery,if !recovery_done=>{
-                recovery_done=true;
+            result = &mut server => { result?; break; },
+            () = shutdown_signal() => break,
+            result = &mut recovery, if !recovery_done => {
+                recovery_done = true;
                 match result {
-                    Ok(Ok(recovered)) if recovery_count>0=>eprintln!("reconciled {} Run(s) after startup",recovered.len()),
-                    Ok(Ok(_))=>{},
-                    _=>eprintln!("startup recovery stopped; inspect durable Run state"),
+                    Ok(Ok(recovered)) if recovery_count > 0 =>
+                        eprintln!("reconciled {} Run(s) after startup", recovered.len()),
+                    Ok(Ok(_)) => {}
+                    _ => eprintln!("startup recovery stopped; inspect durable Run state"),
                 }
             }
         }
@@ -159,7 +166,10 @@ async fn shutdown_signal() {
         if let Ok(mut terminate) =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         {
-            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
         } else {
             let _ = tokio::signal::ctrl_c().await;
         }

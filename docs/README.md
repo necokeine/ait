@@ -1,8 +1,25 @@
 # 概念与架构文档
 
+## 工程规范
+
+- [Rust style guide](policy/rust.md)：所有 Rust 修改必须遵循的代码规范，包括测试模块拆分与项目报告中的测试覆盖率要求。
+
 ## 当前基线
 
 - `decisions/NEC-296/adr-001-new-session-draft.md`：桌面新建 Session 先进入初始 system Message 的本地派生草稿，首条输入原子接纳后才创建 Session；接纳回执独立于视图读取，结果不明时以稳定 ID 恢复。
+
+- `decisions/NEC-313/adr-001-aligned-api-agent-tools.md`：API Agent 对齐 Ait/OpenCode 的工具命名，并实现 Web、Project-local Skill、Todo、持久化用户交互及有界前台 Subagent；同时固定当前不支持的后台与跨模型子任务边界。
+
+- `decisions/NEC-310/adr-001-minimax-api-provider.md`：MiniMax OpenAI-compatible Chat Completions、模型发现、全入口 Provider kind 与 worker 工具循环。
+
+- `decisions/NEC-309/adr-001-gemini-api-provider.md`：Gemini 原生 GenerateContent / 模型发现适配、全入口 Provider kind、worker 工具循环与无 provider call ID 的关联规则。
+
+- `decisions/NEC-304/adr-001-cron-sessions-and-desktop.md`：Cron 的 Desktop 配置入口，以及每个 occurrence 原子创建独立 Session 与 Run 的当前语义；修订 NEC-150 与 ADR-013 的 Sessionless Cron 条款。
+
+- `decisions/NEC-303/adr-001-cli-config-command.md`：CLI 设置入口由 `settings get|set|reset`
+  改为 `config get|set|reset`，不保留旧命令别名；application、HTTP 与持久化语义不变。
+
+- `decisions/NEC-301/adr-001-global-default-and-small-agents.md`：全局 Default Agent 回退、Small Agent 短调用选择，以及暂不参与 prompt 组装的 Agent system prompt 保留字段。
 
 - `decisions/NEC-294/adr-001-project-editing-and-sidebar.md`：Project 名称与默认 Agent 原子编辑、独立展开状态及按 Project 读取的 Session 导航摘要；修订 NEC-233 的侧栏展示限制。
 

@@ -311,6 +311,18 @@ impl RunTool for ScriptedTools {
 
     async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
         self.calls.lock().unwrap().push(request.call_id);
+        if request.tool_name == "metered_failure" {
+            request.usage.record(&RunUsage {
+                input_tokens: 7,
+                output_tokens: 4,
+                tool_executions: 2,
+                ..RunUsage::default()
+            });
+            return Err(DomainError::invariant(
+                ErrorCode::ToolExecutionFailed,
+                "metered failure",
+            ));
+        }
         self.outcomes
             .lock()
             .unwrap()
@@ -319,6 +331,7 @@ impl RunTool for ScriptedTools {
             .unwrap_or_else(|| {
                 Ok(ToolOutcome {
                     output: json!(null),
+                    usage: RunUsage::default(),
                 })
             })
     }
@@ -337,6 +350,31 @@ impl RunTool for NeverCompletesTool {
     }
 
     async fn execute(&self, _request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        std::future::pending().await
+    }
+
+    async fn reconcile(&self, _execution: &ToolExecution) -> Result<ToolRecovery, DomainError> {
+        Ok(ToolRecovery::Unknown)
+    }
+}
+
+struct MeteredNeverCompletesTool {
+    started: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl RunTool for MeteredNeverCompletesTool {
+    fn requires_approval(&self, _tool_name: &str, _arguments: &serde_json::Value) -> bool {
+        false
+    }
+
+    async fn execute(&self, request: ToolInvocation) -> Result<ToolOutcome, DomainError> {
+        request.usage.record(&RunUsage {
+            input_tokens: 11,
+            output_tokens: 5,
+            ..RunUsage::default()
+        });
+        self.started.notify_one();
         std::future::pending().await
     }
 
@@ -638,8 +676,24 @@ async fn executes_multiple_tools_and_appends_results_in_tool_use_order() {
         Ok(text("finished")),
     ]));
     let tools = Arc::new(ScriptedTools::with_outcomes([
-        ("second", Ok(ToolOutcome { output: json!(2) })),
-        ("first", Ok(ToolOutcome { output: json!(1) })),
+        (
+            "second",
+            Ok(ToolOutcome {
+                output: json!(2),
+                usage: RunUsage {
+                    input_tokens: 7,
+                    tool_executions: 4,
+                    ..RunUsage::default()
+                },
+            }),
+        ),
+        (
+            "first",
+            Ok(ToolOutcome {
+                output: json!(1),
+                usage: RunUsage::default(),
+            }),
+        ),
     ]));
     let engine = coordinator(
         store.clone(),
@@ -654,7 +708,12 @@ async fn executes_multiple_tools_and_appends_results_in_tool_use_order() {
         .await
         .unwrap();
 
-    assert!(matches!(outcome, DriveOutcome::Completed(_)));
+    let DriveOutcome::Completed(completed) = outcome else {
+        panic!("expected completion")
+    };
+    assert_eq!(completed.usage.input_tokens, 9);
+    assert_eq!(completed.usage.output_tokens, 3);
+    assert_eq!(completed.usage.tool_executions, 6);
     assert_eq!(*tools.calls.lock().unwrap(), ["call-b", "call-a"]);
     let paths = agent.paths.lock().unwrap();
     let second_path = &paths[1];
@@ -711,6 +770,69 @@ async fn tool_failure_becomes_a_failed_result_and_the_agent_continues() {
 }
 
 #[tokio::test]
+async fn tool_failure_preserves_usage_recorded_before_the_error() {
+    let (run, messages) = fixture();
+    let store = Arc::new(MemoryStore::seeded(run, messages));
+    let engine = coordinator(
+        store.clone(),
+        Arc::new(ScriptedAgent::new(vec![
+            Ok(tool_calls(&[("call-1", "metered_failure")])),
+            Ok(text("handled")),
+        ])),
+        Arc::new(ScriptedTools::default()),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(10)),
+    );
+
+    engine
+        .drive(&RunId::new("run-1"), CancellationToken::new())
+        .await
+        .unwrap();
+
+    let completed = store.snapshot().run;
+    assert_eq!(completed.status, RunStatus::Completed);
+    assert_eq!(completed.usage.input_tokens, 9);
+    assert_eq!(completed.usage.output_tokens, 7);
+    assert_eq!(completed.usage.tool_executions, 3);
+}
+
+#[tokio::test]
+async fn tool_cancellation_preserves_usage_recorded_before_cancellation() {
+    let (run, messages) = fixture();
+    let store = Arc::new(MemoryStore::seeded(run, messages));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let coordinator = RunCoordinator::new(
+        store.clone(),
+        Arc::new(ScriptedAgent::new(vec![Ok(tool_calls(&[(
+            "call-1",
+            "metered_pending",
+        )]))])),
+        Arc::new(MeteredNeverCompletesTool {
+            started: started.clone(),
+        }),
+        Arc::new(ScriptedApprovals::new(vec![])),
+        Arc::new(ManualClock::at(10)),
+        Arc::new(SequenceIds::default()),
+    );
+    let cancellation = CancellationToken::new();
+    let drive_cancellation = cancellation.clone();
+    let drive = tokio::spawn(async move {
+        coordinator
+            .drive(&RunId::new("run-1"), drive_cancellation)
+            .await
+    });
+    started.notified().await;
+    cancellation.cancel();
+    drive.await.unwrap().unwrap();
+
+    let cancelled = store.snapshot().run;
+    assert_eq!(cancelled.status, RunStatus::Cancelled);
+    assert_eq!(cancelled.usage.input_tokens, 11);
+    assert_eq!(cancelled.usage.output_tokens, 5);
+    assert_eq!(cancelled.usage.tool_executions, 1);
+}
+
+#[tokio::test]
 async fn retries_a_transient_agent_failure_inside_the_same_run() {
     let (run, messages) = fixture();
     let store = Arc::new(MemoryStore::seeded(run, messages));
@@ -758,6 +880,7 @@ async fn waits_for_approval_then_resumes_without_a_second_tool_intent() {
         "guarded",
         Ok(ToolOutcome {
             output: json!("ok"),
+            usage: RunUsage::default(),
         }),
     )]);
     tool_adapter.approval_names.insert("guarded".into());
@@ -1075,6 +1198,7 @@ impl RunTool for ParallelTools {
         }
         Ok(ToolOutcome {
             output: json!(request.call_id),
+            usage: RunUsage::default(),
         })
     }
     async fn reconcile(&self, _: &ToolExecution) -> Result<ToolRecovery, DomainError> {

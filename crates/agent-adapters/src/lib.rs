@@ -5,11 +5,11 @@
 //! events. This crate normalizes those behaviors without giving the adapter
 //! ownership of the host application's Message tree or Run lifecycle.
 
-#![allow(missing_docs)]
-
 pub mod codex;
+/// Shared adapter error types.
 pub mod error;
 pub mod llm;
+/// Provider-neutral agent event and configuration types.
 pub mod protocol;
 pub mod provider_gateway;
 pub use provider_gateway::RigProviderGateway;

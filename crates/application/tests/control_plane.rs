@@ -307,6 +307,12 @@ impl SessionTitleGenerator for SuccessfulTitleGenerator {
     ) -> Result<GeneratedSessionTitle, DomainError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         assert_eq!(request.user_prompt.chars().count(), 2_000);
+        assert_eq!(request.config.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(
+            request.config.system_prompt.as_deref(),
+            Some("reserved Small Agent prompt")
+        );
+        assert_eq!(request.provider.id, "builtin-codex");
         Ok(GeneratedSessionTitle {
             title: "Implement session naming".into(),
             description: "Add editable and generated Session names".into(),
@@ -362,10 +368,40 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
     .await;
     run(
         &service,
+        Command::RegisterAgent {
+            id: "small-agent".into(),
+            name: "Small".into(),
+            config: ait_contracts::AgentConfiguration {
+                reasoning_effort: Some("low".into()),
+                system_prompt: Some("reserved Small Agent prompt".into()),
+                ..config()
+            },
+        },
+    )
+    .await;
+    let mut settings = default_settings();
+    settings.0.insert(
+        "agents.default_agent".into(),
+        serde_json::json!("codex-agent"),
+    );
+    settings.0.insert(
+        "agents.small_agent".into(),
+        serde_json::json!("small-agent"),
+    );
+    run(
+        &service,
+        Command::SaveSettings {
+            expected_revision: 1,
+            values: settings,
+        },
+    )
+    .await;
+    run(
+        &service,
         Command::CreateSession {
             id: "named-session".into(),
             project_id: project.id,
-            agent_id: "codex-agent".into(),
+            agent_id: String::new(),
             at_message_id: None,
         },
     )
@@ -387,6 +423,10 @@ async fn first_interaction_generates_session_metadata_once_and_preserves_manual_
     )
     .await;
     let pointer_version = workspace(&service).await.sessions[0].version;
+    assert_eq!(
+        workspace(&service).await.sessions[0].agent_id,
+        "codex-agent"
+    );
 
     let first = service
         .generate_session_title("named-session".into(), "x".repeat(2_100))
@@ -811,7 +851,10 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     };
     assert_eq!(scheduled.trigger, "cron");
     assert_eq!(scheduled.status, "completed");
-    assert!(scheduled.session_id.is_none());
+    let scheduled_session_id = scheduled
+        .session_id
+        .as_deref()
+        .expect("Cron occurrence creates a Session");
     assert_eq!(
         scheduled.workspace_base_commit.as_deref(),
         Some(project.base_commit.as_str())
@@ -852,7 +895,17 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
     let workspace = workspace(&recovered).await;
     assert_eq!(workspace.runs.len(), 2);
     assert_eq!(workspace.messages, before_restart.messages);
-    assert_eq!(workspace.sessions.len(), 2);
+    assert_eq!(workspace.sessions.len(), 3);
+    let scheduled_session = workspace
+        .sessions
+        .iter()
+        .find(|session| session.id == scheduled_session_id)
+        .expect("Cron Session survives restart");
+    assert_eq!(
+        scheduled_session.current_message_id,
+        scheduled.last_message_id.clone().unwrap()
+    );
+    assert!(scheduled_session.active_run_id.is_none());
     assert_eq!(workspace.messages.len(), 4);
     assert!(workspace.runs.iter().all(|run| run.status == "completed"));
 }
@@ -988,6 +1041,7 @@ async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persiste
                     provider_id: provider_id.into(),
                     model: "default".into(),
                     reasoning_effort: None,
+                    system_prompt: None,
                 },
             })
             .await;
@@ -1215,10 +1269,18 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
     .await;
     run(
         &service,
+        Command::SetProjectDefaultAgent {
+            project_id: project.id.clone(),
+            agent_id: "desktop-agent".into(),
+        },
+    )
+    .await;
+    run(
+        &service,
         Command::ForkSession {
             id: "desktop-branch".into(),
             project_id: project.id,
-            agent_id: "desktop-agent".into(),
+            agent_id: String::new(),
             at_message_id: project.root_message_id,
             text: "first branch message".into(),
         },
@@ -1381,5 +1443,6 @@ fn config() -> ait_contracts::AgentConfiguration {
         provider_id: "builtin-codex".into(),
         model: "gpt-5.6-sol".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     }
 }

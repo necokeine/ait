@@ -14,10 +14,13 @@ use std::{
 use serde_json::{Value, json};
 use tokio::{process::Command, time::timeout};
 
-const PROMPT: &str = "Create a minimal Rust binary package named example-project in this repository root. \
-    It must have Cargo.toml, Cargo.lock, src/main.rs, and a .gitignore that ignores /target/. \
-    Use no external dependencies. Running cargo run --offline --quiet must print exactly Hello, world! \
-    followed by a newline. Verify the program. Do not create a Git commit: AIT will commit your changes.";
+const PROMPT: &str = concat!(
+    "Create a minimal Rust binary package named example-project in this repository root. ",
+    "It must have Cargo.toml, Cargo.lock, src/main.rs, and a .gitignore that ignores /target/. ",
+    "Use no external dependencies. Running cargo run --offline --quiet must print exactly ",
+    "Hello, world! followed by a newline. Verify the program. Do not create a Git commit: ",
+    "AIT will commit your changes.",
+);
 
 struct Daemon {
     child: Child,
@@ -320,7 +323,7 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     assert_eq!(session["current_message_id"], project["root_message_id"]);
 
     // Permissions are snapshotted at Run admission. Defaults prohibit code writes.
-    let settings = workflow.cli("settings", &["settings", "get"], 20).await;
+    let settings = workflow.cli("settings", &["config", "get"], 20).await;
     let mut values = settings["values"].clone();
     values["permissions.sandbox"] = json!("workspace_write");
     let settings_path = workflow.root.join("settings-values.json");
@@ -329,7 +332,7 @@ async fn wf10_create_project_with_real_codex_and_commit() {
         .cli(
             "permissions",
             &[
-                "settings",
+                "config",
                 "set",
                 "--expected-revision",
                 &settings["revision"].to_string(),

@@ -108,8 +108,11 @@ Project creation continues to allocate a new folder in Documents.
 The core's empty path remains a host-default marker: Electron main resolves it
 for display without writing settings or changing their optimistic revision.
 
-The composer toolbar starts with Run permissions, followed by Agent configuration
-and reasoning effort. New installations and Restore defaults use Workspace Write;
+The composer toolbar starts with Run permissions, followed by a single Agent/model
+configuration button that also shows the current reasoning level. Its popover groups
+Saved Agent, Provider, Model and Reasoning effort together; reasoning appears only
+for models with advertised levels and includes a Provider default option.
+New installations and Restore defaults use Workspace Write;
 saved permission choices are preserved. Permission changes apply to new Runs,
 while active Runs keep their original permission snapshot.
 
@@ -179,7 +182,7 @@ the `.p12`, its password, or an Apple app-specific password to the repository.
 
 ## Providers and Agent presets
 
-Settings → Models manages shared Codex/OpenAI/DeepSeek provider connections, API
+Settings → Models manages shared Codex/OpenAI/DeepSeek/Gemini/MiniMax provider connections, API
 keys, model discovery and per-model reasoning levels. DeepSeek discovery supplies
 the adapter-owned `off`, `low`, `high`, `max` levels, so a selected DeepSeek model
 shows the same conversation reasoning control as a reasoning-capable Codex model.

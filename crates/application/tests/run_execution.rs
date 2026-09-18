@@ -345,8 +345,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn run_commands_return_persisted_terminal_results_and_do_not_repeat_external_calls_on_conflict()
- {
+async fn run_commands_return_persisted_results_without_repeating_external_calls_on_conflict() {
     let fixture = Fixture::new().await;
     for (index, input) in [
         send_message(),
@@ -389,6 +388,22 @@ async fn run_commands_return_persisted_terminal_results_and_do_not_repeat_extern
                 .iter()
                 .all(|session| session["active_run_id"].is_null())
         );
+        if index == 2 {
+            let session_id = result
+                .session_id
+                .as_deref()
+                .expect("Cron occurrence creates a Session");
+            let session = snapshot.value["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|session| session["id"] == session_id)
+                .expect("Cron Session is persisted");
+            assert_eq!(
+                session["current_message_id"],
+                result.last_message_id.as_deref().unwrap()
+            );
+        }
     }
     let replay = run(
         &fixture.service,
@@ -659,6 +674,7 @@ fn config() -> ait_contracts::AgentConfiguration {
         provider_id: "builtin-codex".into(),
         model: "gpt-5.6-sol".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     }
 }
 

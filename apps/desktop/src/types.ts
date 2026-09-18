@@ -2,7 +2,12 @@ export type MessageRole = "user" | "system" | "assistant";
 export type MessageKind = "standard" | "tool_result";
 export type ReasoningEffort = string;
 
-export interface AgentConfiguration { provider_id: string; model: string; reasoning_effort: string | null }
+export interface AgentConfiguration {
+  provider_id: string;
+  model: string;
+  reasoning_effort: string | null;
+  system_prompt?: string | null;
+}
 export interface ProviderModel { id: string; name: string; reasoning_efforts: string[] }
 export interface AgentProvider { id: string; name: string; kind: string; url: string | null; models: ProviderModel[]; has_secret: boolean }
 export interface ProviderInput { provider: Omit<AgentProvider, "has_secret">; secret?: string }
@@ -104,9 +109,27 @@ export interface DesktopRun {
   };
   nativeApprovals: NativeApproval[];
   toolApprovals?: ToolApproval[];
+  toolInteractions?: ToolInteraction[];
   agentName?: string;
   providerName?: string;
   error?: { code?: string; message: string };
+}
+
+export interface DesktopCron {
+  id: string;
+  name: string;
+  projectId: string;
+  baseMessageId: string;
+  agentId: string;
+  schedule: string;
+  timezone: string;
+  enabled: boolean;
+}
+
+export interface CronRunSubmission {
+  project: ProjectView;
+  runId: string;
+  selectedSessionId: string;
 }
 
 export interface ToolApproval {
@@ -118,6 +141,17 @@ export interface ToolApproval {
       requested: "read_only" | "workspace_write" | "full_access" };
   };
   status: "pending" | "approved" | "consumed" | "denied" | "cancelled" | "expired";
+}
+
+export interface ToolInteraction {
+  id: string;
+  toolName: "question" | "plan_exit";
+  request: Record<string, unknown>;
+  response?: unknown;
+  status: "pending" | "answered" | "approved" | "denied" | "cancelled" | "expired";
+  expiresAt: number;
+  createdAt: number;
+  decidedAt?: number;
 }
 
 export interface NativeApproval {
@@ -255,7 +289,8 @@ export type SettingKind =
   | { type: "boolean" }
   | { type: "select"; options: string[] }
   | { type: "path" }
-  | { type: "credential_reference" };
+  | { type: "credential_reference" }
+  | { type: "agent_reference" };
 
 export interface SettingDefinition {
   id: string;
@@ -285,6 +320,17 @@ export interface AitDesktopApi {
   agents(): Promise<AgentCatalog>;
   project(projectId: string): Promise<ProjectView>;
   projectSessions(projectId: string): Promise<DesktopSession[]>;
+  crons(): Promise<DesktopCron[]>;
+  createCron(input: {
+    name: string;
+    projectId: string;
+    baseMessageId: string;
+    agentId: string;
+    schedule: string;
+    timezone: string;
+  }): Promise<DesktopCron>;
+  setCronEnabled(cronId: string, enabled: boolean): Promise<DesktopCron>;
+  triggerCron(cronId: string, scheduledAt: number): Promise<CronRunSubmission>;
   updateProject(input: { projectId: string; name: string; agentId?: string }): Promise<ProjectCatalog>;
   saveProvider(input: ProviderInput): Promise<AgentCatalog>;
   discoverProviderModels(input: ProviderInput): Promise<ProviderModel[]>;
@@ -309,7 +355,7 @@ export interface AitDesktopApi {
   createProject(input: {
     name: string;
     workdir?: string;
-    agentId: string;
+    agentId?: string;
     repoUrl?: string;
   }): Promise<{ catalog: ProjectCatalog; project: ProjectView; selectedProjectId: string }>;
   setProjectDefaultAgent(input: {
@@ -338,6 +384,13 @@ export interface AitDesktopApi {
   }): Promise<ProjectView>;
   resolveToolApproval(input: {
     runId: string; projectId: string; approvalId: string; action: "approve" | "deny" | "cancel";
+  }): Promise<ProjectView>;
+  resolveToolInteraction(input: {
+    runId: string;
+    projectId: string;
+    interactionId: string;
+    action: "submit" | "approve" | "deny" | "cancel";
+    response?: Record<string, string | string[]>;
   }): Promise<ProjectView>;
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {

@@ -222,43 +222,78 @@ impl WorkerSupervisor {
         let result=async {loop {
             tokio::select! {
                 biased;
-                Some(result)=pending.next()=>{
-                    let (request_id,operation_id,method,result)=result;
-                    if let Some(observer)=&self.observer {observer.checkpoint(pid,method,CommitBoundary::BeforeAck)?;}
-                    let payload=match result {Ok(response)=>Payload::Receipt{request_id,operation_id,response:Box::new(response)},Err(code)=>Payload::Rejected{request_id,code}};
-                    pipe.send(payload).await?;
-                    if let Some(observer)=&self.observer {observer.checkpoint(pid,method,CommitBoundary::AfterAck)?;}
-                }
-                frame=pipe.receiver.recv()=>{
-                    let frame=frame.ok_or(ProtocolError::UnexpectedEof)??;
-                    if frame.lease.as_ref()!=Some(&bootstrap.lease){return Err(ProtocolError::StaleWorkerLease)}
-                    heartbeat=Instant::now();
-                    match frame.payload {
-                        Payload::Heartbeat=>{},
-                        Payload::Request{request_id,operation_id,request}=>{
-                            if request_id <= last_request_id { return Err(ProtocolError::CorrelationMismatch); }
-                            if operation_id.is_empty() || operation_id.len() > 256 { return Err(ProtocolError::OperationConflict); }
-                            last_request_id = request_id;
-                            if pending.len()>=server.capacity(){return Err(ProtocolError::ResourceLimit)}
-                            let lease=bootstrap.lease.clone();
-                            let method=request_method(&request);
-                            if let Some(observer)=&self.observer {observer.checkpoint(pid,method,CommitBoundary::BeforeCommit)?;}
-                            pending.push(Box::pin(async move {let result=server.request(&lease,&operation_id,*request).await;(request_id,operation_id,method,result)}));
+                Some(result) = pending.next() => {
+                    let (request_id, operation_id, method, result) = result;
+                    if let Some(observer) = &self.observer {
+                        observer.checkpoint(pid, method, CommitBoundary::BeforeAck)?;
+                    }
+                    let payload = match result {
+                        Ok(response) => Payload::Receipt {
+                            request_id,
+                            operation_id,
+                            response: Box::new(response),
                         },
-                        Payload::ExitReport=>{
+                        Err(code) => Payload::Rejected { request_id, code },
+                    };
+                    pipe.send(payload).await?;
+                    if let Some(observer) = &self.observer {
+                        observer.checkpoint(pid, method, CommitBoundary::AfterAck)?;
+                    }
+                }
+                frame = pipe.receiver.recv() => {
+                    let frame = frame.ok_or(ProtocolError::UnexpectedEof)??;
+                    if frame.lease.as_ref() != Some(&bootstrap.lease) {
+                        return Err(ProtocolError::StaleWorkerLease);
+                    }
+                    heartbeat = Instant::now();
+                    match frame.payload {
+                        Payload::Heartbeat => {},
+                        Payload::Request { request_id, operation_id, request } => {
+                            if request_id <= last_request_id {
+                                return Err(ProtocolError::CorrelationMismatch);
+                            }
+                            if operation_id.is_empty() || operation_id.len() > 256 {
+                                return Err(ProtocolError::OperationConflict);
+                            }
+                            last_request_id = request_id;
+                            if pending.len() >= server.capacity() {
+                                return Err(ProtocolError::ResourceLimit);
+                            }
+                            let lease = bootstrap.lease.clone();
+                            let method = request_method(&request);
+                            if let Some(observer) = &self.observer {
+                                observer.checkpoint(pid, method, CommitBoundary::BeforeCommit)?;
+                            }
+                            pending.push(Box::pin(async move {
+                                let result = server.request(&lease, &operation_id, *request).await;
+                                (request_id, operation_id, method, result)
+                            }));
+                        },
+                        Payload::ExitReport => {
                             if !pending.is_empty(){return Err(ProtocolError::InvalidTransition)}
                             return server.finished().await;
                         },
                         _=>return Err(ProtocolError::InvalidFrame),
                     }
                 }
-                _=interval.tick()=>{
-                    let now=Instant::now();
-                    if now.duration_since(heartbeat)>Duration::from_millis(bootstrap.limits.heartbeat_timeout_ms){return Err(ProtocolError::HeartbeatTimeout)}
-                    if drain_deadline.is_some_and(|d|now>=d){return Err(ProtocolError::WorkerExited)}
-                    if drain_deadline.is_none()&&(cancel.is_cancelled()||self.draining.is_cancelled()||now>=deadline){
+                _ = interval.tick() => {
+                    let now = Instant::now();
+                    if now.duration_since(heartbeat)
+                        > Duration::from_millis(bootstrap.limits.heartbeat_timeout_ms)
+                    {
+                        return Err(ProtocolError::HeartbeatTimeout);
+                    }
+                    if drain_deadline.is_some_and(|deadline| now >= deadline) {
+                        return Err(ProtocolError::WorkerExited);
+                    }
+                    if drain_deadline.is_none()
+                        && (cancel.is_cancelled()
+                            || self.draining.is_cancelled()
+                            || now >= deadline)
+                    {
                         pipe.send(Payload::Cancel).await?;
-                        drain_deadline=Some(now+Duration::from_millis(bootstrap.limits.drain_ms));
+                        drain_deadline =
+                            Some(now + Duration::from_millis(bootstrap.limits.drain_ms));
                     }
                     pipe.send(Payload::Heartbeat).await?;
                 }
@@ -291,6 +326,8 @@ impl RunDispatcher for WorkerSupervisor {
         let provider = match request.provider.kind {
             ProviderKind::OpenAI => "openai",
             ProviderKind::DeepSeek => "deepseek",
+            ProviderKind::Gemini => "gemini",
+            ProviderKind::MiniMax => "minimax",
             #[allow(clippy::match_wildcard_for_single_variants)]
             _ => return Err(failure()),
         };
@@ -416,6 +453,8 @@ fn request_method(request: &ait_contracts::worker::StoreRequest) -> &'static str
     match request {
         StoreRequest::Approval { .. } => "tool_approval",
         StoreRequest::ConsumeToolGrant { .. } => "tool_grant",
+        StoreRequest::ToolInteraction { .. } => "tool_interaction",
+        StoreRequest::ToolInteractionRecovery { .. } => "tool_interaction_recovery",
         StoreRequest::AppendMessage { .. } => "append_message",
         StoreRequest::SaveTool { tool, .. } => match tool.status {
             ToolExecutionStatus::Pending => "tool_intent",

@@ -6,8 +6,9 @@
 审批、SQLite 和 outbox 留在 daemon；worker 的正常依赖图不包含 storage-sqlite。
 模型目录发现、Session 标题生成仍是 daemon 的辅助操作，不属于 Run 执行。
 遵循 ADR-013：有 Session 的 bootstrap cwd 来自经过校验的 `<Project>/.ait/<session-id>`，
-API 工具与 Codex 结算都在该固定 worktree 中执行；无 Session 的 Cron 才使用 Project
-主工作区。不同 Session 的文件/HEAD 不互相推进，Project 主检出保持成员所有。
+API 工具与 Codex 结算都在该固定 worktree 中执行；NEC-304 起每个新 Cron occurrence 也先
+创建独立 Session，因此使用对应 Session worktree。仅旧版已持久化的无 Session Run 使用
+Project 主工作区。不同 Session 的文件/HEAD 不互相推进，Project 主检出保持成员所有。
 
 ## 构建与启动
 
@@ -127,7 +128,7 @@ npm run typecheck
 npm test
 ```
 
-- `bins/worker/tests/process_providers.rs`：真实 worker + 拆分 SQLite + 离线 OpenAI/DeepSeek HTTP；
+- `bins/worker/tests/process_providers.rs`：真实 worker + 拆分 SQLite + 离线 OpenAI/DeepSeek/Gemini/MiniMax HTTP；
   ToolUse → ToolResult → final，18 个 API ACK kill 边界、durable receipt 重放/冲突/旧 fence，
   各类敏感 ToolUse 对全局/Project DB/WAL、事件、checkpoint、export 的回归。
 - `bins/worker/tests/process_codex.rs`：9 个 native checkpoint/integration/finished kill 边界，
@@ -143,4 +144,4 @@ npm test
 
 ## API 工具审批
 
-私有协议 minor 2 要求 `tool-grants-v1`。Approval RPC 等待期间心跳/控制面继续服务；决定与单次 grant 消费由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，Running 工具的未知结果不重放。审批期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md) 和 [NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md)。
+私有协议 minor 3 要求 `tool-grants-v1` 与 `tool-interactions-v1`。Approval、提问与计划审阅 RPC 等待期间心跳/控制面继续服务；决定、单次 grant 消费及交互答案由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，交互按原 ToolExecution ID 恢复，Running 工具的未知结果不重放。等待期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md)、[NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md) 和 [NEC-313 ADR](../decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。

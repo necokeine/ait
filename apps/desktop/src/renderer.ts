@@ -1,6 +1,7 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
 import { createRunsPage } from "./runs-page.js";
+import { createCronsPage } from "./crons-page.js";
 import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
@@ -24,6 +25,7 @@ import {
 } from "./desktop-slices.js";
 import { expireToolApprovalCards } from "./tool-approval-ui.js";
 import { isApprovalEvent, renderPendingApprovals } from "./approval-ui.js";
+import { interactionResponse } from "./tool-interaction-ui.js";
 import type {
   AgentCatalog,
   DesktopMessage,
@@ -104,7 +106,7 @@ let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let selectingSettingPath = false;
 let settingsCategory: SettingCategory = "models";
-let activePage: "sessions" | "agents" | "runs" = "sessions";
+let activePage: "sessions" | "agents" | "runs" | "crons" = "sessions";
 let pageGeneration = 0;
 let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
@@ -129,6 +131,7 @@ const runsPage = createRunsPage($("#runs-page"), {
   read: () => window.ait.activeRuns(),
   project: (id) => window.ait.project(id),
   resolve: (input) => window.ait.resolveToolApproval(input),
+  resolveInteraction: (input) => window.ait.resolveToolInteraction(input),
   agents: () => view?.agents ?? [],
   openSession: async (projectId, sessionId) => {
     const generation = pageGeneration;
@@ -159,10 +162,29 @@ const runsPage = createRunsPage($("#runs-page"), {
   },
   notify: showToast,
 });
+const cronsPage = createCronsPage($("#crons-page"), {
+  read: () => window.ait.crons(),
+  sessions: (projectId) => window.ait.projectSessions(projectId),
+  create: (input) => window.ait.createCron(input),
+  setEnabled: (cronId, enabled) => window.ait.setCronEnabled(cronId, enabled),
+  trigger: (cronId, scheduledAt) => window.ait.triggerCron(cronId, scheduledAt),
+  openRun: async (result) => {
+    replaceProjectView(result.project.projectId, result.project);
+    selectedSessionId = result.selectedSessionId;
+    sidebar.expanded.add(result.project.projectId);
+    resetTreeView();
+    renderAll();
+    showPage("sessions");
+  },
+  notify: showToast,
+});
 
 window.ait.subscribeRunEvents((updates) => {
   refreshSidebarForEvents(updates);
   runsPage.handleUpdates(updates);
+  if (updates.some((update) => update.type === "event" && update.event.kind.startsWith("cron."))) {
+    cronsPage.refresh();
+  }
   reconcileBackgroundBranches(updates);
   handleRunStreamFrame(updates);
 });
@@ -264,6 +286,24 @@ function bindInteractions(): void {
     });
   });
   conversation.addEventListener("click", (event) => {
+    const interactionButton = (event.target as Element).closest<HTMLButtonElement>("[data-interaction-action]");
+    const interactionCard = interactionButton?.closest<HTMLElement>("[data-interaction-id][data-run-id]");
+    if (interactionButton && interactionCard) {
+      const action = interactionButton.dataset.interactionAction;
+      if (action !== "submit" && action !== "approve" && action !== "deny" && action !== "cancel") return;
+      let response: Record<string, string | string[]> | undefined;
+      try {
+        if (action === "submit") response = interactionResponse(interactionCard);
+      } catch (error) {
+        showToast(errorMessage(error), true);
+        return;
+      }
+      interactionButton.closest("footer")?.querySelectorAll<HTMLButtonElement>("button").forEach((candidate) => {
+        candidate.disabled = true;
+      });
+      void resolveToolInteraction(interactionCard.dataset.runId!, interactionCard.dataset.interactionId!, action, response);
+      return;
+    }
     const button = (event.target as Element).closest<HTMLButtonElement>("[data-approval-action]");
     const card = button?.closest<HTMLElement>("[data-approval-id][data-run-id]");
     if (!button || !card) return;
@@ -281,6 +321,7 @@ function bindInteractions(): void {
   $("#settings-trigger").addEventListener("click", openSettings);
   $("#sessions-nav").addEventListener("click", () => showPage("sessions"));
   $("#runs-nav").addEventListener("click", () => showPage("runs"));
+  $("#crons-nav").addEventListener("click", () => showPage("crons"));
   $("#agents-nav").addEventListener("click", () => showPage("agents"));
   $("#project-create-trigger").addEventListener("click", openProjectDialog);
   $("#project-close").addEventListener("click", closeProjectDialog);
@@ -375,6 +416,12 @@ function renderAll(): void {
   renderTree();
   updateComposerState();
   agentsPage.render(view);
+  cronsPage.render({
+    projects: view.projects,
+    agents: view.agents,
+    selectedProjectId,
+    selectedSessionId,
+  });
 }
 
 function renderRecoveryNotices(): void {
@@ -403,7 +450,7 @@ function renderRecoveryNotices(): void {
   });
 }
 
-function showPage(page: "sessions" | "agents" | "runs"): void {
+function showPage(page: "sessions" | "agents" | "runs" | "crons"): void {
   pageGeneration += 1;
   activePage = page;
   composerConfigPanel.hidePopover();
@@ -411,9 +458,11 @@ function showPage(page: "sessions" | "agents" | "runs"): void {
   $("#sessions-page").classList.toggle("is-hidden", page !== "sessions");
   $("#agents-page").classList.toggle("is-hidden", page !== "agents");
   $("#runs-page").classList.toggle("is-hidden", page !== "runs");
+  $("#crons-page").classList.toggle("is-hidden", page !== "crons");
   runsPage.setActive(page === "runs");
+  cronsPage.setActive(page === "crons");
   $("#tree-toggle").classList.toggle("is-hidden", page !== "sessions");
-  for (const name of ["sessions", "agents", "runs"] as const) {
+  for (const name of ["sessions", "runs", "crons", "agents"] as const) {
     const button = $(`#${name}-nav`);
     button.classList.toggle("is-active", page === name);
     if (page === name) button.setAttribute("aria-current", "page");
@@ -421,6 +470,7 @@ function showPage(page: "sessions" | "agents" | "runs"): void {
   }
   if (page === "agents") $<HTMLElement>("#agents-page-title").focus();
   if (page === "runs") $<HTMLElement>("#runs-page-title").focus();
+  if (page === "crons") $<HTMLElement>("#crons-page-title").focus();
 }
 
 function currentSession(): DesktopSession | undefined {
@@ -535,15 +585,19 @@ function renderAgents(): void {
   const label = agent ? agentLabel(agent) : "No Agent";
   $("#agent-chip").textContent = label;
   $("#composer-config-label").textContent = label;
-  composerConfigTrigger.title = `Configure Agent: ${label}`;
   composerProvider.innerHTML = view.providers.filter((p) => providerChoices([p]).length > 0 || p.id === agent?.config.provider_id).map((p) => `<option value="${escapeAttribute(p.id)}"${p.id === agent?.config.provider_id ? " selected" : ""}>${escapeHtml(p.name)}</option>`).join("");
   const provider = view.providers.find((item) => item.id === agent?.config.provider_id);
   composerModel.innerHTML = provider?.models.map((model) => `<option value="${escapeAttribute(model.id)}"${model.id === agent?.config.model ? " selected" : ""}>${escapeHtml(model.name)}</option>`).join("") ?? "";
   const efforts = agent?.supportedReasoningEfforts ?? [];
-  composerReasoning.innerHTML = `<option value="">Reasoning: Default</option>` + efforts
-    .map((effort) => `<option value="${escapeAttribute(effort)}"${effort === agent?.config.reasoning_effort ? " selected" : ""}>Reasoning: ${escapeHtml(humanize(effort))}</option>`).join("");
+  const effortLabel = humanize(agent?.config.reasoning_effort ?? "default");
+  $("#composer-config-effort").textContent = `· ${effortLabel}`;
+  $("#composer-config-effort").classList.toggle("is-hidden", efforts.length === 0);
+  composerConfigTrigger.title = `Configure Agent: ${label}${efforts.length ? ` · Reasoning: ${effortLabel}` : ""}`;
+  composerReasoning.innerHTML = `<option value="">Provider default</option>` + efforts
+    .map((effort) => `<option value="${escapeAttribute(effort)}"${effort === agent?.config.reasoning_effort ? " selected" : ""}>${escapeHtml(humanize(effort))}</option>`).join("");
   $("#composer-reasoning-control").classList.toggle("is-hidden", efforts.length === 0);
   updateComposerState();
+  positionComposerConfig();
 }
 
 function renderConversation(): void {
@@ -699,6 +753,28 @@ async function resolveApproval(
       approvalId,
       action,
       ...(scope ? { scope } : {}),
+    });
+    if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
+    renderAll();
+  } catch (error) {
+    projectViews.discardMutation(mutation);
+    showToast(errorMessage(error), true);
+    scheduleViewRefresh();
+  }
+}
+
+async function resolveToolInteraction(
+  runId: string,
+  interactionId: string,
+  action: "submit" | "approve" | "deny" | "cancel",
+  response?: Record<string, string | string[]>,
+): Promise<void> {
+  const projectId = selectedProjectId;
+  if (!projectId) return;
+  const mutation = projectViews.beginMutation(projectId);
+  try {
+    const updated = await window.ait.resolveToolInteraction({
+      runId, projectId, interactionId, action, ...(response ? { response } : {}),
     });
     if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
     renderAll();
@@ -1204,11 +1280,16 @@ function toggleComposerConfig(): void {
   if (composerConfigTrigger.disabled) return;
   configuringSessionId = currentSession()?.id;
   composerConfigPanel.showPopover();
+  positionComposerConfig();
+  composerAgent.focus();
+}
+
+function positionComposerConfig(): void {
+  if (!composerConfigPanel.matches(":popover-open")) return;
   const trigger = composerConfigTrigger.getBoundingClientRect();
   const panel = composerConfigPanel.getBoundingClientRect();
   composerConfigPanel.style.left = `${Math.max(16, Math.min(trigger.left, window.innerWidth - panel.width - 16))}px`;
   composerConfigPanel.style.top = `${Math.max(16, trigger.top - panel.height - 8)}px`;
-  composerAgent.focus();
 }
 
 async function changeSessionAgent(): Promise<void> {
@@ -1363,7 +1444,7 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
 function openProjectDialog(): void {
   if (!view) return;
   const agent = $<HTMLSelectElement>("#project-create-agent");
-  agent.innerHTML = agentOptions();
+  agent.innerHTML = `<option value="">Use global Default Agent</option>${agentOptions()}`;
   projectDialog.classList.remove("is-hidden");
   requestAnimationFrame(() => $<HTMLInputElement>("#project-create-name").focus());
 }
@@ -1378,11 +1459,16 @@ function openProjectSettingsDialog(projectId: string | undefined): void {
   configuringProjectId = project.id;
   const options = agentOptions();
   const backend = $<HTMLSelectElement>("#project-backend");
-  backend.innerHTML = `<option value="">Keep current default</option>${options}`;
-  backend.disabled = options.length === 0;
+  const availableAgentId = availableProjectDefaultAgentId(project, view?.agents ?? []);
+  const unavailableAgent = project.defaultAgentId && !availableAgentId
+    ? `<option value="${escapeAttribute(project.defaultAgentId)}" disabled>Unavailable current Agent (kept until changed)</option>`
+    : "";
+  backend.innerHTML = `${unavailableAgent}<option value="">Use global Default Agent</option>${options}`;
+  backend.disabled = false;
   $<HTMLButtonElement>("#project-backend-save").disabled = false;
   $<HTMLInputElement>("#project-settings-name").value = project.name;
-  backend.value = availableProjectDefaultAgentId(project, view?.agents ?? []) ?? "";
+  backend.value = availableAgentId ?? project.defaultAgentId ?? "";
+  backend.dataset.initialAgentId = backend.value;
   $("#project-settings-title").textContent = project.name;
   $("#project-backend-copy").textContent = `New Sessions in ${project.name} use this Agent by default.`;
   projectSettingsDialog.classList.remove("is-hidden");
@@ -1496,7 +1582,8 @@ async function createProject(): Promise<void> {
 async function saveProjectSettings(): Promise<void> {
   const project = view?.projects.find((candidate) => candidate.id === configuringProjectId);
   if (!project || projectSettingsSaving) return;
-  const agentId = $<HTMLSelectElement>("#project-backend").value;
+  const backend = $<HTMLSelectElement>("#project-backend");
+  const agentId = backend.value;
   const name = $<HTMLInputElement>("#project-settings-name").value.trim();
   if (!name) { showToast("Enter a Project name.", true); return; }
   const controls = Array.from(projectSettingsDialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("input, select, button"));
@@ -1504,7 +1591,11 @@ async function saveProjectSettings(): Promise<void> {
   projectSettingsSaving = true;
   controls.forEach((control) => { control.disabled = true; });
   try {
-    const updated = await window.ait.updateProject({ projectId: project.id, name, ...(agentId ? { agentId } : {}) });
+    const updated = await window.ait.updateProject({
+      projectId: project.id,
+      name,
+      ...(agentId !== backend.dataset.initialAgentId ? { agentId } : {}),
+    });
     replaceProjectCatalog(updated);
     renderAll();
     projectSettingsSaving = false;
@@ -1525,9 +1616,13 @@ async function createSession(projectId = selectedProjectId): Promise<void> {
     openProjectDialog();
     return;
   }
-  const agentId = availableProjectDefaultAgentId(project, view.agents);
+  const configuredAgentId = project.defaultAgentId ?? settings?.values["agents.default_agent"];
+  const agentId = typeof configuredAgentId === "string"
+    && view.agents.some((agent) => agent.id === configuredAgentId && agent.enabled && !agent.ownerSessionId)
+    ? configuredAgentId
+    : undefined;
   if (!agentId) {
-    showToast(`Set an enabled default Agent for ${project.name} in Project settings.`, true);
+    showToast(`Set an enabled default Agent for ${project.name} in Project settings or Settings.`, true);
     return;
   }
   creatingSessionProjectId = project.id;
@@ -1606,7 +1701,7 @@ function renderSettings(): void {
   disposeProviderSettings?.();
   disposeProviderSettings = undefined;
   const categories = [...new Set<SettingCategory>(["models", ...settings.schema.definitions.map((definition) => definition.category)])];
-  const categoryLabel = (category: SettingCategory): string => category === "models" ? "Providers" : category === "agents" ? "Execution" : category;
+  const categoryLabel = (category: SettingCategory): string => category === "models" ? "Providers" : category;
   $("#settings-nav").innerHTML = categories.map((category) =>
     `<button type="button" data-category="${category}" class="${category === settingsCategory ? "is-active" : ""}">${categoryLabel(category)}</button>`,
   ).join("");
@@ -1655,6 +1750,10 @@ function renderSettingControl(definition: SettingDefinition, value: unknown): st
   }
   if (definition.kind.type === "select") {
     return `<select ${common}>${definition.kind.options.map((option) => `<option value="${escapeAttribute(option)}"${value === option ? " selected" : ""}>${escapeHtml(humanize(option))}</option>`).join("")}</select>`;
+  }
+  if (definition.kind.type === "agent_reference") {
+    const agents = view?.agents.filter((agent) => agent.enabled && !agent.ownerSessionId) ?? [];
+    return `<select ${common}><option value="">${definition.id === "agents.small_agent" ? "Use Default Agent" : "Not configured"}</option>${agents.map((agent) => `<option value="${escapeAttribute(agent.id)}"${value === agent.id ? " selected" : ""}>${escapeHtml(agentLabel(agent))}</option>`).join("")}</select>`;
   }
   if (definition.kind.type === "number") {
     return `<input ${common} type="number" min="${definition.kind.min}" max="${definition.kind.max}" value="${escapeAttribute(String(value ?? ""))}"/>`;
@@ -1785,6 +1884,7 @@ function renderCommandResults(): void {
     { id: "settings", title: "Open Settings", hint: "⌘," },
     { id: "agents", title: "Open Agents", hint: "" },
     { id: "runs", title: "Open Runs", hint: "" },
+    { id: "crons", title: "Open Crons", hint: "" },
     { id: "tree", title: "Toggle Session Tree", hint: "" },
   ].filter((command) => command.title.toLowerCase().includes(query) && (command.id !== "tree" || activePage === "sessions"));
   $("#command-results").innerHTML = [
@@ -1813,6 +1913,7 @@ function renderCommandResults(): void {
       if (button.dataset.command === "settings") openSettings();
       if (button.dataset.command === "agents") showPage("agents");
       if (button.dataset.command === "runs") showPage("runs");
+      if (button.dataset.command === "crons") showPage("crons");
       if (button.dataset.command === "tree") toggleTree();
     });
   });

@@ -1,7 +1,6 @@
 //! Pausing store regression coverage.
 #![allow(clippy::pedantic)]
 #![allow(dead_code)]
-#![allow(missing_docs)]
 
 use crate::support::terminal_run_status;
 use ait_ports::ControlStore;

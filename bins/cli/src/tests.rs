@@ -52,44 +52,157 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         provider_id: "provider".into(),
         model: "model".into(),
         reasoning_effort: Some("high".into()),
+        system_prompt: None,
     };
     let mut cases: Vec<(&str, Vec<&str>, Command)> = Vec::new();
     macro_rules! case {
         ($args:expr => $variant:ident $({ $($field:ident: $value:expr),* $(,)? })?) => {
-            cases.push((stringify!($variant), $args.to_vec(), Command::$variant $({ $($field: $value),* })?));
+            cases.push((
+                stringify!($variant),
+                $args.to_vec(),
+                Command::$variant $({ $($field: $value),* })?,
+            ));
         };
     }
     case!(&["project", "list"] => ListProjects);
-    case!(&["project", "register", "--id", "id", "--name", "name", "--workdir", "workdir", "--repo-url", "repo_url"] => RegisterProject { id: "id".into(), name: "name".into(), workdir: Some("workdir".into()), repo_url: Some("repo_url".into()) });
-    case!(&["project", "register", "--id", "named", "--name", "中文 project"] => RegisterProject { id: "named".into(), name: "中文 project".into(), workdir: None, repo_url: None });
-    case!(&["project", "update", "--project-id", "p", "--name", "Renamed", "--agent-id", "a"] => UpdateProject { project_id: "p".into(), name: "Renamed".into(), agent_id: Some("a".into()) });
-    case!(&["project", "update", "--project-id", "p", "--name", "Renamed"] => UpdateProject { project_id: "p".into(), name: "Renamed".into(), agent_id: None });
-    case!(&["project", "set-default-agent", "--project-id", "project_id", "--agent-id", "agent_id"] => SetProjectDefaultAgent { project_id: "project_id".into(), agent_id: "agent_id".into() });
+    case!(
+        &["project", "register", "--id", "id", "--name", "name", "--workdir", "workdir",
+          "--repo-url", "repo_url"] => RegisterProject {
+            id: "id".into(), name: "name".into(), workdir: Some("workdir".into()),
+            repo_url: Some("repo_url".into()),
+        }
+    );
+    case!(
+        &["project", "register", "--id", "named", "--name", "中文 project"] =>
+        RegisterProject {
+            id: "named".into(), name: "中文 project".into(), workdir: None, repo_url: None,
+        }
+    );
+    case!(
+        &["project", "update", "--project-id", "p", "--name", "Renamed", "--agent-id", "a"]
+        => UpdateProject {
+            project_id: "p".into(), name: "Renamed".into(), agent_id: Some("a".into()),
+        }
+    );
+    case!(
+        &["project", "update", "--project-id", "p", "--name", "Renamed"] => UpdateProject {
+            project_id: "p".into(), name: "Renamed".into(), agent_id: None,
+        }
+    );
+    case!(
+        &["project", "set-default-agent", "--project-id", "project_id", "--agent-id",
+          "agent_id"] => SetProjectDefaultAgent {
+            project_id: "project_id".into(), agent_id: "agent_id".into(),
+        }
+    );
     case!(&["agent", "list"] => ListAgents);
-    case!(&["agent", "create", "--id", "id", "--name", "name", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => RegisterAgent { id: "id".into(), name: "name".into(), config: config.clone() });
-    case!(&["agent", "update", "--id", "id", "--name", "name", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => UpdateAgent { id: "id".into(), name: "name".into(), config: config.clone() });
+    case!(
+        &["agent", "create", "--id", "id", "--name", "name", "--provider-id", "provider",
+          "--model", "model", "--reasoning-effort", "high"] => RegisterAgent {
+            id: "id".into(), name: "name".into(), config: config.clone(),
+        }
+    );
+    case!(
+        &["agent", "update", "--id", "id", "--name", "name", "--provider-id", "provider",
+          "--model", "model", "--reasoning-effort", "high"] => UpdateAgent {
+            id: "id".into(), name: "name".into(), config: config.clone(),
+        }
+    );
     case!(&["agent", "provider", "list"] => ListAgentProviders);
-    case!(&["agent", "provider", "refresh-models", "--provider-id", "provider_id"] => RefreshProviderModels { provider_id: "provider_id".into() });
-    case!(&["session", "list", "--project-id", "project_id"] => ListSessions { project_id: "project_id".into() });
-    case!(&["session", "create", "--id", "id", "--project-id", "project_id", "--agent-id", "agent_id", "--at-message-id", "at_message_id"] => CreateSession { id: "id".into(), project_id: "project_id".into(), agent_id: "agent_id".into(), at_message_id: Some("at_message_id".into()) });
-    case!(&["session", "set-agent", "--session-id", "session_id", "--agent-id", "agent_id"] => SetSessionAgent { session_id: "session_id".into(), agent_id: "agent_id".into() });
-    case!(&["session", "set-config", "--session-id", "session_id", "--provider-id", "provider", "--model", "model", "--reasoning-effort", "high"] => SetSessionConfig { session_id: "session_id".into(), config: config.clone() });
-    case!(&["session", "rename", "--session-id", "session_id", "--name", "name"] => RenameSession { session_id: "session_id".into(), name: "name".into() });
-    case!(&["session", "set-title", "--session-id", "session_id", "--title", "title"] => SetSessionTitle { session_id: "session_id".into(), title: "title".into() });
-    case!(&["session", "send", "--session-id", "session_id", "--text", "中文\n\\path"] => SendMessage { session_id: "session_id".into(), text: "中文\n\\path".into() });
-    case!(&["session", "fork", "--id", "id", "--project-id", "project_id", "--agent-id", "agent_id", "--at-message-id", "at_message_id", "--text", "中文\n\\path"] => ForkSession { id: "id".into(), project_id: "project_id".into(), agent_id: "agent_id".into(), at_message_id: "at_message_id".into(), text: "中文\n\\path".into() });
-    case!(&["session", "derive", "--id", "id", "--project-id", "project_id", "--source-session-id", "source_session_id", "--agent-id", "agent_id", "--at-message-id", "at_message_id", "--text", "中文\n\\path"] => DeriveSession { id: "id".into(), project_id: "project_id".into(), source_session_id: "source_session_id".into(), agent_id: "agent_id".into(), at_message_id: "at_message_id".into(), text: "中文\n\\path".into() });
-    case!(&["message", "list", "--project-id", "project_id"] => ListMessages { project_id: "project_id".into() });
-    case!(&["run", "list", "--project-id", "project_id"] => ListRuns { project_id: "project_id".into() });
+    case!(
+        &["agent", "provider", "refresh-models", "--provider-id", "provider_id"] =>
+        RefreshProviderModels { provider_id: "provider_id".into() }
+    );
+    case!(
+        &["session", "list", "--project-id", "project_id"] =>
+        ListSessions { project_id: "project_id".into() }
+    );
+    case!(
+        &["session", "create", "--id", "id", "--project-id", "project_id", "--agent-id",
+          "agent_id", "--at-message-id", "at_message_id"] => CreateSession {
+            id: "id".into(), project_id: "project_id".into(), agent_id: "agent_id".into(),
+            at_message_id: Some("at_message_id".into()),
+        }
+    );
+    case!(
+        &["session", "create", "--id", "id", "--project-id", "project_id"] => CreateSession {
+            id: "id".into(), project_id: "project_id".into(), agent_id: String::new(),
+            at_message_id: None,
+        }
+    );
+    case!(
+        &["session", "set-agent", "--session-id", "session_id", "--agent-id", "agent_id"] =>
+        SetSessionAgent { session_id: "session_id".into(), agent_id: "agent_id".into() }
+    );
+    case!(
+        &["session", "set-config", "--session-id", "session_id", "--provider-id", "provider",
+          "--model", "model", "--reasoning-effort", "high"] => SetSessionConfig {
+            session_id: "session_id".into(), config: config.clone(),
+        }
+    );
+    case!(
+        &["session", "rename", "--session-id", "session_id", "--name", "name"] =>
+        RenameSession { session_id: "session_id".into(), name: "name".into() }
+    );
+    case!(
+        &["session", "set-title", "--session-id", "session_id", "--title", "title"] =>
+        SetSessionTitle { session_id: "session_id".into(), title: "title".into() }
+    );
+    case!(
+        &["session", "send", "--session-id", "session_id", "--text", "中文\n\\path"] =>
+        SendMessage { session_id: "session_id".into(), text: "中文\n\\path".into() }
+    );
+    case!(
+        &["session", "fork", "--id", "id", "--project-id", "project_id", "--agent-id",
+          "agent_id", "--at-message-id", "at_message_id", "--text", "中文\n\\path"] =>
+        ForkSession {
+            id: "id".into(), project_id: "project_id".into(), agent_id: "agent_id".into(),
+            at_message_id: "at_message_id".into(), text: "中文\n\\path".into(),
+        }
+    );
+    case!(
+        &["session", "derive", "--id", "id", "--project-id", "project_id",
+          "--source-session-id", "source_session_id", "--agent-id", "agent_id",
+          "--at-message-id", "at_message_id", "--text", "中文\n\\path"] => DeriveSession {
+            id: "id".into(), project_id: "project_id".into(),
+            source_session_id: "source_session_id".into(), agent_id: "agent_id".into(),
+            at_message_id: "at_message_id".into(), text: "中文\n\\path".into(),
+        }
+    );
+    case!(
+        &["message", "list", "--project-id", "project_id"] =>
+        ListMessages { project_id: "project_id".into() }
+    );
+    case!(
+        &["run", "list", "--project-id", "project_id"] =>
+        ListRuns { project_id: "project_id".into() }
+    );
     case!(&["run", "get", "--run-id", "run_id"] => GetRun { run_id: "run_id".into() });
     case!(&["run", "cancel", "--run-id", "run_id"] => CancelRun { run_id: "run_id".into() });
     case!(&["cron", "list"] => ListCrons);
-    case!(&["cron", "create", "--id", "id", "--name", "name", "--project-id", "project_id", "--base-message-id", "base_message_id", "--agent-id", "agent_id", "--schedule", "schedule", "--timezone", "timezone"] => CreateCron { id: "id".into(), name: "name".into(), project_id: "project_id".into(), base_message_id: "base_message_id".into(), agent_id: "agent_id".into(), schedule: "schedule".into(), timezone: "timezone".into() });
-    case!(&["cron", "enable", "--cron-id", "cron_id"] => SetCronEnabled { cron_id: "cron_id".into(), enabled: true });
-    case!(&["cron", "disable", "--cron-id", "cron_id"] => SetCronEnabled { cron_id: "cron_id".into(), enabled: false });
-    case!(&["cron", "trigger", "--cron-id", "cron_id", "--scheduled-at", "1788480000000"] => TriggerCron { cron_id: "cron_id".into(), scheduled_at: 1_788_480_000_000 });
-    case!(&["settings", "get"] => GetSettings);
-    case!(&["settings", "reset"] => ResetSettings);
+    case!(
+        &["cron", "create", "--id", "id", "--name", "name", "--project-id", "project_id",
+          "--base-message-id", "base_message_id", "--agent-id", "agent_id", "--schedule",
+          "schedule", "--timezone", "timezone"] => CreateCron {
+            id: "id".into(), name: "name".into(), project_id: "project_id".into(),
+            base_message_id: "base_message_id".into(), agent_id: "agent_id".into(),
+            schedule: "schedule".into(), timezone: "timezone".into(),
+        }
+    );
+    case!(
+        &["cron", "enable", "--cron-id", "cron_id"] =>
+        SetCronEnabled { cron_id: "cron_id".into(), enabled: true }
+    );
+    case!(
+        &["cron", "disable", "--cron-id", "cron_id"] =>
+        SetCronEnabled { cron_id: "cron_id".into(), enabled: false }
+    );
+    case!(
+        &["cron", "trigger", "--cron-id", "cron_id", "--scheduled-at", "1788480000000"]
+        => TriggerCron { cron_id: "cron_id".into(), scheduled_at: 1_788_480_000_000 }
+    );
+    case!(&["config", "get"] => GetSettings);
+    case!(&["config", "reset"] => ResetSettings);
     let provider = AgentProvider {
         id: "provider".into(),
         name: "Provider".into(),
@@ -103,14 +216,57 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     };
     let models_path = directory.path().join("models with spaces.json");
     std::fs::write(&models_path, serde_json::to_vec(&provider.models).unwrap()).unwrap();
-    case!(&["agent", "provider", "save", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => SaveAgentProvider { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
-    case!(&["agent", "provider", "discover-models", "--id", "provider", "--name", "Provider", "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input", models_path.to_str().unwrap(), "--secret-stdin"] => DiscoverProviderModels { provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())) });
-    case!(&["project", "export", "--project-id", "p", "--output", "archive with spaces.json"] => ExportProject { project_id: "p".into() });
-    case!(&["project", "import", "--input", archive_path.to_str().unwrap(), "--workdir", "path with spaces"] => ImportProject { archive: archive, workdir: "path with spaces".into() });
-    case!(&["settings", "set", "--expected-revision", "42", "--input", settings_path.to_str().unwrap()] => SaveSettings { expected_revision: 42, values: settings });
-    case!(&["run", "approval", "approve", "--run-id", "r", "--approval-id", "a", "--scope", "turn"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Approve, scope: Some(ApprovalGrantScope::Turn) });
-    case!(&["run", "approval", "deny", "--run-id", "r", "--approval-id", "a"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Deny, scope: None });
-    case!(&["run", "approval", "cancel", "--run-id", "r", "--approval-id", "a"] => ResolveNativeApproval { run_id: "r".into(), approval_id: "a".into(), action: NativeApprovalAction::Cancel, scope: None });
+    case!(
+        &["agent", "provider", "save", "--id", "provider", "--name", "Provider", "--kind",
+          "deepseek", "--url", "https://api.deepseek.com", "--input",
+          models_path.to_str().unwrap(), "--secret-stdin"] => SaveAgentProvider {
+            provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())),
+        }
+    );
+    case!(
+        &["agent", "provider", "discover-models", "--id", "provider", "--name", "Provider",
+          "--kind", "deepseek", "--url", "https://api.deepseek.com", "--input",
+          models_path.to_str().unwrap(), "--secret-stdin"] => DiscoverProviderModels {
+            provider: provider.clone(), secret: Some(ProviderSecret("fixture-secret".into())),
+        }
+    );
+    case!(
+        &["project", "export", "--project-id", "p", "--output", "archive with spaces.json"] =>
+        ExportProject { project_id: "p".into() }
+    );
+    case!(
+        &["project", "import", "--input", archive_path.to_str().unwrap(), "--workdir",
+          "path with spaces"] => ImportProject {
+            archive: archive, workdir: "path with spaces".into(),
+        }
+    );
+    case!(
+        &["config", "set", "--expected-revision", "42", "--input",
+          settings_path.to_str().unwrap()] => SaveSettings {
+            expected_revision: 42, values: settings,
+        }
+    );
+    case!(
+        &["run", "approval", "approve", "--run-id", "r", "--approval-id", "a", "--scope",
+          "turn"] => ResolveNativeApproval {
+            run_id: "r".into(), approval_id: "a".into(),
+            action: NativeApprovalAction::Approve, scope: Some(ApprovalGrantScope::Turn),
+        }
+    );
+    case!(
+        &["run", "approval", "deny", "--run-id", "r", "--approval-id", "a"] =>
+        ResolveNativeApproval {
+            run_id: "r".into(), approval_id: "a".into(),
+            action: NativeApprovalAction::Deny, scope: None,
+        }
+    );
+    case!(
+        &["run", "approval", "cancel", "--run-id", "r", "--approval-id", "a"] =>
+        ResolveNativeApproval {
+            run_id: "r".into(), approval_id: "a".into(),
+            action: NativeApprovalAction::Cancel, scope: None,
+        }
+    );
 
     let documented = documented_routes();
     let mut covered = BTreeSet::new();
@@ -244,7 +400,7 @@ fn required_parameters_and_typed_values_fail_before_io() {
         ],
         vec!["event", "list", "--after", "-1"],
         vec![
-            "settings",
+            "config",
             "set",
             "--input",
             "-",
@@ -398,16 +554,24 @@ fn input_preserves_unicode_newlines_and_backslashes() {
         vec!["session", "send", "--session-id", "s", "--text-stdin"],
         vec!["session", "send", "--session-id", "s", "--text-file", "-"],
     ] {
-        assert!(
-            matches!(action(&args, text), Action::Execute(Command::SendMessage { text: actual, .. }) if actual == text)
-        );
+        assert!(matches!(
+            action(&args, text),
+            Action::Execute(Command::SendMessage { text: actual, .. }) if actual == text
+        ));
     }
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("中文 text with spaces.txt");
     std::fs::write(&path, text).unwrap();
-    assert!(
-        matches!(action(&["session", "send", "--session-id", "s", "--text-file", path.to_str().unwrap()], ""), Action::Execute(Command::SendMessage { text: actual, .. }) if actual == text)
-    );
+    assert!(matches!(
+        action(
+            &[
+                "session", "send", "--session-id", "s", "--text-file",
+                path.to_str().unwrap(),
+            ],
+            "",
+        ),
+        Action::Execute(Command::SendMessage { text: actual, .. }) if actual == text
+    ));
 }
 
 #[test]
@@ -435,6 +599,52 @@ fn response_redaction_preserves_json_even_for_escaped_secrets() {
         assert_eq!(error.message, "upstream echoed [REDACTED]");
         assert!(error.retryable);
     }
+}
+
+#[test]
+fn gemini_provider_kind_maps_to_the_domain_contract() {
+    let Action::Execute(Command::SaveAgentProvider { provider, secret }) = action(
+        &[
+            "agent",
+            "provider",
+            "save",
+            "--id",
+            "gemini",
+            "--name",
+            "Gemini",
+            "--kind",
+            "gemini",
+            "--secret-stdin",
+        ],
+        "fixture-secret\n",
+    ) else {
+        panic!("expected Provider operation");
+    };
+    assert_eq!(provider.kind, AgentMode::Gemini);
+    assert_eq!(secret, Some(ProviderSecret("fixture-secret".into())));
+}
+
+#[test]
+fn minimax_provider_kind_maps_to_the_domain_contract() {
+    let Action::Execute(Command::SaveAgentProvider { provider, secret }) = action(
+        &[
+            "agent",
+            "provider",
+            "save",
+            "--id",
+            "minimax",
+            "--name",
+            "MiniMax",
+            "--kind",
+            "minimax",
+            "--secret-stdin",
+        ],
+        "fixture-secret\n",
+    ) else {
+        panic!("expected Provider operation");
+    };
+    assert_eq!(provider.kind, AgentMode::MiniMax);
+    assert_eq!(secret, Some(ProviderSecret("fixture-secret".into())));
 }
 
 #[test]
@@ -575,9 +785,10 @@ fn documented_http_methods_and_paths_match_the_router() {
                     ..
                 }) = &node.args[0]
                 else {
-                    panic!(
-                        "route collector requires a literal path; update it for the new router shape"
-                    );
+                    panic!(concat!(
+                        "route collector requires a literal path; ",
+                        "update it for the new router shape",
+                    ));
                 };
                 let syn::Expr::Call(call) = &node.args[1] else {
                     panic!("update route collector for chained method routers");

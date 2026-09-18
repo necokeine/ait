@@ -40,9 +40,11 @@ patch/command events and resumes the thread for a second edit and verification.
 
 ## Rig LLM client
 
-`LLMClient` wraps Rig 0.42's native OpenAI or DeepSeek client. OpenAI uses
-`POST /responses`; DeepSeek uses `POST /chat/completions`. Both use Rig's
-`GET /models` support to fetch models visible to the configured API key.
+`LLMClient` wraps Rig 0.42's native OpenAI, DeepSeek and Gemini clients plus its
+OpenAI-compatible Chat Completions client for MiniMax. OpenAI uses `POST /responses`,
+DeepSeek and MiniMax use `POST /chat/completions`, and Gemini uses native
+`POST /v1beta/models/{model}:generateContent`. Each uses Rig's provider-specific
+model listing support to fetch models visible to the configured API key.
 The returned catalog can include models for capabilities other than text generation.
 
 ```rust,no_run
@@ -52,6 +54,8 @@ use ait_agent_adapters::{LLMClient, LLMClientConfig, LLMProvider};
 let key = std::env::var("DEEPSEEK_API_KEY")?;
 let mut config = LLMClientConfig::new(LLMProvider::DeepSeek, key);
 // For OpenAI, select LLMProvider::OpenAI and pass OPENAI_API_KEY instead.
+// For Gemini, select LLMProvider::Gemini and pass GEMINI_API_KEY instead.
+// For MiniMax, select LLMProvider::MiniMax and pass MINIMAX_API_KEY instead.
 // Optional: config.base_url = Some("https://gateway.example/v1".into());
 config.timeout = std::time::Duration::from_secs(120);
 let client = LLMClient::new(config)?;
@@ -84,12 +88,17 @@ model-catalog value to the selected API dialect. OpenAI receives
 `reasoning.effort`; DeepSeek receives `thinking: enabled` plus
 `reasoning_effort`, except the adapter-owned `off` choice becomes
 `thinking: disabled` without an invalid `reasoning_effort: off`. Omitting the
-method preserves the provider default. DeepSeek model discovery advertises the
-adapter-owned ordered catalog `off`, `low`, `high`, `max` for every returned
+method preserves the provider default. Gemini and MiniMax do not currently accept this
+method and reports an invalid local configuration before network I/O. DeepSeek
+model discovery advertises the adapter-owned ordered catalog `off`, `low`, `high`, `max` for every returned
 model and rejects any other DeepSeek effort before network I/O; OpenAI discovery
 does not infer model-specific capabilities from `/models`.
 DeepSeek response normalization accepts null content and omitted tool-call
 indices before Rig deserialization; reasoning and call ids remain intact.
+Gemini tool calls may omit provider IDs; Ait persists a minted internal correlator
+without sending it back as a Gemini `functionCall.id` or `functionResponse.id`.
+MiniMax keeps reasoning in assistant `content`; Ait leaves `reasoning_split`
+disabled and replays the complete text and tool calls on later tool-loop turns.
 Neither method executes tools, retries requests, or owns Message/Session/Run state.
 Dropping the operation's future cancels it; requests have a finite timeout.
 
@@ -101,7 +110,11 @@ this adapter; resolve them before construction. No key is read implicitly.
 
 Protocol references: [Rig](https://docs.rs/rig-core/0.42.0/rig_core/),
 [OpenAI model listing](https://developers.openai.com/api/reference/resources/models/methods/list),
-[DeepSeek model listing](https://api-docs.deepseek.com/api/list-models).
+[DeepSeek model listing](https://api-docs.deepseek.com/api/list-models),
+[Gemini API reference](https://ai.google.dev/api),
+[Gemini model listing](https://ai.google.dev/api/models),
+[MiniMax OpenAI-compatible API](https://platform.minimax.io/docs/api-reference/text-openai-api),
+[MiniMax model listing](https://platform.minimax.io/docs/api-reference/models/openai/list-models).
 
 Run verification:
 

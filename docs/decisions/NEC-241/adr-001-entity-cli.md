@@ -41,9 +41,9 @@ CLI 只做参数校验、输入读取、DTO 构造和现有 HTTP 调用。所有
 | `TriggerCron` | `cron trigger --cron-id --scheduled-at` |
 | `ExportProject` | `project export --project-id --output` |
 | `ImportProject` | `project import --input --workdir` |
-| `GetSettings` | `settings get` |
-| `SaveSettings` | `settings set --expected-revision --input` |
-| `ResetSettings` | `settings reset` |
+| `GetSettings` | `config get` |
+| `SaveSettings` | `config set --expected-revision --input` |
+| `ResetSettings` | `config reset` |
 | `ListProjects` | `project list` |
 | `ListAgents` | `agent list` |
 | `ListAgentProviders` | `agent provider list` |
@@ -68,7 +68,7 @@ Provider 操作移到 `agent provider`，不保留旧命令别名。`export`、`
 - Send/Fork/Derive 使用互斥的 `--text`、`--text-file <file|->`、`--text-stdin`。
   文件/stdin 必须是 UTF-8，完整保留换行、反斜杠和中文，不 trim 消息。
 - `agent provider save/discover-models --input <file|->` 只接受模型数组（id/name/reasoning_efforts）。
-  `settings set --input` 只接受完整 values 文档，revision 必须通过单独的 typed flag 传入。
+  `config set --input` 只接受完整 values 文档，revision 必须通过单独的 typed flag 传入。
   `project import --input` 只接受 Project archive。不能用这些入口输入 tagged transport Command。
 - Provider secret 仅用 `--secret-stdin`，不提供 secret 值参数或环境变量入口。要求 stdin 重定向，
   拒绝会回显的终端输入；去掉一个末尾 LF/CRLF，拒绝空值。省略时沿用现有保存语义。
@@ -96,8 +96,8 @@ turn/session；session grant 受管理员策略限制。CLI 固定枚举对应�
 
 新建/重置 settings 的默认值由 [NEC-269](../NEC-269/adr-001-composer-permission-default.md)
 修订为 `permissions.sandbox=workspace_write`、`permissions.approval=on_request`。
-已有设置保留原选择；修改时先 `settings get`，保留完整 values 和最新 revision，再
-`settings set --expected-revision <revision> --input <values文件>`，然后发起新的 Run。
+已有设置保留原选择；修改时先 `config get`，保留完整 values 和最新 revision，再
+`config set --expected-revision <revision> --input <values文件>`，然后发起新的 Run。
 权限在 Run 准入时固定，受管理员上限约束；`strict` 是 read_only 别名，旧 approval=always
 会使 Codex 准入失败。NEC-247 为普通 API Provider 接入宿主工具循环：工具表取精确 provider+model 与执行器能力的交集；API 首版 full_access 仍受 Project 根与管理员上限约束。
 

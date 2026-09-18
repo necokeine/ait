@@ -21,6 +21,7 @@ pub struct OpenAiCompatibleProvider {
 
 impl OpenAiCompatibleProvider {
     #[must_use]
+    /// Creates an adapter backed by the supplied HTTP client.
     pub fn new(client: Client) -> Self {
         Self { client }
     }
@@ -116,11 +117,13 @@ impl ProviderAdapter for OpenAiCompatibleProvider {
                         }
                         continue;
                     }
-                    let payload: Value = serde_json::from_str(&data).map_err(|error| ProviderError::new(
-                        ProviderErrorKind::Protocol,
-                        format!("invalid SSE JSON: {error}"),
-                        RetryDirective::Never,
-                    ))?;
+                    let payload: Value = serde_json::from_str(&data).map_err(|error| {
+                        ProviderError::new(
+                            ProviderErrorKind::Protocol,
+                            format!("invalid SSE JSON: {error}"),
+                            RetryDirective::Never,
+                        )
+                    })?;
                     if let Some(error) = payload.get("error") {
                         Err(provider_payload_error(error))?;
                     }
@@ -139,14 +142,25 @@ impl ProviderAdapter for OpenAiCompatibleProvider {
                             }
                             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                                 for call in calls {
-                                    let raw_index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
-                                    let index = u32::try_from(raw_index).map_err(|_| ProviderError::new(
-                                        ProviderErrorKind::Protocol,
-                                        "provider tool-call index exceeds u32",
-                                        RetryDirective::Never,
-                                    ))?;
-                                    let call_id = call.get("id").and_then(Value::as_str).unwrap_or_default();
-                                    let name = call.pointer("/function/name").and_then(Value::as_str).unwrap_or_default();
+                                    let raw_index = call
+                                        .get("index")
+                                        .and_then(Value::as_u64)
+                                        .unwrap_or(0);
+                                    let index = u32::try_from(raw_index).map_err(|_| {
+                                        ProviderError::new(
+                                            ProviderErrorKind::Protocol,
+                                            "provider tool-call index exceeds u32",
+                                            RetryDirective::Never,
+                                        )
+                                    })?;
+                                    let call_id = call
+                                        .get("id")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default();
+                                    let name = call
+                                        .pointer("/function/name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default();
                                     if open_tools.insert(index) {
                                         yield ProviderEvent::ToolUseStart {
                                             index,
@@ -154,7 +168,9 @@ impl ProviderAdapter for OpenAiCompatibleProvider {
                                             name: name.to_owned(),
                                         };
                                     }
-                                    if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str)
+                                    if let Some(arguments) = call
+                                        .pointer("/function/arguments")
+                                        .and_then(Value::as_str)
                                         && !arguments.is_empty()
                                     {
                                         yield ProviderEvent::ToolUseArgumentsDelta {

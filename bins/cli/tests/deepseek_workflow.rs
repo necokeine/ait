@@ -16,11 +16,15 @@ use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
 const MODEL: &str = "deepseek-v4-flash";
 const VERIFY_LOGIC: &str = include_str!("fixtures/verify_hello.py");
-const PROMPT: &str = "Use the write tool to create hello.py in the Project, then use read to verify it. \
-    Define a zero-argument main() that only prints the literal Hello, world! and implicitly returns None. \
-    Call main() only under if __name__ == \"__main__\". No imports, dependencies, or extra behavior. \
-    Do not return the source instead of creating the file. After verification, give a short final report. \
-    The user will independently validate and execute the file; do not attempt arbitrary shell commands.";
+const PROMPT: &str = concat!(
+    "Use the write tool to create hello.py in the Project, then use read to verify it. ",
+    "Define a zero-argument main() that only prints the literal Hello, world! and implicitly ",
+    "returns None. Call main() only under if __name__ == \"__main__\". No imports, dependencies, ",
+    "or extra behavior. Do not return the source instead of creating the file. ",
+    "After verification, give a short final report. The user will independently validate and ",
+    "execute the file; ",
+    "do not attempt arbitrary shell commands.",
+);
 
 // Deliberately not Debug: neither command diagnostics nor dotenv parse errors may expose it.
 struct Credential(String);
@@ -350,7 +354,7 @@ fn entity<'a>(snapshot: &'a Value, collection: &str, id: &Value) -> &'a Value {
 }
 
 #[tokio::test]
-#[ignore = "uses real DeepSeek API credits, OS credential storage and Python; run ./test_with_deepseek.sh"]
+#[ignore = "uses API credits, credentials, and Python; run ./test_with_deepseek.sh"]
 #[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
 async fn wf11_real_deepseek_python_hello_world() {
     let env_path = env::var_os("AIT_DEEPSEEK_ENV_FILE").map_or_else(
@@ -500,7 +504,7 @@ async fn wf11_real_deepseek_python_hello_world() {
     assert_eq!(session["agent_id"], agent["id"]);
     assert_eq!(session["current_message_id"], project["root_message_id"]);
     let settings = workflow
-        .cli("settings-before", &["settings", "get"], 20)
+        .cli("settings-before", &["config", "get"], 20)
         .await;
     let mut values = settings["values"].clone();
     values["permissions.sandbox"] = json!("workspace_write");
@@ -510,7 +514,7 @@ async fn wf11_real_deepseek_python_hello_world() {
         .cli(
             "permissions",
             &[
-                "settings",
+                "config",
                 "set",
                 "--expected-revision",
                 &settings["revision"].to_string(),

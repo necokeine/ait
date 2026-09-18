@@ -99,6 +99,7 @@ pub(in crate::control) fn send_message(
         permission_profile,
         native_approvals: Vec::new(),
         tool_approvals: Vec::new(),
+        tool_interactions: Vec::new(),
         trigger: ait_domain::RunTrigger::Manual,
         cron_id: None,
         scheduled_at: None,

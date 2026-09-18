@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { projectAgent } from "../src/agents.js";
 import { providerChoices } from "../src/agent-settings.js";
@@ -14,6 +15,20 @@ test("projects saved configuration and provider capabilities without rewriting m
   assert.equal(summary.config.reasoning_effort, "high");
   assert.deepEqual(summary.supportedReasoningEfforts, ["minimal", "high"]);
   assert.deepEqual(providerChoices([provider]), [provider]);
+});
+test("Gemini providers are selectable in desktop Agent configuration", () => {
+  const gemini: AgentProvider = {
+    id: "gemini", name: "Gemini", kind: "gemini", url: null, has_secret: true,
+    models: [{ id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", reasoning_efforts: [] }],
+  };
+  assert.deepEqual(providerChoices([gemini]), [gemini]);
+});
+test("MiniMax providers are selectable in desktop Agent configuration", () => {
+  const minimax: AgentProvider = {
+    id: "minimax", name: "MiniMax", kind: "minimax", url: null, has_secret: true,
+    models: [{ id: "MiniMax-M2.7", name: "MiniMax M2.7", reasoning_efforts: [] }],
+  };
+  assert.deepEqual(providerChoices([minimax]), [minimax]);
 });
 test("development Mock providers remain selectable when the backend advertises them", () => {
   const mock: AgentProvider = {
@@ -51,4 +66,15 @@ test("DeepSeek adapter capabilities reach the conversation reasoning selector", 
   };
   const summary = projectAgent({ ...agent, config: { provider_id: deepseek.id, model: "deepseek-v4-flash", reasoning_effort: "high" } }, [deepseek]);
   assert.deepEqual(summary.supportedReasoningEfforts, ["off", "low", "high", "max"]);
+});
+
+test("Agent settings expose global roles and persist a reserved system prompt", async () => {
+  const [agentsPage, renderer] = await Promise.all([
+    readFile(new URL("../src/agents-page.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(agentsPage, /agent-config-system-prompt/);
+  assert.match(agentsPage, /system_prompt: systemPrompt\.trim\(\) \? systemPrompt : null/);
+  assert.match(renderer, /definition\.kind\.type === "agent_reference"/);
+  assert.match(renderer, /agents\.small_agent/);
 });

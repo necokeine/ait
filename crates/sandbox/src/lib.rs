@@ -90,10 +90,16 @@ impl RunTool for LimitedTools {
         &self,
         request: ait_ports::ToolInvocation,
     ) -> Result<ait_ports::ToolOutcome, DomainError> {
-        let permit=tokio::select!{
-            ()=request.cancellation.cancelled()=>return Err(DomainError::invariant(ErrorCode::RunCancelled,"tool cancelled")),
-            permit=self.slots.acquire()=>permit,
-        }.map_err(|_|DomainError::invariant(ErrorCode::RunCancelled,"tool executor closed"))?;
+        let permit = tokio::select! {
+            () = request.cancellation.cancelled() => {
+                return Err(DomainError::invariant(
+                    ErrorCode::RunCancelled,
+                    "tool cancelled",
+                ));
+            }
+            permit = self.slots.acquire() => permit,
+        }
+        .map_err(|_| DomainError::invariant(ErrorCode::RunCancelled, "tool executor closed"))?;
         let result = self.inner.execute(request).await?;
         drop(permit);
         if serde_json::to_vec(&result.output).map_or(true, |b| b.len() > self.output_bytes) {
@@ -141,6 +147,21 @@ impl RunToolFactory for SandboxToolFactory {
         // HostToolFactory uses capability-relative, no-symlink handles and
         // an OS-sandboxed shell; full_access explicitly removes OS restrictions.
         self.create_bounded(root, profile, 65_536, 4)
+    }
+    fn extend_agent_tools(
+        &self,
+        primary: Arc<dyn RunTool>,
+        child_agent: Arc<dyn ait_ports::RunAgent>,
+        interactions: Arc<dyn ait_ports::RunToolInteraction>,
+    ) -> Arc<dyn RunTool> {
+        Arc::new(ait_ports::CompositeRunTool::new(
+            primary.clone(),
+            Arc::new(ait_tools::agent::AgentTools::new(
+                child_agent,
+                primary,
+                interactions,
+            )),
+        ))
     }
 }
 

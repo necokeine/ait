@@ -20,7 +20,7 @@
 | [WF-09](09-errors-and-scripting.md) | 在脚本中判断命令结果并处理输入错误 | `wf09_cli_diagnostics_do_not_mutate_workspace` |
 | [WF-10](10-create-project-with-codex.md) | 空目录启动 daemon、接入项目、真实 Codex 生成 Rust Hello World 并提交 | `project_creation.rs::wf10_create_project_with_real_codex_and_commit`（手动启用） |
 | [WF-11](11-deepseek-python-hello-world.md) | 从 .env 配置 DeepSeek 默认 Agent，生成并独立验证单文件 Python Hello World | `deepseek_workflow.rs::wf11_real_deepseek_python_hello_world`（手动启用） |
-| [WF-13](13-api-provider-tool-loop.md) | OpenAI/DeepSeek 工具创建、读取与搜索文件，验证 Git/Message/Run 和重启查询 | `ait-application::api_tool_loop`（默认离线执行） |
+| [WF-13](13-api-provider-tool-loop.md) | API Provider 工具创建、读取与搜索文件，验证 Git/Message/Run 和重启查询 | `ait-application::api_tool_loop` 与 worker 子进程 fixture（默认离线执行） |
 
 ```bash
 cargo test -p ait-cli --test workflows
@@ -94,7 +94,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | `message` | `list`（要求 `--project-id`） |
 | `run` | `list`、`get`、`cancel`、`approval approve/deny/cancel` |
 | `cron` | `list`、`create`、`enable`、`disable`、`trigger` |
-| `settings` | `get`、`set`、`reset` |
+| `config` | `get`、`set`、`reset` |
 | `event` | `list --after <cursor>`（durable SSE 回放） |
 
 事件只通过 `event list` 读取。保留 `export`、`import` 顶层快捷入口，行为分别等同于 `project export`、`project import`。

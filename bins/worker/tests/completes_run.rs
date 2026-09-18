@@ -459,14 +459,29 @@ if mode=='pollution':
 if mode=='exit':sys.exit(7)
 if mode=='handshake':time.sleep(10)
 def send(sequence,lease,payload,major=1,minor=0):
-    data=json.dumps(dict(protocol_major=major,protocol_minor=minor,sequence=sequence,lease=lease,payload=payload)).encode()
+    data=json.dumps(dict(
+        protocol_major=major,
+        protocol_minor=minor,
+        sequence=sequence,
+        lease=lease,
+        payload=payload,
+    )).encode()
     sys.stdout.buffer.write(struct.pack('>I',len(data))+data);sys.stdout.buffer.flush()
 def read():
     length=struct.unpack('>I',sys.stdin.buffer.read(4))[0]
     return json.loads(sys.stdin.buffer.read(length))
 major=2 if mode=='version' else 1
-capabilities=['run-store-v1','commit-ack-v1','lease-v1','tool-grants-v1']
-send(1,None,dict(type='hello',protocol_major=major,protocol_minor=0,minimum_protocol_minor=0,capabilities=capabilities,required_capabilities=['unknown'] if mode=='capability' else capabilities,max_frame_bytes=1048576,pid=os.getpid()),major=major)
+capabilities=['run-store-v1','commit-ack-v1','lease-v1','tool-grants-v1','tool-interactions-v1']
+send(1,None,dict(
+    type='hello',
+    protocol_major=major,
+    protocol_minor=0,
+    minimum_protocol_minor=0,
+    capabilities=capabilities,
+    required_capabilities=['unknown'] if mode=='capability' else capabilities,
+    max_frame_bytes=1048576,
+    pid=os.getpid(),
+),major=major)
 read();bootstrap=read()
 lease=bootstrap['lease']
 send(2,lease,dict(type='ready',pid=os.getpid()))

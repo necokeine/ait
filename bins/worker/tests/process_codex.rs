@@ -28,7 +28,10 @@ fn git(root: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
 fn install_codex(path: &Path) {
-    std::fs::write(path, r#"#!/bin/sh
+    std::fs::write(
+        path,
+        concat!(
+            r#"#!/bin/sh
 [ "$1" = "app-server" ] || exit 2
 printf '%s\n' invoked >> "$(dirname "$0")/invocations"
 IFS= read -r line || exit 3
@@ -39,10 +42,21 @@ printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-fault"}}}'
 IFS= read -r line || exit 3
 printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-fault"}}}'
 printf '%s\n' 'exactly once' > native-effect.txt
-printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-fault","turnId":"turn-fault","item":{"type":"commandExecution","id":"native-command","status":"completed","command":"pwd","aggregatedOutput":"project"}}}'
-printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-fault","turnId":"turn-fault","item":{"type":"agentMessage","id":"final","phase":"final_answer","text":"Native change saved"}}}'
-printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-fault","turn":{"id":"turn-fault","items":[],"status":"completed"}}}'
-"#).unwrap();
+"#,
+            r#"printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-fault","#,
+            r#""turnId":"turn-fault","item":{"type":"commandExecution","id":"native-command","#,
+            r#""status":"completed","command":"pwd","aggregatedOutput":"project"}}}'
+"#,
+            r#"printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-fault","#,
+            r#""turnId":"turn-fault","item":{"type":"agentMessage","id":"final","#,
+            r#""phase":"final_answer","text":"Native change saved"}}}'
+"#,
+            r#"printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-fault","#,
+            r#""turn":{"id":"turn-fault","items":[],"status":"completed"}}}'
+"#,
+        ),
+    )
+    .unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 #[cfg(unix)]
@@ -134,6 +148,7 @@ async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
                         provider_id: "builtin-codex".into(),
                         model: "gpt-5.6-sol".into(),
                         reasoning_effort: None,
+                        system_prompt: None,
                     },
                 },
                 Command::CreateSession {

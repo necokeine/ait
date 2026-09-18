@@ -34,6 +34,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
+const API_PROVIDERS: [AgentMode; 4] = [
+    AgentMode::OpenAI,
+    AgentMode::DeepSeek,
+    AgentMode::Gemini,
+    AgentMode::MiniMax,
+];
+
 #[derive(Debug)]
 struct ReadOnlyViolatingAdapter;
 
@@ -78,6 +85,8 @@ fn api_provider(kind: AgentMode) -> AgentProvider {
     let id = match kind {
         AgentMode::OpenAI => "api-openai",
         AgentMode::DeepSeek => "api-deepseek",
+        AgentMode::Gemini => "api-gemini",
+        AgentMode::MiniMax => "api-minimax",
         _ => panic!("expected API provider"),
     };
     AgentProvider {
@@ -110,6 +119,7 @@ async fn setup_api_provider(service: &LocalControlService, kind: AgentMode) -> t
             provider_id,
             model: "chat".into(),
             reasoning_effort: None,
+            system_prompt: None,
         },
     )
     .await
@@ -170,7 +180,7 @@ impl ApiSessionBranch {
 
 #[tokio::test]
 async fn api_provider_branch_permission_settings_are_snapshotted_into_each_run() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         for branch in [
             ApiSessionBranch::Fork,
             ApiSessionBranch::DeriveReuse,
@@ -236,7 +246,7 @@ async fn api_provider_branch_permission_settings_are_snapshotted_into_each_run()
 
 #[tokio::test]
 async fn api_provider_branch_invalid_permissions_have_no_side_effects() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         for branch in [
             ApiSessionBranch::Fork,
             ApiSessionBranch::DeriveReuse,
@@ -293,7 +303,7 @@ async fn api_provider_branch_invalid_permissions_have_no_side_effects() {
 
 #[tokio::test]
 async fn api_unsupported_approval_modes_fail_before_run_or_message_creation() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         for approval in ["untrusted_only", "always"] {
             let store = Arc::new(SqliteControlStore::in_memory().unwrap());
             let gateway = Arc::new(Gateway::default());
@@ -364,7 +374,7 @@ async fn save_rejected_sandbox(
 
 #[tokio::test]
 async fn api_provider_branch_rechecks_permissions_after_a_commit_conflict() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         for branch in [
             ApiSessionBranch::Fork,
             ApiSessionBranch::DeriveReuse,
@@ -426,7 +436,7 @@ async fn api_provider_branch_rechecks_permissions_after_a_commit_conflict() {
 
 #[tokio::test]
 async fn api_provider_permission_settings_are_snapshotted_into_each_run() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         for (setting, expected) in [
             ("read_only", SandboxAccess::ReadOnly),
             ("strict", SandboxAccess::ReadOnly),
@@ -475,7 +485,7 @@ async fn api_provider_permission_settings_are_snapshotted_into_each_run() {
 
 #[tokio::test]
 async fn api_provider_permission_ceiling_fails_before_message_or_remote_call() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());
         let service = LocalControlService::new(
@@ -502,7 +512,7 @@ async fn api_provider_permission_ceiling_fails_before_message_or_remote_call() {
 
 #[tokio::test]
 async fn api_provider_invalid_permission_setting_fails_before_message_or_remote_call() {
-    for kind in [AgentMode::OpenAI, AgentMode::DeepSeek] {
+    for kind in API_PROVIDERS {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());
         let service = LocalControlService::new(
@@ -768,7 +778,14 @@ async fn invalid_permission_profiles_never_echo_input_in_errors() {
     for permissions in [
         serde_json::json!({"network": {"enabled": "fixture-secret"}}),
         serde_json::json!({"fixture-secret": true}),
-        serde_json::json!({"fileSystem": {"entries": [{"path": {"type": "path", "path": "/workspace"}, "access": "fixture-secret"}]}}),
+        serde_json::json!({
+            "fileSystem": {
+                "entries": [{
+                    "path": {"type": "path", "path": "/workspace"},
+                    "access": "fixture-secret",
+                }],
+            },
+        }),
     ] {
         let failure = service
             .decide(WorkspaceApprovalRequest {

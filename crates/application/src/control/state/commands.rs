@@ -180,14 +180,53 @@ impl CommandTransaction {
                 };
                 let project =
                     crate::control::project::require_project_view(&tx.original, project_id)?;
+                let agent_id = crate::control::settings::resolve_project_agent_id(
+                    &tx.original,
+                    project_id,
+                    agent_id,
+                )?;
                 crate::control::project::worktrees::prepare_new_session_worktree(
                     workspace,
                     lease,
                     &tx.original,
                     id,
                     project_id,
-                    agent_id,
+                    &agent_id,
                     at_message_id.as_deref().unwrap_or(&project.root_message_id),
+                    created,
+                )
+                .await
+            }
+            Self::CronTrigger(tx) => {
+                let Command::TriggerCron {
+                    cron_id,
+                    scheduled_at,
+                } = command
+                else {
+                    unreachable!("Cron trigger")
+                };
+                if tx.original.runs.iter().any(|run| {
+                    run.cron_id.as_deref() == Some(cron_id.as_str())
+                        && run.scheduled_at == Some(*scheduled_at)
+                }) {
+                    return Ok(());
+                }
+                let cron = tx
+                    .original
+                    .crons
+                    .iter()
+                    .find(|cron| cron.id == *cron_id && cron.enabled)
+                    .ok_or_else(|| {
+                        error(ErrorCode::InvalidCron, "enabled cron not found", false)
+                    })?;
+                crate::control::project::worktrees::prepare_new_session_worktree(
+                    workspace,
+                    lease,
+                    &tx.original,
+                    &crate::control::cron::cron_session_id(cron_id, *scheduled_at),
+                    &cron.project_id,
+                    &cron.agent_id,
+                    &cron.base_message_id,
                     created,
                 )
                 .await
@@ -214,15 +253,19 @@ impl CommandTransaction {
     }
     /// Record references selecting filesystem work must remain stable on CAS retry.
     /// Project Git identity is checked separately through `PreparedProject::verify`.
-    pub(in crate::control) fn preparation_key(&self) -> PreparationKey {
+    pub(in crate::control) fn preparation_key(
+        &self,
+        command: &Command,
+    ) -> Result<PreparationKey, ApiError> {
         match self {
-            Self::NewSession(tx) => session_preparation_key(&tx.original),
-            Self::Conversation(tx) => session_preparation_key(&tx.original),
-            Self::CronTrigger(tx) => PreparationKey::Cron {
+            Self::NewSession(tx) => session_preparation_key(&tx.original, command),
+            Self::Conversation(tx) => session_preparation_key(&tx.original, command),
+            Self::CronTrigger(tx) => Ok(PreparationKey::Cron {
                 projects: tx.original.projects.clone(),
                 crons: tx.original.crons.clone(),
-            },
-            _ => PreparationKey::None,
+                messages: message_baselines(&tx.original.messages),
+            }),
+            _ => Ok(PreparationKey::None),
         }
     }
     pub(in crate::control) fn read(self, command: Command) -> Result<CommandResult, ApiError> {
@@ -545,7 +588,7 @@ impl CommandTransaction {
                     name,
                     project_id,
                     base_message_id,
-                    agent_id,
+                    &agent_id,
                     schedule,
                     timezone,
                 ))
@@ -611,10 +654,12 @@ pub(in crate::control) enum PreparationKey {
         projects: Vec<ProjectState>,
         sessions: Vec<SessionState>,
         messages: Vec<MessageBaseline>,
+        resolved_agent_id: Option<String>,
     },
     Cron {
         projects: Vec<ProjectState>,
         crons: Vec<CronState>,
+        messages: Vec<MessageBaseline>,
     },
 }
 #[derive(PartialEq)]
@@ -629,25 +674,51 @@ fn session_preparation_key(
          impl crate::control::state::HasProjects
          + crate::control::state::HasSessions
          + crate::control::state::HasMessages
+         + crate::control::state::HasSettings
      ),
-) -> PreparationKey {
-    PreparationKey::Session {
+    command: &Command,
+) -> Result<PreparationKey, ApiError> {
+    let resolved_agent_id = match command {
+        Command::CreateSession {
+            project_id,
+            agent_id,
+            ..
+        }
+        | Command::ForkSession {
+            project_id,
+            agent_id,
+            ..
+        }
+        | Command::DeriveSession {
+            project_id,
+            agent_id,
+            ..
+        } => Some(crate::control::settings::resolve_project_agent_id(
+            state, project_id, agent_id,
+        )?),
+        _ => None,
+    };
+    Ok(PreparationKey::Session {
         projects: state.projects().clone(),
         sessions: state.sessions().clone(),
-        messages: state
-            .messages()
-            .iter()
-            .map(|m| MessageBaseline {
-                id: m.id.clone(),
-                parent: m.parent_message_id.clone(),
-                git_commit: m.git_commit.clone(),
-                workspace_commit: m
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.pointer("/codex/commit_id"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned),
-            })
-            .collect(),
-    }
+        messages: message_baselines(state.messages()),
+        resolved_agent_id,
+    })
+}
+
+fn message_baselines(messages: &[crate::control::model::MessageState]) -> Vec<MessageBaseline> {
+    messages
+        .iter()
+        .map(|message| MessageBaseline {
+            id: message.id.clone(),
+            parent: message.parent_message_id.clone(),
+            git_commit: message.git_commit.clone(),
+            workspace_commit: message
+                .data
+                .as_ref()
+                .and_then(|data| data.pointer("/codex/commit_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        })
+        .collect()
 }

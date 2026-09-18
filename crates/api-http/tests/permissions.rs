@@ -41,7 +41,12 @@ impl AgentAdapter for Native {
         self.0.lock().unwrap().push(request.sandbox);
         Ok(Box::pin(futures_util::stream::iter([
             Ok(AgentEvent::ItemCompleted {
-                item: json!({"type":"agentMessage","id":"answer","phase":"final_answer","text":"Read the project."}),
+                item: json!({
+                    "type": "agentMessage",
+                    "id": "answer",
+                    "phase": "final_answer",
+                    "text": "Read the project.",
+                }),
             }),
             Ok(AgentEvent::Completed {
                 turn_id: "turn".into(),
@@ -139,7 +144,18 @@ async fn fixture(kind: &str, max_sandbox: SandboxAccess) -> Fixture {
     let config = if kind == "codex" {
         json!({"provider_id":"builtin-codex","model":"gpt-5.6-sol"})
     } else {
-        ok(&app, "/v1/agent-provider/save", Some(json!({"provider":{"id":"api","name":"API","kind":kind,"models":[{"id":"chat","name":"Chat","reasoning_efforts":[]}]},"secret":"fixture-secret"}))).await;
+        ok(
+            &app,
+            "/v1/agent-provider/save",
+            Some(json!({
+                "provider": {
+                    "id": "api", "name": "API", "kind": kind,
+                    "models": [{"id": "chat", "name": "Chat", "reasoning_efforts": []}],
+                },
+                "secret": "fixture-secret",
+            })),
+        )
+        .await;
         json!({"provider_id":"api","model":"chat"})
     };
     ok(
@@ -154,7 +170,16 @@ async fn fixture(kind: &str, max_sandbox: SandboxAccess) -> Fixture {
         Some(json!({"id":"s","project_id":"p","agent_id":"a"})),
     )
     .await;
-    ok(&app, "/v1/cron/create", Some(json!({"id":"cron","name":"Cron","project_id":"p","base_message_id":registered["root_message_id"],"agent_id":"a","schedule":"0 * * * * *","timezone":"UTC"}))).await;
+    ok(
+        &app,
+        "/v1/cron/create",
+        Some(json!({
+            "id": "cron", "name": "Cron", "project_id": "p",
+            "base_message_id": registered["root_message_id"], "agent_id": "a",
+            "schedule": "0 * * * * *", "timezone": "UTC",
+        })),
+    )
+    .await;
     Fixture {
         app,
         native,
@@ -176,7 +201,7 @@ async fn settings(app: &Router, sandbox: &str) -> Value {
 
 #[tokio::test]
 async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() {
-    for kind in ["codex", "openai", "deepseek"] {
+    for kind in ["codex", "openai", "deepseek", "minimax"] {
         for (setting, snapshot, wire) in [
             (None, "workspace_write", SandboxMode::WorkspaceWrite),
             (Some("read_only"), "read_only", SandboxMode::ReadOnly),
@@ -218,7 +243,7 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
             .await;
             assert_eq!(cron["status"], "completed", "{cron}");
             assert_eq!(cron["permission_profile"], run["permission_profile"]);
-            assert!(cron["session_id"].is_null());
+            assert!(cron["session_id"].is_string());
             if kind == "codex" {
                 assert_eq!(*fixture.native.0.lock().unwrap(), vec![wire, wire]);
                 assert_eq!(fixture.text.0.load(Ordering::Relaxed), 0);
@@ -251,7 +276,7 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
 
 #[tokio::test]
 async fn http_unknown_settings_and_excessive_run_permissions_have_no_side_effects() {
-    for kind in ["codex", "openai", "deepseek"] {
+    for kind in ["codex", "openai", "deepseek", "minimax"] {
         let fixture = fixture(kind, SandboxAccess::ReadOnly).await;
         let before = ok(&fixture.app, "/v1/message/list?project_id=p", None).await;
         for invalid in ["unknown", "danger-full-access", "fixture-secret"] {

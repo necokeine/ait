@@ -1,11 +1,10 @@
 //! Scheduler scan-planning baseline.
-#![allow(missing_docs)]
 
 use std::hint::black_box;
 
 use ait_domain::TimestampMs;
 use ait_scheduler::next_occurrence;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_main};
 
 fn scheduler_scan(c: &mut Criterion) {
     let after = TimestampMs(1_788_480_000_000);
@@ -18,5 +17,9 @@ fn scheduler_scan(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, scheduler_scan);
+/// Runs the scheduler-scanning benchmark group.
+pub fn benches() {
+    let mut criterion = Criterion::default().configure_from_args();
+    scheduler_scan(&mut criterion);
+}
 criterion_main!(benches);

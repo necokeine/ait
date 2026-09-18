@@ -25,6 +25,10 @@ const api: AitDesktopApi = {
   agents: () => invoke("agent.catalog"),
   project: (projectId) => invoke("project.view", { projectId }),
   projectSessions: (projectId) => invoke("project.sessions", { projectId }),
+  crons: () => invoke("cron.list"),
+  createCron: (input) => invoke("cron.create", input),
+  setCronEnabled: (cronId, enabled) => invoke("cron.set-enabled", { cronId, enabled }),
+  triggerCron: (cronId, scheduledAt) => invoke("cron.trigger", { cronId, scheduledAt }),
   updateProject: (input) => invoke("project.update", input),
   saveProvider: (input) => invoke("provider.save", input),
   discoverProviderModels: (input) => invoke("provider.discover-models", input),
@@ -46,6 +50,7 @@ const api: AitDesktopApi = {
   sendMessage: (input) => invoke("session.send-message", input),
   resolveApproval: (input) => invoke("run.resolve-approval", input),
   resolveToolApproval: (input) => invoke("run.resolve-tool-approval", input),
+  resolveToolInteraction: (input) => invoke("run.resolve-tool-interaction", input),
   subscribeRunEvents: (listener) => {
     runEventListeners.add(listener);
     if (!runEventsReady) {

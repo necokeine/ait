@@ -9,7 +9,7 @@ use ait_domain::{
 use ait_ports::{
     AgentInvocation, ApprovalDecision, ApprovalRequest, CompletionResult, RunAgent, RunApproval,
     RunClock, RunIdGenerator, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome,
-    ToolRecovery,
+    ToolRecovery, ToolUsageRecorder,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -581,6 +581,7 @@ impl RunCoordinator {
         Ok(ToolLoop::Continue(run))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_parallel_tools(
         &self,
         mut run: Run,
@@ -621,25 +622,36 @@ impl RunCoordinator {
         }
         // Every intent is durable before any future is polled. Join preserves
         // proposal order even if the executors finish in the opposite order.
-        let results = futures_util::future::join_all(executions.iter().map(|e| {
-            self.controlled_tool(
-                self.tools.execute(ToolInvocation {
-                    run_id: run.id.clone(),
-                    call_id: e.call_id.clone(),
-                    execution_id: e.id.clone(),
-                    tool_name: e.tool_name.clone(),
-                    arguments: e.arguments.clone(),
-                    cancellation: cancellation.clone(),
-                }),
-                &run,
-                &cancellation,
-            )
-        }))
+        let nested_usages = executions
+            .iter()
+            .map(|_| ToolUsageRecorder::default())
+            .collect::<Vec<_>>();
+        let results = futures_util::future::join_all(executions.iter().zip(&nested_usages).map(
+            |(e, usage)| {
+                self.controlled_tool(
+                    self.tools.execute(ToolInvocation {
+                        run_id: run.id.clone(),
+                        call_id: e.call_id.clone(),
+                        execution_id: e.id.clone(),
+                        tool_name: e.tool_name.clone(),
+                        arguments: e.arguments.clone(),
+                        usage: usage.clone(),
+                        cancellation: cancellation.clone(),
+                    }),
+                    &run,
+                    &cancellation,
+                )
+            },
+        ))
         .await;
         let mut timed_out = false;
-        for (mut execution, result) in executions.into_iter().zip(results) {
+        for ((mut execution, result), nested_usage) in
+            executions.into_iter().zip(results).zip(nested_usages)
+        {
+            add_usage(&mut run.usage, &nested_usage.snapshot());
             match result {
                 Controlled::Returned(Ok(outcome)) => {
+                    add_usage(&mut run.usage, &outcome.usage);
                     execution.status = ToolExecutionStatus::Succeeded;
                     execution.result = Some(outcome.output);
                 }
@@ -849,6 +861,7 @@ impl RunCoordinator {
                 .store
                 .save_tool_execution(run, execution.clone())
                 .await?;
+            let nested_usage = ToolUsageRecorder::default();
             let result = self
                 .controlled_tool(
                     async {
@@ -858,6 +871,7 @@ impl RunCoordinator {
                             execution_id: execution.id.clone(),
                             tool_name: tool_use.tool_name.clone(),
                             arguments: execution.arguments.clone(),
+                            usage: nested_usage.clone(),
                             cancellation: cancellation.clone(),
                         };
                         if let Some(grant) = operation_grant {
@@ -876,8 +890,10 @@ impl RunCoordinator {
                     &cancellation,
                 )
                 .await;
+            add_usage(&mut run.usage, &nested_usage.snapshot());
             let forced_stop = match result {
-                Controlled::Returned(Ok(ToolOutcome { output })) => {
+                Controlled::Returned(Ok(ToolOutcome { output, usage })) => {
+                    add_usage(&mut run.usage, &usage);
                     execution.status = ToolExecutionStatus::Succeeded;
                     execution.result = Some(output);
                     None
@@ -1148,9 +1164,14 @@ fn pending_tool_assistant<'a>(path: &'a [ProjectedMessage], run_id: &RunId) -> O
         .collect();
     path.iter().rev().find_map(|projected| match projected {
         ProjectedMessage::Visible(message)
-            if message.role == MessageRole::Assistant && message.run_id.as_ref() == Some(run_id)
+            if message.role == MessageRole::Assistant
+                && message.run_id.as_ref() == Some(run_id)
                 && message.sub_messages.iter().any(|part| {
-                    matches!(part, SubMessage::ToolUse(tool_use) if !resolved.contains(tool_use.call_id.as_str()))
+                    matches!(
+                        part,
+                        SubMessage::ToolUse(tool_use)
+                            if !resolved.contains(tool_use.call_id.as_str())
+                    )
                 }) =>
         {
             Some(message)

@@ -66,6 +66,7 @@ fn call(name: &str, args: Value) -> ToolInvocation {
         execution_id: ToolExecutionId::new("execution"),
         tool_name: name.into(),
         arguments: args,
+        usage: Default::default(),
         cancellation: CancellationToken::new(),
     }
 }
@@ -109,7 +110,16 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
                     .is_err()
             );
         }
-        let explicit = tools.execute(call("write",json!({"file_path":"explicit","content":"ok","sandbox_permissions":"danger-full-access"}))).await;
+        let explicit = tools
+            .execute(call(
+                "write",
+                json!({
+                    "file_path": "explicit",
+                    "content": "ok",
+                    "sandbox_permissions": "danger-full-access",
+                }),
+            ))
+            .await;
         assert_eq!(explicit.is_ok(), mode == SandboxAccess::FullAccess);
         assert!(
             tools
@@ -138,7 +148,12 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
             tools
                 .execute(call(
                     "edit",
-                    json!({"file_path":"expansion","old_string":"x","new_string":"y".repeat(1024),"replace_all":true})
+                    json!({
+                        "file_path": "expansion",
+                        "old_string": "x",
+                        "new_string": "y".repeat(1024),
+                        "replace_all": true,
+                    })
                 ))
                 .await
                 .is_err()
@@ -182,6 +197,67 @@ async fn fixed_sandbox_blocks_writes_escape_symlinks_and_preserves_atomic_edits(
         );
     }
 }
+
+#[tokio::test]
+async fn aligned_utility_and_web_tools_are_real_and_bounded() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(".agents/skills/review")).unwrap();
+    std::fs::write(
+        root.path().join(".agents/skills/review/SKILL.md"),
+        "Review carefully.",
+    )
+    .unwrap();
+    let tools = HostToolFactory
+        .create(
+            &root.path().canonicalize().unwrap(),
+            RunPermissionProfile::default(),
+        )
+        .unwrap();
+    let names = tools.executable_tools();
+    for name in ["skill", "todowrite", "webfetch", "websearch"] {
+        assert!(names.contains(&name.to_owned()), "missing {name}");
+    }
+    for legacy in [
+        "web_fetch",
+        "web_search",
+        "ask_user_question",
+        "todo_write",
+        "subagent",
+        "subagent_fork",
+        "exit_plan_mode",
+    ] {
+        assert!(
+            !names.contains(&legacy.to_owned()),
+            "advertised legacy name {legacy}"
+        );
+    }
+
+    let skill = tools
+        .execute(call("skill", json!({"name":"review"})))
+        .await
+        .unwrap();
+    assert_eq!(skill.output["content"], "Review carefully.");
+    assert_eq!(skill.output["path"], ".agents/skills/review/SKILL.md");
+    let todos = json!([
+        {"content":"Implement tools","status":"in_progress"},
+        {"content":"Verify tools","status":"pending"}
+    ]);
+    let updated = tools
+        .execute(call("todowrite", json!({"todos":todos})))
+        .await
+        .unwrap();
+    assert_eq!(updated.output["todos"], todos);
+    assert!(
+        tools
+            .execute(call(
+                "webfetch",
+                json!({"url":"http://169.254.169.254/latest/meta-data"})
+            ))
+            .await
+            .is_err(),
+        "webfetch must reject link-local metadata endpoints before connecting"
+    );
+}
 #[cfg(unix)]
 #[tokio::test]
 async fn shell_is_controlled_cancellable_and_bounded() {
@@ -203,7 +279,16 @@ async fn shell_is_controlled_cancellable_and_bounded() {
         .await
         .unwrap();
     assert_eq!(good.output["stdout"], "hello");
-    let inspect = tools.execute(call("bash", json!({"command":"pwd && ls && find . -type f | wc -l","description":"Inspect repository"}))).await.unwrap();
+    let inspect = tools
+        .execute(call(
+            "bash",
+            json!({
+                "command": "pwd && ls && find . -type f | wc -l",
+                "description": "Inspect repository",
+            }),
+        ))
+        .await
+        .unwrap();
     assert_eq!(inspect.output["exit_status"], 0, "{inspect:?}");
     let denied = tools
         .execute(call(

@@ -102,6 +102,7 @@ test("API tool approval GUI: both providers, Session and Cron, approve and deny,
           const session = await api("/v1/session/create", { id, project_id: id, agent_id: id });
           let cronResult;
           let cronPromise;
+          let cronSession;
           let run;
           if (sessionBound) {
             run = await api("/v1/session/submit-message", { session_id: id, text: "Create a synthetic file with approval." });
@@ -109,7 +110,8 @@ test("API tool approval GUI: both providers, Session and Cron, approve and deny,
             await api("/v1/cron/create", { id, name: id, project_id: id, base_message_id: session.current_message_id, agent_id: id, schedule: "0 0 0 1 1 *", timezone: "UTC" });
             cronPromise = api("/v1/cron/trigger", { cron_id: id, scheduled_at: Date.now() }).then((value) => { cronResult = value; });
             run = await eventually(async () => (await api(`/v1/run/list?project_id=${id}`))[0], "Cron must create a Run");
-            assert.equal(run.session_id, null);
+            assert.equal(typeof run.session_id, "string");
+            cronSession = await eventually(async () => (await api(`/v1/session/list?project_id=${id}`)).find((candidate) => candidate.id === run.session_id), "Cron Session must be visible");
           }
           run = await eventually(async () => {
             const value = await api("/v1/run/get", { run_id: run.id });
@@ -145,7 +147,7 @@ test("API tool approval GUI: both providers, Session and Cron, approve and deny,
             await page.locator(".run-detail-result").filter({ hasText: "Approval fixture finished" }).waitFor();
             await page.locator(".run-detail-status").filter({ hasText: "Completed" }).waitFor();
           }
-          const output = join(sessionBound ? session.workdir : workdir, "approved.txt");
+          const output = join(sessionBound ? session.workdir : cronSession.workdir, "approved.txt");
           if (action === "approve") assert.equal(await readFile(output, "utf8"), "synthetic approved content");
           else await assert.rejects(readFile(output), { code: "ENOENT" });
           assert.equal(calls.get(id), 2);

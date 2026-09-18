@@ -28,7 +28,11 @@ pub(in crate::control) fn migrate_state(mut value: Value) -> Result<Value, ApiEr
                     reasoning_efforts: Vec::new(),
                 });
             }
-            agent["config"] = json!({"provider_id": provider.provider.id, "model": model, "reasoning_effort": null});
+            agent["config"] = json!({
+                "provider_id": provider.provider.id,
+                "model": model,
+                "reasoning_effort": null
+            });
             agent.as_object_mut().expect("Agent object").remove("model");
             agent.as_object_mut().expect("Agent object").remove("mode");
         }

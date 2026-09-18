@@ -1,42 +1,65 @@
 //! Private, versioned daemon/worker protocol. Never a public client API.
-#![allow(missing_docs)]
 
 pub mod model;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Protocol value `PROTOCOL_MAJOR`.
 pub const PROTOCOL_MAJOR: u16 = 1;
-pub const PROTOCOL_MINOR: u16 = 2;
+/// Protocol value `PROTOCOL_MINOR`.
+pub const PROTOCOL_MINOR: u16 = 3;
+/// Protocol value `MINIMUM_PROTOCOL_MINOR`.
 pub const MINIMUM_PROTOCOL_MINOR: u16 = 0;
+/// Protocol value `MAX_FRAME_BYTES`.
 pub const MAX_FRAME_BYTES: u32 = 1_048_576;
+/// Protocol value `REQUIRED_CAPABILITIES`.
 pub const REQUIRED_CAPABILITIES: &[&str] = &[
     "run-store-v1",
     "commit-ack-v1",
     "lease-v1",
     "tool-grants-v1",
+    "tool-interactions-v1",
 ];
+/// Protocol value `SUPPORTED_CAPABILITIES`.
 pub const SUPPORTED_CAPABILITIES: &[&str] = REQUIRED_CAPABILITIES;
 
 /// Errors deliberately carry no peer-controlled diagnostic strings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProtocolError {
+    /// Selects the `InvalidFrame` variant.
     InvalidFrame,
+    /// Selects the `FrameTooLarge` variant.
     FrameTooLarge,
+    /// Selects the `UnexpectedEof` variant.
     UnexpectedEof,
+    /// Selects the `Io` variant.
     Io,
+    /// Selects the `VersionMismatch` variant.
     VersionMismatch,
+    /// Selects the `UnsupportedCapability` variant.
     UnsupportedCapability,
+    /// Selects the `SequenceRollback` variant.
     SequenceRollback,
+    /// Selects the `CorrelationMismatch` variant.
     CorrelationMismatch,
+    /// Selects the `StaleWorkerLease` variant.
     StaleWorkerLease,
+    /// Selects the `WrongRun` variant.
     WrongRun,
+    /// Selects the `InvalidTransition` variant.
     InvalidTransition,
+    /// Selects the `OperationConflict` variant.
     OperationConflict,
+    /// Selects the `HandshakeTimeout` variant.
     HandshakeTimeout,
+    /// Selects the `HeartbeatTimeout` variant.
     HeartbeatTimeout,
+    /// Selects the `WorkerExited` variant.
     WorkerExited,
+    /// Selects the `ResourceLimit` variant.
     ResourceLimit,
+    /// Selects the `Draining` variant.
     Draining,
 }
 impl std::fmt::Display for ProtocolError {
@@ -47,14 +70,20 @@ impl std::fmt::Display for ProtocolError {
 impl std::error::Error for ProtocolError {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Data carried by `Lease`.
 pub struct Lease {
+    /// Run identifier.
     pub run_id: String,
+    /// Worker instance identifier.
     pub worker_instance_id: String,
+    /// Lease epoch value.
     pub lease_epoch: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Data carried by `Hello`.
 pub struct Hello {
+    /// Protocol major value.
     pub protocol_major: u16,
     /// Highest wire minor this worker can emit and consume.
     pub protocol_minor: u16,
@@ -62,12 +91,16 @@ pub struct Hello {
     pub minimum_protocol_minor: u16,
     /// Optional and required capabilities implemented by this worker.
     pub capabilities: Vec<String>,
+    /// Required capabilities value.
     pub required_capabilities: Vec<String>,
+    /// Max frame bytes value.
     pub max_frame_bytes: u32,
+    /// Pid value.
     pub pid: u32,
 }
 impl Hello {
     #[must_use]
+    /// Builds the worker handshake advertised by this binary.
     pub fn current() -> Self {
         Self {
             protocol_major: PROTOCOL_MAJOR,
@@ -143,10 +176,15 @@ impl Hello {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Data carried by `HelloAck`.
 pub struct HelloAck {
+    /// Protocol major value.
     pub protocol_major: u16,
+    /// Protocol minor value.
     pub protocol_minor: u16,
+    /// Max frame bytes value.
     pub max_frame_bytes: u32,
+    /// Capabilities value.
     pub capabilities: Vec<String>,
 }
 impl HelloAck {
@@ -187,17 +225,27 @@ impl HelloAck {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Data carried by `Limits`.
 pub struct Limits {
+    /// Max frame bytes value.
     pub max_frame_bytes: u32,
+    /// Max output bytes value.
     pub max_output_bytes: u32,
+    /// Max tool concurrency value.
     pub max_tool_concurrency: u16,
+    /// Max steps value.
     pub max_steps: u64,
+    /// Max tokens value.
     pub max_tokens: u64,
     /// An enabled monetary ceiling requires verifiable cost before a Provider call.
     pub max_cost_micros: Option<u64>,
+    /// Wall clock ms value.
     pub wall_clock_ms: u64,
+    /// Heartbeat ms value.
     pub heartbeat_ms: u64,
+    /// Heartbeat timeout ms value.
     pub heartbeat_timeout_ms: u64,
+    /// Drain ms value.
     pub drain_ms: u64,
 }
 impl Default for Limits {
@@ -257,297 +305,341 @@ impl std::fmt::Debug for CredentialGrant {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+/// Variants represented by `Executor`.
 pub enum Executor {
+    /// Selects the `Api` variant.
     Api {
+        /// Provider value.
         provider: String,
+        /// Endpoint value.
         endpoint: Option<String>,
+        /// Model value.
         model: String,
+        /// Reasoning effort value.
         reasoning_effort: Option<String>,
+        /// Credential value.
         credential: CredentialGrant,
     },
+    /// Selects the `Scripted` variant.
     Scripted {
+        /// Replies value.
         replies: Vec<Vec<model::SubMessage>>,
     },
+    /// Selects the `Workspace` variant.
     Workspace {
+        /// Invocation value.
         invocation: Box<WorkspaceInvocation>,
     },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Data carried by `WorkspaceInvocation`.
 pub struct WorkspaceInvocation {
+    /// Codex binary value.
     pub codex_binary: String,
+    /// Request identifier.
     pub request_id: String,
+    /// Model value.
     pub model: String,
+    /// Reasoning effort value.
     pub reasoning_effort: Option<String>,
+    /// Project instructions value.
     pub project_instructions: Option<String>,
+    /// Prompt value.
     pub prompt: String,
+    /// Commit subject value.
     pub commit_subject: String,
+    /// Baseline commit value.
     pub baseline_commit: String,
+    /// Baseline index tree value.
     pub baseline_index_tree: String,
+    /// Recovery result value.
     pub recovery_result: Option<model::WorkspaceAgentResponse>,
+    /// Baseline ref value.
     pub baseline_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Data carried by `Bootstrap`.
 pub struct Bootstrap {
+    /// Lease value.
     pub lease: Lease,
+    /// Limits value.
     pub limits: Limits,
+    /// Workdir value.
     pub workdir: String,
+    /// Permission value.
     pub permission: model::RunPermissionProfile,
+    /// Maximum sandbox value.
     pub maximum_sandbox: model::SandboxAccess,
+    /// Executor value.
     pub executor: Executor,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Data carried by `ToolInteractionRequest`.
+pub struct ToolInteractionRequest {
+    /// Run identifier.
+    pub run_id: String,
+    /// Call identifier.
+    pub call_id: String,
+    /// Execution identifier.
+    pub execution_id: String,
+    /// Tool name value.
+    pub tool_name: String,
+    /// Arguments value.
+    pub arguments: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
+/// Variants represented by `StoreRequest`.
 pub enum StoreRequest {
+    /// Selects the `WorkspaceProgress` variant.
     WorkspaceProgress {
+        /// Event value.
         event: Box<model::WorkspaceProgressEvent>,
     },
+    /// Selects the `WorkspaceCheckpoint` variant.
     WorkspaceCheckpoint {
+        /// Result value.
         result: Box<model::WorkspaceAgentResponse>,
     },
+    /// Selects the `WorkspaceIntegration` variant.
     WorkspaceIntegration,
+    /// Selects the `WorkspaceApproval` variant.
     WorkspaceApproval {
+        /// Request value.
         request: Box<model::WorkspaceApprovalRequest>,
+        /// Expire value.
         expire: bool,
     },
+    /// Selects the `WorkspaceFinished` variant.
     WorkspaceFinished {
+        /// Result value.
         result: Box<model::WorkspaceAgentResponse>,
     },
+    /// Selects the `LoadRun` variant.
     LoadRun,
+    /// Selects the `MessagePath` variant.
     MessagePath {
+        /// Head value.
         head: String,
+        /// Offset value.
         offset: u32,
     },
+    /// Selects the `Attempts` variant.
     Attempts {
+        /// Offset value.
         offset: u32,
     },
+    /// Selects the `Tools` variant.
     Tools {
+        /// Assistant value.
         assistant: String,
+        /// Offset value.
         offset: u32,
     },
+    /// Selects the `SaveRun` variant.
     SaveRun {
+        /// Run value.
         run: Box<model::Run>,
     },
+    /// Selects the `SaveAttempt` variant.
     SaveAttempt {
+        /// Run value.
         run: Box<model::Run>,
+        /// Attempt value.
         attempt: model::RunAttempt,
     },
+    /// Selects the `AppendMessage` variant.
     AppendMessage {
+        /// Run value.
         run: Box<model::Run>,
+        /// Message value.
         message: Box<model::Message>,
     },
+    /// Selects the `SaveTool` variant.
     SaveTool {
+        /// Run value.
         run: Box<model::Run>,
+        /// Tool value.
         tool: Box<model::ToolExecution>,
     },
+    /// Selects the `AppendToolResult` variant.
     AppendToolResult {
+        /// Run value.
         run: Box<model::Run>,
+        /// Tool value.
         tool: Box<model::ToolExecution>,
+        /// Message value.
         message: Box<model::Message>,
     },
+    /// Selects the `Complete` variant.
     Complete {
+        /// Run value.
         run: Box<model::Run>,
+        /// Queue version value.
         queue_version: u64,
     },
+    /// Selects the `DrainQueue` variant.
     DrainQueue {
+        /// Run value.
         run: Box<model::Run>,
     },
+    /// Selects the `Approval` variant.
     Approval {
+        /// Execution value.
         execution: Box<model::ToolExecution>,
     },
+    /// Selects the `ConsumeToolGrant` variant.
     ConsumeToolGrant {
+        /// Grant value.
         grant: Box<ait_domain::ToolGrant>,
+    },
+    /// Selects the `ToolInteraction` variant.
+    ToolInteraction {
+        /// Request value.
+        request: Box<ToolInteractionRequest>,
+    },
+    /// Selects the `ToolInteractionRecovery` variant.
+    ToolInteractionRecovery {
+        /// Execution value.
+        execution: Box<model::ToolExecution>,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+/// Variants represented by `StoreResponse`.
 pub enum StoreResponse {
+    /// Selects the `Unit` variant.
     Unit,
+    /// Selects the `WorkspaceApproval` variant.
     WorkspaceApproval {
+        /// Decision value.
         decision: model::WorkspaceApprovalDecision,
     },
+    /// Selects the `Run` variant.
     Run {
+        /// Run value.
         run: Box<model::Run>,
     },
+    /// Selects the `Messages` variant.
     Messages {
+        /// Entries value.
         entries: Vec<model::ProjectedMessage>,
+        /// Next value.
         next: Option<u32>,
     },
+    /// Selects the `Attempts` variant.
     Attempts {
+        /// Entries value.
         entries: Vec<model::RunAttempt>,
+        /// Next value.
         next: Option<u32>,
     },
+    /// Selects the `Tools` variant.
     Tools {
+        /// Entries value.
         entries: Vec<model::ToolExecution>,
+        /// Next value.
         next: Option<u32>,
     },
+    /// Selects the `Completion` variant.
     Completion {
+        /// Run value.
         run: Box<model::Run>,
+        /// Completed value.
         completed: bool,
     },
+    /// Selects the `Approval` variant.
     Approval {
+        /// Decision value.
         decision: String,
     },
+    /// Selects the `ToolGrant` variant.
     ToolGrant {
+        /// Grant value.
         grant: Box<ait_domain::ToolGrant>,
+    },
+    /// Selects the `ToolInteraction` variant.
+    ToolInteraction {
+        /// Output value.
+        output: serde_json::Value,
+    },
+    /// Selects the `ToolRecovery` variant.
+    ToolRecovery {
+        /// Recovery value.
+        recovery: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Output value.
+        output: Option<serde_json::Value>,
     },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+/// Variants represented by `Payload`.
 pub enum Payload {
+    /// Selects the `Hello` variant.
     Hello(Hello),
+    /// Selects the `HelloAck` variant.
     HelloAck(HelloAck),
+    /// Selects the `Bootstrap` variant.
     Bootstrap(Box<Bootstrap>),
+    /// Selects the `Ready` variant.
     Ready {
+        /// Pid value.
         pid: u32,
     },
+    /// Selects the `Request` variant.
     Request {
+        /// Request identifier.
         request_id: u64,
+        /// Operation identifier.
         operation_id: String,
+        /// Request value.
         request: Box<StoreRequest>,
     },
+    /// Selects the `Receipt` variant.
     Receipt {
+        /// Request identifier.
         request_id: u64,
+        /// Operation identifier.
         operation_id: String,
+        /// Response value.
         response: Box<StoreResponse>,
     },
+    /// Selects the `Rejected` variant.
     Rejected {
+        /// Request identifier.
         request_id: u64,
+        /// Code value.
         code: ProtocolError,
     },
+    /// Selects the `Heartbeat` variant.
     Heartbeat,
+    /// Selects the `Cancel` variant.
     Cancel,
+    /// Selects the `ExitReport` variant.
     ExitReport,
 }
 
 /// Every post-bootstrap frame is bound to the exact worker lease.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Envelope {
+    /// Protocol major value.
     pub protocol_major: u16,
+    /// Protocol minor value.
     pub protocol_minor: u16,
+    /// Sequence value.
     pub sequence: u64,
+    /// Lease value.
     pub lease: Option<Lease>,
+    /// Payload value.
     pub payload: Payload,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
-        let value = json!({
-            "protocol_major": 1,
-            "protocol_minor": 3,
-            "sequence": 1,
-            "lease": null,
-            "future_envelope_hint": "optional",
-            "payload": {
-                "type": "hello",
-                "protocol_major": 1,
-                "protocol_minor": 3,
-                "minimum_protocol_minor": 0,
-                "capabilities": [
-                    "run-store-v1",
-                    "commit-ack-v1",
-                    "lease-v1",
-                    "tool-grants-v1",
-                    "future-optional-v1"
-                ],
-                "required_capabilities": ["run-store-v1", "commit-ack-v1", "lease-v1", "tool-grants-v1"],
-                "max_frame_bytes": 2_097_152,
-                "pid": 42,
-                "future_hello_hint": true
-            }
-        });
-        let decoded: Envelope = serde_json::from_value(value).unwrap();
-        let Payload::Hello(hello) = &decoded.payload else {
-            panic!("expected hello")
-        };
-        let selected = hello.negotiate(MAX_FRAME_BYTES).unwrap();
-        assert_eq!(selected.protocol_minor, PROTOCOL_MINOR);
-        assert_eq!(selected.max_frame_bytes, MAX_FRAME_BYTES);
-        assert_eq!(selected.capabilities.len(), REQUIRED_CAPABILITIES.len());
-        let encoded = serde_json::to_value(decoded).unwrap();
-        assert_eq!(encoded["protocol_minor"], 3);
-        assert_eq!(encoded["payload"]["protocol_minor"], 3);
-        assert_eq!(encoded["payload"]["minimum_protocol_minor"], 0);
-        assert_eq!(encoded["payload"]["max_frame_bytes"], 2_097_152);
-    }
-
-    #[test]
-    fn worker_accepts_older_daemon_minor_and_ignores_optional_fields() {
-        let value = json!({
-            "protocol_major": 1,
-            "protocol_minor": 0,
-            "sequence": 1,
-            "lease": null,
-            "future_envelope_hint": "optional",
-            "payload": {
-                "type": "hello_ack",
-                "protocol_major": 1,
-                "protocol_minor": 0,
-                "max_frame_bytes": 262_144,
-                "capabilities": ["run-store-v1", "commit-ack-v1", "lease-v1", "tool-grants-v1"],
-                "future_ack_hint": true
-            }
-        });
-        let decoded: Envelope = serde_json::from_value(value).unwrap();
-        let Payload::HelloAck(ack) = &decoded.payload else {
-            panic!("expected hello_ack")
-        };
-        ack.validate(&Hello::current()).unwrap();
-        let encoded = serde_json::to_value(decoded).unwrap();
-        assert_eq!(encoded["protocol_minor"], 0);
-        assert_eq!(encoded["payload"]["protocol_minor"], 0);
-        assert_eq!(encoded["payload"]["max_frame_bytes"], 262_144);
-        assert_eq!(
-            encoded["payload"]["capabilities"].as_array().unwrap().len(),
-            REQUIRED_CAPABILITIES.len()
-        );
-    }
-
-    #[test]
-    fn unknown_message_kind_and_required_capability_remain_fatal() {
-        let unknown = json!({
-            "protocol_major": 1,
-            "protocol_minor": 0,
-            "sequence": 1,
-            "lease": null,
-            "payload": {"type": "future_required_message"}
-        });
-        assert!(serde_json::from_value::<Envelope>(unknown).is_err());
-
-        let mut hello = Hello::current();
-        hello
-            .required_capabilities
-            .push("unknown-required-v9".into());
-        assert_eq!(hello.validate(), Err(ProtocolError::UnsupportedCapability));
-
-        let incompatible_minor = Hello {
-            protocol_minor: PROTOCOL_MINOR + 1,
-            minimum_protocol_minor: PROTOCOL_MINOR + 1,
-            ..Hello::current()
-        };
-        assert_eq!(
-            incompatible_minor.negotiate(MAX_FRAME_BYTES),
-            Err(ProtocolError::VersionMismatch)
-        );
-
-        let missing_capability = HelloAck {
-            protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
-            max_frame_bytes: MAX_FRAME_BYTES,
-            capabilities: vec!["run-store-v1".into()],
-        };
-        assert_eq!(
-            missing_capability.validate(&Hello::current()),
-            Err(ProtocolError::UnsupportedCapability)
-        );
-    }
-}
+mod tests;

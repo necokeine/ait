@@ -303,7 +303,12 @@ impl LocalProjectWorkspace {
                 if let Some(duplicate) = lease_duplicate {
                     // A duplicated descriptor shares the open file description,
                     // just like one inherited by a concurrent child at fork.
-                    *duplicate.lock().unwrap() = Some(file.try_clone().unwrap());
+                    *duplicate
+                        .lock()
+                        .expect("test lease duplicate lock must remain available") = Some(
+                        file.try_clone()
+                            .expect("test lease descriptor must be cloneable"),
+                    );
                 }
                 ctx.point("lease_acquired");
                 Ok(Arc::new(LocalLease {

@@ -4,7 +4,9 @@ mod api_tool_faults;
 mod support;
 use ait_agent_adapters::{LLMClient, LLMClientConfig, LLMProvider, provider_turn};
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult, ProviderSecret, default_settings};
+use ait_contracts::{
+    Command, CommandResult, ProviderSecret, ToolInteractionAction, default_settings,
+};
 use ait_domain::{AgentConfiguration, AgentProvider, DomainError, ProviderKind, ProviderModel};
 use ait_ports::{AgentInvocation, AgentProviderGateway, AgentResponse, ProviderMessage};
 use ait_storage_sqlite::SqliteControlStore;
@@ -61,20 +63,69 @@ impl AgentProviderGateway for Gateway {
 fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
     if kind == ProviderKind::OpenAI {
         let output = if calls.is_empty() {
-            vec![
-                json!({"type":"message","id":"msg_final","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"text":"Verified hello.py"}]}),
-            ]
+            vec![json!({
+                "type": "message",
+                "id": "msg_final",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "Verified hello.py",
+                }],
+            })]
         } else {
-            calls.iter().map(|(id,name,args)|json!({"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect()
+            calls
+                .iter()
+                .map(|(id, name, args)| {
+                    json!({
+                        "type": "function_call",
+                        "id": format!("fc_{id}"),
+                        "call_id": id,
+                        "name": name,
+                        "arguments": args.to_string(),
+                        "status": "completed",
+                    })
+                })
+                .collect()
         };
-        json!({"id":"resp_fixture","object":"response","created_at":0,"status":"completed","model":"fixture-model","tools":[],"output":output,"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}})
+        json!({
+            "id": "resp_fixture",
+            "object": "response",
+            "created_at": 0,
+            "status": "completed",
+            "model": "fixture-model",
+            "tools": [],
+            "output": output,
+            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        })
     } else {
         let message = if calls.is_empty() {
-            json!({"role":"assistant","content":"Verified hello.py"})
+            json!({"role": "assistant", "content": "Verified hello.py"})
         } else {
-            json!({"role":"assistant","content":null,"reasoning_content":"Use the host tools.","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
+            json!({
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "Use the host tools.",
+                "tool_calls": calls.iter().map(|(id, name, args)| json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                })).collect::<Vec<_>>(),
+            })
         };
-        json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+        json!({
+            "id": "chatcmpl_fixture",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "fixture-model",
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": if calls.is_empty() { "stop" } else { "tool_calls" },
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        })
     }
 }
 async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
@@ -182,6 +233,7 @@ impl Fixture {
                     provider_id: "api".into(),
                     model: "fixture-model".into(),
                     reasoning_effort: None,
+                    system_prompt: None,
                 },
             },
         )
@@ -331,11 +383,78 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             })
             .collect::<Vec<_>>();
         let expected = if cfg!(unix) {
-            vec!["bash", "edit", "glob", "grep", "read", "write"]
+            vec![
+                "bash",
+                "edit",
+                "glob",
+                "grep",
+                "plan_exit",
+                "question",
+                "read",
+                "skill",
+                "task",
+                "todowrite",
+                "webfetch",
+                "websearch",
+                "write",
+            ]
         } else {
-            vec!["edit", "glob", "grep", "read", "write"]
+            vec![
+                "edit",
+                "glob",
+                "grep",
+                "plan_exit",
+                "question",
+                "read",
+                "skill",
+                "task",
+                "todowrite",
+                "webfetch",
+                "websearch",
+                "write",
+            ]
         };
         assert_eq!(names, expected);
+        let task = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| {
+                if kind == ProviderKind::OpenAI {
+                    tool
+                } else {
+                    &tool["function"]
+                }
+            })
+            .find(|tool| tool["name"] == "task")
+            .unwrap();
+        assert_eq!(
+            task["description"],
+            concat!(
+                "Run one bounded foreground child agent with a complete, self-contained prompt ",
+                "on the current provider and model route. The child does not inherit this ",
+                "conversation, and the call returns its final text inline.",
+            )
+        );
+        let task_properties = task["parameters"]["properties"].as_object().unwrap();
+        assert_eq!(
+            task_properties
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["description", "prompt"]
+        );
+        let final_request = first.to_string();
+        for unsupported in [
+            "list_subagent_models",
+            "run_in_background",
+            "background id",
+            "list_agents",
+            "send_message",
+            "interrupt_agent",
+        ] {
+            assert!(!final_request.contains(unsupported), "{unsupported}");
+        }
         let result_ids = if kind == ProviderKind::OpenAI {
             requests[2]["input"]
                 .as_array()
@@ -375,13 +494,37 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
 #[tokio::test]
 async fn denied_invalid_unknown_failed_and_approval_results_continue_without_side_effects() {
     let kind = ProviderKind::DeepSeek;
-    let f=Fixture::new(kind,vec![response(kind,&[
-        ("bad_path","write",json!({"file_path":"../escape","content":"bad"})),
-        ("bad_args","read",json!({"file_path":10})),
-        ("unknown","web_search",json!({})),
-        ("missing","read",json!({"file_path":"missing"})),
-        ("approval","write",json!({"file_path":"denied","content":"bad","sandbox_permissions":"danger-full-access","justification":"escape"})),
-    ]),response(kind,&[])],"workspace_write").await;
+    let f = Fixture::new(
+        kind,
+        vec![
+            response(
+                kind,
+                &[
+                    (
+                        "bad_path",
+                        "write",
+                        json!({"file_path":"../escape","content":"bad"}),
+                    ),
+                    ("bad_args", "read", json!({"file_path":10})),
+                    ("unknown", "definitely_unknown", json!({})),
+                    ("missing", "read", json!({"file_path":"missing"})),
+                    (
+                        "approval",
+                        "write",
+                        json!({
+                            "file_path": "denied",
+                            "content": "bad",
+                            "sandbox_permissions": "danger-full-access",
+                            "justification": "escape",
+                        }),
+                    ),
+                ],
+            ),
+            response(kind, &[]),
+        ],
+        "workspace_write",
+    )
+    .await;
     let run = f.run().await;
     assert_eq!(run.status, "completed");
     let tools = &run.execution.unwrap().tools;
@@ -393,6 +536,152 @@ async fn denied_invalid_unknown_failed_and_approval_results_continue_without_sid
     );
     assert_eq!(tools[4].status, ait_domain::ToolExecutionStatus::Denied);
     assert!(!f.worktree().join("denied").exists());
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn questions_and_plan_review_wait_for_one_durable_member_response() {
+    let kind = ProviderKind::DeepSeek;
+    let mut f = Fixture::new(
+        kind,
+        vec![
+            response(
+                kind,
+                &[(
+                    "question",
+                    "question",
+                    json!({
+                        "questions": [{
+                            "id": "mode",
+                            "header": "Mode",
+                            "question": "Choose a mode",
+                            "options": [{"label": "Safe"}, {"label": "Fast"}],
+                        }],
+                    }),
+                )],
+            ),
+            response(
+                kind,
+                &[(
+                    "plan",
+                    "plan_exit",
+                    json!({"plan":"# Implement safely\n\nRun the verified change."}),
+                )],
+            ),
+            response(kind, &[]),
+        ],
+        "workspace_write",
+    )
+    .await;
+    f.service = f
+        .service
+        .clone()
+        .with_tool_approval_timeout(std::time::Duration::from_secs(5));
+    let service = Arc::new(f.service.clone());
+    let accepted = service
+        .submit(Command::SendMessage {
+            session_id: "session".into(),
+            text: "Ask and propose a plan.".into(),
+        })
+        .await;
+    assert!(accepted.ok, "{:?}", accepted.error);
+    let CommandResult::Run(initial) = accepted.result.unwrap() else {
+        panic!()
+    };
+
+    let question = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let CommandResult::Run(run) = ok(
+                &service,
+                Command::GetRun {
+                    run_id: initial.id.clone(),
+                },
+            )
+            .await
+            else {
+                panic!()
+            };
+            if let Some(interaction) = run.tool_interactions.iter().find(|interaction| {
+                interaction.tool_name == "question" && interaction.status == "pending"
+            }) {
+                break interaction.id.clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let answered = service
+        .resolve_tool_interaction(
+            &initial.id,
+            &question,
+            ToolInteractionAction::Submit,
+            Some(json!({"mode":"Safe"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answered.tool_interactions[0].status, "answered");
+
+    let plan = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let CommandResult::Run(run) = ok(
+                &service,
+                Command::GetRun {
+                    run_id: initial.id.clone(),
+                },
+            )
+            .await
+            else {
+                panic!()
+            };
+            if let Some(interaction) = run.tool_interactions.iter().find(|interaction| {
+                interaction.tool_name == "plan_exit" && interaction.status == "pending"
+            }) {
+                break interaction.id.clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    service
+        .resolve_tool_interaction(&initial.id, &plan, ToolInteractionAction::Approve, None)
+        .await
+        .unwrap();
+
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let CommandResult::Run(run) = ok(
+                &service,
+                Command::GetRun {
+                    run_id: initial.id.clone(),
+                },
+            )
+            .await
+            else {
+                panic!()
+            };
+            if run.status == "completed" {
+                break run;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(completed.tool_interactions.len(), 2);
+    assert_eq!(
+        completed.tool_interactions[0].response,
+        Some(json!({"answers":{"mode":"Safe"}}))
+    );
+    assert_eq!(
+        completed.tool_interactions[1].response,
+        Some(json!({"approved":true}))
+    );
+    let wire = f.requests.lock().unwrap().to_vec();
+    assert_eq!(wire.len(), 3);
+    assert!(wire[1].to_string().contains("Safe"));
+    assert!(wire[2].to_string().contains("approved"));
     f.finish().await;
 }
 #[tokio::test]
@@ -575,11 +864,39 @@ async fn archive_and_events_omit_tool_payloads_while_queries_retain_them() {
 #[tokio::test]
 async fn api_provider_receives_scoped_count_schema_and_persisted_result_with_selected_permission() {
     for kind in [ProviderKind::DeepSeek, ProviderKind::OpenAI] {
-        let fixture = Fixture::new(kind, vec![
-            response(kind, &[("write", "write", json!({"file_path":"sample.rs","content":"first\nsecond\nthird\n","sandbox_permissions":"workspace-write"}))]),
-            response(kind, &[("count", "grep", json!({"pattern":"^","path":"sample.rs","include":"*.rs","output_mode":"count"}))]),
-            response(kind, &[]),
-        ], "workspace_write").await;
+        let fixture = Fixture::new(
+            kind,
+            vec![
+                response(
+                    kind,
+                    &[(
+                        "write",
+                        "write",
+                        json!({
+                            "file_path": "sample.rs",
+                            "content": "first\nsecond\nthird\n",
+                            "sandbox_permissions": "workspace-write",
+                        }),
+                    )],
+                ),
+                response(
+                    kind,
+                    &[(
+                        "count",
+                        "grep",
+                        json!({
+                            "pattern": "^",
+                            "path": "sample.rs",
+                            "include": "*.rs",
+                            "output_mode": "count",
+                        }),
+                    )],
+                ),
+                response(kind, &[]),
+            ],
+            "workspace_write",
+        )
+        .await;
         let run = fixture.run().await;
         assert_eq!(run.status, "completed");
         assert_eq!(

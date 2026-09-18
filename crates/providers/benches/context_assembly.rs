@@ -1,5 +1,4 @@
 //! Long provider-context validation baseline.
-#![allow(missing_docs)]
 
 use std::{collections::BTreeMap, hint::black_box};
 
@@ -7,7 +6,7 @@ use ait_providers::{
     ContentPart, ProviderCapabilities, ProviderMessage, ProviderParameters, ProviderRequest, Role,
     validate_request,
 };
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_main};
 
 fn context_assembly(c: &mut Criterion) {
     let request = ProviderRequest {
@@ -44,5 +43,9 @@ fn context_assembly(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, context_assembly);
+/// Runs the provider-context validation benchmark group.
+pub fn benches() {
+    let mut criterion = Criterion::default().configure_from_args();
+    context_assembly(&mut criterion);
+}
 criterion_main!(benches);

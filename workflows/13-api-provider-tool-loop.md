@@ -6,10 +6,11 @@
 cargo test -p ait-application --test api_tool_loop
 cargo test -p ait-tools --test host
 cargo test -p ait-runtime --test run_coordinator
+cargo test -p ait-worker --test process_providers subprocess_api_providers_keep_tool_result_order_and_sqlite_receipts -- --exact
 cargo test -p ait-worker --test process_providers permission_change::changed_permission_reaches_worker_and_repository_inspection -- --exact
 ```
 
-HTTP fixture 使用实际 Rig OpenAI Responses / DeepSeek Chat Completions adapter。
+HTTP fixture 使用实际 Rig OpenAI Responses、DeepSeek/MiniMax Chat Completions 与 Gemini GenerateContent adapter。
 首轮提出 `write(hello.py)`，第二轮提出 `read` 与 `grep`，第三轮收到原 call id 的结果后给出最终答复。
 宿主持久化 ToolExecution intent 后执行；测试程序不代写文件。读取与搜索可以并发，结果仍按提案顺序追加。
 
@@ -47,7 +48,7 @@ NEC-272 的现场记录已是 `workspace_write`，但已安装 worker 仍拒绝�
 
 如需核验某个已构建的 worker，可运行以下离线回放。将路径替换为该可信 worker 的绝对路径；
 它使用临时项目、独立 SQLite 和本地 HTTP 模型夹具，不连接正在运行的 daemon，不读取真实 Provider 凭据。
-旧 worker 会在同档位 Shell、写入或大范围搜索断言处失败；当前 worker 应通过 DeepSeek/OpenAI 两组验证。
+旧 worker 会在同档位 Shell、写入或大范围搜索断言处失败；当前主工具循环应通过 OpenAI、DeepSeek、Gemini、MiniMax 四组验证。
 
 ```bash
 AIT_TEST_WORKER_EXECUTABLE=/absolute/path/to/ait-worker cargo test -p ait-worker --test process_providers permission_change::replay_permission_change_with_external_worker -- --ignored --exact

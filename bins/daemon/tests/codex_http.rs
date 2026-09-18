@@ -193,7 +193,12 @@ async fn assert_codex_http_response(gui_launch: bool) {
             &client,
             &base_url,
             "/v1/agent-provider/discover-models",
-            &json!({"provider": {"id": "builtin-codex", "name": "Codex", "kind": "codex", "url": null, "models": []}}),
+            &json!({
+                "provider": {
+                    "id": "builtin-codex", "name": "Codex", "kind": "codex",
+                    "url": null, "models": [],
+                },
+            }),
         )
         .await;
         assert_ok(&models);
@@ -477,6 +482,7 @@ async fn seed_queued_run(database: &Path, project: &Path) -> String {
                 provider_id: "builtin-codex".into(),
                 model: "gpt-5.6-sol".into(),
                 reasoning_effort: Some("high".into()),
+                system_prompt: None,
             },
         },
         ControlCommand::CreateSession {
@@ -589,7 +595,11 @@ async fn register_test_entities(client: &Client, base_url: &str, project: &Path)
             json!({
                 "id": "daemon-codex-agent",
                 "name": "Codex",
-                "config": { "provider_id": "builtin-codex", "model": "gpt-5.6-sol", "reasoning_effort": "high" },
+                "config": {
+                    "provider_id": "builtin-codex",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                },
             }),
         ),
         (
@@ -617,11 +627,13 @@ fn codex_daemon_command(home: &Path) -> Command {
     command
 }
 
+#[allow(clippy::too_many_lines)] // Keeps the complete protocol fixture readable in one script.
 fn install_fake_codex(path: &Path, delay: u32) {
     fs::write(
         path,
         format!(
-            r#"#!/bin/sh
+            concat!(
+                r#"#!/bin/sh
 [ "$1" = "app-server" ] || exit 2
 read_line() {{
   IFS= read -r line || exit 3
@@ -633,7 +645,12 @@ read_line
 read_line
 case "$line" in
   *'"method":"model/list"'*)
-    printf '%s\n' '{{"id":1,"result":{{"data":[{{"model":"gpt-5.6-sol","displayName":"Codex Test","supportedReasoningEfforts":[{{"reasoningEffort":"high"}}]}}],"nextCursor":null}}}}'
+"#,
+                r#"    printf '%s\n' '{{"id":1,"result":{{"data":[{{"model":"gpt-5.6-sol","#,
+                r#""displayName":"Codex Test","supportedReasoningEfforts":[{{"#,
+                r#""reasoningEffort":"high"}}]}}],"nextCursor":null}}}}'
+"#,
+                r#"
     exit 0 ;;
   *'"model":"gpt-5.6-sol"'*) ;;
   *) printf '%s\n' '{{"id":1,"error":{{"code":-32602,"message":"unsupported model"}}}}'; exit 4 ;;
@@ -642,25 +659,80 @@ printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
 read_line
 printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-http-test"}}}}}}'
 sleep {delay}
-printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":""}}}}}}'
-printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
-printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"commentary-http-test","phase":"commentary","text":"Inspecting the project."}}}}}}'
-printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"commandExecution","id":"command-http-test","status":"inProgress","command":"pwd"}}}}}}'
-printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"stress-http-test","phase":"commentary","text":""}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"agentMessage","id":"commentary-http-test","#,
+                r#""phase":"commentary","text":""}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","#,
+                r#""itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"agentMessage","id":"commentary-http-test","phase":"commentary","#,
+                r#""text":"Inspecting the project."}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"commandExecution","id":"command-http-test","#,
+                r#""status":"inProgress","command":"pwd"}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"agentMessage","id":"stress-http-test","phase":"commentary","#,
+                r#""text":""}}}}}}'
+"#,
+                r#"
 i=0
 while [ "$i" -lt 4000 ]; do
-  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"stress-http-test","delta":"x"}}}}'
+"#,
+                r#"  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","#,
+                r#""itemId":"stress-http-test","delta":"x"}}}}'
+"#,
+                r#"
   i=$((i + 1))
 done
-printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"stress-http-test","phase":"commentary","text":"Stress replay complete."}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"agentMessage","id":"stress-http-test","phase":"commentary","#,
+                r#""text":"Stress replay complete."}}}}}}'
+"#,
+                r#"
 sleep 0.6
-printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"commandExecution","id":"command-http-test","status":"completed","command":"pwd","aggregatedOutput":"project"}}}}}}'
-printf '%s\n' '{{"method":"item/started","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"assistant-http-test","phase":"final_answer","text":""}}}}}}'
-printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","itemId":"assistant-http-test","delta":"Generated through Codex "}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"commandExecution","id":"command-http-test","status":"completed","#,
+                r#""command":"pwd","aggregatedOutput":"project"}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"agentMessage","id":"assistant-http-test","phase":"final_answer","#,
+                r#""text":""}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","#,
+                r#""itemId":"assistant-http-test","delta":"Generated through Codex "}}}}'
+"#,
+                r#"
 sleep 0.6
-printf '%s\n' '{{"method":"item/completed","params":{{"threadId":"thread-http-test","turnId":"turn-http-test","item":{{"type":"agentMessage","id":"assistant-http-test","phase":"final_answer","text":"{ASSISTANT_RESPONSE}"}}}}}}'
-printf '%s\n' '{{"method":"turn/completed","params":{{"threadId":"thread-http-test","turn":{{"id":"turn-http-test","items":[],"status":"completed"}}}}}}'
-"#
+"#,
+                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
+                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
+                r#""type":"agentMessage","id":"assistant-http-test","phase":"final_answer","#,
+                r#""text":"{ASSISTANT_RESPONSE}"}}}}}}'
+"#,
+                r#"printf '%s\n' '{{"method":"turn/completed","params":{{"#,
+                r#""threadId":"thread-http-test","turn":{{"id":"turn-http-test","#,
+                r#""items":[],"status":"completed"}}}}}}'
+"#,
+            ),
+            delay = delay,
+            ASSISTANT_RESPONSE = ASSISTANT_RESPONSE,
         ),
     )
     .unwrap();

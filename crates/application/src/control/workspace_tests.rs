@@ -158,6 +158,7 @@ async fn dirty_fake_baseline_never_persists_message_run_or_session_changes() {
                 provider_id: "builtin-codex".into(),
                 model: "gpt-5.6-sol".into(),
                 reasoning_effort: Some("low".into()),
+                system_prompt: None,
             },
         },
         Command::CreateSession {

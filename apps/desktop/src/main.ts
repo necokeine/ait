@@ -35,7 +35,8 @@ const allowedMethods = new Set([
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
-  "run.resolve-approval", "run.resolve-tool-approval", "run.active",
+  "run.resolve-approval", "run.resolve-tool-approval", "run.resolve-tool-interaction", "run.active",
+  "cron.list", "cron.create", "cron.set-enabled", "cron.trigger",
 ]);
 interface DaemonResponse {
   ok: boolean;
@@ -72,6 +73,11 @@ interface DaemonData {
     base_message_id: string; last_message_id: string | null; status: string;
     permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
     tool_approvals?: import("./types.js").ToolApproval[];
+    tool_interactions?: Array<{
+      id: string; tool_name: "question" | "plan_exit";
+      request: Record<string, unknown>; response?: unknown; status: string;
+      expires_at: number; created_at: number; decided_at?: number;
+    }>;
     provider?: { name: string };
     native_approvals?: Array<{
       id: string; run_id: string; protocol_request_id: string | number; method: string; kind: string;
@@ -81,6 +87,10 @@ interface DaemonData {
       granted_permissions?: Record<string, unknown>; created_at: number; decided_at?: number;
     }>;
     error?: { code?: string; message?: string } | null;
+  }>;
+  crons: Array<{
+    id: string; name: string; project_id: string; base_message_id: string;
+    agent_id: string; schedule: string; timezone: string; enabled: boolean;
   }>;
 }
 
@@ -119,7 +129,11 @@ export class DaemonClient {
     if (method === "settings.save") return projectSettings(await this.post("/v1/settings/save", "settings", {
       expected_revision: params.expectedRevision, values: params.values,
     }));
-    if (method === "settings.reset") return projectSettings(await this.post("/v1/settings/reset", "settings", {}));
+    if (method === "settings.reset") {
+      await this.post("/v1/settings/reset", "settings", {});
+      await this.ensureBuiltInAgents();
+      return projectSettings(await this.get("/v1/settings", "settings"));
+    }
     if (method === "provider.save") {
       await this.post("/v1/agent-provider/save", "agent_provider", { provider: params.provider, secret: params.secret });
       return this.agentCatalog();
@@ -197,6 +211,37 @@ export class DaemonClient {
       const sessions = await this.get(path, "sessions") as DaemonData["sessions"];
       for (const session of sessions) assertProject(session, projectId);
       return sessions.map(projectSession);
+    }
+    if (method === "cron.list") {
+      const crons = await this.get("/v1/cron/list", "crons") as DaemonData["crons"];
+      return crons.map(desktopCron);
+    }
+    if (method === "cron.create") {
+      const cron = await this.post("/v1/cron/create", "cron", {
+        id: randomUUID(), name: params.name,
+        project_id: boundedId(params.projectId, "Project"),
+        base_message_id: boundedId(params.baseMessageId, "Message"),
+        agent_id: boundedId(params.agentId, "Agent"),
+        schedule: params.schedule, timezone: params.timezone,
+      }) as DaemonData["crons"][number];
+      return desktopCron(cron);
+    }
+    if (method === "cron.set-enabled") {
+      const cron = await this.post("/v1/cron/set-enabled", "cron", {
+        cron_id: boundedId(params.cronId, "Cron"), enabled: params.enabled,
+      }) as DaemonData["crons"][number];
+      return desktopCron(cron);
+    }
+    if (method === "cron.trigger") {
+      const run = await this.post("/v1/cron/trigger", "run", {
+        cron_id: boundedId(params.cronId, "Cron"), scheduled_at: params.scheduledAt,
+      }) as DaemonData["runs"][number];
+      if (!run.session_id) throw new Error("Scheduled Run did not create a Session.");
+      return {
+        project: await this.projectView(run.project_id),
+        runId: run.id,
+        selectedSessionId: run.session_id,
+      };
     }
     if (method === "project.update") {
       await this.post("/v1/project/update", "project", {
@@ -276,6 +321,25 @@ export class DaemonClient {
       }
       assertProject(await this.post("/v1/run/get", "run", { run_id: runId }), projectId);
       const run = await this.post("/v1/run/tool-approval/resolve", "run", { run_id: runId, approval_id: approvalId, action });
+      assertProject(run, projectId);
+      return this.projectView(projectId);
+    }
+    if (method === "run.resolve-tool-interaction") {
+      const projectId = boundedId(params.projectId, "Project");
+      const runId = boundedId(params.runId, "Run");
+      const interactionId = boundedId(params.interactionId, "interaction");
+      const action = String(params.action);
+      if (!["submit", "approve", "deny", "cancel"].includes(action)
+        || Object.keys(params).some((key) => !["projectId", "runId", "interactionId", "action", "response"].includes(key))) {
+        throw new Error("Tool interaction response is invalid.");
+      }
+      assertProject(await this.post("/v1/run/get", "run", { run_id: runId }), projectId);
+      const run = await this.post("/v1/run/tool-interaction/resolve", "run", {
+        run_id: runId,
+        interaction_id: interactionId,
+        action,
+        ...(params.response === undefined ? {} : { response: params.response }),
+      });
       assertProject(run, projectId);
       return this.projectView(projectId);
     }
@@ -394,9 +458,10 @@ export class DaemonClient {
   }
 
   private async ensureBuiltInAgents(): Promise<void> {
-    const [projects, agents] = await Promise.all([
+    const [projects, agents, settings] = await Promise.all([
       this.get("/v1/project/list", "projects") as Promise<DaemonData["projects"]>,
       this.get("/v1/agent/list", "agents") as Promise<DaemonData["agents"]>,
+      this.get("/v1/settings", "settings") as Promise<SettingsResponse>,
     ]);
     if (!agents.some((agent) => agent.id === builtInCodexAgentId)) {
       await this.post("/v1/agent/register", "agent", {
@@ -410,6 +475,23 @@ export class DaemonClient {
       .map((project) => this.post("/v1/project/set-default-agent", "project", {
         project_id: project.id, agent_id: builtInCodexAgentId,
       })));
+    const values = { ...settings.values };
+    let changed = false;
+    const hadDefault = typeof values["agents.default_agent"] === "string" && values["agents.default_agent"] !== "";
+    if (!hadDefault) {
+      values["agents.default_agent"] = builtInCodexAgentId;
+      changed = true;
+    }
+    if (!hadDefault && !(typeof values["agents.small_agent"] === "string" && values["agents.small_agent"] !== "")) {
+      values["agents.small_agent"] = builtInCodexAgentId;
+      changed = true;
+    }
+    if (changed) {
+      await this.post("/v1/settings/save", "settings", {
+        expected_revision: settings.revision,
+        values,
+      });
+    }
   }
 
   private async isReady(): Promise<boolean> {
@@ -601,6 +683,16 @@ export class DaemonClient {
         status: run.status,
         permissionProfile: run.permission_profile,
         toolApprovals: run.tool_approvals ?? [],
+        toolInteractions: (run.tool_interactions ?? []).map((interaction) => ({
+          id: interaction.id,
+          toolName: interaction.tool_name,
+          request: interaction.request,
+          ...(interaction.response === undefined ? {} : { response: interaction.response }),
+          status: interaction.status as import("./types.js").ToolInteraction["status"],
+          expiresAt: interaction.expires_at,
+          createdAt: interaction.created_at,
+          ...(interaction.decided_at === undefined ? {} : { decidedAt: interaction.decided_at }),
+        })),
         agentName: agents.find((agent) => agent.id === run.agent_id)?.name ?? run.agent_id,
         providerName: run.provider?.name ?? "API Provider",
         nativeApprovals: (run.native_approvals ?? []).map((approval) => ({
@@ -716,5 +808,13 @@ function projectSession(session: DaemonData["sessions"][number]): import("./type
     currentMessageId: session.current_message_id, agentId: session.agent_id,
     version: session.version, active: session.active_run_id !== null,
     activeRunId: session.active_run_id, updatedAt: 0,
+  };
+}
+
+function desktopCron(cron: DaemonData["crons"][number]): import("./types.js").DesktopCron {
+  return {
+    id: cron.id, name: cron.name, projectId: cron.project_id,
+    baseMessageId: cron.base_message_id, agentId: cron.agent_id,
+    schedule: cron.schedule, timezone: cron.timezone, enabled: cron.enabled,
   };
 }

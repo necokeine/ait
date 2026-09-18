@@ -1,7 +1,6 @@
 //! Workspace agents regression coverage.
 #![allow(clippy::pedantic)]
 #![allow(dead_code)]
-#![allow(missing_docs)]
 
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};

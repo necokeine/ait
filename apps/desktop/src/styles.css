@@ -161,6 +161,12 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .tool-approval dd { white-space: normal; overflow-wrap: anywhere; }
 .tool-approval pre { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
 .tool-approval header strong { color: var(--text); }
+.tool-interaction fieldset { border: 0; margin: 12px 0; padding: 0; }
+.tool-interaction legend { color: var(--text); font-weight: 700; }
+.tool-interaction label { align-items: flex-start; display: flex; gap: 8px; margin: 8px 0; }
+.tool-interaction label small { display: block; }
+.tool-interaction input[type="text"] { box-sizing: border-box; width: 100%; }
+.tool-interaction > pre { max-height: 320px; overflow: auto; white-space: pre-wrap; }
 #run-detail { margin-top: 24px; }
 #run-detail h2 { font-size: 16px; overflow-wrap: anywhere; }
 .run-detail-status { color: var(--text-soft); font-size: 12px; }
@@ -251,11 +257,11 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .composer-config-trigger, .composer-select-wrap select { height: 28px; border: 1px solid var(--line); background: var(--control-bg); color: var(--text-soft); border-radius: 6px; font-size: 10px; cursor: pointer; }
 .composer-config-trigger { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 240px; padding: 0 9px; }
 .composer-config-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#composer-config-effort { flex-shrink: 0; white-space: nowrap; }
 .select-chevron { display: block; width: 6px; height: 6px; flex-shrink: 0; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: translateY(-2px) rotate(45deg); color: var(--text-muted); pointer-events: none; }
 .composer-select-wrap { display: block; position: relative; min-width: 0; }
 .composer-select-wrap select { appearance: none; width: 100%; padding: 0 25px 0 9px; text-overflow: ellipsis; }
 .composer-select-wrap > .select-chevron { position: absolute; right: 10px; top: 50%; margin-top: -2px; }
-.reasoning-control { flex-shrink: 0; }
 .composer-config-trigger:hover:not(:disabled), .composer-select-wrap select:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--text-muted); }
 .composer-config-trigger[aria-expanded="true"] { background: var(--surface-active); border-color: var(--text-muted); }
 .composer-config-trigger:disabled, .composer-select-wrap select:disabled { opacity: .5; cursor: default; }
@@ -473,12 +479,22 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .run-action { justify-self: end; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .run-action button { white-space: nowrap; }
 .run-no-session { color: var(--text-muted); font-size: 11px; }
+.cron-editor { max-width: 1100px; margin: 0 auto 22px; }
+.cron-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); column-gap: 20px; }
+.cron-list { max-width: 1100px; margin: 0 auto; display: grid; gap: 12px; }
+.cron-row { display: grid; grid-template-columns: minmax(150px,1.2fr) minmax(120px,.8fr) minmax(150px,1fr) auto auto; align-items: center; gap: 18px; padding: 18px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface); }
+.cron-identity, .cron-schedule, .cron-target { min-width: 0; display: grid; gap: 6px; }
+.cron-row strong { font-size: 12px; font-weight: 550; overflow-wrap: anywhere; }
+.cron-row small, .cron-row code { color: var(--text-muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cron-actions { display: flex; align-items: center; gap: 8px; }
 .runs-empty { display: grid; justify-items: center; padding: 70px 20px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
 .runs-empty > span { font-size: 38px; color: var(--text-muted); }
 .runs-empty h2 { margin: 16px 0 8px; font-size: 17px; font-weight: 550; }
 .runs-empty p { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
 @media (max-width: 1150px) {
   .run-row { grid-template-columns: minmax(150px, 1.4fr) minmax(110px, 1fr); gap: 18px; }
+  .cron-row { grid-template-columns: minmax(150px,1fr) minmax(120px,1fr) auto; }
+  .cron-target { display: none; }
 }
 .agents-catalog-section { max-width: 1100px; margin: 0 auto 32px; }
 .agents-catalog-section h2 { margin: 0; font-size: 15px; font-weight: 570; }
@@ -511,4 +527,5 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
   .agents-page-scroll { padding: 22px; }
   .named-agent-row { grid-template-columns: minmax(120px,1fr) minmax(100px,1fr) auto; gap: 14px; }
   .named-agent-usage { display: none; }
+  .cron-fields { grid-template-columns: 1fr; }
 }

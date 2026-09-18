@@ -16,11 +16,12 @@ test("places Projects above the bottom navigation group", async () => {
   const footerHtml = sidebar.slice(footer);
   const sessions = footerHtml.indexOf("Sessions");
   const runs = footerHtml.indexOf("Runs");
+  const crons = footerHtml.indexOf("Crons");
   const agents = footerHtml.indexOf("Agents");
   const settings = footerHtml.indexOf("Settings");
 
   assert.ok(sessions >= 0, "Sessions should be in the footer navigation");
-  assert.ok(sessions < runs && runs < agents && agents < settings);
+  assert.ok(sessions < runs && runs < crons && crons < agents && agents < settings);
   assert.match(footerHtml, /<nav class="primary-nav" aria-label="Workspace">[\s\S]*id="settings-trigger"[\s\S]*<\/nav>/);
 });
 

@@ -41,6 +41,7 @@
           <nav class="primary-nav" aria-label="Workspace">
             <button id="sessions-nav" class="nav-item is-active" type="button" aria-current="page"><span>◈</span>Sessions <kbd>⌘1</kbd></button>
             <button id="runs-nav" class="nav-item" type="button"><span>⌁</span>Runs</button>
+            <button id="crons-nav" class="nav-item" type="button"><span>◷</span>Crons</button>
             <button id="agents-nav" class="nav-item" type="button"><span>◇</span>Agents</button>
             <button id="settings-trigger" class="nav-item" type="button"><span>⚙</span>Settings <kbd>⌘,</kbd></button>
           </nav>
@@ -82,7 +83,7 @@
                     </select><span class="select-chevron" aria-hidden="true"></span>
                   </label>
                   <button id="composer-config-trigger" class="composer-config-trigger" type="button" popovertarget="composer-config-panel" aria-haspopup="dialog" aria-expanded="false" aria-controls="composer-config-panel" disabled>
-                    <span id="composer-config-label">No Agent</span><span class="select-chevron" aria-hidden="true"></span>
+                    <span id="composer-config-label">No Agent</span><span id="composer-config-effort" class="is-hidden"></span><span class="select-chevron" aria-hidden="true"></span>
                   </button>
                   <div id="composer-config-panel" class="composer-config-panel" popover="auto" role="dialog" aria-labelledby="composer-config-title">
                     <header>
@@ -98,11 +99,11 @@
                     <label class="composer-config-field">Model
                       <span class="composer-select-wrap"><select id="composer-model"></select><span class="select-chevron" aria-hidden="true"></span></span>
                     </label>
+                    <label id="composer-reasoning-control" class="composer-config-field is-hidden">Reasoning effort
+                      <span class="composer-select-wrap"><select id="composer-reasoning" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span></span>
+                    </label>
                     <p>Choose a saved Agent or customize this Session.</p>
                   </div>
-                  <span id="composer-reasoning-control" class="composer-select-wrap reasoning-control is-hidden">
-                    <select id="composer-reasoning" class="reasoning-select" aria-label="Reasoning effort"></select><span class="select-chevron" aria-hidden="true"></span>
-                  </span>
                 </div>
                 <button id="send-button" class="send-button" type="submit" disabled aria-label="Send message">↑</button>
               </div>
@@ -124,6 +125,7 @@
 
       <main id="agents-page" class="agents-page is-hidden" aria-labelledby="agents-page-title"></main>
       <main id="runs-page" class="agents-page is-hidden" aria-labelledby="runs-page-title"></main>
+      <main id="crons-page" class="agents-page is-hidden" aria-labelledby="crons-page-title"></main>
 
       <div id="settings-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <section class="settings-window">

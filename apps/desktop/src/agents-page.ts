@@ -36,7 +36,9 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
       <div class="agent-config-fields"><label class="catalog-field"><span>Name</span><input id="agent-config-name" value="${escape(agent?.name ?? "")}" placeholder="e.g. Code review" required autocomplete="off"/></label>
       <label class="catalog-field"><span>Provider</span><select id="agent-config-provider">${providers.map((provider) => option(provider.id, provider.name, initial?.provider_id)).join("")}</select></label>
       <label class="catalog-field"><span>Model</span><select id="agent-config-model" required></select></label>
-      <label class="catalog-field"><span>Reasoning effort</span><select id="agent-config-effort"></select></label></div>
+      <label class="catalog-field"><span>Reasoning effort</span><select id="agent-config-effort"></select></label>
+      <label class="catalog-field"><span>System prompt (reserved)</span><textarea id="agent-config-system-prompt" rows="5" placeholder="Saved for future Agent prompt customization">${escape(initial?.system_prompt ?? "")}</textarea></label></div>
+      <p class="catalog-help">System prompt is saved with this Agent but is not sent to providers yet.</p>
       <p class="catalog-help">${agent ? "Changes apply the next time this named Agent is used." : "Save a configuration to reuse across Projects and Sessions."}</p>
       <p id="agent-config-error" class="catalog-error${providers.length ? " is-hidden" : ""}" role="alert">${providers.length ? "" : "Add a provider and select its models first."}</p>
       <div class="catalog-actions"><button class="secondary-button" type="button" id="agent-config-cancel">Cancel</button><button class="primary-button" type="submit" id="agent-config-save"${providers.length ? "" : " disabled"}>Save Agent</button></div></form>`;
@@ -64,7 +66,13 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
     const save = async (): Promise<void> => {
       if (saving) return;
       const name = get<HTMLInputElement>("#agent-config-name").value.trim();
-      const config = { provider_id: select("provider").value, model: select("model").value, reasoning_effort: select("effort").value || null };
+      const systemPrompt = get<HTMLTextAreaElement>("#agent-config-system-prompt").value;
+      const config = {
+        provider_id: select("provider").value,
+        model: select("model").value,
+        reasoning_effort: select("effort").value || null,
+        system_prompt: systemPrompt.trim() ? systemPrompt : null,
+      };
       if (!name || !config.model) {
         get("#agent-config-error").textContent = !name ? "Enter an Agent name." : "Select a model.";
         get("#agent-config-error").classList.remove("is-hidden");
@@ -100,7 +108,7 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   const render = (updated: AgentsPageView): void => {
     view = updated;
     get("#agents-provider-list").innerHTML = view.providers.map((provider) => {
-      const remote = ["openai", "deepseek"].includes(provider.kind);
+      const remote = ["openai", "deepseek", "gemini", "minimax"].includes(provider.kind);
       return `<article class="provider-card"><header><strong>${escape(provider.name)}</strong><span class="catalog-badge${remote && !provider.has_secret ? " needs-setup" : ""}">${remote ? provider.has_secret ? "Secret saved" : "Needs secret" : "Built-in"}</span></header>
         <p class="provider-endpoint">${escape(provider.url ?? (remote ? "Official API endpoint" : provider.kind === "codex" ? "Host sign-in" : "Built-in provider"))}</p>
         <details><summary>${provider.models.length} enabled models</summary><ul>${provider.models.map((model) => `<li><strong>${escape(model.name)}</strong><code>${escape(model.id)}</code><small>${model.reasoning_efforts.length ? escape(model.reasoning_efforts.join(" · ")) : "Default reasoning"}</small></li>`).join("") || "<li>No models selected.</li>"}</ul></details>

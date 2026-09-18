@@ -180,30 +180,38 @@ impl LocalControlService {
             &mut created_workdir,
             &mut created_session_worktrees,
         )
-            .await
-            .map_err(|mut failure| {
-                if let Some(path) = created_workdir {
-                    // Filesystem and SQLite are separate commit domains. Preserve
-                    // the new directory, including anything written concurrently.
-                    failure.message = format!("{} Directory retained at {}. Inspect it before explicitly registering it or choosing another name.", failure.message, path.display());
-                    failure.retryable = false;
-                }
-                if !created_session_worktrees.is_empty() {
-                    let retained = created_session_worktrees
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    failure.message = format!(
-                        "{} Session worktree retained at {retained}; inspect it before retrying.",
-                        failure.message
-                    );
-                    // Import can be prepared again after inspection; never reset
-                    // or overwrite a retained worktree automatically.
-                    failure.retryable &= importing_project && failure.code == ErrorCode::RunQueueConflict;
-                }
-                failure
-            })
+        .await
+        .map_err(|mut failure| {
+            if let Some(path) = created_workdir {
+                // Filesystem and SQLite are separate commit domains. Preserve
+                // the new directory, including anything written concurrently.
+                failure.message = format!(
+                    concat!(
+                        "{} Directory retained at {}. Inspect it before explicitly ",
+                        "registering it or choosing another name."
+                    ),
+                    failure.message,
+                    path.display()
+                );
+                failure.retryable = false;
+            }
+            if !created_session_worktrees.is_empty() {
+                let retained = created_session_worktrees
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                failure.message = format!(
+                    "{} Session worktree retained at {retained}; inspect it before retrying.",
+                    failure.message
+                );
+                // Import can be prepared again after inspection; never reset
+                // or overwrite a retained worktree automatically.
+                failure.retryable &=
+                    importing_project && failure.code == ErrorCode::RunQueueConflict;
+            }
+            failure
+        })
     }
 
     #[allow(
@@ -260,7 +268,7 @@ impl LocalControlService {
                 created_session_worktrees,
             )
             .await?;
-        let preparation_key = initial.preparation_key();
+        let preparation_key = initial.preparation_key(&command)?;
         for attempt in 0..4 {
             let loaded = if attempt == 0 {
                 None
@@ -269,7 +277,7 @@ impl LocalControlService {
             };
             let loaded = loaded.as_ref().unwrap_or(&initial);
             loaded.check_admission(&command)?;
-            if loaded.preparation_key() != preparation_key {
+            if loaded.preparation_key(&command)? != preparation_key {
                 return Err(error(
                     ErrorCode::RunQueueConflict,
                     "prepared command references changed; retry the request",
@@ -283,7 +291,10 @@ impl LocalControlService {
             {
                 return Err(error(
                     ErrorCode::ProjectWorkspaceBusy,
-                    "Agent configuration changed to a workspace-writing provider during admission; retry the request",
+                    concat!(
+                        "Agent configuration changed to a workspace-writing provider during ",
+                        "admission; retry the request"
+                    ),
                     true,
                 ));
             }

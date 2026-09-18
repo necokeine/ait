@@ -9,7 +9,7 @@ use ait_ipc::{
     mapping::Wire,
     rpc::{Call, RemoteStore},
 };
-use ait_ports::{AgentInvocation, AgentResponse, RunAgent};
+use ait_ports::{AgentInvocation, AgentResponse, RunAgent, RunTool};
 use async_trait::async_trait;
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 use tokio::{
@@ -47,10 +47,23 @@ impl RunAgent for ApiAgent {
 struct ScriptedAgent {
     replies: Vec<Vec<SubMessage>>,
 }
+
+type ComposedAgentTools = (Arc<dyn RunTool>, Arc<dyn RunAgent>);
 #[async_trait]
 impl RunAgent for ScriptedAgent {
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError> {
-        let index=request.message_path.iter().filter(|entry|matches!(entry,ait_domain::ProjectedMessage::Visible(m) if m.run_id.as_ref()==Some(&request.run_id)&&m.role==ait_domain::MessageRole::Assistant)).count();
+        let index = request
+            .message_path
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    ait_domain::ProjectedMessage::Visible(message)
+                        if message.run_id.as_ref() == Some(&request.run_id)
+                            && message.role == ait_domain::MessageRole::Assistant
+                )
+            })
+            .count();
         let reply = self.replies.get(index).ok_or_else(|| {
             DomainError::invariant(ErrorCode::ProviderFailed, "scripted response exhausted")
         })?;
@@ -77,6 +90,79 @@ fn validate_tool_arguments(response: &AgentResponse) -> Result<(), DomainError> 
     }
     Ok(())
 }
+
+fn compose_agent_tools(
+    bootstrap: &Bootstrap,
+    primary_tools: Arc<dyn RunTool>,
+    store: Arc<RemoteStore>,
+) -> Result<ComposedAgentTools, ProtocolError> {
+    match bootstrap.executor.clone() {
+        Executor::Workspace { .. } => Err(ProtocolError::InvalidFrame),
+        Executor::Api {
+            provider,
+            endpoint,
+            model,
+            reasoning_effort,
+            credential,
+        } => {
+            let provider = match provider.as_str() {
+                "openai" => ait_agent_adapters::LLMProvider::OpenAI,
+                "deepseek" => ait_agent_adapters::LLMProvider::DeepSeek,
+                "gemini" => ait_agent_adapters::LLMProvider::Gemini,
+                "minimax" => ait_agent_adapters::LLMProvider::MiniMax,
+                _ => return Err(ProtocolError::InvalidFrame),
+            };
+            let mut config = ait_agent_adapters::LLMClientConfig::new(provider, credential.0);
+            config.base_url = endpoint;
+            let client = ait_agent_adapters::LLMClient::new(config)
+                .map_err(|_| ProtocolError::InvalidFrame)?;
+            let agent_config = AgentConfiguration {
+                provider_id: String::new(),
+                model,
+                reasoning_effort,
+                system_prompt: None,
+            };
+            let requires_verified_cost = bootstrap.limits.max_cost_micros.is_some();
+            let child: Arc<dyn RunAgent> = Arc::new(ApiAgent {
+                client: client.clone(),
+                config: agent_config.clone(),
+                names: primary_tools.executable_tools(),
+                requires_verified_cost,
+            });
+            let extension: Arc<dyn RunTool> = Arc::new(ait_tools::agent::AgentTools::new(
+                child,
+                primary_tools.clone(),
+                store,
+            ));
+            let tools: Arc<dyn RunTool> =
+                Arc::new(ait_ports::CompositeRunTool::new(primary_tools, extension));
+            let parent: Arc<dyn RunAgent> = Arc::new(ApiAgent {
+                client,
+                config: agent_config,
+                names: tools.executable_tools(),
+                requires_verified_cost,
+            });
+            Ok((tools, parent))
+        }
+        Executor::Scripted { replies } => {
+            let scripted: Arc<dyn RunAgent> = Arc::new(ScriptedAgent {
+                replies: replies
+                    .into_iter()
+                    .map(Vec::<SubMessage>::from_wire)
+                    .collect::<Result<_, _>>()?,
+            });
+            let extension: Arc<dyn RunTool> = Arc::new(ait_tools::agent::AgentTools::new(
+                scripted.clone(),
+                primary_tools.clone(),
+                store,
+            ));
+            let tools: Arc<dyn RunTool> =
+                Arc::new(ait_ports::CompositeRunTool::new(primary_tools, extension));
+            Ok((tools, scripted))
+        }
+    }
+}
+
 /// Runs a handshake and a Run, then joins tools and protocol pumps.
 /// # Errors
 /// Returns stable codes without credentials, input, or SDK diagnostics.
@@ -144,7 +230,7 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
         let factory = ait_sandbox::SandboxToolFactory {
             maximum: ait_domain::SandboxAccess::from_wire(bootstrap.maximum_sandbox)?,
         };
-        let tools = factory
+        let primary_tools = factory
             .create_bounded(
                 Path::new(&bootstrap.workdir),
                 profile,
@@ -152,59 +238,29 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
                 bootstrap.limits.max_tool_concurrency,
             )
             .map_err(|_| ProtocolError::ResourceLimit)?;
-        let agent: Arc<dyn RunAgent> = match bootstrap.executor.clone() {
-            Executor::Workspace { .. } => return Err(ProtocolError::InvalidFrame),
-            Executor::Api {
-                provider,
-                endpoint,
-                model,
-                reasoning_effort,
-                credential,
-            } => {
-                let provider = match provider.as_str() {
-                    "openai" => ait_agent_adapters::LLMProvider::OpenAI,
-                    "deepseek" => ait_agent_adapters::LLMProvider::DeepSeek,
-                    _ => return Err(ProtocolError::InvalidFrame),
-                };
-                let mut config = ait_agent_adapters::LLMClientConfig::new(provider, credential.0);
-                config.base_url = endpoint;
-                let client = ait_agent_adapters::LLMClient::new(config)
-                    .map_err(|_| ProtocolError::InvalidFrame)?;
-                Arc::new(ApiAgent {
-                    client,
-                    config: AgentConfiguration {
-                        provider_id: String::new(),
-                        model,
-                        reasoning_effort,
-                    },
-                    names: tools.executable_tools(),
-                    requires_verified_cost: bootstrap.limits.max_cost_micros.is_some(),
-                })
-            }
-            Executor::Scripted { replies } => Arc::new(ScriptedAgent {
-                replies: replies
-                    .into_iter()
-                    .map(Vec::<SubMessage>::from_wire)
-                    .collect::<Result<_, _>>()?,
-            }),
-        };
         let (store, mut calls) = RemoteStore::channel();
         let store = Arc::new(store);
-        let worker = crate::RunWorker::new(
-            store.clone(),
-            agent,
-            tools.clone(),
-            store,
-        );
+        let (tools, agent) = compose_agent_tools(&bootstrap, primary_tools, store.clone())?;
+        let worker = crate::RunWorker::new(store.clone(), agent, tools.clone(), store);
         let id = RunId::new(&bootstrap.lease.run_id);
         let run_cancel = cancellation.clone();
-        let mut drive = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move { worker.execute(&id, run_cancel).await }));
+        let mut drive = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            worker.execute(&id, run_cancel).await
+        }));
         let result = {
             let io = drive_io(&mut pipe, &mut calls, &bootstrap, cancellation.clone());
             tokio::pin!(io);
             tokio::select! {
-                result=&mut drive=>result.map_err(|_|ProtocolError::WorkerExited)?.map(|_|()).map_err(|_|ProtocolError::InvalidTransition),
-                result=&mut io=>{cancellation.cancel();drive.abort();let _=(&mut drive).await;result},
+                result = &mut drive => result
+                    .map_err(|_| ProtocolError::WorkerExited)?
+                    .map(|_| ())
+                    .map_err(|_| ProtocolError::InvalidTransition),
+                result = &mut io => {
+                    cancellation.cancel();
+                    drive.abort();
+                    let _ = (&mut drive).await;
+                    result
+                },
             }
         };
         cancellation.cancel();
@@ -246,31 +302,51 @@ pub(crate) async fn drive_io(
         tokio::select! {
             Some(call)=calls.recv()=>{
                 if pending.len()>=16{return Err(ProtocolError::ResourceLimit)}
-                request_id=request_id.checked_add(1).ok_or(ProtocolError::ResourceLimit)?;
-                let operation_id=uuid::Uuid::new_v4().to_string();
-                pipe.send(Payload::Request{request_id,operation_id:operation_id.clone(),request:Box::new(call.request)}).await?;
-                pending.insert(request_id,(operation_id,call.reply));
+                request_id = request_id
+                    .checked_add(1)
+                    .ok_or(ProtocolError::ResourceLimit)?;
+                let operation_id = uuid::Uuid::new_v4().to_string();
+                pipe.send(Payload::Request {
+                    request_id,
+                    operation_id: operation_id.clone(),
+                    request: Box::new(call.request),
+                })
+                .await?;
+                pending.insert(request_id, (operation_id, call.reply));
             },
-            frame=pipe.receiver.recv()=>{
-                let frame=frame.ok_or(ProtocolError::UnexpectedEof)??;
-                if frame.lease.as_ref()!=Some(&bootstrap.lease){return Err(ProtocolError::StaleWorkerLease)}
-                heartbeat=Instant::now();
+            frame = pipe.receiver.recv() => {
+                let frame = frame.ok_or(ProtocolError::UnexpectedEof)??;
+                if frame.lease.as_ref() != Some(&bootstrap.lease) {
+                    return Err(ProtocolError::StaleWorkerLease);
+                }
+                heartbeat = Instant::now();
                 match frame.payload {
-                    Payload::Heartbeat=>{},
-                    Payload::Cancel=>cancel.cancel(),
-                    Payload::Receipt{request_id,operation_id,response}=>{
-                        let (expected,reply)=pending.remove(&request_id).ok_or(ProtocolError::CorrelationMismatch)?;
-                        if expected!=operation_id{return Err(ProtocolError::CorrelationMismatch)}
-                        let _=reply.send(Ok(*response));
+                    Payload::Heartbeat => {},
+                    Payload::Cancel => cancel.cancel(),
+                    Payload::Receipt { request_id, operation_id, response } => {
+                        let (expected, reply) = pending
+                            .remove(&request_id)
+                            .ok_or(ProtocolError::CorrelationMismatch)?;
+                        if expected != operation_id {
+                            return Err(ProtocolError::CorrelationMismatch);
+                        }
+                        let _ = reply.send(Ok(*response));
                     },
-                    Payload::Rejected{request_id,code}=>{
-                        let (_,reply)=pending.remove(&request_id).ok_or(ProtocolError::CorrelationMismatch)?;let _=reply.send(Err(code));
+                    Payload::Rejected { request_id, code } => {
+                        let (_, reply) = pending
+                            .remove(&request_id)
+                            .ok_or(ProtocolError::CorrelationMismatch)?;
+                        let _ = reply.send(Err(code));
                     },
-                    _=>return Err(ProtocolError::InvalidFrame),
+                    _ => return Err(ProtocolError::InvalidFrame),
                 }
             },
-            _=interval.tick()=>{
-                if heartbeat.elapsed()>Duration::from_millis(bootstrap.limits.heartbeat_timeout_ms){return Err(ProtocolError::HeartbeatTimeout)}
+            _ = interval.tick() => {
+                if heartbeat.elapsed()
+                    > Duration::from_millis(bootstrap.limits.heartbeat_timeout_ms)
+                {
+                    return Err(ProtocolError::HeartbeatTimeout);
+                }
                 pipe.send(Payload::Heartbeat).await?;
             }
         }
@@ -278,35 +354,4 @@ pub(crate) async fn drive_io(
 }
 
 #[cfg(test)]
-mod private_input_tests {
-    use super::*;
-
-    fn response(arguments: String) -> AgentResponse {
-        AgentResponse {
-            sub_messages: vec![SubMessage::ToolUse(ait_domain::ToolUse {
-                call_id: "private-input".into(),
-                tool_name: "write".into(),
-                arguments,
-                provider_metadata: None,
-            })],
-            usage: ait_domain::RunUsage::default(),
-        }
-    }
-
-    #[test]
-    fn worker_rejects_malformed_and_oversized_arguments_without_echoing_them() {
-        let malformed_secret = "NEC248_MALFORMED_WORKER_SECRET";
-        let malformed = format!(r#"{{"content":"{malformed_secret}""#);
-        let oversized_secret = "NEC248_OVERSIZED_WORKER_SECRET";
-        let oversized = format!(
-            r#"{{"content":"{oversized_secret}{}"}}"#,
-            "x".repeat(ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
-        );
-
-        for (secret, arguments) in [(malformed_secret, malformed), (oversized_secret, oversized)] {
-            let error = validate_tool_arguments(&response(arguments)).unwrap_err();
-            assert_eq!(error.code, ErrorCode::InvalidSubmessageKind);
-            assert!(!error.to_string().contains(secret));
-        }
-    }
-}
+mod private_input_tests;

@@ -23,7 +23,12 @@ pub(crate) struct Arguments {
     #[arg(long, global = true, default_value = "127.0.0.1", value_parser = input::host)]
     pub(crate) host: String,
     /// Local daemon HTTP port (valid at every subcommand level).
-    #[arg(long, global = true, default_value_t = 7314, value_parser = clap::value_parser!(u16).range(1..))]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 7314,
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
     pub(crate) port: u16,
     #[command(subcommand)]
     pub(crate) command: CliCommand,
@@ -67,8 +72,8 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         command: CronCommand,
     },
-    /// Manage Settings operations.
-    Settings {
+    /// Manage configuration operations.
+    Config {
         #[command(subcommand)]
         command: SettingsCommand,
     },
@@ -196,7 +201,7 @@ pub(crate) enum SessionCommand {
         #[arg(long, value_parser = input::id)]
         project_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long, value_parser = input::id)]
         at_message_id: Option<String>,
     },
@@ -242,7 +247,7 @@ pub(crate) enum SessionCommand {
         #[arg(long, value_parser = input::id)]
         project_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long, value_parser = input::id)]
         at_message_id: String,
         #[command(flatten)]
@@ -257,7 +262,7 @@ pub(crate) enum SessionCommand {
         #[arg(long, value_parser = input::id)]
         source_session_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long, value_parser = input::id)]
         at_message_id: String,
         #[command(flatten)]
@@ -313,7 +318,7 @@ pub(crate) enum CronCommand {
         #[arg(long, value_parser = input::id)]
         base_message_id: String,
         #[arg(long, value_parser = input::id)]
-        agent_id: String,
+        agent_id: Option<String>,
         #[arg(long)]
         schedule: String,
         #[arg(long)]
@@ -329,7 +334,8 @@ pub(crate) enum CronCommand {
         #[arg(long, value_parser = input::id)]
         cron_id: String,
     },
-    /// Trigger an occurrence. scheduled-at is Unix milliseconds (signed i64); the same value deduplicates.
+    /// Trigger an occurrence. scheduled-at is Unix milliseconds (signed i64);
+    /// the same value deduplicates.
     Trigger {
         #[arg(long, value_parser = input::id)]
         cron_id: String,
@@ -345,7 +351,8 @@ pub(crate) enum SettingsCommand {
     /// Restore defaults: `read_only` sandbox and `on_request` approval.
     Reset,
     /// Replace the complete settings document using its observed revision.
-    /// Sandbox values: `read_only` (default), `workspace_write`, `full_access`; strict aliases `read_only`.
+    /// Sandbox values: `read_only` (default), `workspace_write`, `full_access`;
+    /// strict aliases `read_only`.
     /// Permissions apply to new Runs and remain subject to the daemon ceiling.
     Set {
         #[arg(long)]
@@ -374,6 +381,9 @@ pub(crate) struct Config {
     /// Provider/model-specific effort from agent provider list (validated by the daemon).
     #[arg(long, value_parser = input::id)]
     reasoning_effort: Option<String>,
+    /// Reserved Agent instructions. Persisted for future use; currently not sent to providers.
+    #[arg(long)]
+    system_prompt: Option<String>,
 }
 
 impl From<Config> for AgentConfiguration {
@@ -382,6 +392,7 @@ impl From<Config> for AgentConfiguration {
             provider_id: value.provider_id,
             model: value.model,
             reasoning_effort: value.reasoning_effort,
+            system_prompt: value.system_prompt,
         }
     }
 }
@@ -414,6 +425,8 @@ pub(crate) enum ProviderKind {
     Codex,
     Openai,
     Deepseek,
+    Gemini,
+    Minimax,
     /// Development-only deterministic Provider.
     #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
     Mock,
@@ -425,6 +438,8 @@ impl From<ProviderKind> for AgentMode {
             ProviderKind::Codex => Self::Codex,
             ProviderKind::Openai => Self::OpenAI,
             ProviderKind::Deepseek => Self::DeepSeek,
+            ProviderKind::Gemini => Self::Gemini,
+            ProviderKind::Minimax => Self::MiniMax,
             #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
             ProviderKind::Mock => Self::Mock,
         }
@@ -462,9 +477,10 @@ impl ProviderArgs {
             ));
         }
         if self.secret_stdin && matches!(source, StdinSource::Terminal) {
-            return Err(input::invalid(
-                "agent provider: --secret-stdin requires redirected stdin (terminal echo is unsafe)",
-            ));
+            return Err(input::invalid(concat!(
+                "agent provider: --secret-stdin requires redirected stdin ",
+                "(terminal echo is unsafe)"
+            )));
         }
         let models = self
             .input
@@ -577,7 +593,7 @@ impl CliCommand {
             Self::Message { command } => command.into(),
             Self::Run { command } => command.into(),
             Self::Cron { command } => command.into(),
-            Self::Settings { command } => command.into_command(stdin)?,
+            Self::Config { command } => command.into_command(stdin)?,
             Self::Event {
                 command: EventCommand::List { after },
             } => return Ok(Action::Events { after }),
@@ -698,7 +714,7 @@ impl SessionCommand {
             } => Command::CreateSession {
                 id,
                 project_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 at_message_id,
             },
             SessionCommand::SetAgent {
@@ -731,7 +747,7 @@ impl SessionCommand {
             } => Command::ForkSession {
                 id,
                 project_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 at_message_id,
                 text: text.read(stdin)?,
             },
@@ -746,7 +762,7 @@ impl SessionCommand {
                 id,
                 project_id,
                 source_session_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 at_message_id,
                 text: text.read(stdin)?,
             },
@@ -791,7 +807,7 @@ impl From<CronCommand> for Command {
                 name,
                 project_id,
                 base_message_id,
-                agent_id,
+                agent_id: agent_id.unwrap_or_default(),
                 schedule,
                 timezone,
             },

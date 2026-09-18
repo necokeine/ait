@@ -111,6 +111,20 @@ test("name-only Desktop creation omits workdir through the HTTP bridge", async (
   ]);
 });
 
+test("Project creation can inherit the global Default Agent without writing an override", async () => {
+  const input = projectCreationInput("Global", "", "");
+  assert.deepEqual(input, { name: "Global" });
+  const calls: unknown[] = [];
+  await registerDesktopProject(async (path, kind, body) => {
+    calls.push({ path, kind, body });
+  }, "global-project", input);
+  assert.deepEqual(calls, [{
+    path: "/v1/project/register",
+    kind: "project",
+    body: { id: "global-project", name: "Global", workdir: undefined, repo_url: undefined },
+  }]);
+});
+
 test("explicit Desktop directories keep their path and default folder name", async () => {
   const input = projectCreationInput("", "/tmp/existing project", "codex-local");
   assert.deepEqual(input, { name: "existing project", workdir: "/tmp/existing project", agentId: "codex-local" });

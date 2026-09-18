@@ -100,6 +100,73 @@ impl ait_ports::RunApproval for RemoteStore {
 }
 
 #[async_trait]
+impl ait_ports::RunToolInteraction for RemoteStore {
+    async fn request(
+        &self,
+        request: ait_ports::ToolInvocation,
+    ) -> Result<ait_ports::ToolOutcome, ait_domain::DomainError> {
+        let failed = || {
+            ait_domain::DomainError::invariant(
+                ait_domain::ErrorCode::ToolExecutionFailed,
+                "daemon tool interaction channel unavailable",
+            )
+        };
+        match self
+            .call(StoreRequest::ToolInteraction {
+                request: Box::new(ait_contracts::worker::ToolInteractionRequest {
+                    run_id: request.run_id.as_str().into(),
+                    call_id: request.call_id,
+                    execution_id: request.execution_id.as_str().into(),
+                    tool_name: request.tool_name,
+                    arguments: request.arguments,
+                }),
+            })
+            .await
+            .map_err(|_| failed())?
+        {
+            StoreResponse::ToolInteraction { output } => Ok(ait_ports::ToolOutcome {
+                output,
+                usage: ait_domain::RunUsage::default(),
+            }),
+            _ => Err(failed()),
+        }
+    }
+
+    async fn reconcile(
+        &self,
+        execution: &ToolExecution,
+    ) -> Result<ait_ports::ToolRecovery, ait_domain::DomainError> {
+        let failed = || {
+            ait_domain::DomainError::invariant(
+                ait_domain::ErrorCode::RunRecoveryFailed,
+                "daemon tool interaction recovery unavailable",
+            )
+        };
+        match self
+            .call(StoreRequest::ToolInteractionRecovery {
+                execution: Box::new(execution.to_wire()),
+            })
+            .await
+            .map_err(|_| failed())?
+        {
+            StoreResponse::ToolRecovery { recovery, output } if recovery == "completed" => {
+                Ok(ait_ports::ToolRecovery::Completed(ait_ports::ToolOutcome {
+                    output: output.ok_or_else(failed)?,
+                    usage: ait_domain::RunUsage::default(),
+                }))
+            }
+            StoreResponse::ToolRecovery { recovery, .. } if recovery == "retry_safe" => {
+                Ok(ait_ports::ToolRecovery::RetrySafe)
+            }
+            StoreResponse::ToolRecovery { recovery, .. } if recovery == "unknown" => {
+                Ok(ait_ports::ToolRecovery::Unknown)
+            }
+            _ => Err(failed()),
+        }
+    }
+}
+
+#[async_trait]
 impl RunStore for RemoteStore {
     async fn load_run(&self, _: &RunId) -> Result<Run, RunStoreError> {
         self.run(StoreRequest::LoadRun).await
@@ -382,6 +449,53 @@ impl StoreServer {
                     decision: if consumed { "consumed" } else { "denied" }.into(),
                 });
             }
+            StoreRequest::ToolInteraction { request } => {
+                if request.run_id != lease.run_id {
+                    return Err(ProtocolError::WrongRun);
+                }
+                let output = self
+                    .store
+                    .request_tool_interaction(
+                        &WorkerLease {
+                            run_id: id,
+                            instance_id: lease.worker_instance_id.clone(),
+                            epoch: lease.lease_epoch,
+                        },
+                        request.call_id,
+                        request.execution_id,
+                        request.tool_name,
+                        request.arguments,
+                    )
+                    .await
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
+                return Ok(StoreResponse::ToolInteraction {
+                    output: output.output,
+                });
+            }
+            StoreRequest::ToolInteractionRecovery { execution } => {
+                if execution.run_id != lease.run_id {
+                    return Err(ProtocolError::WrongRun);
+                }
+                let recovery = self
+                    .store
+                    .recover_tool_interaction(&ToolExecution::from_wire(*execution)?)
+                    .await
+                    .map_err(|_| ProtocolError::InvalidTransition)?;
+                return Ok(match recovery {
+                    ait_ports::ToolRecovery::Completed(outcome) => StoreResponse::ToolRecovery {
+                        recovery: "completed".into(),
+                        output: Some(outcome.output),
+                    },
+                    ait_ports::ToolRecovery::RetrySafe => StoreResponse::ToolRecovery {
+                        recovery: "retry_safe".into(),
+                        output: None,
+                    },
+                    ait_ports::ToolRecovery::Unknown => StoreResponse::ToolRecovery {
+                        recovery: "unknown".into(),
+                        output: None,
+                    },
+                });
+            }
             StoreRequest::SaveRun { run } => RunMutation::SaveRun(Run::from_wire(*run)?),
             StoreRequest::SaveAttempt { run, attempt } => {
                 RunMutation::SaveAttempt(Run::from_wire(*run)?, RunAttempt::from_wire(attempt)?)
@@ -451,6 +565,11 @@ fn validate_private_input(request: &StoreRequest) -> Result<(), ProtocolError> {
             validate_wire_message_tool_inputs(value)
         }
         StoreRequest::SaveTool { tool: value, .. } => validate_wire_tool_input(value),
+        StoreRequest::ToolInteraction { request } => {
+            ait_contracts::sensitive::validate_tool_argument_value(&request.arguments)
+                .map_err(|_| ProtocolError::InvalidTransition)
+        }
+        StoreRequest::ToolInteractionRecovery { execution } => validate_wire_tool_input(execution),
         StoreRequest::AppendToolResult {
             tool: execution,
             message: result,
@@ -472,68 +591,4 @@ fn page<T>(entries: Vec<T>, offset: u32) -> Result<(Vec<T>, Option<u32>), Protoc
 }
 
 #[cfg(test)]
-mod private_input_tests {
-    use super::*;
-    use ait_contracts::worker::model;
-
-    fn assistant_message(arguments: String) -> model::Message {
-        model::Message {
-            id: "message".into(),
-            project_id: "project".into(),
-            parent_message_id: Some("parent".into()),
-            role: model::MessageRole::Assistant,
-            kind: model::MessageKind::Standard,
-            origin: model::MessageOrigin::Agent,
-            sub_messages: vec![model::SubMessage::ToolUse(model::ToolUse {
-                call_id: "private-input".into(),
-                tool_name: "write".into(),
-                arguments,
-                provider_metadata: None,
-            })],
-            created_by_session_id: None,
-            run_id: Some("run".into()),
-            run_seq: Some(1),
-            tool_result: None,
-            git_commit: None,
-            metadata: std::collections::BTreeMap::new(),
-            created_at: 1,
-        }
-    }
-
-    #[test]
-    fn daemon_ipc_rejects_malformed_messages_and_oversized_tool_intents() {
-        let malformed_secret = "NEC248_MALFORMED_IPC_SECRET";
-        let malformed = assistant_message(format!(r#"{{"content":"{malformed_secret}""#));
-        let error = validate_wire_message_tool_inputs(&malformed).unwrap_err();
-        assert_eq!(error, ProtocolError::InvalidTransition);
-        assert!(!error.to_string().contains(malformed_secret));
-
-        let oversized_secret = "NEC248_OVERSIZED_IPC_SECRET";
-        let tool = model::ToolExecution {
-            id: "tool".into(),
-            run_id: "run".into(),
-            call_id: "private-input".into(),
-            assistant_message_id: "message".into(),
-            tool_use_index: 0,
-            tool_result_message_id: None,
-            tool_name: "write".into(),
-            arguments: serde_json::json!({
-                "content": format!(
-                    "{oversized_secret}{}",
-                    "x".repeat(ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
-                )
-            }),
-            attempt: 1,
-            approval_status: model::ToolApprovalStatus::NotRequired,
-            status: model::ToolExecutionStatus::Pending,
-            result: None,
-            error: None,
-            started_at: None,
-            ended_at: None,
-            created_at: 1,
-        };
-        let error = validate_wire_tool_input(&tool).unwrap_err();
-        assert_eq!(error, ProtocolError::InvalidTransition);
-        assert!(!error.to_string().contains(oversized_secret));
-    }
-}
+mod private_input_tests;

@@ -25,6 +25,25 @@ test("an empty Project can open, repeat and cancel a new Session without persist
     { forks: [], sessions: [], runs: [] });
 });
 
+test("a draft inherits the global Default Agent when the Project has no override", async (t) => {
+  const page = await openFixture(t, () => {
+    window.fixture.projects[0].defaultAgentId = null;
+    const settings = window.ait.settings;
+    window.ait.settings = async () => {
+      const response = await settings();
+      response.values["agents.default_agent"] = "alternate";
+      return response;
+    };
+  });
+  await openDraft(page);
+  assert.equal(await page.locator("#composer-agent").inputValue(), "alternate");
+  assert.deepEqual(await page.evaluate(() => window.fixture.created), []);
+  await page.locator("#message-input").fill("Use the global default");
+  await page.locator("#send-button").click();
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
+  assert.equal(await page.evaluate(() => window.fixture.created[0].agentId), "alternate");
+});
+
 test("the first input creates one Session from the Project root even while another Session runs", async (t) => {
   const page = await openFixture(t);
   const original = await page.evaluate(() => structuredClone(window.fixture.sessions[1]));

@@ -1,5 +1,6 @@
+//! Shared helpers for application integration tests.
+
 #![allow(dead_code)]
-#![allow(missing_docs)]
 #![allow(clippy::pedantic)]
 
 use std::collections::{BTreeMap, HashMap};
@@ -31,14 +32,14 @@ const KINDS: [ControlRecordKind; 11] = [
 ];
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct WorkspaceView {
-    pub projects: Vec<ProjectView>,
-    pub agents: Vec<AgentView>,
-    pub providers: Vec<AgentProviderView>,
-    pub sessions: Vec<SessionView>,
-    pub messages: Vec<MessageView>,
-    pub runs: Vec<RunView>,
-    pub crons: Vec<CronView>,
+pub(crate) struct WorkspaceView {
+    pub(crate) projects: Vec<ProjectView>,
+    pub(crate) agents: Vec<AgentView>,
+    pub(crate) providers: Vec<AgentProviderView>,
+    pub(crate) sessions: Vec<SessionView>,
+    pub(crate) messages: Vec<MessageView>,
+    pub(crate) runs: Vec<RunView>,
+    pub(crate) crons: Vec<CronView>,
 }
 
 async fn execute(service: &LocalControlService, command: Command) -> CommandResult {
@@ -48,7 +49,7 @@ async fn execute(service: &LocalControlService, command: Command) -> CommandResu
 }
 
 /// Test-only aggregate assembled from bounded list commands.
-pub async fn workspace(service: &LocalControlService) -> WorkspaceView {
+pub(crate) async fn workspace(service: &LocalControlService) -> WorkspaceView {
     let CommandResult::Projects(projects) = execute(service, Command::ListProjects).await else {
         panic!("expected projects")
     };
@@ -113,13 +114,13 @@ pub async fn workspace(service: &LocalControlService) -> WorkspaceView {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct TestState {
-    pub revision: u64,
-    pub value: Value,
+pub(crate) struct TestState {
+    pub(crate) revision: u64,
+    pub(crate) value: Value,
 }
 
 #[async_trait]
-pub trait ControlStoreTestExt: ControlStore {
+pub(crate) trait ControlStoreTestExt: ControlStore {
     async fn load(&self) -> Result<TestState, ControlStoreError> {
         self.load_state().await
     }
@@ -173,7 +174,7 @@ pub trait ControlStoreTestExt: ControlStore {
 
 impl<T: ControlStore + ?Sized> ControlStoreTestExt for T {}
 
-pub fn terminal_run_status(changes: &[ControlChange]) -> Option<&str> {
+pub(crate) fn terminal_run_status(changes: &[ControlChange]) -> Option<&str> {
     changes.iter().rev().find_map(|change| match change {
         ControlChange::Put(record) if record.kind == ControlRecordKind::Run => {
             record.value["status"].as_str()
@@ -300,7 +301,7 @@ fn encode(value: &Value) -> BTreeMap<(ControlRecordKind, String), ControlRecord>
 }
 
 /// Reads private execution only through the durable store; public projections must omit it.
-pub async fn persisted_run(store: &dyn ControlStore, id: &str) -> RunView {
+pub(crate) async fn persisted_run(store: &dyn ControlStore, id: &str) -> RunView {
     let read = store
         .read(&[ControlFilter::id(ControlRecordKind::Run, id)])
         .await
@@ -314,7 +315,7 @@ pub async fn persisted_run(store: &dyn ControlStore, id: &str) -> RunView {
     )
     .unwrap()
 }
-pub async fn workspace_with_runs(
+pub(crate) async fn workspace_with_runs(
     service: &LocalControlService,
     store: &dyn ControlStore,
 ) -> WorkspaceView {

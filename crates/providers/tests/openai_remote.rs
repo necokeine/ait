@@ -28,11 +28,19 @@ async fn openai_compatible_adapter_normalizes_remote_sse() {
         let body = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+            concat!(
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,",
+                "\"completion_tokens\":2,\"total_tokens\":5}}\n\n",
+            ),
             "data: [DONE]\n\n"
         );
         let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "content-type: text/event-stream\r\n",
+                "content-length: {}\r\n",
+                "connection: close\r\n\r\n{}",
+            ),
             body.len(),
             body
         );
@@ -85,7 +93,13 @@ async fn openai_compatible_adapter_classifies_rate_limits() {
         let _ = socket.read(&mut request).await.unwrap();
         let body = r#"{"error":{"message":"slow down","code":"rate_limit"}}"#;
         let response = format!(
-            "HTTP/1.1 429 Too Many Requests\r\ncontent-type: application/json\r\nretry-after: 2\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            concat!(
+                "HTTP/1.1 429 Too Many Requests\r\n",
+                "content-type: application/json\r\n",
+                "retry-after: 2\r\n",
+                "content-length: {}\r\n",
+                "connection: close\r\n\r\n{}",
+            ),
             body.len(),
             body
         );

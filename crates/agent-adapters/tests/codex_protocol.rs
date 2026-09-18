@@ -85,7 +85,10 @@ async fn observed_sandbox(mode: SandboxMode) -> (String, Value) {
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
         (
@@ -240,17 +243,45 @@ async fn assert_codex_jsonl_lifecycle_and_usage(ephemeral: bool) {
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"item-1","delta":"done"}}),
+            json!({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1",
+                    "itemId": "item-1", "delta": "done",
+                },
+            }),
         )
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thr-1","turnId":"turn-1","tokenUsage":{"last":{"inputTokens":3,"cachedInputTokens":1,"outputTokens":2,"reasoningOutputTokens":0,"totalTokens":5},"total":{"inputTokens":3,"cachedInputTokens":1,"outputTokens":2,"reasoningOutputTokens":0,"totalTokens":5}}}}),
+            json!({
+                "method": "thread/tokenUsage/updated",
+                "params": {
+                    "threadId": "thr-1",
+                    "turnId": "turn-1",
+                    "tokenUsage": {
+                        "last": {
+                            "inputTokens": 3, "cachedInputTokens": 1, "outputTokens": 2,
+                            "reasoningOutputTokens": 0, "totalTokens": 5,
+                        },
+                        "total": {
+                            "inputTokens": 3, "cachedInputTokens": 1, "outputTokens": 2,
+                            "reasoningOutputTokens": 0, "totalTokens": 5,
+                        },
+                    },
+                },
+            }),
         )
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"threadId":"thr-1","turn":{"id":"turn-1","items":[],"status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thr-1",
+                    "turn": {"id": "turn-1", "items": [], "status": "completed"},
+                },
+            }),
         )
         .await;
     });
@@ -346,7 +377,14 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
             json!({"id":2,"result":{"turn":{"id":"turn-2"}}}),
         )
         .await;
-        write_json(&mut server_write, json!({"method":"turn/completed","params":{"turn":{"id":"turn-2","status":"completed"}}})).await;
+        write_json(
+            &mut server_write,
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-2", "status": "completed"}},
+            }),
+        )
+        .await;
     });
     let mut request = request();
     request.resume_thread_id = Some("existing-thread".into());
@@ -388,7 +426,11 @@ impl ApprovalHandler for InspectingCommandApproval {
         assert_eq!(
             request.target,
             NativeApprovalTarget::Command {
-                command: "curl -H X-Api-Key:[REDACTED] --header=Authorization:[REDACTED] -H Cookie:[REDACTED] https://[REDACTED]@example.com".into(),
+                command: concat!(
+                    "curl -H X-Api-Key:[REDACTED] --header=Authorization:[REDACTED] ",
+                    "-H Cookie:[REDACTED] https://[REDACTED]@example.com",
+                )
+                .into(),
                 cwd: "/workspace".into(),
             }
         );
@@ -431,7 +473,20 @@ async fn routes_command_approvals_through_handler() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","command":"curl -H X-Api-Key:header-secret --header=\"Authorization: Bearer auth-secret\" -H \"Cookie: session=cookie-secret\" https://url-user:url-secret@example.com","cwd":"/workspace","reason":"needs permission"}}),
+            json!({
+                "id": 99,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1", "itemId": "cmd-1",
+                    "command": concat!(
+                        "curl -H X-Api-Key:header-secret ",
+                        "--header=\"Authorization: Bearer auth-secret\" ",
+                        "-H \"Cookie: session=cookie-secret\" ",
+                        "https://url-user:url-secret@example.com",
+                    ),
+                    "cwd": "/workspace", "reason": "needs permission",
+                },
+            }),
         )
         .await;
         let response = read_json(&mut lines).await;
@@ -439,7 +494,13 @@ async fn routes_command_approvals_through_handler() {
         assert_eq!(response["result"]["decision"], "accept");
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"threadId":"thr-1","turn":{"id":"turn-1","items":[],"status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thr-1",
+                    "turn": {"id": "turn-1", "items": [], "status": "completed"},
+                },
+            }),
         )
         .await;
     });
@@ -538,7 +599,10 @@ async fn permission_approval_answers_the_original_request_id_with_explicit_profi
         assert!(response["result"].get("decision").is_none());
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -594,7 +658,13 @@ async fn mismatched_approval_correlation_fails_closed_before_the_handler() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":91,"method":"item/fileChange/requestApproval","params":{"threadId":"other-thread","turnId":"turn-1","itemId":"patch-1"}}),
+            json!({
+                "id": 91,
+                "method": "item/fileChange/requestApproval",
+                "params": {
+                    "threadId": "other-thread", "turnId": "turn-1", "itemId": "patch-1",
+                },
+            }),
         )
         .await;
         let response = read_json(&mut lines).await;
@@ -602,7 +672,10 @@ async fn mismatched_approval_correlation_fails_closed_before_the_handler() {
         assert_eq!(response["error"]["code"], -32602);
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -622,7 +695,11 @@ async fn mismatched_approval_correlation_fails_closed_before_the_handler() {
     });
     let mut saw_warning = false;
     while let Some(event) = receiver.recv().await {
-        saw_warning |= matches!(event.unwrap(), AgentEvent::AdapterWarning { code: Some(code), .. } if code == "CODEX_APPROVAL_CORRELATION_INVALID");
+        saw_warning |= matches!(
+            event.unwrap(),
+            AgentEvent::AdapterWarning { code: Some(code), .. }
+                if code == "CODEX_APPROVAL_CORRELATION_INVALID"
+        );
     }
     drive.await.unwrap().unwrap();
     server.await.unwrap();
@@ -654,7 +731,14 @@ async fn ambiguous_or_missing_approval_target_fails_closed_before_the_handler() 
         .await;
         write_json(
             &mut server_write,
-            json!({"id":92,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","reason":"arguments intentionally absent"}}),
+            json!({
+                "id": 92,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1", "itemId": "cmd-1",
+                    "reason": "arguments intentionally absent",
+                },
+            }),
         )
         .await;
         let response = read_json(&mut lines).await;
@@ -666,7 +750,15 @@ async fn ambiguous_or_missing_approval_target_fails_closed_before_the_handler() 
         ] {
             write_json(
                 &mut server_write,
-                json!({"id":id,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("cmd-{id}"),"command":command,"cwd":"/workspace","reason":"ambiguous header boundary"}}),
+                json!({
+                    "id": id,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": "thr-1", "turnId": "turn-1",
+                        "itemId": format!("cmd-{id}"), "command": command,
+                        "cwd": "/workspace", "reason": "ambiguous header boundary",
+                    },
+                }),
             )
             .await;
             let response = read_json(&mut lines).await;
@@ -675,7 +767,10 @@ async fn ambiguous_or_missing_approval_target_fails_closed_before_the_handler() 
         }
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -712,6 +807,7 @@ async fn ambiguous_or_missing_approval_target_fails_closed_before_the_handler() 
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // One complete elicitation exchange and continuation assertion.
 async fn declines_mcp_elicitation_with_the_original_id_and_continues() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
@@ -757,17 +853,29 @@ async fn declines_mcp_elicitation_with_the_original_id_and_continues() {
         assert!(response["result"]["content"].is_null());
         write_json(
             &mut server_write,
-            json!({"method":"serverRequest/resolved","params":{"threadId":"thr-1","requestId":"elicit-1"}}),
+            json!({
+                "method": "serverRequest/resolved",
+                "params": {"threadId": "thr-1", "requestId": "elicit-1"},
+            }),
         )
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"answer","delta":"continued"}}),
+            json!({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1",
+                    "itemId": "answer", "delta": "continued",
+                },
+            }),
         )
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -872,12 +980,21 @@ async fn rejects_unavailable_server_request_methods_without_leaking_params() {
         }
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"answer","delta":"still running"}}),
+            json!({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1",
+                    "itemId": "answer", "delta": "still running",
+                },
+            }),
         )
         .await;
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -973,7 +1090,14 @@ async fn decline_continues_but_cancel_interrupts_the_original_turn() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":71,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"item-71","command":"git status","cwd":"/workspace"}}),
+            json!({
+                "id": 71,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1", "itemId": "item-71",
+                    "command": "git status", "cwd": "/workspace",
+                },
+            }),
         )
         .await;
         let response = read_json(&mut lines).await;
@@ -981,12 +1105,30 @@ async fn decline_continues_but_cancel_interrupts_the_original_turn() {
         assert_eq!(response["result"]["decision"], "decline");
         write_json(
             &mut server_write,
-            json!({"method":"item/started","params":{"threadId":"thr-1","turnId":"turn-1","item":{"type":"fileChange","id":"item-72","status":"inProgress","changes":[{"path":"src/main.rs","kind":"update","diff":"never persist this patch"}]}}}),
+            json!({
+                "method": "item/started",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1",
+                    "item": {
+                        "type": "fileChange", "id": "item-72", "status": "inProgress",
+                        "changes": [{
+                            "path": "src/main.rs", "kind": "update",
+                            "diff": "never persist this patch",
+                        }],
+                    },
+                },
+            }),
         )
         .await;
         write_json(
             &mut server_write,
-            json!({"id":72,"method":"item/fileChange/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"item-72"}}),
+            json!({
+                "id": 72,
+                "method": "item/fileChange/requestApproval",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1", "itemId": "item-72",
+                },
+            }),
         )
         .await;
         let interrupt = read_json(&mut lines).await;
@@ -1105,6 +1247,7 @@ impl ApprovalHandler for PendingApproval {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Repeats the exchange to exercise the select race reliably.
 async fn buffered_resolution_wins_over_immediately_completed_approvals() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
@@ -1130,18 +1273,35 @@ async fn buffered_resolution_wins_over_immediately_completed_approvals() {
         for request_id in 100..132 {
             write_json(
                 &mut server_write,
-                json!({"id":request_id,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":format!("cmd-{request_id}"),"command":"git status","cwd":"/workspace"}}),
+                json!({
+                    "id": request_id,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": "thr-1", "turnId": "turn-1",
+                        "itemId": format!("cmd-{request_id}"),
+                        "command": "git status", "cwd": "/workspace",
+                    },
+                }),
             )
             .await;
             write_json(
                 &mut server_write,
-                json!({"method":"serverRequest/resolved","params":{"threadId":"thr-1","requestId":request_id}}),
+                json!({
+                    "method": "serverRequest/resolved",
+                    "params": {"threadId": "thr-1", "requestId": request_id},
+                }),
             )
             .await;
         }
         write_json(
             &mut server_write,
-            json!({"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"answer","delta":"not blocked"}}),
+            json!({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1",
+                    "itemId": "answer", "delta": "not blocked",
+                },
+            }),
         )
         .await;
         assert!(
@@ -1152,7 +1312,10 @@ async fn buffered_resolution_wins_over_immediately_completed_approvals() {
         );
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -1199,6 +1362,7 @@ async fn buffered_resolution_wins_over_immediately_completed_approvals() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Covers both answered and pending duplicate request states.
 async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
@@ -1220,7 +1384,14 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
             json!({"id":2,"result":{"turn":{"id":"turn-1"}}}),
         )
         .await;
-        let answered = json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-99","command":"git status","cwd":"/workspace"}});
+        let answered = json!({
+            "id": 99,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr-1", "turnId": "turn-1", "itemId": "cmd-99",
+                "command": "git status", "cwd": "/workspace",
+            },
+        });
         write_json(&mut server_write, answered.clone()).await;
         let response = read_json(&mut lines).await;
         assert_eq!(response["id"], 99);
@@ -1233,7 +1404,14 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
             "an answered request must not receive a second response"
         );
 
-        let pending = json!({"id":100,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-100","command":"git status","cwd":"/workspace"}});
+        let pending = json!({
+            "id": 100,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thr-1", "turnId": "turn-1", "itemId": "cmd-100",
+                "command": "git status", "cwd": "/workspace",
+            },
+        });
         write_json(&mut server_write, pending.clone()).await;
         write_json(&mut server_write, pending).await;
         let response = read_json(&mut lines).await;
@@ -1247,7 +1425,10 @@ async fn duplicate_ids_receive_at_most_one_response_with_immediate_approvals() {
         );
         write_json(
             &mut server_write,
-            json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            json!({
+                "method": "turn/completed",
+                "params": {"turn": {"id": "turn-1", "status": "completed"}},
+            }),
         )
         .await;
     });
@@ -1315,7 +1496,14 @@ async fn cancellation_interrupts_a_turn_while_approval_is_pending() {
         .await;
         write_json(
             &mut server_write,
-            json!({"id":99,"method":"item/commandExecution/requestApproval","params":{"threadId":"thr-1","turnId":"turn-1","itemId":"cmd-1","command":"git status","cwd":"/workspace"}}),
+            json!({
+                "id": 99,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thr-1", "turnId": "turn-1", "itemId": "cmd-1",
+                    "command": "git status", "cwd": "/workspace",
+                },
+            }),
         )
         .await;
         let interrupt = read_json(&mut lines).await;
@@ -1358,7 +1546,13 @@ async fn turn_sandbox_pins_writable_roots_and_excludes_implicit_temporary_direct
         ),
         (
             SandboxMode::WorkspaceWrite,
-            json!({"type":"workspaceWrite", "writableRoots":["/workspace"], "networkAccess":false, "excludeTmpdirEnvVar":true, "excludeSlashTmp":true}),
+            json!({
+                "type": "workspaceWrite",
+                "writableRoots": ["/workspace"],
+                "networkAccess": false,
+                "excludeTmpdirEnvVar": true,
+                "excludeSlashTmp": true,
+            }),
         ),
         (
             SandboxMode::DangerFullAccess,

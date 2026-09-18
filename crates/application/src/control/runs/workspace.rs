@@ -132,7 +132,10 @@ impl LocalControlService {
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
-        if matches!(run.provider.kind, AgentMode::OpenAI | AgentMode::DeepSeek) {
+        if matches!(
+            run.provider.kind,
+            AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini | AgentMode::MiniMax
+        ) {
             return self
                 .execute_api_run(&run, control.cancellation.clone())
                 .await;
@@ -160,7 +163,10 @@ impl LocalControlService {
             // before invoking either provider after startup recovery.
             validate_run_permission_ceiling(run.permission_profile, self.permission_limits)?;
             match run.provider.kind {
-                AgentMode::OpenAI | AgentMode::DeepSeek => Err(DomainError::invariant(
+                AgentMode::OpenAI
+                | AgentMode::DeepSeek
+                | AgentMode::Gemini
+                | AgentMode::MiniMax => Err(DomainError::invariant(
                     ErrorCode::InvalidRun,
                     "API Run must use the host coordinator",
                 )),
@@ -266,7 +272,7 @@ impl LocalControlService {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the invocation keeps immutable admission, finalization, and progress context together"
+        reason = "the invocation keeps immutable execution context together"
     )]
     async fn invoke_codex_workspace_checkpointed(
         &self,

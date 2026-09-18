@@ -21,7 +21,7 @@ use ait_domain::{
 use ait_ports::{
     AgentInvocation, AgentProviderGateway, AgentResponse, ApprovalDecision, CompletionResult,
     ControlStoreError, RunAgent, RunStore, RunStoreError, RunTool, ToolInvocation, ToolOutcome,
-    ToolRecovery,
+    ToolRecovery, ToolUsageRecorder,
 };
 use ait_runtime::{RunCoordinator, SystemClock, UuidIds};
 use async_trait::async_trait;
@@ -64,6 +64,7 @@ fn status(run: &Run) -> LifecycleStatus {
     run.status.into()
 }
 
+#[derive(Clone)]
 struct ProviderAgent {
     gateway: Arc<dyn AgentProviderGateway>,
     view: RunState,
@@ -242,7 +243,7 @@ impl LocalControlService {
             details: None,
             cause_id: None,
         })?;
-        let tools = match &self.api_tools {
+        let primary_tools = match &self.api_tools {
             Some(factory) => {
                 let factory = factory.clone();
                 let profile = view.permission_profile;
@@ -273,6 +274,22 @@ impl LocalControlService {
                     "provider credential is missing",
                 )
             })?;
+        let child_agent = ProviderAgent {
+            gateway: gateway.clone(),
+            view: view.clone(),
+            credential: credential.clone(),
+            names: primary_tools.executable_tools(),
+        };
+        let tools = self.api_tools.as_ref().map_or_else(
+            || primary_tools.clone(),
+            |factory| {
+                factory.extend_agent_tools(
+                    primary_tools.clone(),
+                    Arc::new(child_agent),
+                    Arc::new(self.clone()),
+                )
+            },
+        );
         let agent = ProviderAgent {
             gateway,
             view: view.clone(),
@@ -285,9 +302,9 @@ impl LocalControlService {
 fn api_domain_error_reverse(e: DomainError) -> ApiError {
     error(e.code, e.message, e.retryable)
 }
-struct ControlRunStore {
-    service: LocalControlService,
-    worker_deadline: std::sync::atomic::AtomicI64,
+pub(in crate::control) struct ControlRunStore {
+    pub(in crate::control) service: LocalControlService,
+    pub(in crate::control) worker_deadline: std::sync::atomic::AtomicI64,
     worker_connection: Mutex<Option<WorkerConnection>>,
     records: crate::control::state::records::RecordAccess,
     id: String,
@@ -321,7 +338,7 @@ fn validate_worker_transition(
 }
 
 impl ControlRunStore {
-    fn live_connection(
+    pub(in crate::control) fn live_connection(
         &self,
         lease: &ait_ports::WorkerLease,
     ) -> Option<tokio_util::sync::CancellationToken> {
@@ -331,6 +348,10 @@ impl ControlRunStore {
             .as_ref()
             .filter(|connection| connection.lease == *lease && !connection.closed.is_cancelled())
             .map(|connection| connection.closed.clone())
+    }
+    pub(in crate::control) fn worker_deadline(&self) -> i64 {
+        self.worker_deadline
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
     async fn latest_view(&self) -> Result<RunState, ApiError> {
         self.records
@@ -592,6 +613,47 @@ impl ControlRunStore {
 }
 #[async_trait]
 impl RunStore for ControlRunStore {
+    async fn request_tool_interaction(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        call_id: String,
+        execution_id: String,
+        tool_name: String,
+        arguments: Value,
+    ) -> Result<ToolOutcome, DomainError> {
+        let Some(connection) = self.live_connection(lease) else {
+            return Err(DomainError::invariant(
+                ErrorCode::RunRecoveryFailed,
+                "worker connection is unavailable",
+            ));
+        };
+        self.service
+            .request_api_tool_interaction(
+                ToolInvocation {
+                    run_id: lease.run_id.clone(),
+                    call_id,
+                    execution_id: ait_domain::ToolExecutionId::new(execution_id),
+                    tool_name,
+                    arguments,
+                    usage: ToolUsageRecorder::default(),
+                    cancellation: connection.child_token(),
+                },
+                Some(lease),
+                self.worker_deadline(),
+                connection,
+            )
+            .await
+            .map_err(crate::control::errors::api_domain_error)
+    }
+    async fn recover_tool_interaction(
+        &self,
+        execution: &ToolExecution,
+    ) -> Result<ToolRecovery, DomainError> {
+        self.service
+            .recover_api_tool_interaction(execution)
+            .await
+            .map_err(crate::control::errors::api_domain_error)
+    }
     async fn request_tool_approval(
         &self,
         lease: &ait_ports::WorkerLease,
@@ -634,6 +696,8 @@ impl RunStore for ControlRunStore {
         }
         self.service
             .interrupt_api_tool_approvals(lease.run_id.as_str(), lease.epoch);
+        self.service
+            .interrupt_tool_interactions(lease.run_id.as_str(), lease.epoch);
     }
     fn set_worker_deadline(&self, deadline: i64) {
         self.worker_deadline
@@ -1157,65 +1221,4 @@ pub(in crate::control) fn append_terminal_results(
 }
 
 #[cfg(test)]
-mod private_input_tests {
-    use super::*;
-
-    fn assistant_message(arguments: String) -> Message {
-        Message {
-            id: MessageId::from_u128(2),
-            project_id: ait_domain::ProjectId::new("project"),
-            parent_message_id: Some(MessageId::from_u128(1)),
-            role: MessageRole::Assistant,
-            kind: MessageKind::Standard,
-            origin: MessageOrigin::Agent,
-            sub_messages: vec![SubMessage::ToolUse(ait_domain::ToolUse {
-                call_id: "private-input".into(),
-                tool_name: "write".into(),
-                arguments,
-                provider_metadata: None,
-            })],
-            created_by_session_id: None,
-            run_id: Some(RunId::new("run")),
-            run_seq: Some(1),
-            tool_result: None,
-            git_commit: None,
-            metadata: ait_domain::DomainMetadata::default(),
-            created_at: ait_domain::TimestampMs(1),
-        }
-    }
-
-    #[test]
-    fn application_rejects_malformed_messages_and_oversized_tool_intents() {
-        let malformed_secret = "NEC248_MALFORMED_APPLICATION_SECRET";
-        let malformed = assistant_message(format!(r#"{{"content":"{malformed_secret}""#));
-        let error = validate_message_tool_inputs(&malformed).unwrap_err();
-        assert!(!error.to_string().contains(malformed_secret));
-
-        let oversized_secret = "NEC248_OVERSIZED_APPLICATION_SECRET";
-        let tool = ToolExecution {
-            id: ait_domain::ToolExecutionId::new("tool"),
-            run_id: RunId::new("run"),
-            call_id: "private-input".into(),
-            assistant_message_id: MessageId::from_u128(2),
-            tool_use_index: 0,
-            tool_result_message_id: None,
-            tool_name: "write".into(),
-            arguments: json!({
-                "content": format!(
-                    "{oversized_secret}{}",
-                    "x".repeat(ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
-                )
-            }),
-            attempt: 1,
-            approval_status: ait_domain::ToolApprovalStatus::NotRequired,
-            status: ait_domain::ToolExecutionStatus::Pending,
-            result: None,
-            error: None,
-            started_at: None,
-            ended_at: None,
-            created_at: ait_domain::TimestampMs(1),
-        };
-        let error = validate_execution_tool_input(&tool).unwrap_err();
-        assert!(!error.to_string().contains(oversized_secret));
-    }
-}
+mod private_input_tests;

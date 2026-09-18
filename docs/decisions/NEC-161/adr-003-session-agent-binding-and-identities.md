@@ -16,7 +16,7 @@ ADR-001 v4 将 Session 定义为可移动 Message ref，并允许每次 Run 选�
 3. `Session.agent_id` 为必填，替代可空的 `default_agent_id`；仅允许在 Session 空闲时通过显式 version CAS 更新。
 4. Session 是交互式 Agent 的最小运行单元。跟随 Session 创建的 Run 必须使用 `Session.agent_id`，并在 Run 创建时固定当时的 Agent revision。
 5. 同一 Message 需要并排比较不同 Agent 时仍创建多个 Session；连续使用同一 Session 时可在两个 Run 之间显式重绑 Agent。
-6. Cron 和显式无 Session Run 仍可直接选择 Agent，不受 Session 绑定约束。
+6. Cron 和显式无 Session Run 仍可直接选择具名 Agent；NEC-304 起 Cron 以该 Agent 创建 occurrence Session，显式无 Session Run 不受 Session 绑定约束。
 
 ## 不变量与存储影响
 

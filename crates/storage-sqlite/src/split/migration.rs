@@ -45,10 +45,16 @@ pub(super) fn initialize(
         backup_before_migration(connection, path)?;
         connection.execute_batch(RECORD_SCHEMA).map_err(sql_error)?;
         migrate_legacy_blob(connection)?;
-        let has_route: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('durable_events') WHERE name='project_id')",
-            [], |row| row.get(0),
-        ).map_err(sql_error)?;
+        let has_route: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('durable_events') ",
+                    "WHERE name='project_id')"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
         if !has_route {
             connection
                 .execute("ALTER TABLE durable_events ADD COLUMN project_id TEXT", [])

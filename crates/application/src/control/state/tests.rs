@@ -123,35 +123,56 @@ fn project(root: &str) -> ControlRecord {
     record(
         Kind::Project,
         "p",
-        json!({"id":"p","name":"Project","workdir":"/project","root_message_id":root,"base_commit":"a".repeat(40)}),
+        json!({
+            "id": "p", "name": "Project", "workdir": "/project",
+            "root_message_id": root, "base_commit": "a".repeat(40),
+        }),
     )
 }
 fn agent() -> ControlRecord {
     record(
         Kind::Agent,
         "a",
-        json!({"id":"a","name":"Agent","config":{"provider_id":"builtin-codex","model":"test"},"revision":1,"enabled":true}),
+        json!({
+            "id": "a", "name": "Agent",
+            "config": {"provider_id": "builtin-codex", "model": "test"},
+            "revision": 1, "enabled": true,
+        }),
     )
 }
 fn session(head: &str) -> ControlRecord {
     record(
         Kind::Session,
         "s",
-        json!({"id":"s","project_id":"p","agent_id":"a","current_message_id":head,"active_run_id":null,"version":1}),
+        json!({
+            "id": "s", "project_id": "p", "agent_id": "a",
+            "current_message_id": head, "active_run_id": null, "version": 1,
+        }),
     )
 }
 fn message(id: &str, parent: Option<&str>) -> ControlRecord {
     record(
         Kind::Message,
         id,
-        json!({"id":id,"project_id":"p","parent_message_id":parent,"role":if parent.is_none(){"system"}else{"assistant"},"kind":"standard","text":"text"}),
+        json!({
+            "id": id, "project_id": "p", "parent_message_id": parent,
+            "role": if parent.is_none() { "system" } else { "assistant" },
+            "kind": "standard", "text": "text",
+        }),
     )
 }
 fn run(head: &str) -> ControlRecord {
     record(
         Kind::Run,
         "r",
-        json!({"id":"r","project_id":"p","base_message_id":ROOT,"last_message_id":head,"session_id":"s","agent_id":"a","agent_revision":1,"config":{"provider_id":"builtin-codex","model":"test"},"provider":builtin_providers()[0].provider,"trigger":"manual","cron_id":null,"scheduled_at":null,"status":"running","error":null}),
+        json!({
+            "id": "r", "project_id": "p", "base_message_id": ROOT,
+            "last_message_id": head, "session_id": "s", "agent_id": "a",
+            "agent_revision": 1,
+            "config": {"provider_id": "builtin-codex", "model": "test"},
+            "provider": builtin_providers()[0].provider, "trigger": "manual",
+            "cron_id": null, "scheduled_at": null, "status": "running", "error": null,
+        }),
     )
 }
 
@@ -276,9 +297,11 @@ async fn session_reference_revision_is_checked_before_decoding() {
 #[tokio::test]
 async fn new_session_replans_changed_root_and_reads_only_ancestors() {
     let store = Probe::new(vec![
-        read(1, vec![project(ROOT), agent()]),
+        read(1, vec![project(ROOT)]),
+        read(1, vec![agent()]),
         read(2, vec![record(Kind::Message, ROOT, json!(null))]),
-        read(2, vec![project(NEXT), agent()]),
+        read(2, vec![project(NEXT)]),
+        read(2, vec![agent()]),
         read(2, vec![project(NEXT), agent(), message(NEXT, None)]),
     ]);
     let loaded = store
@@ -296,12 +319,12 @@ async fn new_session_replans_changed_root_and_reads_only_ancestors() {
     };
     assert_eq!(loaded.original.messages[0].id, NEXT);
     let reads = store.reads.lock().unwrap();
-    assert!(reads[1].contains(&ControlFilter::message_ancestors(ROOT)));
-    assert!(reads[3].contains(&ControlFilter::message_ancestors(NEXT)));
+    assert!(reads[2].contains(&ControlFilter::message_ancestors(ROOT)));
+    assert!(reads[5].contains(&ControlFilter::message_ancestors(NEXT)));
     assert!(reads.iter().flatten().all(|f| matches!(
         f,
         ControlFilter::Id {
-            kind: Kind::Project | Kind::Agent | Kind::Session,
+            kind: Kind::Project | Kind::Agent | Kind::Session | Kind::Settings,
             ..
         } | ControlFilter::MessageAncestors { .. }
     )));
