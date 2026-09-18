@@ -1,8 +1,10 @@
-//! Record access shared by the command service and the runtime bridge.
+//! Record-store access shared by use cases and the runtime bridge.
 use crate::control::LocalControlService;
-use crate::control::state::commands::CommandTransaction;
-use crate::control::state::transaction::{RecordContext, RecordTransaction};
-use crate::control::state::{ProviderContext, RunContext, SessionTitleContext};
+use crate::control::catalog::ProviderContext;
+use crate::control::conversation::SessionTitleContext;
+use crate::control::persistence::transaction::{RecordContext, RecordTransaction};
+use crate::control::runs::RunContext;
+use crate::control::use_cases::transaction::CommandTransaction;
 use ait_contracts::{ApiError, Command};
 use ait_ports::{ControlStore, ControlStoreError, PendingEvent};
 use std::sync::Arc;

@@ -1,4 +1,5 @@
 use super::*;
+use ait_domain::{MessageKind, MessageOrigin, MessageRole};
 
 fn assistant_message(arguments: String) -> Message {
     Message {

@@ -1,7 +1,10 @@
 //! Typed change collection and the single record/event commit boundary.
-use crate::control::model::ProviderState;
-use crate::control::model::RunState;
-use crate::control::model::{AgentState, CronState, MessageState, ProjectState, SessionState};
+use crate::control::catalog::AgentRecord;
+use crate::control::catalog::ProviderRecord;
+use crate::control::conversation::{MessageRecord, SessionRecord};
+use crate::control::cron::CronRecord;
+use crate::control::project::ProjectRecord;
+use crate::control::runs::RunRecord;
 
 use crate::control::runs::journal::WorkspaceRunJournal;
 use ait_contracts::SettingsDocument;
@@ -19,13 +22,13 @@ pub(in crate::control) trait RecordContext: Clone + DeserializeOwned {
 
 /// Only the context's declared record families can produce typed changes.
 pub(in crate::control) enum TypedChange {
-    Project(ProjectState),
-    Agent(AgentState),
-    Provider(ProviderState),
-    Session(SessionState),
-    Message(MessageState),
-    Run(Box<RunState>),
-    Cron(CronState),
+    Project(ProjectRecord),
+    Agent(AgentRecord),
+    Provider(ProviderRecord),
+    Session(SessionRecord),
+    Message(MessageRecord),
+    Run(Box<RunRecord>),
+    Cron(CronRecord),
     ProviderCredential(String, String),
     RunCredential(String, String),
     WorkspaceRunJournal(String, WorkspaceRunJournal),
@@ -50,12 +53,12 @@ macro_rules! entity {
         }
     };
 }
-entity!(ProjectState, Project, id);
-entity!(AgentState, Agent, id);
-entity!(ProviderState, Provider, provider.id);
-entity!(SessionState, Session, id);
-entity!(MessageState, Message, id);
-impl Entity for RunState {
+entity!(ProjectRecord, Project, id);
+entity!(AgentRecord, Agent, id);
+entity!(ProviderRecord, Provider, provider.id);
+entity!(SessionRecord, Session, id);
+entity!(MessageRecord, Message, id);
+impl Entity for RunRecord {
     const KIND: Kind = Kind::Run;
     fn id(&self) -> &str {
         &self.id
@@ -67,7 +70,7 @@ impl Entity for RunState {
         self.compatibility_repair
     }
 }
-entity!(CronState, Cron, id);
+entity!(CronRecord, Cron, id);
 
 pub(in crate::control) fn diff_records<T: Entity>(
     before: &[T],

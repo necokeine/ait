@@ -1,13 +1,13 @@
 //! Session exclusion and canonical Project workspace write leases.
 use crate::control::LocalControlService;
 use crate::control::catalog::{require_agent, validate_config};
+use crate::control::conversation::SessionRecord;
 use crate::control::errors::error;
-use crate::control::model::SessionState;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
-use crate::control::project::require_project_view;
-use crate::control::state::{
+use crate::control::persistence::{
     HasAgents, HasCrons, HasProjects, HasProviders, HasRuns, HasSessions, HasSettings,
 };
+use crate::control::project::require_project_view;
 use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
 use std::path::{Path, PathBuf};
@@ -133,7 +133,7 @@ fn busy() -> ApiError {
     )
 }
 
-pub(in crate::control) fn ensure_idle(session: &SessionState) -> Result<(), ApiError> {
+pub(in crate::control) fn ensure_idle(session: &SessionRecord) -> Result<(), ApiError> {
     if session.active_run_id().is_some() {
         Err(busy())
     } else {

@@ -223,7 +223,7 @@ impl LocalControlService {
                 .await?;
             if let CommandOutcome::Ready(result) = &outcome
                 && let CommandResult::Run(run) = result.as_ref()
-                && crate::control::model::cancellation_requested(run)
+                && crate::control::runs::cancellation_requested(run)
                 && let Some(token) = self
                     .cancellations
                     .lock()
@@ -248,7 +248,7 @@ impl LocalControlService {
             .await?;
         if let CommandOutcome::Ready(result) = &outcome
             && let CommandResult::Run(run) = result.as_ref()
-            && crate::control::model::cancellation_requested(run)
+            && crate::control::runs::cancellation_requested(run)
         {
             *decision = WorkspaceFinalizationDecision::Cancelled;
             control.cancellation.cancel();

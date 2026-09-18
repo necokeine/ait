@@ -1,5 +1,5 @@
 //! Command admission and CAS commits; execution continuations run only after persistence.
-use crate::control::model::RunState;
+use crate::control::runs::RunRecord;
 
 use crate::control::LocalControlService;
 use crate::control::errors::{error, store_error};
@@ -15,11 +15,11 @@ use std::sync::Arc;
 /// is committed. A public `RunView` is a result snapshot, never an execution signal.
 pub(in crate::control) enum CommandOutcome {
     Ready(Box<CommandResult>),
-    ExecuteRun(Box<RunState>),
+    ExecuteRun(Box<RunRecord>),
 }
 
 impl CommandOutcome {
-    pub(in crate::control) fn for_new_run(run: RunState) -> Self {
+    pub(in crate::control) fn for_new_run(run: RunRecord) -> Self {
         Self::ExecuteRun(Box::new(run))
     }
 }
@@ -344,7 +344,7 @@ impl LocalControlService {
     }
     async fn allocate_project_directory(
         &self,
-        initial: &crate::control::state::commands::CommandTransaction,
+        initial: &crate::control::use_cases::transaction::CommandTransaction,
         command: &mut Command,
         created_workdir: &mut Option<PathBuf>,
     ) -> Result<(), ApiError> {

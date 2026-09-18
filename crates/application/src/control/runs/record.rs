@@ -1,5 +1,5 @@
-//! Application Run aggregate. Transport projections are built only at boundaries.
-use super::{NativeApprovalState, ToolInteractionState};
+//! Persisted application Run aggregate and explicit transport projections.
+use super::{NativeApprovalRecord, ToolInteractionRecord};
 use ait_contracts::{ApiError, RunView, WorkerCommitReceipt};
 use ait_domain::{
     AgentConfiguration, AgentProvider, LifecyclePhase, LifecycleStatus, RunPermissionProfile,
@@ -7,7 +7,7 @@ use ait_domain::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[derive(Clone, Debug, PartialEq)]
-pub(in crate::control) struct RunState {
+pub(in crate::control) struct RunRecord {
     pub compatibility_repair: bool,
     /// Canonical host runtime state for API Providers; absent for native harness Runs.
     pub lifecycle: RunLifecycle,
@@ -23,9 +23,9 @@ pub(in crate::control) struct RunState {
     /// Effective non-secret permission policy fixed when this Run was created.
     pub permission_profile: RunPermissionProfile,
     /// Codex-native approval audit records. They are not Ait ToolUse/ToolResult.
-    pub native_approvals: Vec<NativeApprovalState>,
+    pub native_approvals: Vec<NativeApprovalRecord>,
     pub tool_approvals: Vec<ait_domain::ToolApprovalRecord>,
-    pub tool_interactions: Vec<ToolInteractionState>,
+    pub tool_interactions: Vec<ToolInteractionRecord>,
     pub trigger: ait_domain::RunTrigger,
     pub cron_id: Option<String>,
     pub scheduled_at: Option<i64>,
@@ -40,7 +40,7 @@ pub(in crate::control) struct RunState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(in crate::control) struct ApiRunState {
+pub(in crate::control) struct ApiRunExecution {
     pub run: ait_domain::Run,
     pub attempts: Vec<ait_domain::RunAttempt>,
     pub tools: Vec<ait_domain::ToolExecution>,
@@ -58,7 +58,7 @@ pub(in crate::control) enum RunLifecycle {
         error: Option<ait_domain::DomainError>,
     },
     Api {
-        execution: Box<ApiRunState>,
+        execution: Box<ApiRunExecution>,
         cancel_requested: bool,
     },
 }
@@ -72,7 +72,7 @@ impl RunLifecycle {
         }
     }
 }
-impl RunState {
+impl RunRecord {
     fn validate_execution(&self) -> Result<(), &'static str> {
         let Some(execution) = self.execution() else {
             return Ok(());
@@ -213,19 +213,19 @@ impl RunState {
             }
         }
     }
-    pub(in crate::control) fn execution(&self) -> Option<&ApiRunState> {
+    pub(in crate::control) fn execution(&self) -> Option<&ApiRunExecution> {
         match &self.lifecycle {
             RunLifecycle::Api { execution, .. } => Some(execution),
             RunLifecycle::Workspace { .. } => None,
         }
     }
-    pub(in crate::control) fn execution_mut(&mut self) -> Option<&mut ApiRunState> {
+    pub(in crate::control) fn execution_mut(&mut self) -> Option<&mut ApiRunExecution> {
         match &mut self.lifecycle {
             RunLifecycle::Api { execution, .. } => Some(execution),
             RunLifecycle::Workspace { .. } => None,
         }
     }
-    pub(in crate::control) fn install_execution(&mut self, execution: ApiRunState) {
+    pub(in crate::control) fn install_execution(&mut self, execution: ApiRunExecution) {
         let cancel_requested = self.status() == LifecycleStatus::Cancelling;
         self.lifecycle = RunLifecycle::Api {
             execution: Box::new(execution),
@@ -254,12 +254,12 @@ impl RunState {
             tool_interactions: self
                 .tool_interactions
                 .iter()
-                .map(ToolInteractionState::view)
+                .map(ToolInteractionRecord::view)
                 .collect(),
             native_approvals: self
                 .native_approvals
                 .iter()
-                .map(NativeApprovalState::view)
+                .map(NativeApprovalRecord::view)
                 .collect(),
             trigger: self.trigger.as_str().into(),
             cron_id: self.cron_id.clone(),
@@ -283,14 +283,14 @@ impl RunState {
         }
     }
 }
-impl Serialize for RunState {
+impl Serialize for RunRecord {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.validate_execution()
             .map_err(serde::ser::Error::custom)?;
         self.record().serialize(serializer)
     }
 }
-impl<'de> Deserialize<'de> for RunState {
+impl<'de> Deserialize<'de> for RunRecord {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let view = RunView::deserialize(deserializer)?;
         let status: LifecycleStatus =
@@ -305,7 +305,7 @@ impl<'de> Deserialize<'de> for RunState {
         let legacy_last = view.last_message_id.clone();
         let lifecycle = match view.execution {
             Some(e) => RunLifecycle::Api {
-                execution: Box::new(ApiRunState {
+                execution: Box::new(ApiRunExecution {
                     run: e.run,
                     attempts: e.attempts,
                     tools: e.tools,

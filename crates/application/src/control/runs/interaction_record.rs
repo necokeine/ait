@@ -1,8 +1,9 @@
+//! Persisted user interaction records for one Run tool call.
 use ait_contracts::ToolInteractionView;
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(in crate::control) struct ToolInteractionState {
+pub(in crate::control) struct ToolInteractionRecord {
     pub id: String,
     pub run_id: String,
     pub tool_name: String,
@@ -15,7 +16,7 @@ pub(in crate::control) struct ToolInteractionState {
     pub decided_at: Option<i64>,
 }
 
-impl ToolInteractionState {
+impl ToolInteractionRecord {
     pub(in crate::control) fn view(&self) -> ToolInteractionView {
         ToolInteractionView {
             id: self.id.clone(),
@@ -32,7 +33,7 @@ impl ToolInteractionState {
     }
 }
 
-impl From<ToolInteractionView> for ToolInteractionState {
+impl From<ToolInteractionView> for ToolInteractionRecord {
     fn from(view: ToolInteractionView) -> Self {
         Self {
             id: view.id,

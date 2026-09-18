@@ -1,5 +1,4 @@
 //! Shared service composition, public command entry points and exhaustive command routing.
-mod model;
 
 use crate::control::runs::finalization::RunControl;
 use ait_contracts::{Command, Response};
@@ -20,12 +19,13 @@ pub(in crate::control) mod errors;
 pub(in crate::control) mod events;
 pub(in crate::control) mod execution;
 pub(in crate::control) mod permissions;
+pub(in crate::control) mod persistence;
 pub(in crate::control) mod project;
 pub(in crate::control) mod runs;
 pub(in crate::control) mod settings;
-pub(in crate::control) mod state;
 pub(in crate::control) mod tool_approvals;
 pub(in crate::control) mod tool_interactions;
+pub(in crate::control) mod use_cases;
 
 pub use permissions::PermissionPolicyLimits;
 pub use runs::recovery::StartupRecoveryPlan;

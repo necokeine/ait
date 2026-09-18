@@ -4,17 +4,17 @@ use crate::control::approvals::expire_pending_native_approvals;
 use crate::control::conversation::release_session;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
-use crate::control::model::RunState;
 use crate::control::permissions::validate_run_permission_ceiling;
+use crate::control::persistence::{
+    HasMessages, HasRuns, HasSessions, HasSettings, HasWorkspaceRunJournals,
+};
+use crate::control::runs::RunRecord;
 use crate::control::runs::finalization::{InvocationGuard, RunControl, RunControlGuard};
 use crate::control::runs::journal::{
     WorkspaceExecutionLease, ensure_current_lease, ensure_journal_lease,
 };
 use crate::control::runs::workspace::workspace_invocation;
 use crate::control::runs::{api_run, is_terminal_run_status};
-use crate::control::state::{
-    HasMessages, HasRuns, HasSessions, HasSettings, HasWorkspaceRunJournals,
-};
 use ait_contracts::ApiError;
 use ait_domain::{ErrorCode, NativeApprovalStatus};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
@@ -34,7 +34,7 @@ enum RecoveryPolicy {
 pub(in crate::control) enum WorkspaceRecoveryClaim {
     Execute,
     Finalize(WorkspaceExecutionLease),
-    Recovered(Box<RunState>),
+    Recovered(Box<RunRecord>),
     Skip,
 }
 
@@ -173,12 +173,12 @@ impl LocalControlService {
     ) -> Result<Vec<ait_contracts::RunView>, ApiError> {
         self.run_startup_recovery_states(plan)
             .await
-            .map(|runs| runs.iter().map(RunState::view).collect())
+            .map(|runs| runs.iter().map(RunRecord::view).collect())
     }
     async fn run_startup_recovery_states(
         &self,
         plan: StartupRecoveryPlan,
-    ) -> Result<Vec<RunState>, ApiError> {
+    ) -> Result<Vec<RunRecord>, ApiError> {
         let mut recovered = Vec::new();
         for run_id in plan.run_ids {
             let workspace_lease = match self.acquire_workspace_write_for_run(&run_id).await {
@@ -412,7 +412,7 @@ impl LocalControlService {
         &self,
         lease: &WorkspaceExecutionLease,
         control: Arc<RunControl>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         let state = self.read_run_records(&lease.run_id).await?.original;
         let run = state
             .runs
@@ -465,7 +465,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
         failure: &ApiError,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(run_id).await?;
             let mut state = loaded.original.clone();

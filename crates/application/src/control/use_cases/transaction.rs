@@ -1,35 +1,38 @@
-//! Exhaustive typed command dispatch. Each arm exposes only its context.
+//! Exhaustive typed command transaction dispatch. Each arm exposes only its context.
 use crate::control::approvals::resolve_native_approval;
-use crate::control::catalog::{register_agent, set_session_config, update_agent};
+use crate::control::catalog::{
+    AgentContext, AgentsContext, ProviderContext, register_agent, set_session_config, update_agent,
+};
+use crate::control::conversation::SessionRecord;
 use crate::control::conversation::messages::send_message;
 use crate::control::conversation::title::set_session_title;
 use crate::control::conversation::{
-    ForkSessionInput, create_session, derive_session, fork_session, rename_session,
-    set_session_agent,
+    ConversationContext, ForkSessionInput, MessagesContext, NewSessionContext,
+    SessionBindingContext, SessionConfigContext, SessionsContext, create_session, derive_session,
+    fork_session, rename_session, set_session_agent,
 };
-use crate::control::cron::{create_cron, set_cron_enabled, trigger_cron};
+use crate::control::cron::CronRecord;
+use crate::control::cron::{
+    CronCreateContext, CronTriggerContext, CronsContext, create_cron, set_cron_enabled,
+    trigger_cron,
+};
 use crate::control::errors::error;
 use crate::control::execution::CommandOutcome;
-use crate::control::model::{CronState, ProjectState, SessionState};
+use crate::control::project::ProjectRecord;
 use crate::control::project::archive::{
     export_project, import_project, validate_import_conflicts, validate_project_export,
 };
 use crate::control::project::git::{GitBaseline, PreparedProject, require_user_git_baseline};
 use crate::control::project::{
+    ArchiveContext, ProjectAgentContext, ProjectRegistrationContext, ProjectsContext,
     register_project, set_project_default_agent, update_project, validate_project_workdir,
 };
-use crate::control::runs::cancel_run;
+use crate::control::runs::{RunControlContext, RunsContext, cancel_run};
 
 use crate::control::errors::store_error;
 use crate::control::permissions::PermissionPolicyLimits;
-use crate::control::settings::{reset_settings, save_settings, settings_view};
-use crate::control::state::transaction::RecordTransaction;
-use crate::control::state::{
-    AgentContext, AgentsContext, ArchiveContext, ConversationContext, CronCreateContext,
-    CronTriggerContext, CronsContext, MessagesContext, NewSessionContext, ProjectAgentContext,
-    ProjectRegistrationContext, ProjectsContext, ProviderContext, RunControlContext, RunsContext,
-    SessionBindingContext, SessionConfigContext, SessionsContext, SettingsContext,
-};
+use crate::control::persistence::transaction::RecordTransaction;
+use crate::control::settings::{SettingsContext, reset_settings, save_settings, settings_view};
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlChange, PendingEvent, ProjectWorkspace, WorkspaceLease};
@@ -289,7 +292,7 @@ impl CommandTransaction {
                     .original
                     .projects
                     .iter()
-                    .map(crate::control::model::ProjectState::view)
+                    .map(crate::control::project::ProjectRecord::view)
                     .collect(),
             )),
             (Self::Agents(loaded), Command::ListAgents) => Ok(CommandResult::Agents(
@@ -297,7 +300,7 @@ impl CommandTransaction {
                     .original
                     .agents
                     .iter()
-                    .map(crate::control::model::AgentState::view)
+                    .map(crate::control::catalog::AgentRecord::view)
                     .collect(),
             )),
             (Self::Provider(loaded), Command::ListAgentProviders) => {
@@ -306,7 +309,7 @@ impl CommandTransaction {
                         .original
                         .providers
                         .iter()
-                        .map(crate::control::model::ProviderState::view)
+                        .map(crate::control::catalog::ProviderRecord::view)
                         .collect(),
                 ))
             }
@@ -315,7 +318,7 @@ impl CommandTransaction {
                     .original
                     .sessions
                     .iter()
-                    .map(crate::control::model::SessionState::view)
+                    .map(crate::control::conversation::SessionRecord::view)
                     .collect(),
             )),
             (Self::Messages(loaded), Command::ListMessages { .. }) => Ok(CommandResult::Messages(
@@ -323,7 +326,7 @@ impl CommandTransaction {
                     .original
                     .messages
                     .iter()
-                    .map(crate::control::model::MessageState::view)
+                    .map(crate::control::conversation::MessageRecord::view)
                     .collect(),
             )),
             (Self::Runs(loaded), Command::ListRuns { .. }) => Ok(CommandResult::Runs(
@@ -331,7 +334,7 @@ impl CommandTransaction {
                     .original
                     .runs
                     .iter()
-                    .map(crate::control::model::RunState::view)
+                    .map(crate::control::runs::RunRecord::view)
                     .collect(),
             )),
             (Self::Crons(loaded), Command::ListCrons) => Ok(CommandResult::Crons(
@@ -339,7 +342,7 @@ impl CommandTransaction {
                     .original
                     .crons
                     .iter()
-                    .map(crate::control::model::CronState::view)
+                    .map(crate::control::cron::CronRecord::view)
                     .collect(),
             )),
             _ => unreachable!("read command/context mismatch"),
@@ -651,14 +654,14 @@ impl CommandTransaction {
 pub(in crate::control) enum PreparationKey {
     None,
     Session {
-        projects: Vec<ProjectState>,
-        sessions: Vec<SessionState>,
+        projects: Vec<ProjectRecord>,
+        sessions: Vec<SessionRecord>,
         messages: Vec<MessageBaseline>,
         resolved_agent_id: Option<String>,
     },
     Cron {
-        projects: Vec<ProjectState>,
-        crons: Vec<CronState>,
+        projects: Vec<ProjectRecord>,
+        crons: Vec<CronRecord>,
         messages: Vec<MessageBaseline>,
     },
 }
@@ -671,10 +674,10 @@ pub(in crate::control) struct MessageBaseline {
 }
 fn session_preparation_key(
     state: &(
-         impl crate::control::state::HasProjects
-         + crate::control::state::HasSessions
-         + crate::control::state::HasMessages
-         + crate::control::state::HasSettings
+         impl crate::control::persistence::HasProjects
+         + crate::control::persistence::HasSessions
+         + crate::control::persistence::HasMessages
+         + crate::control::persistence::HasSettings
      ),
     command: &Command,
 ) -> Result<PreparationKey, ApiError> {
@@ -706,7 +709,9 @@ fn session_preparation_key(
     })
 }
 
-fn message_baselines(messages: &[crate::control::model::MessageState]) -> Vec<MessageBaseline> {
+fn message_baselines(
+    messages: &[crate::control::conversation::MessageRecord],
+) -> Vec<MessageBaseline> {
     messages
         .iter()
         .map(|message| MessageBaseline {

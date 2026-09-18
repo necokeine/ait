@@ -5,12 +5,12 @@ use crate::control::conversation::messages::{append_output, message};
 use crate::control::conversation::release_session;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
-use crate::control::model::RunState;
+use crate::control::persistence::{HasMessages, HasSessions};
+use crate::control::runs::RunRecord;
 use crate::control::runs::journal::{
     WorkspaceExecutionLease, ensure_current_lease, ensure_journal_lease,
 };
 use crate::control::runs::{api_run, is_terminal_run_status};
-use crate::control::state::{HasMessages, HasSessions};
 use ait_contracts::ApiError;
 use ait_domain::{DomainError, ErrorCode, NativeApprovalStatus};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
@@ -26,7 +26,7 @@ async fn wait_for_workspace_terminal_persistence(failures: &mut u32) {
 
 fn apply_workspace_terminal_result(
     state: &mut (impl HasMessages + HasSessions),
-    run: &mut RunState,
+    run: &mut RunRecord,
     result: &Result<WorkspaceAgentResponse, DomainError>,
 ) {
     match result {
@@ -109,7 +109,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
         result: Result<WorkspaceAgentResponse, DomainError>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         let lease = self.current_workspace_lease(run_id).await?;
         self.finish_workspace_run(&lease, result).await
     }
@@ -154,7 +154,7 @@ impl LocalControlService {
         &self,
         lease: &WorkspaceExecutionLease,
         result: Result<WorkspaceAgentResponse, DomainError>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         let mut persistence_failures = 0_u32;
         loop {
             let Ok(loaded) = self.read_run_records(&lease.run_id).await else {

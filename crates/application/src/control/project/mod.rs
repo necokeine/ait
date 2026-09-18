@@ -1,10 +1,10 @@
 //! Project registration and default Agent selection.
 use crate::control::catalog::require_named_agent;
+use crate::control::conversation::MessageRecord;
 use crate::control::errors::error;
 use crate::control::events::{now, pending};
-use crate::control::model::{MessageState, ProjectState};
+use crate::control::persistence::{HasAgents, HasMessages, HasProjects};
 use crate::control::project::git::PreparedProject;
-use crate::control::state::{HasAgents, HasMessages, HasProjects};
 use ait_contracts::{ApiError, CommandResult};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
@@ -104,7 +104,7 @@ pub(in crate::control) fn register_project(
     let canonical_text = prepared.workdir.clone();
     validate_project_workdir(state, &canonical_text)?;
     let root_id = Uuid::new_v4().to_string();
-    let project = ProjectState {
+    let project = ProjectRecord {
         id: id.clone(),
         name,
         workdir: canonical_text,
@@ -113,7 +113,7 @@ pub(in crate::control) fn register_project(
         base_commit,
         defaults: ait_domain::ProjectDefaults::default(),
     };
-    state.messages_mut().push(MessageState {
+    state.messages_mut().push(MessageRecord {
         id: root_id,
         project_id: id.clone(),
         parent_message_id: None,
@@ -152,10 +152,16 @@ pub(in crate::control) fn validate_project_workdir(
 pub(in crate::control) fn require_project_view<'a>(
     state: &'a impl HasProjects,
     project_id: &str,
-) -> Result<&'a ProjectState, ApiError> {
+) -> Result<&'a ProjectRecord, ApiError> {
     state
         .projects()
         .iter()
         .find(|project| project.id == project_id)
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))
 }
+mod context;
+mod record;
+pub(in crate::control) use context::{
+    ArchiveContext, ProjectAgentContext, ProjectRegistrationContext, ProjectsContext,
+};
+pub(in crate::control) use record::ProjectRecord;

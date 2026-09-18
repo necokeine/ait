@@ -2,7 +2,7 @@
 use super::errors::{api_domain_error, error, store_error};
 use super::events::{now, pending};
 use super::project::worktrees::run_workdir;
-use super::{LocalControlService, model::RunState};
+use super::{LocalControlService, runs::RunRecord};
 use ait_contracts::{ApiError, Command, CommandResult, RunView, ToolApprovalAction};
 use ait_domain::{
     DomainError, ErrorCode, LifecycleStatus, ToolApprovalRecord, ToolApprovalState as Status,
@@ -49,7 +49,7 @@ fn digest(tool: &ToolExecution) -> Result<String, ApiError> {
         Sha256::digest(serde_json::to_vec(&tool.arguments).map_err(|_| invalid())?)
     ))
 }
-fn active(run: &RunState, lease: Option<&WorkerLease>) -> bool {
+fn active(run: &RunRecord, lease: Option<&WorkerLease>) -> bool {
     !run.status().is_terminal()
         && run.status() != LifecycleStatus::Cancelling
         && lease.is_none_or(|lease| {
@@ -61,7 +61,7 @@ fn active(run: &RunState, lease: Option<&WorkerLease>) -> bool {
                     == Some(lease.instance_id.as_str())
         })
 }
-fn tool_for<'a>(run: &'a RunState, grant: &ToolGrant) -> Option<&'a ToolExecution> {
+fn tool_for<'a>(run: &'a RunRecord, grant: &ToolGrant) -> Option<&'a ToolExecution> {
     run.execution()?.tools.iter().find(|t| {
         t.id.as_str() == grant.execution_id
             && t.call_id == grant.call_id
@@ -71,7 +71,7 @@ fn tool_for<'a>(run: &'a RunState, grant: &ToolGrant) -> Option<&'a ToolExecutio
 }
 
 /// Revoke all outstanding authority at cancellation, terminal settlement, or lease change.
-pub(super) fn expire(run: &mut RunState, status: Status) {
+pub(super) fn expire(run: &mut RunRecord, status: Status) {
     for approval in &mut run.tool_approvals {
         if matches!(approval.status, Status::Pending | Status::Approved) {
             approval.status = status;
@@ -82,7 +82,7 @@ pub(super) fn expire(run: &mut RunState, status: Status) {
 
 /// A new worker must not recreate approvals for the previous worker's intents,
 /// including intents whose target review had not yet produced an audit record.
-pub(super) fn fence_pending_tools(run: &mut RunState) {
+pub(super) fn fence_pending_tools(run: &mut RunRecord) {
     if let Some(execution) = run.execution_mut() {
         for tool in &mut execution.tools {
             if tool.status == ToolExecutionStatus::Pending
@@ -123,7 +123,7 @@ impl RunApproval for LocalControlService {
 impl LocalControlService {
     async fn review_tool(
         &self,
-        run: &RunState,
+        run: &RunRecord,
         tool: &ToolExecution,
     ) -> Result<ait_domain::ToolApprovalTarget, ApiError> {
         let state = self.read_run_records(&run.id).await?.original;
@@ -251,7 +251,7 @@ impl LocalControlService {
 
     fn register_tool_waiter(
         &self,
-        run: &RunState,
+        run: &RunRecord,
         id: &str,
         sender: &tokio::sync::watch::Sender<Option<Status>>,
         connection: &CancellationToken,
@@ -276,7 +276,7 @@ impl LocalControlService {
 
     fn tool_approval_deadline(
         &self,
-        run: &RunState,
+        run: &RunRecord,
         worker_deadline: i64,
     ) -> Result<i64, ApiError> {
         let execution = run.execution().ok_or_else(invalid)?;

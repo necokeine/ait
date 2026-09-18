@@ -1,13 +1,15 @@
 //! Project archive import, export and validation.
+use crate::control::catalog::AgentRecord;
+use crate::control::catalog::ProviderRecord;
 use crate::control::catalog::validate_provider;
+use crate::control::conversation::{MessageRecord, SessionRecord};
 use crate::control::errors::{error, serialization_error};
 use crate::control::events::pending;
-use crate::control::model::ProviderState;
-use crate::control::model::{AgentState, MessageState, ProjectState, SessionState};
+use crate::control::persistence::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
+use crate::control::project::ProjectRecord;
 use crate::control::project::git::{PreparedProject, is_git_commit};
 use crate::control::project::validate_project_workdir;
 use crate::control::project::worktrees::session_worktree_path;
-use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
 use ait_contracts::{ApiError, CommandResult, PROJECT_EXPORT_VERSION, ProjectExport};
@@ -31,7 +33,7 @@ pub(in crate::control) fn export_project(
         .messages()
         .iter()
         .filter(|message| message.project_id == project_id)
-        .map(crate::control::model::MessageState::view)
+        .map(crate::control::conversation::MessageRecord::view)
         .map(|mut message| {
             if message
                 .data
@@ -50,7 +52,7 @@ pub(in crate::control) fn export_project(
         .sessions()
         .iter()
         .filter(|session| session.project_id == project_id)
-        .map(crate::control::model::SessionState::view)
+        .map(crate::control::conversation::SessionRecord::view)
         .map(|mut session| {
             // An active Run is process-local state and cannot safely be resumed
             // from a portable archive.
@@ -87,7 +89,7 @@ pub(in crate::control) fn export_project(
         project: project.view(),
         agents: agents
             .iter()
-            .map(crate::control::model::AgentState::view)
+            .map(crate::control::catalog::AgentRecord::view)
             .collect(),
         sessions,
         messages,
@@ -122,7 +124,7 @@ pub(in crate::control) fn import_project(
         {
             state
                 .agents_mut()
-                .push(AgentState::try_from(agent).map_err(serialization_error)?);
+                .push(AgentRecord::try_from(agent).map_err(serialization_error)?);
         }
     }
     for provider in archive.providers {
@@ -131,7 +133,7 @@ pub(in crate::control) fn import_project(
             .iter()
             .any(|p| p.provider.id == provider.id)
         {
-            state.providers_mut().push(ProviderState {
+            state.providers_mut().push(ProviderRecord {
                 provider,
                 has_secret: false,
             });
@@ -141,20 +143,20 @@ pub(in crate::control) fn import_project(
         archive
             .messages
             .into_iter()
-            .map(MessageState::try_from)
+            .map(MessageRecord::try_from)
             .collect::<Result<Vec<_>, _>>()
             .map_err(serialization_error)?,
     );
     state.sessions_mut().extend(
         sessions
             .into_iter()
-            .map(SessionState::try_from)
+            .map(SessionRecord::try_from)
             .collect::<Result<Vec<_>, _>>()
             .map_err(serialization_error)?,
     );
     state
         .projects_mut()
-        .push(ProjectState::try_from(project.clone()).map_err(serialization_error)?);
+        .push(ProjectRecord::try_from(project.clone()).map_err(serialization_error)?);
     Ok((
         CommandResult::Project(project.clone()),
         vec![pending(

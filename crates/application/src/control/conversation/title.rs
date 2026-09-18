@@ -1,13 +1,13 @@
 //! Session metadata and first-interaction title generation.
 use crate::control::LocalControlService;
+use crate::control::conversation::SessionRecord;
 use crate::control::errors::{error, store_error};
 use crate::control::events::pending;
-use crate::control::model::SessionState;
+use crate::control::persistence::{
+    HasAgents, HasMessages, HasProviderCredentials, HasProviders, HasRuns, HasSessions, HasSettings,
+};
 use crate::control::settings::{
     DEFAULT_AGENT_SETTING_ID, SMALL_AGENT_SETTING_ID, configured_agent_id,
-};
-use crate::control::state::{
-    HasAgents, HasMessages, HasProviderCredentials, HasProviders, HasRuns, HasSessions, HasSettings,
 };
 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
 use ait_contracts::AgentMode;
@@ -56,7 +56,7 @@ pub(in crate::control) fn set_session_title(
 
 fn is_first_completed_interaction(
     state: &(impl HasMessages + HasRuns),
-    session: &SessionState,
+    session: &SessionRecord,
 ) -> bool {
     let head_is_assistant = state
         .messages()
@@ -120,7 +120,7 @@ impl LocalControlService {
         &self,
         session_id: &str,
         user_prompt: &str,
-    ) -> Result<SessionState, ApiError> {
+    ) -> Result<SessionRecord, ApiError> {
         let bounded_prompt = user_prompt.chars().take(2_000).collect::<String>();
         if bounded_prompt.trim().is_empty() {
             return Err(error(
@@ -161,7 +161,7 @@ impl LocalControlService {
     async fn begin_title_generation(
         &self,
         session_id: &str,
-    ) -> Result<(SessionState, String, bool, bool, TitleAgent), ApiError> {
+    ) -> Result<(SessionRecord, String, bool, bool, TitleAgent), ApiError> {
         for _ in 0..4 {
             let loaded = self.read_session_title_records(session_id).await?;
             let mut state = loaded.original.clone();
@@ -262,7 +262,7 @@ impl LocalControlService {
         session_id: &str,
         title: String,
         description: String,
-    ) -> Result<SessionState, ApiError> {
+    ) -> Result<SessionRecord, ApiError> {
         for _ in 0..4 {
             let loaded = self.records().read_session_record(session_id).await?;
             let mut state = loaded.original.clone();

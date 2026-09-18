@@ -1,16 +1,19 @@
-//! Bounded record selection and persistence for each existing command path.
+//! Bounded record selection for application use cases.
+use crate::control::catalog::ProviderContext;
+use crate::control::conversation::{
+    ConversationContext, MessagesContext, SessionTitleContext, SessionsContext,
+};
+use crate::control::cron::{CronCreateContext, CronTriggerContext};
 use crate::control::errors::{error, store_error};
-use crate::control::settings::DEFAULT_AGENT_SETTING_ID;
-use crate::control::state::codec::{
+use crate::control::persistence::access::RecordAccess;
+use crate::control::persistence::codec::{
     agent_provider_id, decode_records, record_value, required_string,
 };
-use crate::control::state::commands::CommandTransaction;
-use crate::control::state::records::RecordAccess;
-use crate::control::state::transaction::{RecordContext, RecordTransaction};
-use crate::control::state::{
-    ApiRunContext, ArchiveContext, ConversationContext, CronTriggerContext, ProviderContext,
-    RunContext, RunControlContext, RunsContext, SessionTitleContext,
-};
+use crate::control::persistence::transaction::{RecordContext, RecordTransaction};
+use crate::control::project::{ArchiveContext, ProjectsContext};
+use crate::control::runs::{ApiRunContext, RunContext, RunControlContext, RunsContext};
+use crate::control::settings::DEFAULT_AGENT_SETTING_ID;
+use crate::control::use_cases::transaction::CommandTransaction;
 use ait_contracts::{ApiError, Command};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlFilter, ControlRecordKind, ControlStoreError, PendingEvent};
@@ -62,14 +65,14 @@ impl RecordAccess {
     pub(in crate::control) async fn read_message_path_records(
         &self,
         head_id: &str,
-    ) -> Result<RecordTransaction<crate::control::state::MessagesContext>, ApiError> {
+    ) -> Result<RecordTransaction<MessagesContext>, ApiError> {
         self.read_records(vec![ControlFilter::message_ancestors(head_id)])
             .await
     }
     pub(in crate::control) async fn read_session_record(
         &self,
         session_id: &str,
-    ) -> Result<RecordTransaction<crate::control::state::SessionsContext>, ApiError> {
+    ) -> Result<RecordTransaction<SessionsContext>, ApiError> {
         self.read_records(vec![ControlFilter::id(
             ControlRecordKind::Session,
             session_id,
@@ -78,7 +81,7 @@ impl RecordAccess {
     }
     pub(in crate::control) async fn read_project_catalog(
         &self,
-    ) -> Result<RecordTransaction<crate::control::state::ProjectsContext>, ApiError> {
+    ) -> Result<RecordTransaction<ProjectsContext>, ApiError> {
         self.read_records(vec![ControlFilter::all(ControlRecordKind::Project)])
             .await
     }
@@ -513,7 +516,7 @@ impl RecordAccess {
         project_id: &str,
         base_message_id: &str,
         agent_id: &str,
-    ) -> Result<RecordTransaction<crate::control::state::CronCreateContext>, ApiError> {
+    ) -> Result<RecordTransaction<CronCreateContext>, ApiError> {
         use ControlRecordKind as Kind;
         for _ in 0..4 {
             let anchors = self

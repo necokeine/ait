@@ -1,17 +1,18 @@
 //! Immutable conversation messages and interactive Run creation.
-use crate::control::model::{MessageState, ProjectState};
-use crate::control::model::{RunLifecycle, RunState};
+use crate::control::conversation::MessageRecord;
+use crate::control::project::ProjectRecord;
+use crate::control::runs::{RunLifecycle, RunRecord};
 
 use crate::control::catalog::{require_agent, validate_config};
 use crate::control::errors::error;
 use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
-use crate::control::project::git::{GitBaseline, is_git_commit};
-use crate::control::state::{
+use crate::control::persistence::{
     HasAgents, HasMessages, HasProviderCredentials, HasProviders, HasRunCredentials, HasRuns,
     HasSessions, HasSettings,
 };
+use crate::control::project::git::{GitBaseline, is_git_commit};
 use ait_contracts::ApiError;
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
@@ -85,7 +86,7 @@ pub(in crate::control) fn send_message(
         .map_err(|e| error(e.code, e.message, e.retryable))?;
     let workspace_base_commit = Some(git_baseline.commit.clone());
     let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
-    let run = RunState {
+    let run = RunRecord {
         compatibility_repair: false,
         lifecycle: RunLifecycle::queued(),
         id: run_id.clone(),
@@ -127,7 +128,7 @@ pub(in crate::control) fn codex_prompt(
     state: &impl HasMessages,
     head_id: &str,
 ) -> Result<(Option<String>, String), ApiError> {
-    let path = crate::control::model::domain_path(state.messages(), head_id)
+    let path = crate::control::conversation::domain_path(state.messages(), head_id)
         .map_err(|e| error(e.code, e.message, e.retryable))?;
     let mut instructions = Vec::new();
     let mut prompt = String::from("Conversation:\n");
@@ -150,8 +151,8 @@ pub(in crate::control) fn codex_prompt(
 
 pub(in crate::control) fn append_output(
     state: &mut (impl HasMessages + HasSessions),
-    run: &mut RunState,
-    output: MessageState,
+    run: &mut RunRecord,
+    output: MessageRecord,
 ) {
     run.set_last_message_id(Some(output.id.clone()));
     if let Some(session_id) = &run.session_id
@@ -186,8 +187,8 @@ pub(in crate::control) fn message(
     text: Option<String>,
     git_commit: Option<&str>,
     data: Option<Value>,
-) -> MessageState {
-    MessageState {
+) -> MessageRecord {
+    MessageRecord {
         id: Uuid::new_v4().to_string(),
         project_id: project.into(),
         parent_message_id: parent.map(str::to_owned),
@@ -233,7 +234,7 @@ pub(in crate::control) fn validate_session_message(
 
 pub(in crate::control) fn message_workspace_commit(
     state: &impl HasMessages,
-    project: &ProjectState,
+    project: &ProjectRecord,
     message_id: &str,
 ) -> Result<String, ApiError> {
     let mut cursor = Some(message_id);

@@ -1,11 +1,11 @@
 //! Provider credentials and host model discovery use cases.
 use crate::control::LocalControlService;
+use crate::control::catalog::ProviderRecord;
 use crate::control::catalog::{
     invalid, preserve_unadvertised_reasoning_efforts, validate_model, validate_provider,
 };
 use crate::control::errors::{error, store_error};
 use crate::control::events::pending;
-use crate::control::model::ProviderState;
 use ait_contracts::{AgentMode, AgentProvider, ApiError, CommandResult, ProviderSecret};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{AgentProviderGateway, ControlStoreError, HostProviderModelCatalog};
@@ -100,7 +100,7 @@ impl LocalControlService {
                     .provider_credentials
                     .insert(provider.id.clone(), reference.into());
             }
-            let view = ProviderState {
+            let view = ProviderRecord {
                 provider: provider.clone(),
                 has_secret: state.provider_credentials.contains_key(&provider.id),
             };

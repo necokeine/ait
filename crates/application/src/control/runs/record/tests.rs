@@ -2,14 +2,14 @@ use super::*;
 use ait_domain::*;
 use serde_json::json;
 
-fn api_state() -> RunState {
+fn api_state() -> RunRecord {
     let config = AgentConfiguration {
         provider_id: "api".into(),
         model: "fixture".into(),
         reasoning_effort: None,
         system_prompt: None,
     };
-    let mut state: RunState = serde_json::from_value(json!({
+    let mut state: RunRecord = serde_json::from_value(json!({
         "id": "run", "project_id": "project", "base_message_id": MessageId::from_u128(1),
         "last_message_id": null, "session_id": "session", "agent_id": "agent", "agent_revision": 1,
         "config": config,
@@ -20,7 +20,7 @@ fn api_state() -> RunState {
         "status": "queued", "phase": "queued", "error": null,
     }))
     .unwrap();
-    state.install_execution(ApiRunState {
+    state.install_execution(ApiRunExecution {
         run: Run {
             id: RunId::new("run"),
             project_id: ProjectId::new("project"),
@@ -97,7 +97,7 @@ fn canonical_run_is_the_only_mutable_projection_source() {
         value["last_message_id"],
         value["execution"]["run"]["last_message_id"]
     );
-    let decoded: RunState = serde_json::from_value(value).unwrap();
+    let decoded: RunRecord = serde_json::from_value(value).unwrap();
     assert_eq!(decoded, state);
     assert!(decoded.view().execution.is_none());
     let event = crate::control::events::pending("run.updated", Some("run".into()), &decoded);
@@ -110,7 +110,8 @@ fn cancellation_intent_does_not_replace_coordinator_state() {
     state.set_status(LifecycleStatus::Cancelling);
     assert_eq!(state.execution().unwrap().run.status, RunStatus::Queued);
     assert_eq!(state.view().status, "cancelling");
-    let restored: RunState = serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
+    let restored: RunRecord =
+        serde_json::from_value(serde_json::to_value(&state).unwrap()).unwrap();
     assert_eq!(restored, state);
     state.set_status(LifecycleStatus::Cancelled);
     assert_eq!(state.view().status, "cancelled");
@@ -119,7 +120,8 @@ fn cancellation_intent_does_not_replace_coordinator_state() {
 
 #[test]
 fn legacy_redundant_projection_is_rewritten_by_the_record_transaction() {
-    use crate::control::state::{RunsContext, codec::decode_records};
+    use crate::control::persistence::codec::decode_records;
+    use crate::control::runs::RunsContext;
     use ait_ports::{ControlChange, ControlRead, ControlRecord, ControlRecordKind};
     let mut value = serde_json::to_value(api_state()).unwrap();
     value["status"] = json!("running");
@@ -142,7 +144,7 @@ fn legacy_redundant_projection_is_rewritten_by_the_record_transaction() {
     };
     assert_eq!(record.value["status"], "queued");
     assert!(
-        !serde_json::from_value::<RunState>(record.value.clone())
+        !serde_json::from_value::<RunRecord>(record.value.clone())
             .unwrap()
             .compatibility_repair
     );
@@ -152,7 +154,7 @@ fn legacy_redundant_projection_is_rewritten_by_the_record_transaction() {
 fn invalid_identity_and_unknown_lifecycle_fail_without_echoing_payload() {
     let mut value = serde_json::to_value(api_state()).unwrap();
     value["execution"]["run"]["project_id"] = json!("PRIVATE_MISMATCH");
-    let failure = serde_json::from_value::<RunState>(value).unwrap_err();
+    let failure = serde_json::from_value::<RunRecord>(value).unwrap_err();
     assert!(!failure.to_string().contains("PRIVATE_MISMATCH"));
     let mut state = api_state();
     state.agent_id = "another".into();
@@ -169,7 +171,7 @@ fn canonical_terminal_state_wins_over_stale_outer_terminal_projection() {
     run.ended_at = Some(TimestampMs(3));
     let mut value = serde_json::to_value(&state).unwrap();
     value["status"] = json!("failed");
-    let migrated: RunState = serde_json::from_value(value).unwrap();
+    let migrated: RunRecord = serde_json::from_value(value).unwrap();
     assert_eq!(migrated.execution(), state.execution());
     assert_eq!(migrated.view().status, "completed");
     assert!(migrated.compatibility_repair);
@@ -180,7 +182,7 @@ fn legacy_completion_cannot_grant_coordinator_completion() {
     let mut value = serde_json::to_value(api_state()).unwrap();
     value["status"] = json!("completed");
     value["phase"] = json!("terminal");
-    let migrated: RunState = serde_json::from_value(value).unwrap();
+    let migrated: RunRecord = serde_json::from_value(value).unwrap();
     assert_eq!(migrated.execution().unwrap().run.status, RunStatus::Failed);
     assert_eq!(migrated.view().status, "failed");
     assert!(migrated.compatibility_repair);
@@ -191,7 +193,7 @@ fn unknown_lifecycle_values_are_rejected_without_echoing_input() {
     for field in ["status", "phase", "trigger"] {
         let mut value = serde_json::to_value(api_state()).unwrap();
         value[field] = json!("PRIVATE_UNKNOWN");
-        let failure = serde_json::from_value::<RunState>(value).unwrap_err();
+        let failure = serde_json::from_value::<RunRecord>(value).unwrap_err();
         assert!(!failure.to_string().contains("PRIVATE_UNKNOWN"));
     }
 }
@@ -200,9 +202,9 @@ fn unknown_lifecycle_values_are_rejected_without_echoing_input() {
 fn fixed_configuration_cannot_drift_from_the_execution_snapshot() {
     let mut value = serde_json::to_value(api_state()).unwrap();
     value["config"]["reasoning_effort"] = json!("PRIVATE_EFFORT");
-    let failure = serde_json::from_value::<RunState>(value).unwrap_err();
+    let failure = serde_json::from_value::<RunRecord>(value).unwrap_err();
     assert!(!failure.to_string().contains("PRIVATE_EFFORT"));
     let mut value = serde_json::to_value(api_state()).unwrap();
     value["provider"]["kind"] = json!("deepseek");
-    assert!(serde_json::from_value::<RunState>(value).is_err());
+    assert!(serde_json::from_value::<RunRecord>(value).is_err());
 }

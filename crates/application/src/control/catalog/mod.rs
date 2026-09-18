@@ -3,9 +3,7 @@ use crate::control::LocalControlService;
 use crate::control::admission::ensure_idle;
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::model::AgentState;
-use crate::control::model::ProviderState;
-use crate::control::state::{HasAgents, HasProviders, HasSessions};
+use crate::control::persistence::{HasAgents, HasProviders, HasSessions};
 use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, ApiError, CommandResult, ProviderModel,
 };
@@ -20,7 +18,7 @@ pub(in crate::control) mod providers;
 pub(in crate::control) fn require_agent<'a>(
     state: &'a impl HasAgents,
     id: &str,
-) -> Result<&'a AgentState, ApiError> {
+) -> Result<&'a AgentRecord, ApiError> {
     state
         .agents()
         .iter()
@@ -28,9 +26,9 @@ pub(in crate::control) fn require_agent<'a>(
         .ok_or_else(|| error(ErrorCode::AgentNotFound, "enabled agent not found", false))
 }
 
-pub(in crate::control) fn builtin_providers() -> Vec<ProviderState> {
+pub(in crate::control) fn builtin_providers() -> Vec<ProviderRecord> {
     vec![
-        ProviderState {
+        ProviderRecord {
             provider: AgentProvider {
                 id: "builtin-codex".into(),
                 name: "Codex".into(),
@@ -47,7 +45,7 @@ pub(in crate::control) fn builtin_providers() -> Vec<ProviderState> {
             has_secret: false,
         },
         #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
-        ProviderState {
+        ProviderRecord {
             provider: AgentProvider {
                 id: "builtin-mock".into(),
                 name: "Mock (Development)".into(),
@@ -161,7 +159,7 @@ pub(in crate::control) fn preserve_unadvertised_reasoning_efforts(
 pub(in crate::control) fn require_named_agent<'a>(
     state: &'a impl HasAgents,
     id: &str,
-) -> Result<&'a AgentState, ApiError> {
+) -> Result<&'a AgentRecord, ApiError> {
     let agent = require_agent(state, id)?;
     if agent.owner_session_id.is_some() {
         return Err(invalid("a named Agent preset is required"));
@@ -179,7 +177,7 @@ pub(in crate::control) fn register_agent(
         return Err(invalid("Agent id and name are required; id must be unique"));
     }
     validate_config(state, &config)?;
-    let agent = AgentState {
+    let agent = AgentRecord {
         id: id.clone(),
         name,
         config,
@@ -264,7 +262,7 @@ pub(in crate::control) fn set_session_config(
         target.revision += 1;
         target.clone()
     } else {
-        let agent = AgentState {
+        let agent = AgentRecord {
             id: Uuid::new_v4().to_string(),
             name: String::new(),
             config,
@@ -300,3 +298,7 @@ impl LocalControlService {
         }
     }
 }
+mod context;
+mod record;
+pub(in crate::control) use context::{AgentContext, AgentsContext, ProviderContext};
+pub(in crate::control) use record::{AgentRecord, ProviderRecord};

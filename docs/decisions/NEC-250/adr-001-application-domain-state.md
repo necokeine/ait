@@ -3,6 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-13
 - 基线：NEC-150 v4、NEC-252、NEC-253、NEC-248
+- 源码布局：经 ADR-014 修订为 feature-owned record/context 与独立 persistence/use-case 层
 
 ## 决策
 
@@ -21,7 +22,7 @@ API Run 的 `domain::Run` 是唯一执行状态权威。公开 status/phase、�
 
 ## 实现与迁移约束
 
-- `control/model` 是 application aggregate 与 contracts 的转换层。`RunLifecycle::Api` 只保存领域执行和取消意图；Workspace 分支保存 typed 生命周期及其专属 journal。固定的 Run identity/config 元数据在 codec 往返时与领域快照校验，worker successor 的身份、单调性与 completion gate 校验位于 domain。
+- feature-owned `record.rs` 是 application aggregate 与 contracts 的转换边界。`RunLifecycle::Api` 只保存领域执行和取消意图；Workspace 分支保存 typed 生命周期及其专属 journal。固定的 Run identity/config 元数据在 codec 往返时与领域快照校验，worker successor 的身份、单调性与 completion gate 校验位于 domain。通用 codec/access/transaction 位于 `control/persistence`，命令路由和读取计划位于 `control/use_cases`。
 - facade 通过 `ExecuteRun` → `supervise_run` → `drive_run` 进入同一个既有监督路径。`RunControl`、终结提交、startup recovery 和 worker dispatcher 继续共享所有权、lease 与 finalization gate；API 调用原 RunCoordinator，Workspace 调用原 checkpoint/integration 路径。
 - durable JSON 形状保持兼容：写入时从权威状态生成旧外层字段。decode 检测历史漂移，record transaction 在正常 revision CAS 中写回 canonical 投影。已经 terminal 的领域执行优先；旧 terminal 投影加未结束的领域执行进入失败/取消结算，旧外层 completed 不得授予 Run 完成资格。迁移继续结算未完成子记录，不重放未知工具效果，也不能夺取已移动的 Session。
 - `GetRun`、list、同步命令结果以及恢复结果明确省略 `execution`（contracts 本来已将其标为可选内部字段）；内部审计/worker receipt 保留在 durable record。API 故障和进程测试从真实存储读取审计数据，并单独断言公开结果没有 execution。事件继续使用原版本化脱敏规则。
@@ -29,4 +30,4 @@ API Run 的 `domain::Run` 是唯一执行状态权威。公开 status/phase、�
 
 ## 验证位置
 
-`domain::SessionReference` 覆盖 stale pointer/version、忙碌 binding 与迟到 release；`control/model/run/tests.rs` 覆盖 canonical projection、取消意图、旧记录修复、终态优先和敏感错误；`control/state/tests` 保留不可变 Message、跨记录事件回滚、有界读取与 CAS 冲突；`api_tool_loop`/`api_tool_faults` 保留工具结果顺序、crash/panic 恢复与禁止重放；worker process 与 Workspace 测试保留进程隔离、checkpoint、权限和 fencing 回归。10k Message benchmark 直接调用生产路径共享的领域 traversal。
+`domain::SessionReference` 覆盖 stale pointer/version、忙碌 binding 与迟到 release；`control/runs/record/tests.rs` 覆盖 canonical projection、取消意图、旧记录修复、终态优先和敏感错误；`control/persistence/tests` 保留不可变 Message、跨记录事件回滚、有界读取与 CAS 冲突；`api_tool_loop`/`api_tool_faults` 保留工具结果顺序、crash/panic 恢复与禁止重放；worker process 与 Workspace 测试保留进程隔离、checkpoint、权限和 fencing 回归。10k Message benchmark 直接调用生产路径共享的领域 traversal。

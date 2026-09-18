@@ -1,5 +1,5 @@
 //! Bounded progress reporting and drain before terminal persistence.
-use crate::control::model::RunState;
+use crate::control::runs::RunRecord;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -29,7 +29,7 @@ pub(super) struct ProgressPump {
 }
 
 impl ProgressPump {
-    pub(super) fn start(store: Arc<dyn ControlStore>, run: &RunState) -> Self {
+    pub(super) fn start(store: Arc<dyn ControlStore>, run: &RunRecord) -> Self {
         let (sender, receiver) = mpsc::channel(PROGRESS_BUFFER);
         let identity = ProgressIdentity {
             run: run.id.clone(),

@@ -2,14 +2,14 @@
 use crate::control::LocalControlService;
 use crate::control::conversation::messages::codex_prompt;
 use crate::control::errors::{api_domain_error, error};
-use crate::control::model::RunState;
 use crate::control::permissions::validate_run_permission_ceiling;
+use crate::control::persistence::{HasMessages, HasProjects, HasSessions};
 use crate::control::project::worktrees::run_workdir;
+use crate::control::runs::RunRecord;
 use crate::control::runs::finalization::{InvocationGuard, RunControl, RunControlGuard};
 use crate::control::runs::journal::WorkspaceExecutionLease;
 use crate::control::runs::progress::ProgressPump;
 use crate::control::runs::recovery::WorkspaceRecoveryClaim;
-use crate::control::state::{HasMessages, HasProjects, HasSessions};
 use ait_contracts::{AgentMode, ApiError};
 use ait_domain::LifecycleStatus;
 use ait_domain::{DomainError, ErrorCode};
@@ -59,7 +59,7 @@ impl WorkspaceResultSink for DurableWorkspaceResultSink {
 
 pub(in crate::control) fn workspace_invocation(
     state: &(impl HasMessages + HasProjects + HasSessions),
-    run: &RunState,
+    run: &RunRecord,
     control: Arc<RunControl>,
     approvals: Arc<dyn WorkspaceApproval>,
 ) -> Result<WorkspaceAgentInvocation, DomainError> {
@@ -123,7 +123,7 @@ impl LocalControlService {
         &self,
         run_id: &str,
         control: Arc<RunControl>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         let loaded = self.read_run_records(run_id).await?;
         let state = loaded.original;
         let run = state
@@ -277,7 +277,7 @@ impl LocalControlService {
     async fn invoke_codex_workspace_checkpointed(
         &self,
         state: &(impl HasMessages + HasProjects + HasSessions),
-        run: &RunState,
+        run: &RunRecord,
         control: Arc<RunControl>,
         progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,
         result_sink: &dyn WorkspaceResultSink,
@@ -298,7 +298,7 @@ impl LocalControlService {
         &self,
         run_id: String,
         control: Arc<RunControl>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         let worker = self.clone();
         let worker_run_id = run_id.clone();
         let task_control = Arc::clone(&control);

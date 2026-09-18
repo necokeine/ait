@@ -2,7 +2,7 @@
 use crate::control::catalog::require_named_agent;
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::state::{HasAgents, HasProjects, HasSettings, HasSettingsRevision};
+use crate::control::persistence::{HasAgents, HasProjects, HasSettings, HasSettingsRevision};
 use ait_contracts::{
     ApiError, CommandResult, SettingKind, SettingsDocument, SettingsView, default_settings,
     settings_schema,
@@ -146,3 +146,5 @@ fn validate_settings(values: &SettingsDocument) -> Result<(), ApiError> {
     }
     Ok(())
 }
+mod context;
+pub(in crate::control) use context::SettingsContext;

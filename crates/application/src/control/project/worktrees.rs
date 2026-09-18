@@ -1,6 +1,6 @@
 //! Manager-owned Session worktree preparation and validation.
-use crate::control::model::ProjectState;
-use crate::control::model::RunState;
+use crate::control::project::ProjectRecord;
+use crate::control::runs::RunRecord;
 
 use crate::control::catalog::require_agent;
 use crate::control::conversation::derive_reuses_source;
@@ -9,12 +9,12 @@ use crate::control::conversation::messages::{
 };
 use crate::control::errors::error;
 use crate::control::errors::project_error;
+use crate::control::persistence::HasSettings;
+use crate::control::persistence::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 use crate::control::project::archive::{validate_import_conflicts, validate_project_export};
 use crate::control::project::git::PreparedProject;
 use crate::control::project::{require_project_view, validate_project_workdir};
 use crate::control::settings::resolve_project_agent_id;
-use crate::control::state::HasSettings;
-use crate::control::state::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
 use ait_contracts::{ApiError, Command, ProjectExport};
 use ait_domain::ErrorCode;
 use ait_ports::{ProjectWorkspace, WorkspaceLease};
@@ -66,7 +66,7 @@ pub(in crate::control) fn session_worktree_path(
 
 pub(in crate::control) fn run_workdir(
     state: &(impl HasProjects + HasSessions),
-    run: &RunState,
+    run: &RunRecord,
 ) -> Result<PathBuf, ApiError> {
     let project = state
         .projects()
@@ -187,7 +187,7 @@ pub(in crate::control) async fn prepare_import_session_worktrees(
     validate_import_conflicts(state, archive)?;
     validate_project_workdir(state, &prepared.workdir)?;
     prepared.verify(workspace).await?;
-    let mut project = ProjectState::try_from(archive.project.clone())
+    let mut project = ProjectRecord::try_from(archive.project.clone())
         .map_err(crate::control::errors::serialization_error)?;
     project.workdir.clone_from(&prepared.workdir);
     project.base_commit.clone_from(&prepared.base_commit);
@@ -331,7 +331,7 @@ async fn prepare_existing_session_worktree(
 async fn ensure_session_worktree(
     workspace: &dyn ProjectWorkspace,
     lease: Option<Arc<dyn WorkspaceLease>>,
-    project: &ProjectState,
+    project: &ProjectRecord,
     session_id: &str,
     baseline: &str,
     created: &mut Vec<PathBuf>,

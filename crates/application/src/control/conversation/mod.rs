@@ -1,6 +1,5 @@
 //! Session creation, derivation, binding and pointer ownership.
-use crate::control::model::RunState;
-use crate::control::model::SessionState;
+use crate::control::runs::RunRecord;
 
 use crate::control::catalog::{agent_for_session, require_agent};
 use crate::control::conversation::messages::send_message;
@@ -8,13 +7,13 @@ use crate::control::errors::error;
 use crate::control::events::pending;
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::PermissionPolicyLimits;
-use crate::control::project::git::GitBaseline;
-use crate::control::project::worktrees::{session_worktree_path, validate_session_path_component};
-use crate::control::settings::resolve_project_agent_id;
-use crate::control::state::{
+use crate::control::persistence::{
     HasAgents, HasMessages, HasProjects, HasProviderCredentials, HasProviders, HasRunCredentials,
     HasRuns, HasSessions, HasSettings,
 };
+use crate::control::project::git::GitBaseline;
+use crate::control::project::worktrees::{session_worktree_path, validate_session_path_component};
+use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{ApiError, CommandResult};
 use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
@@ -210,7 +209,7 @@ pub(in crate::control) fn create_session(
     }
     let session_workdir = session_worktree_path(&project_workdir, &id)?;
     let agent_id = agent_for_session(state, &agent_id, &id)?;
-    let session = SessionState {
+    let session = SessionRecord {
         id: id.clone(),
         project_id,
         workdir: session_workdir.to_string_lossy().into_owned(),
@@ -240,7 +239,7 @@ pub(in crate::control) fn derive_reuses_source(
     state: &impl HasMessages,
     _requested_id: &str,
     project_id: &str,
-    source: &SessionState,
+    source: &SessionRecord,
     agent_id: &str,
     at_message_id: &str,
 ) -> bool {
@@ -320,7 +319,7 @@ pub(in crate::control) fn set_session_agent(
     ))
 }
 
-pub(in crate::control) fn release_session(state: &mut impl HasSessions, run: &RunState) {
+pub(in crate::control) fn release_session(state: &mut impl HasSessions, run: &RunRecord) {
     if let Some(session_id) = &run.session_id
         && let Some(session) = state.sessions_mut().iter_mut().find(|session| {
             &session.id == session_id && session.active_run_id() == Some(run.id.as_str())
@@ -329,3 +328,12 @@ pub(in crate::control) fn release_session(state: &mut impl HasSessions, run: &Ru
         session.reference.release(&ait_domain::RunId::new(&run.id));
     }
 }
+mod context;
+mod message_record;
+mod record;
+pub(in crate::control) use context::{
+    ConversationContext, MessagesContext, NewSessionContext, SessionBindingContext,
+    SessionConfigContext, SessionTitleContext, SessionsContext,
+};
+pub(in crate::control) use message_record::domain_path;
+pub(in crate::control) use record::{MessageRecord, SessionRecord};

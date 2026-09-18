@@ -1,10 +1,11 @@
+//! Persisted native approval audit records for one Run.
 use ait_contracts::{NativeApprovalView, NativePermissionProfile, ProtocolRequestId};
 use ait_domain::{
     ApprovalGrantScope, NativeApprovalKind, NativeApprovalStatus, NativeApprovalTarget,
 };
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(in crate::control) struct NativeApprovalState {
+pub(in crate::control) struct NativeApprovalRecord {
     pub id: String,
     pub run_id: String,
     pub protocol_request_id: ProtocolRequestId,
@@ -26,7 +27,7 @@ pub(in crate::control) struct NativeApprovalState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<i64>,
 }
-impl NativeApprovalState {
+impl NativeApprovalRecord {
     pub(in crate::control) fn view(&self) -> NativeApprovalView {
         NativeApprovalView {
             id: self.id.clone(),
@@ -47,7 +48,7 @@ impl NativeApprovalState {
         }
     }
 }
-impl From<NativeApprovalView> for NativeApprovalState {
+impl From<NativeApprovalView> for NativeApprovalRecord {
     fn from(view: NativeApprovalView) -> Self {
         Self {
             id: view.id,

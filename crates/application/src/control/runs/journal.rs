@@ -2,8 +2,8 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
-use crate::control::model::RunState;
 use crate::control::project::worktrees::run_workdir;
+use crate::control::runs::RunRecord;
 use crate::control::runs::is_terminal_run_status;
 use ait_contracts::{AgentMode, ApiError};
 use ait_domain::ErrorCode;
@@ -75,7 +75,7 @@ pub(in crate::control) struct WorkspaceExecutionLease {
 }
 
 pub(in crate::control) fn ensure_current_lease(
-    run: &RunState,
+    run: &RunRecord,
     lease: &WorkspaceExecutionLease,
 ) -> Result<(), ApiError> {
     if run.operation_id.as_deref() != Some(lease.operation_id.as_str())
@@ -215,7 +215,7 @@ impl LocalControlService {
         lease: &WorkspaceExecutionLease,
         result: WorkspaceAgentResponse,
         worker: Option<&ait_ports::WorkspaceWorkerOperation>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&lease.run_id).await?;
             let mut state = loaded.original.clone();
@@ -284,7 +284,7 @@ impl LocalControlService {
         &self,
         lease: &WorkspaceExecutionLease,
         worker: Option<&ait_ports::WorkspaceWorkerOperation>,
-    ) -> Result<RunState, ApiError> {
+    ) -> Result<RunRecord, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&lease.run_id).await?;
             let mut state = loaded.original.clone();

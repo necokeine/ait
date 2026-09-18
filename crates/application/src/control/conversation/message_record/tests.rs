@@ -3,7 +3,7 @@ use ait_domain::{
     ProjectId, RunId, SubMessage, TimestampMs,
 };
 
-use super::MessageState;
+use crate::control::conversation::MessageRecord;
 
 fn domain_message() -> Message {
     Message {
@@ -27,10 +27,10 @@ fn domain_message() -> Message {
 }
 
 #[test]
-fn domain_message_round_trips_through_state() {
+fn domain_message_round_trips_through_persisted_record() {
     let expected = domain_message();
 
-    let state = MessageState::from(expected.clone());
+    let state = MessageRecord::from(expected.clone());
     let actual = Message::try_from(state).expect("generated state must be valid");
 
     assert_eq!(actual, expected);
@@ -38,7 +38,7 @@ fn domain_message_round_trips_through_state() {
 
 #[test]
 fn native_message_conversion_rejects_projection_drift() {
-    let mut state = MessageState::from(domain_message());
+    let mut state = MessageRecord::from(domain_message());
     state.text = Some("different".into());
 
     assert_eq!(

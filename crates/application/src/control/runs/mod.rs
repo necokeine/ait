@@ -4,7 +4,7 @@ use crate::control::approvals::expire_pending_native_approvals;
 use crate::control::conversation::release_session;
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::state::{HasRuns, HasSessions, HasWorkspaceRunJournals};
+use crate::control::persistence::{HasRuns, HasSessions, HasWorkspaceRunJournals};
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::{ErrorCode, NativeApprovalStatus};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
@@ -108,3 +108,13 @@ impl LocalControlService {
             .is_ok_and(|active| active.is_empty())
     }
 }
+mod approval_record;
+mod context;
+mod interaction_record;
+mod record;
+pub(in crate::control) use approval_record::NativeApprovalRecord;
+pub(in crate::control) use context::{ApiRunContext, RunContext, RunControlContext, RunsContext};
+pub(in crate::control) use interaction_record::ToolInteractionRecord;
+pub(in crate::control) use record::{
+    ApiRunExecution, RunLifecycle, RunRecord, cancellation_requested,
+};

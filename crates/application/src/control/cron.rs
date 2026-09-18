@@ -1,6 +1,5 @@
 //! Cron configuration, enablement and idempotent Run triggers.
-use crate::control::model::CronState;
-use crate::control::model::{RunLifecycle, RunState};
+use crate::control::runs::{RunLifecycle, RunRecord};
 
 use crate::control::catalog::{require_agent, require_named_agent, validate_config};
 use crate::control::conversation::create_session;
@@ -8,12 +7,12 @@ use crate::control::errors::error;
 use crate::control::events::{now, pending};
 use crate::control::execution::CommandOutcome;
 use crate::control::permissions::{PermissionPolicyLimits, effective_permission_profile};
-use crate::control::project::git::GitBaseline;
-use crate::control::settings::resolve_project_agent_id;
-use crate::control::state::{
+use crate::control::persistence::{
     HasAgents, HasCrons, HasMessages, HasProjects, HasProviderCredentials, HasProviders,
     HasRunCredentials, HasRuns, HasSessions, HasSettings,
 };
+use crate::control::project::git::GitBaseline;
+use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{AgentMode, ApiError, CommandResult};
 use ait_domain::{
     AgentId, Cron, CronConcurrencyPolicy, CronId, CronMisfirePolicy, ErrorCode, MessageId,
@@ -95,7 +94,7 @@ pub(in crate::control) fn create_cron(
     domain
         .validate()
         .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
-    let cron = CronState {
+    let cron = CronRecord {
         id: id.clone(),
         name,
         project_id,
@@ -206,7 +205,7 @@ pub(in crate::control) fn trigger_cron(
             .run_credentials_mut()
             .insert(run_id.clone(), reference.clone());
     }
-    state.runs_mut().push(RunState {
+    state.runs_mut().push(RunRecord {
         compatibility_repair: false,
         lifecycle: RunLifecycle::queued(),
         id: run_id.clone(),
@@ -239,3 +238,7 @@ pub(in crate::control) fn trigger_cron(
         ],
     ))
 }
+mod context;
+mod record;
+pub(in crate::control) use context::{CronCreateContext, CronTriggerContext, CronsContext};
+pub(in crate::control) use record::CronRecord;

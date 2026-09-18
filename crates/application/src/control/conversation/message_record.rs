@@ -1,4 +1,4 @@
-//! Legacy record and native Message conversion at the domain boundary.
+//! Persisted Message conversion at the conversation/domain boundary.
 use std::collections::HashMap;
 
 use ait_domain::{
@@ -6,16 +6,16 @@ use ait_domain::{
     MessageOrigin, MessageRole, ProjectId, SubMessage, TimestampMs,
 };
 
-use super::MessageState;
+use super::record::MessageRecord;
 
 fn invalid() -> DomainError {
     DomainError::invariant(ErrorCode::InvalidMessageId, "invalid persisted Message")
 }
 
-impl TryFrom<&MessageState> for Message {
+impl TryFrom<&MessageRecord> for Message {
     type Error = DomainError;
 
-    fn try_from(state: &MessageState) -> Result<Self, Self::Error> {
+    fn try_from(state: &MessageRecord) -> Result<Self, Self::Error> {
         if let Some(native) = state
             .data
             .as_ref()
@@ -89,15 +89,15 @@ impl TryFrom<&MessageState> for Message {
     }
 }
 
-impl TryFrom<MessageState> for Message {
+impl TryFrom<MessageRecord> for Message {
     type Error = DomainError;
 
-    fn try_from(state: MessageState) -> Result<Self, Self::Error> {
+    fn try_from(state: MessageRecord) -> Result<Self, Self::Error> {
         Self::try_from(&state)
     }
 }
 
-impl From<Message> for MessageState {
+impl From<Message> for MessageRecord {
     fn from(message: Message) -> Self {
         let text = message
             .sub_messages
@@ -124,14 +124,14 @@ impl From<Message> for MessageState {
     }
 }
 
-impl From<&Message> for MessageState {
+impl From<&Message> for MessageRecord {
     fn from(message: &Message) -> Self {
         message.clone().into()
     }
 }
 
 pub(in crate::control) fn domain_path(
-    messages: &[MessageState],
+    messages: &[MessageRecord],
     head: &str,
 ) -> Result<Vec<Message>, DomainError> {
     let entities = messages

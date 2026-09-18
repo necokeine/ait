@@ -2,9 +2,9 @@
 use crate::control::catalog::builtin_providers;
 use crate::control::catalog::migration::migrate_state;
 use crate::control::errors::{error, serialization_error};
+use crate::control::persistence::transaction::{RecordContext, RecordTransaction, TypedChange};
 use crate::control::project::worktrees::session_worktree_path;
 use crate::control::settings::{DEFAULT_AGENT_SETTING_ID, SMALL_AGENT_SETTING_ID};
-use crate::control::state::transaction::{RecordContext, RecordTransaction, TypedChange};
 use ait_contracts::{ApiError, ProjectView, SessionView, default_settings};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlChange, ControlRead, ControlRecord, ControlRecordKind, ControlStoreError};

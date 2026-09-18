@@ -2,7 +2,7 @@
 
 use super::errors::{api_domain_error, error, store_error};
 use super::events::{now, pending};
-use super::{LocalControlService, model::ToolInteractionState};
+use super::{LocalControlService, runs::ToolInteractionRecord};
 use ait_contracts::{ApiError, Command, CommandResult, RunView, ToolInteractionAction};
 use ait_domain::{DomainError, ErrorCode, LifecycleStatus, ToolExecution, ToolExecutionStatus};
 use ait_ports::{
@@ -55,7 +55,7 @@ fn invalid() -> ApiError {
     )
 }
 
-fn active(run: &super::model::RunState, lease: Option<&WorkerLease>) -> bool {
+fn active(run: &crate::control::runs::RunRecord, lease: Option<&WorkerLease>) -> bool {
     !run.status().is_terminal()
         && run.status() != LifecycleStatus::Cancelling
         && lease.is_none_or(|lease| {
@@ -68,7 +68,7 @@ fn active(run: &super::model::RunState, lease: Option<&WorkerLease>) -> bool {
         })
 }
 
-fn matching_tool(run: &super::model::RunState, request: &ToolInvocation) -> bool {
+fn matching_tool(run: &crate::control::runs::RunRecord, request: &ToolInvocation) -> bool {
     run.execution().is_some_and(|execution| {
         execution.tools.iter().any(|tool| {
             tool.id == request.execution_id
@@ -164,7 +164,7 @@ impl LocalControlService {
 
     fn interaction_deadline(
         &self,
-        run: &super::model::RunState,
+        run: &crate::control::runs::RunRecord,
         worker_deadline: i64,
     ) -> Result<i64, ApiError> {
         let runtime_deadline = run
@@ -302,7 +302,7 @@ impl LocalControlService {
                 if deadline <= now() {
                     return Err(invalid());
                 }
-                run.tool_interactions.push(ToolInteractionState {
+                run.tool_interactions.push(ToolInteractionRecord {
                     id: id.clone(),
                     run_id: run.id.clone(),
                     tool_name: request.tool_name.clone(),

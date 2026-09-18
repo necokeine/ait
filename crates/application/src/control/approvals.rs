@@ -2,11 +2,11 @@
 use crate::control::LocalControlService;
 use crate::control::errors::{api_domain_error, error, store_error};
 use crate::control::events::{now, pending};
-use crate::control::model::NativeApprovalState;
-use crate::control::model::RunState;
 use crate::control::permissions::{PermissionPolicyLimits, validate_native_permission_profile};
+use crate::control::persistence::{HasProjects, HasRuns, HasSessions, HasWorkspaceRunJournals};
+use crate::control::runs::NativeApprovalRecord;
+use crate::control::runs::RunRecord;
 use crate::control::runs::{cancel_run, is_terminal_run_status};
-use crate::control::state::{HasProjects, HasRuns, HasSessions, HasWorkspaceRunJournals};
 use ait_contracts::{
     ApiError, CommandResult, NativeApprovalAction, NativePermissionProfile, ProtocolRequestId,
 };
@@ -157,7 +157,7 @@ impl WorkspaceApproval for LocalControlService {
 
 fn native_approval_record(
     request: &WorkspaceApprovalRequest,
-) -> Result<NativeApprovalState, ApiError> {
+) -> Result<NativeApprovalRecord, ApiError> {
     if request.run_id.trim().is_empty()
         || request.thread_id.trim().is_empty()
         || request.turn_id.trim().is_empty()
@@ -233,7 +233,7 @@ fn native_approval_record(
     } else {
         None
     };
-    Ok(NativeApprovalState {
+    Ok(NativeApprovalRecord {
         id: native_approval_id(&request.run_id, &request.protocol_request_id)?,
         run_id: request.run_id.clone(),
         protocol_request_id,
@@ -313,7 +313,7 @@ pub(in crate::control) fn is_bounded_display_value(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 4_096 && !value.chars().any(char::is_control)
 }
 
-fn approval_decision(approval: &NativeApprovalState) -> Option<WorkspaceApprovalDecision> {
+fn approval_decision(approval: &NativeApprovalRecord) -> Option<WorkspaceApprovalDecision> {
     match approval.status {
         NativeApprovalStatus::Approved => Some(WorkspaceApprovalDecision::Approved {
             scope: approval.granted_scope?,
@@ -443,7 +443,7 @@ pub(in crate::control) async fn resolve_native_approval(
 
 async fn validate_native_approval_grant(
     workspace: &dyn ProjectWorkspace,
-    approval: &NativeApprovalState,
+    approval: &NativeApprovalRecord,
     scope: ApprovalGrantScope,
     limits: PermissionPolicyLimits,
     run_profile: RunPermissionProfile,
@@ -672,7 +672,7 @@ fn project_boundary_error() -> ApiError {
 }
 
 pub(in crate::control) fn expire_pending_native_approvals(
-    run: &mut RunState,
+    run: &mut RunRecord,
     status: NativeApprovalStatus,
 ) {
     let decided_at = now();
@@ -702,7 +702,7 @@ impl LocalControlService {
             let Some(sender) = waiters.remove(&approval.id) else {
                 continue;
             };
-            let decision = approval_decision(&NativeApprovalState::from(approval.clone()))
+            let decision = approval_decision(&NativeApprovalRecord::from(approval.clone()))
                 .unwrap_or(WorkspaceApprovalDecision::Cancelled);
             sender.send_replace(Some(decision));
         }
@@ -710,8 +710,8 @@ impl LocalControlService {
 
     async fn persist_native_approval(
         &self,
-        approval: NativeApprovalState,
-    ) -> Result<NativeApprovalState, ApiError> {
+        approval: NativeApprovalRecord,
+    ) -> Result<NativeApprovalRecord, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(&approval.run_id).await?;
             let mut state = loaded.original.clone();

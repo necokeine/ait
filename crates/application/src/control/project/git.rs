@@ -3,11 +3,11 @@ use crate::control::catalog::{require_agent, validate_config};
 use crate::control::conversation::derive_reuses_source;
 use crate::control::errors::error;
 use crate::control::errors::project_error;
-use crate::control::project::worktrees::session_worktree_path;
-use crate::control::settings::resolve_project_agent_id;
-use crate::control::state::{
+use crate::control::persistence::{
     HasAgents, HasCrons, HasMessages, HasProjects, HasProviders, HasRuns, HasSessions, HasSettings,
 };
+use crate::control::project::worktrees::session_worktree_path;
+use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{AgentMode, ApiError, Command};
 use ait_domain::ErrorCode;
 use ait_ports::ProjectWorkspace;
