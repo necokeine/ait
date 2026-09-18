@@ -132,7 +132,9 @@ async fn tool_approval_sensitive_reasons_never_reach_cards_events_results_or_sto
                 "one",
                 "write",
                 json!({
-                    "file_path":"effect.txt", "content":"synthetic", "sandbox_permissions":"workspace-write",
+                    "file_path": "effect.txt",
+                    "content": "synthetic",
+                    "sandbox_permissions": "workspace-write",
                     "justification":format!("Authorization: Bearer {marker}"),
                 }),
             )],
@@ -264,7 +266,12 @@ async fn tool_approval_consumed_grants_and_unknown_effects_are_never_replayed() 
 async fn tool_approval_openai_deepseek_approve_deny_cancel_expire_and_one_use() {
     for kind in [ProviderKind::OpenAI, ProviderKind::DeepSeek] {
         for decision in ["approve", "deny", "cancel", "expire"] {
-            let args = json!({"file_path":"approved.txt","content":"synthetic content","sandbox_permissions":"workspace-write","justification":"Create the requested synthetic file"});
+            let args = json!({
+                "file_path": "approved.txt",
+                "content": "synthetic content",
+                "sandbox_permissions": "workspace-write",
+                "justification": "Create the requested synthetic file",
+            });
             let mut f = Fixture::new(
                 kind,
                 vec![
@@ -496,7 +503,11 @@ async fn tool_approval_path_or_administrator_change_revokes_pending_authority() 
 #[tokio::test]
 async fn tool_approval_ceiling_and_unreviewable_targets_never_create_pending() {
     for args in [
-        json!({"file_path":"allowed.txt","content":"one","sandbox_permissions":"danger-full-access"}),
+        json!({
+            "file_path": "allowed.txt",
+            "content": "one",
+            "sandbox_permissions": "danger-full-access",
+        }),
         json!({"file_path":"../escape","content":"one"}),
     ] {
         let kind = ProviderKind::OpenAI;
@@ -532,9 +543,38 @@ async fn tool_approval_ceiling_and_unreviewable_targets_never_create_pending() {
 #[tokio::test]
 async fn tool_approval_shell_uses_effective_os_sandbox_for_exactly_one_command() {
     for kind in [ProviderKind::OpenAI, ProviderKind::DeepSeek] {
-        let mut f = Fixture::new(kind, vec![response(kind, &[("shell-one", "bash", json!({
-            "command":"printf approved > shell.txt", "description":"Write a synthetic file", "sandbox_permissions":"workspace-write", "justification":"Write a synthetic file"
-        }))]), response(kind, &[("shell-two", "bash", json!({"command":"printf unexpected > forbidden.txt", "description":"Verify readonly baseline"}))]), response(kind, &[])], "read_only").await;
+        let mut f = Fixture::new(
+            kind,
+            vec![
+                response(
+                    kind,
+                    &[(
+                        "shell-one",
+                        "bash",
+                        json!({
+                            "command": "printf approved > shell.txt",
+                            "description": "Write a synthetic file",
+                            "sandbox_permissions": "workspace-write",
+                            "justification": "Write a synthetic file",
+                        }),
+                    )],
+                ),
+                response(
+                    kind,
+                    &[(
+                        "shell-two",
+                        "bash",
+                        json!({
+                            "command": "printf unexpected > forbidden.txt",
+                            "description": "Verify readonly baseline",
+                        }),
+                    )],
+                ),
+                response(kind, &[]),
+            ],
+            "read_only",
+        )
+        .await;
         interactive(&mut f);
         let task = execute(&f);
         let run = pending(&f).await;

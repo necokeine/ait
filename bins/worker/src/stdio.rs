@@ -52,7 +52,18 @@ type ComposedAgentTools = (Arc<dyn RunTool>, Arc<dyn RunAgent>);
 #[async_trait]
 impl RunAgent for ScriptedAgent {
     async fn invoke(&self, request: AgentInvocation) -> Result<AgentResponse, DomainError> {
-        let index=request.message_path.iter().filter(|entry|matches!(entry,ait_domain::ProjectedMessage::Visible(m) if m.run_id.as_ref()==Some(&request.run_id)&&m.role==ait_domain::MessageRole::Assistant)).count();
+        let index = request
+            .message_path
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    ait_domain::ProjectedMessage::Visible(message)
+                        if message.run_id.as_ref() == Some(&request.run_id)
+                            && message.role == ait_domain::MessageRole::Assistant
+                )
+            })
+            .count();
         let reply = self.replies.get(index).ok_or_else(|| {
             DomainError::invariant(ErrorCode::ProviderFailed, "scripted response exhausted")
         })?;
@@ -230,21 +241,26 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
         let (store, mut calls) = RemoteStore::channel();
         let store = Arc::new(store);
         let (tools, agent) = compose_agent_tools(&bootstrap, primary_tools, store.clone())?;
-        let worker = crate::RunWorker::new(
-            store.clone(),
-            agent,
-            tools.clone(),
-            store,
-        );
+        let worker = crate::RunWorker::new(store.clone(), agent, tools.clone(), store);
         let id = RunId::new(&bootstrap.lease.run_id);
         let run_cancel = cancellation.clone();
-        let mut drive = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move { worker.execute(&id, run_cancel).await }));
+        let mut drive = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            worker.execute(&id, run_cancel).await
+        }));
         let result = {
             let io = drive_io(&mut pipe, &mut calls, &bootstrap, cancellation.clone());
             tokio::pin!(io);
             tokio::select! {
-                result=&mut drive=>result.map_err(|_|ProtocolError::WorkerExited)?.map(|_|()).map_err(|_|ProtocolError::InvalidTransition),
-                result=&mut io=>{cancellation.cancel();drive.abort();let _=(&mut drive).await;result},
+                result = &mut drive => result
+                    .map_err(|_| ProtocolError::WorkerExited)?
+                    .map(|_| ())
+                    .map_err(|_| ProtocolError::InvalidTransition),
+                result = &mut io => {
+                    cancellation.cancel();
+                    drive.abort();
+                    let _ = (&mut drive).await;
+                    result
+                },
             }
         };
         cancellation.cancel();
@@ -286,31 +302,51 @@ pub(crate) async fn drive_io(
         tokio::select! {
             Some(call)=calls.recv()=>{
                 if pending.len()>=16{return Err(ProtocolError::ResourceLimit)}
-                request_id=request_id.checked_add(1).ok_or(ProtocolError::ResourceLimit)?;
-                let operation_id=uuid::Uuid::new_v4().to_string();
-                pipe.send(Payload::Request{request_id,operation_id:operation_id.clone(),request:Box::new(call.request)}).await?;
-                pending.insert(request_id,(operation_id,call.reply));
+                request_id = request_id
+                    .checked_add(1)
+                    .ok_or(ProtocolError::ResourceLimit)?;
+                let operation_id = uuid::Uuid::new_v4().to_string();
+                pipe.send(Payload::Request {
+                    request_id,
+                    operation_id: operation_id.clone(),
+                    request: Box::new(call.request),
+                })
+                .await?;
+                pending.insert(request_id, (operation_id, call.reply));
             },
-            frame=pipe.receiver.recv()=>{
-                let frame=frame.ok_or(ProtocolError::UnexpectedEof)??;
-                if frame.lease.as_ref()!=Some(&bootstrap.lease){return Err(ProtocolError::StaleWorkerLease)}
-                heartbeat=Instant::now();
+            frame = pipe.receiver.recv() => {
+                let frame = frame.ok_or(ProtocolError::UnexpectedEof)??;
+                if frame.lease.as_ref() != Some(&bootstrap.lease) {
+                    return Err(ProtocolError::StaleWorkerLease);
+                }
+                heartbeat = Instant::now();
                 match frame.payload {
-                    Payload::Heartbeat=>{},
-                    Payload::Cancel=>cancel.cancel(),
-                    Payload::Receipt{request_id,operation_id,response}=>{
-                        let (expected,reply)=pending.remove(&request_id).ok_or(ProtocolError::CorrelationMismatch)?;
-                        if expected!=operation_id{return Err(ProtocolError::CorrelationMismatch)}
-                        let _=reply.send(Ok(*response));
+                    Payload::Heartbeat => {},
+                    Payload::Cancel => cancel.cancel(),
+                    Payload::Receipt { request_id, operation_id, response } => {
+                        let (expected, reply) = pending
+                            .remove(&request_id)
+                            .ok_or(ProtocolError::CorrelationMismatch)?;
+                        if expected != operation_id {
+                            return Err(ProtocolError::CorrelationMismatch);
+                        }
+                        let _ = reply.send(Ok(*response));
                     },
-                    Payload::Rejected{request_id,code}=>{
-                        let (_,reply)=pending.remove(&request_id).ok_or(ProtocolError::CorrelationMismatch)?;let _=reply.send(Err(code));
+                    Payload::Rejected { request_id, code } => {
+                        let (_, reply) = pending
+                            .remove(&request_id)
+                            .ok_or(ProtocolError::CorrelationMismatch)?;
+                        let _ = reply.send(Err(code));
                     },
-                    _=>return Err(ProtocolError::InvalidFrame),
+                    _ => return Err(ProtocolError::InvalidFrame),
                 }
             },
-            _=interval.tick()=>{
-                if heartbeat.elapsed()>Duration::from_millis(bootstrap.limits.heartbeat_timeout_ms){return Err(ProtocolError::HeartbeatTimeout)}
+            _ = interval.tick() => {
+                if heartbeat.elapsed()
+                    > Duration::from_millis(bootstrap.limits.heartbeat_timeout_ms)
+                {
+                    return Err(ProtocolError::HeartbeatTimeout);
+                }
                 pipe.send(Payload::Heartbeat).await?;
             }
         }
@@ -318,35 +354,4 @@ pub(crate) async fn drive_io(
 }
 
 #[cfg(test)]
-mod private_input_tests {
-    use super::*;
-
-    fn response(arguments: String) -> AgentResponse {
-        AgentResponse {
-            sub_messages: vec![SubMessage::ToolUse(ait_domain::ToolUse {
-                call_id: "private-input".into(),
-                tool_name: "write".into(),
-                arguments,
-                provider_metadata: None,
-            })],
-            usage: ait_domain::RunUsage::default(),
-        }
-    }
-
-    #[test]
-    fn worker_rejects_malformed_and_oversized_arguments_without_echoing_them() {
-        let malformed_secret = "NEC248_MALFORMED_WORKER_SECRET";
-        let malformed = format!(r#"{{"content":"{malformed_secret}""#);
-        let oversized_secret = "NEC248_OVERSIZED_WORKER_SECRET";
-        let oversized = format!(
-            r#"{{"content":"{oversized_secret}{}"}}"#,
-            "x".repeat(ait_contracts::sensitive::MAX_PRIVATE_TOOL_ARGUMENT_BYTES)
-        );
-
-        for (secret, arguments) in [(malformed_secret, malformed), (oversized_secret, oversized)] {
-            let error = validate_tool_arguments(&response(arguments)).unwrap_err();
-            assert_eq!(error.code, ErrorCode::InvalidSubmessageKind);
-            assert!(!error.to_string().contains(secret));
-        }
-    }
-}
+mod private_input_tests;

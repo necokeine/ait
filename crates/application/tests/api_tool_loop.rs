@@ -63,20 +63,69 @@ impl AgentProviderGateway for Gateway {
 fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
     if kind == ProviderKind::OpenAI {
         let output = if calls.is_empty() {
-            vec![
-                json!({"type":"message","id":"msg_final","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"text":"Verified hello.py"}]}),
-            ]
+            vec![json!({
+                "type": "message",
+                "id": "msg_final",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "annotations": [],
+                    "text": "Verified hello.py",
+                }],
+            })]
         } else {
-            calls.iter().map(|(id,name,args)|json!({"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect()
+            calls
+                .iter()
+                .map(|(id, name, args)| {
+                    json!({
+                        "type": "function_call",
+                        "id": format!("fc_{id}"),
+                        "call_id": id,
+                        "name": name,
+                        "arguments": args.to_string(),
+                        "status": "completed",
+                    })
+                })
+                .collect()
         };
-        json!({"id":"resp_fixture","object":"response","created_at":0,"status":"completed","model":"fixture-model","tools":[],"output":output,"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}})
+        json!({
+            "id": "resp_fixture",
+            "object": "response",
+            "created_at": 0,
+            "status": "completed",
+            "model": "fixture-model",
+            "tools": [],
+            "output": output,
+            "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        })
     } else {
         let message = if calls.is_empty() {
-            json!({"role":"assistant","content":"Verified hello.py"})
+            json!({"role": "assistant", "content": "Verified hello.py"})
         } else {
-            json!({"role":"assistant","content":null,"reasoning_content":"Use the host tools.","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
+            json!({
+                "role": "assistant",
+                "content": null,
+                "reasoning_content": "Use the host tools.",
+                "tool_calls": calls.iter().map(|(id, name, args)| json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                })).collect::<Vec<_>>(),
+            })
         };
-        json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+        json!({
+            "id": "chatcmpl_fixture",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "fixture-model",
+            "choices": [{
+                "index": 0,
+                "message": message,
+                "finish_reason": if calls.is_empty() { "stop" } else { "tool_calls" },
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        })
     }
 }
 async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
@@ -381,7 +430,11 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
             .unwrap();
         assert_eq!(
             task["description"],
-            "Run one bounded foreground child agent with a complete, self-contained prompt on the current provider and model route. The child does not inherit this conversation, and the call returns its final text inline."
+            concat!(
+                "Run one bounded foreground child agent with a complete, self-contained prompt ",
+                "on the current provider and model route. The child does not inherit this ",
+                "conversation, and the call returns its final text inline.",
+            )
         );
         let task_properties = task["parameters"]["properties"].as_object().unwrap();
         assert_eq!(
@@ -441,13 +494,37 @@ async fn wf13_openai_and_deepseek_create_and_verify_files_through_persisted_tool
 #[tokio::test]
 async fn denied_invalid_unknown_failed_and_approval_results_continue_without_side_effects() {
     let kind = ProviderKind::DeepSeek;
-    let f=Fixture::new(kind,vec![response(kind,&[
-        ("bad_path","write",json!({"file_path":"../escape","content":"bad"})),
-        ("bad_args","read",json!({"file_path":10})),
-        ("unknown","definitely_unknown",json!({})),
-        ("missing","read",json!({"file_path":"missing"})),
-        ("approval","write",json!({"file_path":"denied","content":"bad","sandbox_permissions":"danger-full-access","justification":"escape"})),
-    ]),response(kind,&[])],"workspace_write").await;
+    let f = Fixture::new(
+        kind,
+        vec![
+            response(
+                kind,
+                &[
+                    (
+                        "bad_path",
+                        "write",
+                        json!({"file_path":"../escape","content":"bad"}),
+                    ),
+                    ("bad_args", "read", json!({"file_path":10})),
+                    ("unknown", "definitely_unknown", json!({})),
+                    ("missing", "read", json!({"file_path":"missing"})),
+                    (
+                        "approval",
+                        "write",
+                        json!({
+                            "file_path": "denied",
+                            "content": "bad",
+                            "sandbox_permissions": "danger-full-access",
+                            "justification": "escape",
+                        }),
+                    ),
+                ],
+            ),
+            response(kind, &[]),
+        ],
+        "workspace_write",
+    )
+    .await;
     let run = f.run().await;
     assert_eq!(run.status, "completed");
     let tools = &run.execution.unwrap().tools;
@@ -473,7 +550,14 @@ async fn questions_and_plan_review_wait_for_one_durable_member_response() {
                 &[(
                     "question",
                     "question",
-                    json!({"questions":[{"id":"mode","header":"Mode","question":"Choose a mode","options":[{"label":"Safe"},{"label":"Fast"}]}]}),
+                    json!({
+                        "questions": [{
+                            "id": "mode",
+                            "header": "Mode",
+                            "question": "Choose a mode",
+                            "options": [{"label": "Safe"}, {"label": "Fast"}],
+                        }],
+                    }),
                 )],
             ),
             response(
@@ -780,11 +864,39 @@ async fn archive_and_events_omit_tool_payloads_while_queries_retain_them() {
 #[tokio::test]
 async fn api_provider_receives_scoped_count_schema_and_persisted_result_with_selected_permission() {
     for kind in [ProviderKind::DeepSeek, ProviderKind::OpenAI] {
-        let fixture = Fixture::new(kind, vec![
-            response(kind, &[("write", "write", json!({"file_path":"sample.rs","content":"first\nsecond\nthird\n","sandbox_permissions":"workspace-write"}))]),
-            response(kind, &[("count", "grep", json!({"pattern":"^","path":"sample.rs","include":"*.rs","output_mode":"count"}))]),
-            response(kind, &[]),
-        ], "workspace_write").await;
+        let fixture = Fixture::new(
+            kind,
+            vec![
+                response(
+                    kind,
+                    &[(
+                        "write",
+                        "write",
+                        json!({
+                            "file_path": "sample.rs",
+                            "content": "first\nsecond\nthird\n",
+                            "sandbox_permissions": "workspace-write",
+                        }),
+                    )],
+                ),
+                response(
+                    kind,
+                    &[(
+                        "count",
+                        "grep",
+                        json!({
+                            "pattern": "^",
+                            "path": "sample.rs",
+                            "include": "*.rs",
+                            "output_mode": "count",
+                        }),
+                    )],
+                ),
+                response(kind, &[]),
+            ],
+            "workspace_write",
+        )
+        .await;
         let run = fixture.run().await;
         assert_eq!(run.status, "completed");
         assert_eq!(

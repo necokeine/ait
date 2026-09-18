@@ -77,7 +77,19 @@ async fn browses_scopes_counts_and_pages_without_loading_whole_files() {
     assert_eq!(first["matches"].as_array().unwrap().len(), 2);
     assert_eq!(first["total_count"], 10_000);
     assert_eq!(first["truncated"], true);
-    let second = tools.execute(call("grep",json!({"pattern":"^","path":"crates/one/src/large.rs","offset":first["next_offset"],"limit":2}))).await.unwrap().output;
+    let second = tools
+        .execute(call(
+            "grep",
+            json!({
+                "pattern": "^",
+                "path": "crates/one/src/large.rs",
+                "offset": first["next_offset"],
+                "limit": 2,
+            }),
+        ))
+        .await
+        .unwrap()
+        .output;
     assert_eq!(second["matches"][0]["line"], 3);
     let found = tools
         .execute(call("glob", json!({"pattern":"*.rs","path":"crates/one"})))

@@ -14,10 +14,13 @@ use std::{
 use serde_json::{Value, json};
 use tokio::{process::Command, time::timeout};
 
-const PROMPT: &str = "Create a minimal Rust binary package named example-project in this repository root. \
-    It must have Cargo.toml, Cargo.lock, src/main.rs, and a .gitignore that ignores /target/. \
-    Use no external dependencies. Running cargo run --offline --quiet must print exactly Hello, world! \
-    followed by a newline. Verify the program. Do not create a Git commit: AIT will commit your changes.";
+const PROMPT: &str = concat!(
+    "Create a minimal Rust binary package named example-project in this repository root. ",
+    "It must have Cargo.toml, Cargo.lock, src/main.rs, and a .gitignore that ignores /target/. ",
+    "Use no external dependencies. Running cargo run --offline --quiet must print exactly ",
+    "Hello, world! followed by a newline. Verify the program. Do not create a Git commit: ",
+    "AIT will commit your changes.",
+);
 
 struct Daemon {
     child: Child,

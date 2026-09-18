@@ -123,35 +123,56 @@ fn project(root: &str) -> ControlRecord {
     record(
         Kind::Project,
         "p",
-        json!({"id":"p","name":"Project","workdir":"/project","root_message_id":root,"base_commit":"a".repeat(40)}),
+        json!({
+            "id": "p", "name": "Project", "workdir": "/project",
+            "root_message_id": root, "base_commit": "a".repeat(40),
+        }),
     )
 }
 fn agent() -> ControlRecord {
     record(
         Kind::Agent,
         "a",
-        json!({"id":"a","name":"Agent","config":{"provider_id":"builtin-codex","model":"test"},"revision":1,"enabled":true}),
+        json!({
+            "id": "a", "name": "Agent",
+            "config": {"provider_id": "builtin-codex", "model": "test"},
+            "revision": 1, "enabled": true,
+        }),
     )
 }
 fn session(head: &str) -> ControlRecord {
     record(
         Kind::Session,
         "s",
-        json!({"id":"s","project_id":"p","agent_id":"a","current_message_id":head,"active_run_id":null,"version":1}),
+        json!({
+            "id": "s", "project_id": "p", "agent_id": "a",
+            "current_message_id": head, "active_run_id": null, "version": 1,
+        }),
     )
 }
 fn message(id: &str, parent: Option<&str>) -> ControlRecord {
     record(
         Kind::Message,
         id,
-        json!({"id":id,"project_id":"p","parent_message_id":parent,"role":if parent.is_none(){"system"}else{"assistant"},"kind":"standard","text":"text"}),
+        json!({
+            "id": id, "project_id": "p", "parent_message_id": parent,
+            "role": if parent.is_none() { "system" } else { "assistant" },
+            "kind": "standard", "text": "text",
+        }),
     )
 }
 fn run(head: &str) -> ControlRecord {
     record(
         Kind::Run,
         "r",
-        json!({"id":"r","project_id":"p","base_message_id":ROOT,"last_message_id":head,"session_id":"s","agent_id":"a","agent_revision":1,"config":{"provider_id":"builtin-codex","model":"test"},"provider":builtin_providers()[0].provider,"trigger":"manual","cron_id":null,"scheduled_at":null,"status":"running","error":null}),
+        json!({
+            "id": "r", "project_id": "p", "base_message_id": ROOT,
+            "last_message_id": head, "session_id": "s", "agent_id": "a",
+            "agent_revision": 1,
+            "config": {"provider_id": "builtin-codex", "model": "test"},
+            "provider": builtin_providers()[0].provider, "trigger": "manual",
+            "cron_id": null, "scheduled_at": null, "status": "running", "error": null,
+        }),
     )
 }
 

@@ -353,7 +353,12 @@ fn filter_projects(
 ) -> Result<Option<Vec<String>>, ControlStoreError> {
     let selection = match filter {
         ControlFilter::All(kind) if is_project(*kind) => {
-            let mut statement = connection.prepare("SELECT DISTINCT project_id FROM record_locations WHERE kind=?1 ORDER BY project_id").map_err(sql_error)?;
+            let mut statement = connection
+                .prepare(concat!(
+                    "SELECT DISTINCT project_id FROM record_locations ",
+                    "WHERE kind=?1 ORDER BY project_id"
+                ))
+                .map_err(sql_error)?;
             let rows = statement
                 .query_map([table(*kind)], |row| row.get(0))
                 .map_err(sql_error)?;
@@ -622,7 +627,15 @@ fn recover(connection: &mut Connection) -> Result<(), ControlStoreError> {
     }
     for location in commit.locations {
         if let Some(project_id) = location.project_id {
-            transaction.execute("INSERT INTO record_locations VALUES(?1, ?2, ?3) ON CONFLICT(kind,id) DO UPDATE SET project_id=excluded.project_id", params![table(location.kind), location.id, project_id]).map_err(sql_error)?;
+            transaction
+                .execute(
+                    concat!(
+                        "INSERT INTO record_locations VALUES(?1, ?2, ?3) ",
+                        "ON CONFLICT(kind,id) DO UPDATE SET project_id=excluded.project_id"
+                    ),
+                    params![table(location.kind), location.id, project_id],
+                )
+                .map_err(sql_error)?;
         } else {
             transaction
                 .execute(
@@ -641,7 +654,15 @@ fn recover(connection: &mut Connection) -> Result<(), ControlStoreError> {
             [commit.revision],
         )
         .map_err(sql_error)?;
-    transaction.execute("DELETE FROM durable_events WHERE cursor < COALESCE((SELECT cursor FROM durable_events ORDER BY cursor DESC LIMIT 1 OFFSET ?1),0)", [RETAINED_EVENTS - 1]).map_err(sql_error)?;
+    transaction
+        .execute(
+            concat!(
+                "DELETE FROM durable_events WHERE cursor < COALESCE((SELECT cursor FROM ",
+                "durable_events ORDER BY cursor DESC LIMIT 1 OFFSET ?1),0)"
+            ),
+            [RETAINED_EVENTS - 1],
+        )
+        .map_err(sql_error)?;
     if commit.migration {
         migration::finish(&transaction)?;
     }
@@ -656,7 +677,24 @@ fn write_global_event(
     event: &DurableEvent,
     project_id: Option<&str>,
 ) -> Result<(), ControlStoreError> {
-    connection.execute("INSERT INTO durable_events(cursor,kind,entity_id,body_json,created_at,project_id) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(cursor) DO UPDATE SET body_json=excluded.body_json, project_id=excluded.project_id", params![event.cursor,event.kind,event.entity_id,event.body.to_string(),event.created_at,project_id]).map_err(sql_error)?;
+    connection
+        .execute(
+            concat!(
+                "INSERT INTO durable_events",
+                "(cursor,kind,entity_id,body_json,created_at,project_id) ",
+                "VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(cursor) DO UPDATE SET ",
+                "body_json=excluded.body_json, project_id=excluded.project_id"
+            ),
+            params![
+                event.cursor,
+                event.kind,
+                event.entity_id,
+                event.body.to_string(),
+                event.created_at,
+                project_id
+            ],
+        )
+        .map_err(sql_error)?;
     Ok(())
 }
 

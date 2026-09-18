@@ -107,7 +107,12 @@ fn schemas_accept_real_arguments_and_reject_bad_calls() {
         ),
         (
             "task",
-            json!({"description":"Inspect parser errors","prompt":"Review the parser","provider":"deepseek","model":"fixture-model"}),
+            json!({
+                "description": "Inspect parser errors",
+                "prompt": "Review the parser",
+                "provider": "deepseek",
+                "model": "fixture-model",
+            }),
             json!({"prompt":"Review the parser"}),
         ),
     ] {

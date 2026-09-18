@@ -1,5 +1,4 @@
 //! Shared service composition, public command entry points and exhaustive command routing.
-#![allow(missing_docs)]
 mod model;
 
 use crate::control::runs::finalization::RunControl;
@@ -68,6 +67,7 @@ impl LocalControlService {
     }
 
     #[must_use]
+    /// Creates a control service backed by the supplied workspace and store ports.
     pub fn new(
         project_workspace: Arc<dyn ait_ports::ProjectWorkspace>,
         store: Arc<dyn ControlStore>,

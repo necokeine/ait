@@ -139,7 +139,11 @@ fn model_list(provider: LLMProvider, empty: bool) -> Value {
             vec![]
         } else {
             vec![
-                json!({"name":"models/fixture-model","baseModelId":"fixture-model","displayName":"Fixture model"}),
+                json!({
+                    "name": "models/fixture-model",
+                    "baseModelId": "fixture-model",
+                    "displayName": "Fixture model",
+                }),
                 json!({"name":"models/another-model","baseModelId":"another-model"}),
             ]
         };
@@ -170,7 +174,11 @@ fn completion(provider: LLMProvider) -> Value {
         LLMProvider::DeepSeek | LLMProvider::MiniMax => json!({
             "id": "chatcmpl_fixture", "object": "chat.completion", "created": 0,
             "model": "fixture-model",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hello"},
+                "finish_reason": "stop",
+            }],
             "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
         }),
         LLMProvider::Gemini => json!({
@@ -178,7 +186,11 @@ fn completion(provider: LLMProvider) -> Value {
                 "content": {"role": "model", "parts": [{"text": "hello"}]},
                 "finishReason": "STOP", "index": 0
             }],
-            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2, "totalTokenCount": 5},
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 2,
+                "totalTokenCount": 5,
+            },
             "modelVersion": "fixture-model", "responseId": "resp_fixture"
         }),
     }
@@ -416,9 +428,16 @@ async fn http_errors_are_classified_redacted_and_never_retried() {
             (400, AdapterErrorKind::Protocol, false),
         ] {
             for listing in [true, false] {
-                let mut fixture = Fixture::new(vec![(StatusCode::from_u16(status).unwrap(), json!({
-                    "error": {"message": format!("{TEST_KEY}: private prompt"), "type": "fixture_error"}
-                }))]).await;
+                let mut fixture = Fixture::new(vec![(
+                    StatusCode::from_u16(status).unwrap(),
+                    json!({
+                        "error": {
+                            "message": format!("{TEST_KEY}: private prompt"),
+                            "type": "fixture_error",
+                        }
+                    }),
+                )])
+                .await;
                 let client = fixture.client(provider);
                 let error = if listing {
                     client.list_models().await.unwrap_err()
@@ -756,10 +775,23 @@ async fn model_override_is_sent_without_leaking_into_other_models() {
     .await;
     let mut config = LLMClientConfig::new(provider, TEST_KEY);
     config.base_url = Some(fixture.base_url.clone());
-    config.tool_sets.insert("deepseek", "special-model", ToolSet::new("Custom instructions", vec![ToolDefinition {
-        name: "lookup".to_owned(), description: "Look up a record".to_owned(),
-        parameters: json!({"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}),
-    }]).unwrap());
+    config.tool_sets.insert(
+        "deepseek",
+        "special-model",
+        ToolSet::new(
+            "Custom instructions",
+            vec![ToolDefinition {
+                name: "lookup".to_owned(),
+                description: "Look up a record".to_owned(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {"key": {"type": "string"}},
+                    "required": ["key"],
+                }),
+            }],
+        )
+        .unwrap(),
+    );
     let client = LLMClient::new(config).unwrap();
     for model in ["special-model", "other-model"] {
         client
@@ -785,7 +817,10 @@ async fn model_override_is_sent_without_leaking_into_other_models() {
 async fn deepseek_tool_call_can_be_returned_to_the_host_and_answered_with_its_id() {
     let mut call = completion(LLMProvider::DeepSeek);
     call["choices"][0]["message"] = json!({
-        "role":"assistant", "content":null, "reasoning_content":"Inspect the file first.", "tool_calls":[{
+        "role": "assistant",
+        "content": null,
+        "reasoning_content": "Inspect the file first.",
+        "tool_calls": [{
             "id":"call_read", "type":"function",
             "function":{"name":"read","arguments":"{\"file_path\":\"README.md\",\"limit\":10}"}
         }]

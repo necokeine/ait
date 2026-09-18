@@ -10,7 +10,9 @@ use serde_json::Value;
 /// Administrator-owned ceiling applied before a Run or approval can have side effects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PermissionPolicyLimits {
+    /// Max sandbox value.
     pub max_sandbox: SandboxAccess,
+    /// Allow session approvals value.
     pub allow_session_approvals: bool,
 }
 
@@ -70,7 +72,10 @@ pub(in crate::control) fn effective_permission_profile(
         {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                "API Providers support on_request only: operations within the Run baseline execute directly; higher access requires approval for that operation",
+                concat!(
+                    "API Providers support on_request only: operations within the Run baseline ",
+                    "execute directly; higher access requires approval for that operation"
+                ),
                 false,
             ));
         }
@@ -89,7 +94,10 @@ pub(in crate::control) fn effective_permission_profile(
         Some("always") => {
             return Err(error(
                 ErrorCode::InvalidConfiguration,
-                "Codex app-server cannot guarantee approval for every native operation; permissions.approval=always is unsupported",
+                concat!(
+                    "Codex app-server cannot guarantee approval for every native operation; ",
+                    "permissions.approval=always is unsupported"
+                ),
                 false,
             ));
         }

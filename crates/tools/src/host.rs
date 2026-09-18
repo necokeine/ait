@@ -244,15 +244,29 @@ pub fn parameters(name: &str) -> Option<Value> {
     if matches!(name, "grep" | "glob") {
         schema["properties"]["offset"] =
             json!({"type":"integer","minimum":0,"description":"Zero-based result offset."});
-        schema["properties"]["limit"] = json!({"type":"integer","minimum":1,"maximum":1000,"description":"Maximum returned results, default 200."});
+        schema["properties"]["limit"] = json!({
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum returned results, default 200."
+        });
     }
     if name == "grep" {
-        schema["properties"]["output_mode"] = json!({"type":"string","enum":["content","count","files_with_matches"],"description":"content (default), per-file matching line counts, or matching paths. count avoids returning file contents."});
+        schema["properties"]["output_mode"] = json!({
+            "type": "string",
+            "enum": ["content", "count", "files_with_matches"],
+            "description": concat!(
+                "content (default), per-file matching line counts, or matching paths. ",
+                "count avoids returning file contents."
+            )
+        });
     }
     if let Some(permission) = schema["properties"].get_mut("sandbox_permissions") {
-        permission["description"] = json!(
-            "Optional requested access. Higher access requires interactive approval for this operation only, subject to administrator and tool limits. Provide justification. Approval never changes the Run baseline."
-        );
+        permission["description"] = json!(concat!(
+            "Optional requested access. Higher access requires interactive approval for ",
+            "this operation only, subject to administrator and tool limits. Provide ",
+            "justification. Approval never changes the Run baseline."
+        ));
     }
     schema["additionalProperties"] = Value::Bool(false);
     Some(schema)

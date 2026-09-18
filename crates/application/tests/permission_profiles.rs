@@ -778,7 +778,14 @@ async fn invalid_permission_profiles_never_echo_input_in_errors() {
     for permissions in [
         serde_json::json!({"network": {"enabled": "fixture-secret"}}),
         serde_json::json!({"fixture-secret": true}),
-        serde_json::json!({"fileSystem": {"entries": [{"path": {"type": "path", "path": "/workspace"}, "access": "fixture-secret"}]}}),
+        serde_json::json!({
+            "fileSystem": {
+                "entries": [{
+                    "path": {"type": "path", "path": "/workspace"},
+                    "access": "fixture-secret",
+                }],
+            },
+        }),
     ] {
         let failure = service
             .decide(WorkspaceApprovalRequest {

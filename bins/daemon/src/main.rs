@@ -131,14 +131,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut recovery_done = false;
     loop {
         tokio::select! {
-            result=&mut server=>{result?;break;},
-            ()=shutdown_signal()=>break,
-            result=&mut recovery,if !recovery_done=>{
-                recovery_done=true;
+            result = &mut server => { result?; break; },
+            () = shutdown_signal() => break,
+            result = &mut recovery, if !recovery_done => {
+                recovery_done = true;
                 match result {
-                    Ok(Ok(recovered)) if recovery_count>0=>eprintln!("reconciled {} Run(s) after startup",recovered.len()),
-                    Ok(Ok(_))=>{},
-                    _=>eprintln!("startup recovery stopped; inspect durable Run state"),
+                    Ok(Ok(recovered)) if recovery_count > 0 =>
+                        eprintln!("reconciled {} Run(s) after startup", recovered.len()),
+                    Ok(Ok(_)) => {}
+                    _ => eprintln!("startup recovery stopped; inspect durable Run state"),
                 }
             }
         }
@@ -165,7 +166,10 @@ async fn shutdown_signal() {
         if let Ok(mut terminate) =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         {
-            tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate.recv() => {}
+            }
         } else {
             let _ = tokio::signal::ctrl_c().await;
         }

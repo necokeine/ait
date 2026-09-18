@@ -66,7 +66,11 @@ fn request_error(error: reqwest::Error, command: &Command) -> Box<dyn std::error
     ) {
         // A malformed server response can make serde quote an unknown variant
         // containing the secret. Never render the underlying error on this path.
-        input::invalid("agent provider request failed (transport, HTTP status or response decoding); check the connection and saved Provider state").into()
+        input::invalid(concat!(
+            "agent provider request failed (transport, HTTP status or response decoding); ",
+            "check the connection and saved Provider state"
+        ))
+        .into()
     } else {
         error.into()
     }

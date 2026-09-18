@@ -23,7 +23,12 @@ pub(crate) struct Arguments {
     #[arg(long, global = true, default_value = "127.0.0.1", value_parser = input::host)]
     pub(crate) host: String,
     /// Local daemon HTTP port (valid at every subcommand level).
-    #[arg(long, global = true, default_value_t = 7314, value_parser = clap::value_parser!(u16).range(1..))]
+    #[arg(
+        long,
+        global = true,
+        default_value_t = 7314,
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
     pub(crate) port: u16,
     #[command(subcommand)]
     pub(crate) command: CliCommand,
@@ -329,7 +334,8 @@ pub(crate) enum CronCommand {
         #[arg(long, value_parser = input::id)]
         cron_id: String,
     },
-    /// Trigger an occurrence. scheduled-at is Unix milliseconds (signed i64); the same value deduplicates.
+    /// Trigger an occurrence. scheduled-at is Unix milliseconds (signed i64);
+    /// the same value deduplicates.
     Trigger {
         #[arg(long, value_parser = input::id)]
         cron_id: String,
@@ -345,7 +351,8 @@ pub(crate) enum SettingsCommand {
     /// Restore defaults: `read_only` sandbox and `on_request` approval.
     Reset,
     /// Replace the complete settings document using its observed revision.
-    /// Sandbox values: `read_only` (default), `workspace_write`, `full_access`; strict aliases `read_only`.
+    /// Sandbox values: `read_only` (default), `workspace_write`, `full_access`;
+    /// strict aliases `read_only`.
     /// Permissions apply to new Runs and remain subject to the daemon ceiling.
     Set {
         #[arg(long)]
@@ -470,9 +477,10 @@ impl ProviderArgs {
             ));
         }
         if self.secret_stdin && matches!(source, StdinSource::Terminal) {
-            return Err(input::invalid(
-                "agent provider: --secret-stdin requires redirected stdin (terminal echo is unsafe)",
-            ));
+            return Err(input::invalid(concat!(
+                "agent provider: --secret-stdin requires redirected stdin ",
+                "(terminal echo is unsafe)"
+            )));
         }
         let models = self
             .input

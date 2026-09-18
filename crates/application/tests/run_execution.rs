@@ -345,8 +345,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn run_commands_return_persisted_terminal_results_and_do_not_repeat_external_calls_on_conflict()
- {
+async fn run_commands_return_persisted_results_without_repeating_external_calls_on_conflict() {
     let fixture = Fixture::new().await;
     for (index, input) in [
         send_message(),

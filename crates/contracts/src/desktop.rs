@@ -357,13 +357,20 @@ pub fn settings_schema() -> SettingsSchema {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "settings remain grouped by display order"
+)]
 fn execution_settings() -> Vec<SettingDefinition> {
     vec![
         setting(
             "agents.default_agent",
             SettingCategory::Agents,
             "Default Agent",
-            "Global fallback used whenever a Project, Session, branch, or Cron does not select an Agent.",
+            concat!(
+                "Global fallback used whenever a Project, Session, branch, or Cron does not ",
+                "select an Agent."
+            ),
             SettingKind::AgentReference,
             json!(""),
             false,
@@ -372,7 +379,10 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "agents.small_agent",
             SettingCategory::Agents,
             "Small Agent",
-            "Agent used for short AI calls such as Session title and search-summary generation. Falls back to Default Agent when unset.",
+            concat!(
+                "Agent used for short AI calls such as Session title and search-summary ",
+                "generation. Falls back to Default Agent when unset."
+            ),
             SettingKind::AgentReference,
             json!(""),
             false,
@@ -422,7 +432,13 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.approval",
             SettingCategory::Permissions,
             "Approval mode",
-            "API Providers support on_request: operations within the Run baseline run directly; higher access waits for Allow once or Deny, within administrator and tool limits. Waiting counts toward the Run timeout. untrusted_only and legacy always are rejected for API Runs. Codex keeps its native on_request/untrusted_only policies; always is unsupported.",
+            concat!(
+                "API Providers support on_request: operations within the Run baseline run ",
+                "directly; higher access waits for Allow once or Deny, within administrator and ",
+                "tool limits. Waiting counts toward the Run timeout. untrusted_only and legacy ",
+                "always are rejected for API Runs. Codex keeps its native ",
+                "on_request/untrusted_only policies; always is unsupported."
+            ),
             SettingKind::Select {
                 options: vec![
                     "on_request".into(),
@@ -437,7 +453,15 @@ fn execution_settings() -> Vec<SettingDefinition> {
             "permissions.sandbox",
             SettingCategory::Permissions,
             "Sandbox profile",
-            "Default workspace_write permits Agent writes within the workspace. Codex uses its native sandbox and isolated Project; full_access requires administrator permission. OpenAI/DeepSeek/Gemini/MiniMax file tools stay within the Session workspace. On macOS/Linux, Shell follows the Run permission: read_only forbids writes, workspace_write permits writes only in the workspace, and full_access removes the OS sandbox. Restricted Shell requires an available OS sandbox; the administrator ceiling always applies. Legacy strict is a read_only alias.",
+            concat!(
+                "Default workspace_write permits Agent writes within the workspace. Codex uses ",
+                "its native sandbox and isolated Project; full_access requires administrator ",
+                "permission. OpenAI/DeepSeek/Gemini/MiniMax file tools stay within the Session ",
+                "workspace. On macOS/Linux, Shell follows the Run permission: read_only forbids ",
+                "writes, workspace_write permits writes only in the workspace, and full_access ",
+                "removes the OS sandbox. Restricted Shell requires an available OS sandbox; the ",
+                "administrator ceiling always applies. Legacy strict is a read_only alias."
+            ),
             SettingKind::Select {
                 options: vec![
                     "read_only".into(),
@@ -564,29 +588,4 @@ pub fn default_settings() -> SettingsDocument {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_cover_every_setting_once() {
-        let schema = settings_schema();
-        let defaults = default_settings();
-        assert_eq!(schema.definitions.len(), defaults.0.len());
-        assert!(
-            schema
-                .definitions
-                .iter()
-                .all(|item| defaults.0.contains_key(&item.id))
-        );
-    }
-
-    #[test]
-    fn provider_settings_have_a_single_authoritative_catalog() {
-        assert!(
-            settings_schema()
-                .definitions
-                .iter()
-                .all(|item| !item.id.starts_with("models."))
-        );
-    }
-}
+mod tests;

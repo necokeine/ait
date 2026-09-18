@@ -75,29 +75,75 @@ fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
     match kind {
         ProviderKind::OpenAI => {
             let output = if calls.is_empty() {
-                vec![
-                    json!({"type":"message","id":"msg_final","status":"completed","role":"assistant","content":[{"type":"output_text","annotations":[],"text":"Verified hello.py"}]}),
-                ]
+                vec![json!({
+                    "type": "message",
+                    "id": "msg_final",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "output_text",
+                        "annotations": [],
+                        "text": "Verified hello.py",
+                    }],
+                })]
             } else {
-                calls.iter().map(|(id,name,args)|json!({"type":"function_call","id":format!("fc_{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect()
+                calls
+                    .iter()
+                    .map(|(id, name, args)| {
+                        json!({
+                            "type": "function_call",
+                            "id": format!("fc_{id}"),
+                            "call_id": id,
+                            "name": name,
+                            "arguments": args.to_string(),
+                            "status": "completed",
+                        })
+                    })
+                    .collect()
             };
-            json!({"id":"resp_fixture","object":"response","created_at":0,"status":"completed","model":"fixture-model","tools":[],"output":output,"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}})
+            json!({
+                "id": "resp_fixture",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "model": "fixture-model",
+                "tools": [],
+                "output": output,
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+            })
         }
         ProviderKind::DeepSeek => {
             let message = if calls.is_empty() {
-                json!({"role":"assistant","content":"Verified hello.py"})
+                json!({"role": "assistant", "content": "Verified hello.py"})
             } else {
-                json!({"role":"assistant","content":null,"reasoning_content":"Use the host tools.","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
+                json!({
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "Use the host tools.",
+                    "tool_calls": calls.iter().map(|(id, name, args)| json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": args.to_string()},
+                    })).collect::<Vec<_>>(),
+                })
             };
-            json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+            chat_completion(message, calls.is_empty())
         }
         ProviderKind::MiniMax => {
             let message = if calls.is_empty() {
-                json!({"role":"assistant","content":"Verified hello.py"})
+                json!({"role": "assistant", "content": "Verified hello.py"})
             } else {
-                json!({"role":"assistant","content":"<think>Use the host tools.</think>","tool_calls":calls.iter().map(|(id,name,args)|json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect::<Vec<_>>()})
+                json!({
+                    "role": "assistant",
+                    "content": "<think>Use the host tools.</think>",
+                    "tool_calls": calls.iter().map(|(id, name, args)| json!({
+                        "id": id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": args.to_string()},
+                    })).collect::<Vec<_>>(),
+                })
             };
-            json!({"id":"chatcmpl_fixture","object":"chat.completion","created":0,"model":"fixture-model","choices":[{"index":0,"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}})
+            chat_completion(message, calls.is_empty())
         }
         ProviderKind::Gemini => {
             let parts = if calls.is_empty() {
@@ -108,10 +154,38 @@ fn response(kind: ProviderKind, calls: &[(&str, &str, Value)]) -> Value {
                     .map(|(_, name, args)| json!({"functionCall":{"name":name,"args":args}}))
                     .collect()
             };
-            json!({"candidates":[{"content":{"role":"model","parts":parts},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"fixture-model","responseId":"resp_fixture"})
+            json!({
+                "candidates": [{
+                    "content": {"role": "model", "parts": parts},
+                    "finishReason": "STOP",
+                    "index": 0,
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 3,
+                    "candidatesTokenCount": 2,
+                    "totalTokenCount": 5,
+                },
+                "modelVersion": "fixture-model",
+                "responseId": "resp_fixture",
+            })
         }
         ProviderKind::Codex => unreachable!(),
     }
+}
+
+fn chat_completion(message: Value, no_calls: bool) -> Value {
+    json!({
+        "id": "chatcmpl_fixture",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "fixture-model",
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": if no_calls { "stop" } else { "tool_calls" },
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    })
 }
 fn openai_response_with_raw_tool_arguments(arguments: &str) -> Value {
     json!({
@@ -854,12 +928,22 @@ async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
         (
             "uri_user_info",
             "NEC248_URI_MATERIAL",
-            json!({"file_path":"leak.txt","source_uri":"https://user:NEC248_URI_MATERIAL@example.test/path"}),
+            json!({
+                "file_path": "leak.txt",
+                "source_uri": "https://user:NEC248_URI_MATERIAL@example.test/path",
+            }),
         ),
         (
             "pem",
             "NEC248_PEM_MATERIAL",
-            json!({"file_path":"leak.txt","content":"-----BEGIN PRIVATE KEY-----\nNEC248_PEM_MATERIAL\n-----END PRIVATE KEY-----"}),
+            json!({
+                "file_path": "leak.txt",
+                "content": concat!(
+                    "-----BEGIN PRIVATE KEY-----\n",
+                    "NEC248_PEM_MATERIAL\n",
+                    "-----END PRIVATE KEY-----",
+                ),
+            }),
         ),
     ];
 
@@ -909,7 +993,11 @@ async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
                 !artifact
                     .windows(secret.len())
                     .any(|window| window == secret.as_bytes()),
-                "{shape}: a durable, exported, checkpoint, event, stderr/protocol diagnostic surface contained the raw secret"
+                concat!(
+                    "{}: a durable, exported, checkpoint, event, stderr/protocol ",
+                    "diagnostic surface contained the raw secret",
+                ),
+                shape,
             );
             assert!(
                 !artifact
@@ -933,7 +1021,15 @@ async fn malformed_and_oversized_tool_inputs_leave_no_process_or_persistence_tra
     std::fs::write(
         &wrapper,
         format!(
-            "#!/usr/bin/env python3\nimport os,sys\nfd=os.open({stderr},os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\nos.dup2(fd,2)\nos.execv({worker},[{worker}]+sys.argv[1:])\n"
+            concat!(
+                "#!/usr/bin/env python3\n",
+                "import os,sys\n",
+                "fd=os.open({stderr},os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\n",
+                "os.dup2(fd,2)\n",
+                "os.execv({worker},[{worker}]+sys.argv[1:])\n",
+            ),
+            stderr = stderr,
+            worker = worker,
         ),
     )
     .unwrap();
@@ -1027,7 +1123,11 @@ async fn malformed_and_oversized_tool_inputs_leave_no_process_or_persistence_tra
                 !artifact
                     .windows(secret.len())
                     .any(|window| window == secret.as_bytes()),
-                "{shape}: raw private input reached a durable, exported, event, checkpoint, stderr, or protocol diagnostic surface"
+                concat!(
+                    "{}: raw private input reached a durable, exported, event, checkpoint, ",
+                    "stderr, or protocol diagnostic surface",
+                ),
+                shape,
             );
             assert!(
                 !artifact
