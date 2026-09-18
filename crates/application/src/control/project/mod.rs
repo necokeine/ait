@@ -21,7 +21,7 @@ pub(in crate::control) fn update_project(
     agent_id: Option<&str>,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let name = name.trim();
-    ait_domain::project_policy::validate_registration(project_id, name, &mut None)
+    ait_domain::project::validate_registration(project_id, name, &mut None)
         .map_err(|e| error(e.code, e.message, e.retryable))?;
     if let Some(agent_id) = agent_id.filter(|id| !id.trim().is_empty()) {
         require_named_agent(state, agent_id)?;
@@ -80,7 +80,7 @@ pub(in crate::control) fn validate_project_registration(
     name: &str,
     repo_url: &mut Option<String>,
 ) -> Result<(), ApiError> {
-    ait_domain::project_policy::validate_registration(id, name, repo_url)
+    ait_domain::project::validate_registration(id, name, repo_url)
         .map_err(|e| error(e.code, e.message, e.retryable))?;
     if state.projects().iter().any(|project| project.id == id) {
         return Err(error(

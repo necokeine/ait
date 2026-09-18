@@ -1,4 +1,14 @@
 use super::*;
+
+#[test]
+fn message_id_is_a_uuid_with_stable_serde() {
+    let id = MessageId::from_u128(1);
+    let encoded = serde_json::to_string(&id).unwrap();
+
+    assert_eq!(encoded, "\"00000000-0000-0000-0000-000000000001\"");
+    assert_eq!(serde_json::from_str::<MessageId>(&encoded).unwrap(), id);
+    assert!(MessageId::parse("message-1").is_err());
+}
 use std::collections::HashMap;
 
 fn message(role: MessageRole) -> Message {

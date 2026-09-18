@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DomainError, DomainMetadata, ErrorCode, TimestampMs};
 
+/// Provider catalog types used by Agent configurations.
+pub mod provider;
+
 /// Stable identity of an Agent.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -117,6 +120,23 @@ impl Agent {
         }
         Ok(())
     }
+}
+
+/// A mutable Agent's configuration, copied into each Run before execution.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfiguration {
+    /// Identifier of the selected provider.
+    pub provider_id: String,
+    /// Identifier of the selected model.
+    pub model: String,
+    /// Optional reasoning-effort setting.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Reserved Agent-authored instructions. Persisted and snapshotted only;
+    /// current adapters deliberately do not add this value to provider prompts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 /// Immutable, non-secret configuration of one Agent revision.

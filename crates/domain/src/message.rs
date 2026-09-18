@@ -2,11 +2,77 @@ use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{
-    DomainError, DomainMetadata, ErrorCode, GitCommit, MessageId, ProjectId, RunId, SessionId,
-    TimestampMs,
+    DomainError, DomainMetadata, ErrorCode, GitCommit, InstructionSnapshot, ProjectId, RunId,
+    SessionId, TimestampMs,
 };
+
+/// Stable identity of an immutable Message.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MessageId(Uuid);
+
+impl MessageId {
+    /// Creates an identity from an externally assigned UUID.
+    #[must_use]
+    pub const fn new(value: Uuid) -> Self {
+        Self(value)
+    }
+
+    /// Creates an identity from its raw UUID value.
+    #[must_use]
+    pub const fn from_u128(value: u128) -> Self {
+        Self(Uuid::from_u128(value))
+    }
+
+    /// Parses a UUID string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`uuid::Error`] when the input is not a UUID.
+    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
+        Uuid::parse_str(value).map(Self)
+    }
+
+    /// Returns the underlying UUID.
+    #[must_use]
+    pub const fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl From<Uuid> for MessageId {
+    fn from(value: Uuid) -> Self {
+        Self::new(value)
+    }
+}
+
+impl std::fmt::Display for MessageId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A typed component stored in an immutable System Message.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemMessageComponent {
+    /// Project instruction sources captured at a particular revision.
+    ProjectInstructions(InstructionSnapshot),
+}
+
+/// Immutable root System Message for a new Message tree.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SystemMessage {
+    /// Message identity.
+    pub id: MessageId,
+    /// Owning Project.
+    pub project_id: ProjectId,
+    /// Structured snapshots used later to assemble a provider prompt.
+    pub components: Vec<SystemMessageComponent>,
+}
 
 /// Role of an immutable Message.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]

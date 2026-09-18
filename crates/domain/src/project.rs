@@ -1,59 +1,8 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use crate::{AgentId, DomainError, DomainMetadata, ErrorCode, RunId, TimestampMs};
-
-/// Immutable Git commit identity captured at a Project or Message boundary.
-///
-/// Both SHA-1 and SHA-256 object formats are accepted so repositories can
-/// migrate hash algorithms without changing the domain model.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct GitCommit(String);
-
-impl GitCommit {
-    /// Parses a full lowercase hexadecimal Git object identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorCode::InvalidProject`] when `value` is not a full SHA-1
-    /// or SHA-256 object identity.
-    pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
-        let value = value.into();
-        if is_git_commit(&value) {
-            Ok(Self(value))
-        } else {
-            Err(DomainError::invariant(
-                ErrorCode::InvalidProject,
-                "Git commit must be a full lowercase SHA-1 or SHA-256 object id",
-            ))
-        }
-    }
-
-    /// Returns the full hexadecimal object identity.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Reports whether this value remains a valid full Git object identity.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        is_git_commit(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for GitCommit {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(value).map_err(serde::de::Error::custom)
-    }
-}
+use crate::{AgentId, DomainError, DomainMetadata, ErrorCode, GitCommit, TimestampMs};
 
 /// Stable identity of a registered project.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -71,71 +20,6 @@ impl ProjectId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-}
-
-/// Stable identity of a session.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionId(String);
-
-impl SessionId {
-    /// Creates an externally assigned session identity.
-    #[must_use]
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// Returns the string representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Stable identity of an immutable message.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MessageId(Uuid);
-
-impl MessageId {
-    /// Creates an identity from an externally assigned UUID.
-    #[must_use]
-    pub const fn new(value: Uuid) -> Self {
-        Self(value)
-    }
-
-    /// Creates an identity from its raw UUID value.
-    #[must_use]
-    pub const fn from_u128(value: u128) -> Self {
-        Self(Uuid::from_u128(value))
-    }
-
-    /// Parses a UUID string.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`uuid::Error`] when the input is not a UUID.
-    pub fn parse(value: &str) -> Result<Self, uuid::Error> {
-        Uuid::parse_str(value).map(Self)
-    }
-
-    /// Returns the underlying UUID.
-    #[must_use]
-    pub const fn as_uuid(&self) -> &Uuid {
-        &self.0
-    }
-}
-
-impl From<Uuid> for MessageId {
-    fn from(value: Uuid) -> Self {
-        Self::new(value)
-    }
-}
-
-impl std::fmt::Display for MessageId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
     }
 }
 
@@ -207,9 +91,9 @@ impl Project {
                 .repo_url
                 .as_ref()
                 .is_some_and(|url| url.trim().is_empty())
-            || !is_git_commit(self.base_commit.as_str())
+            || !self.base_commit.is_valid()
             || self.instruction_revision == 0
-            || !is_sha256(&self.instruction_digest)
+            || !crate::common::is_sha256(&self.instruction_digest)
             || self.updated_at < self.created_at
         {
             return Err(DomainError::invariant(
@@ -221,218 +105,85 @@ impl Project {
     }
 }
 
-/// Audit summary for one instruction input. Exact content lives beside this
-/// summary in the structured component snapshot.
+/// Revisioned default Agent suggestion for future Sessions.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InstructionSourceSummary {
-    /// Stable, displayable source name.
-    pub name: String,
-    /// Locator relative to the project, or an explicitly authorized absolute locator.
-    pub locator: String,
-    /// Larger values override smaller values by being rendered later.
-    pub priority: u32,
-    /// SHA-256 of the source bytes.
-    pub content_digest: String,
-    /// Source size in bytes.
-    pub byte_len: u64,
+pub struct ProjectDefaults {
+    #[serde(default)]
+    default_agent_id: Option<AgentId>,
+    #[serde(default = "initial_revision")]
+    revision: u64,
 }
 
-/// Immutable content and provenance of one discovered instruction source.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InstructionSourceSnapshot {
-    /// Source provenance and precedence.
-    pub summary: InstructionSourceSummary,
-    /// Exact UTF-8 source content captured for this revision.
-    pub content: String,
+const fn initial_revision() -> u64 {
+    1
 }
 
-/// Immutable, reproducible Project-instruction component.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct InstructionSnapshot {
-    /// Monotonic project-local revision, beginning at one.
-    pub revision: u64,
-    /// Source snapshots in strictly increasing priority order.
-    pub sources: Vec<InstructionSourceSnapshot>,
-    /// SHA-256 of the canonical component content and provenance.
-    pub content_digest: String,
+impl Default for ProjectDefaults {
+    fn default() -> Self {
+        Self {
+            default_agent_id: None,
+            revision: 1,
+        }
+    }
 }
 
-impl InstructionSnapshot {
-    /// Validates revision, digest formats, source sizes, and strict priority ordering.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorCode::InvalidProject`] when the snapshot cannot be
-    /// reproduced deterministically.
-    pub fn validate(&self) -> Result<(), DomainError> {
-        let sources_valid = self.sources.iter().all(|source| {
-            !source.summary.name.trim().is_empty()
-                && !source.summary.locator.trim().is_empty()
-                && is_sha256(&source.summary.content_digest)
-                && u64::try_from(source.content.len())
-                    .is_ok_and(|length| length == source.summary.byte_len)
-        });
-        let priorities_strict = self
-            .sources
-            .windows(2)
-            .all(|pair| pair[0].summary.priority < pair[1].summary.priority);
-        if self.revision == 0
-            || !is_sha256(&self.content_digest)
-            || !sources_valid
-            || !priorities_strict
-        {
+impl ProjectDefaults {
+    /// Returns the current suggestion; it does not rebind existing Sessions.
+    #[must_use]
+    pub fn agent(&self) -> Option<&AgentId> {
+        self.default_agent_id.as_ref()
+    }
+
+    /// Returns the current catalog revision.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Selects a validated named Agent in the surrounding catalog transaction.
+    pub fn select(&mut self, agent: AgentId) {
+        self.default_agent_id = Some(agent);
+        self.mark_updated();
+    }
+
+    /// Clears the Project override so future Sessions use the global default.
+    pub fn clear(&mut self) {
+        self.default_agent_id = None;
+        self.mark_updated();
+    }
+
+    /// Advances the catalog revision after Project metadata changes.
+    pub fn mark_updated(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+}
+
+/// Validates caller-owned registration metadata and normalizes the declared URL.
+///
+/// # Errors
+///
+/// Returns [`ErrorCode::InvalidProject`] for blank identities, names, or supplied URLs.
+pub fn validate_registration(
+    id: &str,
+    name: &str,
+    repo_url: &mut Option<String>,
+) -> Result<(), DomainError> {
+    if id.trim().is_empty() || name.trim().is_empty() {
+        return Err(DomainError::invariant(
+            ErrorCode::InvalidProject,
+            "project id and name are required",
+        ));
+    }
+    if let Some(url) = repo_url {
+        *url = url.trim().to_owned();
+        if url.is_empty() {
             return Err(DomainError::invariant(
                 ErrorCode::InvalidProject,
-                "instruction revision, digest, source length, or priority order is invalid",
+                "repository URL cannot be empty",
             ));
         }
-        Ok(())
     }
-}
-
-/// A typed component stored in an immutable System Message.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SystemMessageComponent {
-    /// Project instruction sources captured at a particular revision.
-    ProjectInstructions(InstructionSnapshot),
-}
-
-/// Immutable root system message for a new message tree.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SystemMessage {
-    /// Message identity.
-    pub id: MessageId,
-    /// Owning project.
-    pub project_id: ProjectId,
-    /// Structured snapshots used later to assemble a provider prompt.
-    pub components: Vec<SystemMessageComponent>,
-}
-
-/// Lifecycle of a named Session reference.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    /// May accept input and follow a Run.
-    Active,
-    /// Retained for history but unavailable for new work.
-    Archived,
-}
-
-/// A movable reference into a Project's immutable Message forest.
-///
-/// A Session owns no Message history. `active_run_id` is only an exclusive
-/// non-terminal Run binding, while `current_message_id` is moved by CAS.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Session {
-    /// Session identity.
-    pub id: SessionId,
-    /// Owning project.
-    pub project_id: ProjectId,
-    /// Manager-owned linked worktree used for every interactive execution.
-    pub workdir: PathBuf,
-    /// Human-readable reference name.
-    #[serde(default)]
-    pub name: String,
-    /// Optional UI title.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// AI-generated plain-text summary used by Session search.
-    #[serde(default)]
-    pub description: String,
-    /// Current message pointer.
-    pub current_message_id: MessageId,
-    /// The sole non-terminal Run currently following this Session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_run_id: Option<RunId>,
-    /// Agent used by the next interactive Run; mutable only while idle.
-    pub agent_id: AgentId,
-    /// Session availability state.
-    pub status: SessionStatus,
-    /// Compare-and-swap version.
-    pub version: u64,
-    /// Creation time.
-    pub created_at: TimestampMs,
-    /// Last pointer, binding, or metadata update time.
-    pub updated_at: TimestampMs,
-}
-
-impl Session {
-    /// Creates an active, idle Session pointing at one existing Message.
-    #[must_use]
-    pub fn new(
-        id: SessionId,
-        project_id: ProjectId,
-        workdir: PathBuf,
-        name: impl Into<String>,
-        current_message_id: MessageId,
-        agent_id: AgentId,
-        now: TimestampMs,
-    ) -> Self {
-        Self {
-            id,
-            project_id,
-            workdir,
-            name: name.into(),
-            title: None,
-            description: String::new(),
-            current_message_id,
-            active_run_id: None,
-            agent_id,
-            status: SessionStatus::Active,
-            version: 1,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    /// Validates pointer, binding, version, and lifecycle fields.
-    ///
-    /// Cross-Project Message/Run checks require a store and remain application invariants.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorCode::InvalidSession`] for an invalid aggregate.
-    pub fn validate(&self) -> Result<(), DomainError> {
-        if self.id.as_str().is_empty()
-            || self.project_id.as_str().is_empty()
-            || !self.workdir.is_absolute()
-            || self.current_message_id.as_uuid().is_nil()
-            || self.agent_id.as_str().is_empty()
-            || self.version == 0
-            || (self.status == SessionStatus::Archived && self.active_run_id.is_some())
-            || self.updated_at < self.created_at
-        {
-            return Err(DomainError::invariant(
-                ErrorCode::InvalidSession,
-                "session identity, pointer, binding, version, or timestamps are invalid",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Atomic result of creating a new tree and a session pointing at its root.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SessionRoot {
-    /// Newly created session.
-    pub session: Session,
-    /// Immutable root system message.
-    pub root_message: SystemMessage,
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn is_git_commit(value: &str) -> bool {
-    matches!(value.len(), 40 | 64)
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    Ok(())
 }
 
 #[cfg(test)]

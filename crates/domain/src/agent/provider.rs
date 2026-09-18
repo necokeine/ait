@@ -1,4 +1,4 @@
-//! Shared provider connections and reusable or Session-owned Agent configuration.
+//! Shared provider connections available to Agent configurations.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,16 +24,16 @@ pub enum ProviderKind {
     Mock,
 }
 
+/// Model advertised by an Agent provider.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Model advertised by an agent provider.
 pub struct ProviderModel {
     /// Provider-specific model identifier.
     pub id: String,
     /// Human-readable model name.
     pub name: String,
-    #[serde(default)]
     /// Reasoning-effort values accepted by the model.
+    #[serde(default)]
     pub reasoning_efforts: Vec<String>,
 }
 
@@ -51,23 +51,6 @@ pub struct AgentProvider {
     pub url: Option<String>,
     /// Models available through this provider.
     pub models: Vec<ProviderModel>,
-}
-
-/// A mutable Agent's configuration, copied into each Run before execution.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentConfiguration {
-    /// Identifier of the selected provider.
-    pub provider_id: String,
-    /// Identifier of the selected model.
-    pub model: String,
-    #[serde(default)]
-    /// Optional reasoning-effort setting.
-    pub reasoning_effort: Option<String>,
-    /// Reserved Agent-authored instructions. Persisted and snapshotted only;
-    /// current adapters deliberately do not add this value to provider prompts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
 }
 
 #[cfg(test)]
