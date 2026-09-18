@@ -33,7 +33,7 @@ const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
-  "session.create", "session.set-agent", "session.rename", "session.set-title",
+  "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
   "run.resolve-approval", "run.resolve-tool-approval", "run.resolve-tool-interaction", "run.active",
   "cron.list", "cron.create", "cron.set-enabled", "cron.trigger",
@@ -44,10 +44,21 @@ interface DaemonResponse {
   error?: { code: string; message: string };
 }
 
+class DaemonRejection extends Error {
+  constructor(message: string, readonly code?: string) { super(message); }
+}
+
+const forkValidationErrors = new Set([
+  "INVALID_PROJECT", "INVALID_SESSION", "INVALID_CONFIGURATION", "INVALID_AGENT_CONFIGURATION",
+  "AGENT_NOT_FOUND", "AGENT_DISABLED", "AGENT_REVISION_NOT_FOUND", "AGENT_CAPABILITY_UNSUPPORTED",
+  "MESSAGE_NOT_FOUND", "MESSAGE_PROJECT_MISMATCH", "SESSION_MESSAGE_PROJECT_MISMATCH",
+  "INVALID_ROOT_MESSAGE", "INVALID_MESSAGE_ROLE", "PROJECT_GIT_DIRTY", "PROJECT_GIT_HEAD_UNAVAILABLE",
+]);
+
 interface DaemonData {
   projects: Array<{
     id: string; name: string; workdir: string; repo_url?: string | null;
-    base_commit: string; default_agent_id?: string | null;
+    base_commit: string; root_message_id: string; default_agent_id?: string | null;
   }>;
   agents: AgentView[];
   providers: AgentProvider[];
@@ -83,7 +94,7 @@ interface DaemonData {
   }>;
 }
 
-class DaemonClient {
+export class DaemonClient {
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
   private viewRevision = 0;
@@ -245,15 +256,6 @@ class DaemonClient {
       });
       return this.projectCatalog();
     }
-    if (method === "session.create") {
-      const projectId = boundedId(params.projectId, "Project");
-      const id = randomUUID();
-      const session = await this.post("/v1/session/create", "session", {
-        id, project_id: projectId, agent_id: params.agentId,
-      });
-      assertProject(session, projectId);
-      return { project: await this.projectView(projectId), selectedSessionId: id };
-    }
     if (method === "session.set-agent") {
       const projectId = boundedId(params.projectId, "Project");
       const session = await this.post("/v1/session/set-agent", "session", {
@@ -342,21 +344,51 @@ class DaemonClient {
       return this.projectView(projectId);
     }
 
-    const id = randomUUID();
-    const currentSessionId = String(params.currentSessionId);
+    const currentSessionId = params.currentSessionId === undefined
+      ? undefined : boundedId(params.currentSessionId, "Session");
+    // A draft owns this ID across transport failures and retries. The daemon's
+    // atomic fork rejects an existing Session ID, so replay cannot append twice.
+    const id = currentSessionId ? randomUUID() : boundedId(params.submissionId, "Submission");
     const projectId = boundedId(params.projectId, "Project");
-    const run = await this.post("/v1/session/submit-derive", "run", {
-      id, project_id: projectId, source_session_id: currentSessionId,
-      agent_id: params.agentId, at_message_id: params.sourceMessageId,
-      text: params.content,
-    }) as { id: string; project_id: string; session_id: string | null };
+    type AcceptedRun = { id: string; project_id: string; session_id: string | null };
+    const recover = async (): Promise<AcceptedRun | undefined> => {
+      const runs = await this.get(`/v1/run/list?project_id=${encodeURIComponent(projectId)}`, "runs") as AcceptedRun[];
+      for (const run of runs) assertProject(run, projectId);
+      return runs.find((run) => run.session_id === id);
+    };
+    let run: AcceptedRun | undefined;
+    try {
+      if (!currentSessionId) run = await recover();
+      if (!run) {
+        try {
+          run = await this.post(currentSessionId ? "/v1/session/submit-derive" : "/v1/session/submit-fork", "run", {
+            id, project_id: projectId,
+            ...(currentSessionId ? { source_session_id: currentSessionId } : {}),
+            agent_id: params.agentId, at_message_id: params.sourceMessageId,
+            text: params.content,
+          }) as AcceptedRun;
+        } catch (error) {
+          if (currentSessionId) throw error;
+          run = await recover();
+          if (!run) {
+            // Only a definite first-attempt rejection releases the input. A retry
+            // may race the original request, even if this POST itself is rejected.
+            const rejected = !params.recover && error instanceof DaemonRejection && forkValidationErrors.has(error.code ?? "");
+            return { status: rejected ? "rejected" : "unknown", message: error instanceof Error ? error.message : String(error) };
+          }
+        }
+      }
+    } catch (error) {
+      if (currentSessionId) throw error;
+      return { status: "unknown", message: error instanceof Error ? error.message : String(error) };
+    }
     assertProject(run, projectId);
     const selectedSessionId = run.session_id;
     if (selectedSessionId !== currentSessionId && selectedSessionId !== id) {
       throw new Error("Daemon returned an unexpected derived Session");
     }
     return {
-      project: await this.projectView(projectId),
+      status: "accepted",
       selectedSessionId,
       runId: run.id,
       reusedCurrentSession: selectedSessionId === currentSessionId,
@@ -483,9 +515,7 @@ class DaemonClient {
     if (!response.ok) throw new Error(`Ait daemon returned HTTP ${response.status}.`);
     const envelope = await response.json() as DaemonResponse;
     if (!envelope.ok || !envelope.result) {
-      const error = new Error(envelope.error?.message ?? "Ait daemon rejected the operation.") as Error & { code?: string };
-      if (envelope.error?.code !== undefined) error.code = envelope.error.code;
-      throw error;
+      throw new DaemonRejection(envelope.error?.message ?? "Ait daemon rejected the operation.", envelope.error?.code);
     }
     if (envelope.result.kind !== expectedKind) throw new Error("Ait daemon returned an unexpected response.");
     return envelope.result.value;
@@ -599,7 +629,7 @@ class DaemonClient {
       projects: projects.map((project) => ({
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
-        defaultAgentId: project.default_agent_id ?? null,
+        rootMessageId: project.root_message_id, defaultAgentId: project.default_agent_id ?? null,
       })),
     };
   }

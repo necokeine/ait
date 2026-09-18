@@ -6,6 +6,8 @@
 
 ## 当前基线
 
+- `decisions/NEC-296/adr-001-new-session-draft.md`：桌面新建 Session 先进入初始 system Message 的本地派生草稿，首条输入原子接纳后才创建 Session；接纳回执独立于视图读取，结果不明时以稳定 ID 恢复。
+
 - `decisions/NEC-313/adr-001-aligned-api-agent-tools.md`：API Agent 对齐 Ait/OpenCode 的工具命名，并实现 Web、Project-local Skill、Todo、持久化用户交互及有界前台 Subagent；同时固定当前不支持的后台与跨模型子任务边界。
 
 - `decisions/NEC-310/adr-001-minimax-api-provider.md`：MiniMax OpenAI-compatible Chat Completions、模型发现、全入口 Provider kind 与 worker 工具循环。

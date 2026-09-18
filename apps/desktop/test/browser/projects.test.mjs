@@ -62,9 +62,13 @@ test("editing saves name and default Agent together, and new Sessions use the ne
   assert.deepEqual(await page.evaluate(() => window.fixture.edits), [{ projectId: "a", name: "Renamed Project", agentId: "alternate" }]);
   assert.equal(await page.evaluate(() => window.fixture.sessions[0].agentId), "agent");
   await page.locator('[data-new-session-project-id="a"]').click();
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "New Session");
+  assert.deepEqual(await page.evaluate(() => window.fixture.created), []);
+  assert.equal(await page.locator("#composer-agent").inputValue(), "alternate");
+  await page.locator("#message-input").fill("First message");
+  await page.locator("#send-button").click();
   await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Created Session");
-  assert.deepEqual(await page.evaluate(() => window.fixture.created), [{ projectId: "a" }]);
-  assert.equal(await page.evaluate(() => window.fixture.sessions.at(-1).agentId), "alternate");
+  assert.deepEqual(await page.evaluate(() => window.fixture.created), [{ projectId: "a", agentId: "alternate", sourceMessageId: "root-a", content: "First message" }]);
 });
 
 test("cancel and failed saves retain persisted Project data, with drafts available for retry", async (t) => {

@@ -63,6 +63,21 @@ struct Fixture {
 
 impl Fixture {
     async fn new(agent: Arc<dyn WorkspaceAgent>) -> Self {
+        let fixture = Self::empty(agent).await;
+        execute(
+            &fixture.service,
+            Command::CreateSession {
+                id: "current".into(),
+                project_id: fixture.project.id.clone(),
+                agent_id: "agent".into(),
+                at_message_id: None,
+            },
+        )
+        .await;
+        fixture
+    }
+
+    async fn empty(agent: Arc<dyn WorkspaceAgent>) -> Self {
         let temporary = TempDir::new().unwrap();
         let workdir = temporary.path().join("project");
         std::fs::create_dir(&workdir).unwrap();
@@ -105,16 +120,6 @@ impl Fixture {
             },
         )
         .await;
-        execute(
-            &service,
-            Command::CreateSession {
-                id: "current".into(),
-                project_id: project.id.clone(),
-                agent_id: "agent".into(),
-                at_message_id: None,
-            },
-        )
-        .await;
         Self {
             _temporary: temporary,
             service,
@@ -132,6 +137,60 @@ impl Fixture {
             text: text.into(),
         }
     }
+}
+
+#[tokio::test]
+async fn first_input_atomically_forks_from_the_initial_system_message_without_a_source_session() {
+    let fixture = Fixture::empty(Arc::new(ImmediateAgent)).await;
+    let initial = workspace(&fixture.service).await;
+    assert!(initial.sessions.is_empty());
+    assert!(initial.runs.is_empty());
+    assert_eq!(initial.messages.len(), 1);
+
+    let fork = |text: &str| Command::ForkSession {
+        id: "first-session".into(),
+        project_id: fixture.project.id.clone(),
+        agent_id: "agent".into(),
+        at_message_id: fixture.project.root_message_id.clone(),
+        text: text.into(),
+    };
+    let rejected = fixture.service.execute(fork("   ")).await;
+    assert!(!rejected.ok);
+    let after_rejection = workspace(&fixture.service).await;
+    assert!(after_rejection.sessions.is_empty());
+    assert!(after_rejection.runs.is_empty());
+    assert_eq!(after_rejection.messages.len(), 1);
+
+    let run = execute_run(&fixture.service, fork("First input")).await;
+    assert_eq!(run.session_id.as_deref(), Some("first-session"));
+    let accepted = workspace(&fixture.service).await;
+    assert_eq!(accepted.sessions.len(), 1);
+    assert_eq!(accepted.runs.len(), 1);
+    let user = accepted
+        .messages
+        .iter()
+        .find(|message| message.id == run.base_message_id)
+        .unwrap();
+    assert_eq!(user.text.as_deref(), Some("First input"));
+    assert_eq!(
+        user.parent_message_id.as_deref(),
+        Some(fixture.project.root_message_id.as_str())
+    );
+    let root = accepted
+        .messages
+        .iter()
+        .find(|message| message.id == fixture.project.root_message_id)
+        .unwrap();
+    assert_eq!(root, &initial.messages[0]);
+
+    // A transport retry keeps the candidate Session ID. Even after the first
+    // Run has finished, replay cannot create another Session, input, or Run.
+    let replay = fixture.service.execute(fork("First input")).await;
+    assert!(!replay.ok);
+    let after_replay = workspace(&fixture.service).await;
+    assert_eq!(after_replay.sessions, accepted.sessions);
+    assert_eq!(after_replay.runs, accepted.runs);
+    assert_eq!(after_replay.messages, accepted.messages);
 }
 
 async fn execute(service: &LocalControlService, command: Command) -> CommandResult {

@@ -51,6 +51,7 @@ export interface DesktopProject {
   description: string;
   repoUrl?: string;
   baseCommit: string;
+  rootMessageId: string;
   defaultAgentId: string | null;
 }
 
@@ -199,6 +200,15 @@ export interface RunSubmission {
   project: ProjectView;
   runId: string;
 }
+
+export interface ForkReceipt {
+  status: "accepted";
+  selectedSessionId: string;
+  runId: string;
+  reusedCurrentSession: boolean;
+}
+
+export type ForkSubmission = ForkReceipt | { status: "rejected" | "unknown"; message: string };
 
 /** Workspace activity summary; excludes conversation content and execution payloads. */
 export interface ActiveRunSummary {
@@ -352,10 +362,6 @@ export interface AitDesktopApi {
     projectId: string;
     agentId: string;
   }): Promise<ProjectCatalog>;
-  createSession(input: {
-    projectId: string;
-    agentId?: string;
-  }): Promise<{ project: ProjectView; selectedSessionId: string }>;
   setSessionAgent(input: {
     projectId: string;
     sessionId: string;
@@ -389,14 +395,13 @@ export interface AitDesktopApi {
   subscribeRunEvents(listener: (updates: RunStreamUpdate[]) => void): () => void;
   fork(input: {
     projectId: string;
-    currentSessionId: string;
+    currentSessionId?: string;
     sourceMessageId: string;
     agentId: string;
     content: string;
-  }): Promise<RunSubmission & {
-    selectedSessionId: string;
-    reusedCurrentSession: boolean;
-  }>;
+    submissionId?: string;
+    recover?: boolean;
+  }): Promise<ForkSubmission>;
 }
 
 declare global {

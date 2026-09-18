@@ -38,7 +38,19 @@ its Project conversation. Electron uses separate Project catalog, global Agent/P
 and explicit Project-scoped data calls;
 it never transfers an all-Workspace view to the renderer. Use the `+` beside Projects to register a
 local directory, choose that Project's default Agent backend, and use the `+` on a Project row to create
-a Session. The `•••` action edits the display name and default Agent together. Renaming preserves the
+a new Session draft. The draft derives from the Project's initial system Message and
+uses its default Agent; choose another saved Agent preset before sending if needed.
+Only sending the first nonempty message creates the Session and starts its Run,
+through the daemon's atomic fork submission. Reopening, cancelling or leaving an
+unsent draft adds no Session or worktree. A rejected submission keeps the input for
+retry. The accepted Session opens immediately so its Run progress is visible.
+If loading the accepted Session fails, the retry control opens that same Session
+without submitting again. If acceptance is unknown, the draft keeps its original
+input and identifier while the retry control checks the submission; inputs stay
+locked until the result is known. This recovery state lasts for the current draft.
+Provider, model and reasoning edits remain Session configuration actions, available
+once the Session is idle; a draft uses the selected preset's configuration.
+The `•••` action edits the display name and default Agent together. Renaming preserves the
 Project directory and Git identity; a new default applies to new Sessions and leaves existing Sessions
 unchanged. Failed saves retain the draft for retry. Starting the desktop with an empty workspace leaves
 this list empty until the user explicitly

@@ -17,6 +17,7 @@ const project = (id: string): DesktopProject => ({
   workdir: `/${id}`,
   description: "",
   baseCommit: "a".repeat(40),
+  rootMessageId: "root",
   defaultAgentId: null,
 });
 

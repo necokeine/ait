@@ -31,6 +31,7 @@ import type {
   DesktopMessage,
   DesktopSession,
   DesktopState,
+  ForkReceipt,
   ProjectCatalog,
   ProjectView,
   RunStreamUpdate,
@@ -77,6 +78,15 @@ let selectedProjectId: string | undefined;
 let selectedSessionId: string | undefined;
 let inspectedNodeId: string | undefined;
 let branchSourceNodeId: string | undefined;
+interface NewSessionDraft {
+  projectId: string;
+  sourceMessageId: string;
+  agentId: string;
+  submitting: boolean;
+  submission?: { id: string; content: string; agentId: string };
+  receipt?: ForkReceipt;
+}
+let newSessionDraft: NewSessionDraft | undefined;
 let messageContextNodeId: string | undefined;
 interface PendingSessionBranch extends PendingBranch {
   projectId: string;
@@ -397,6 +407,7 @@ function bindInteractions(): void {
 
 function renderAll(): void {
   if (!view) return;
+  reconcileAcceptedDraft();
   reconcilePendingBranch();
   renderRecoveryNotices();
   renderProjects();
@@ -467,6 +478,10 @@ function currentSession(): DesktopSession | undefined {
     session.id === selectedSessionId && session.projectId === selectedProjectId);
 }
 
+function currentNewSessionDraft(): NewSessionDraft | undefined {
+  return !selectedSessionId && newSessionDraft?.projectId === selectedProjectId ? newSessionDraft : undefined;
+}
+
 function currentPendingBranch(): PendingSessionBranch | undefined {
   return Array.from(pendingBranches.values()).find((pending) =>
     pending.projectId === selectedProjectId && pending.sourceSessionId === selectedSessionId);
@@ -477,6 +492,8 @@ function currentProject() {
 }
 
 function resetTreeView(): void {
+  if (newSessionDraft) messageInput.value = "";
+  newSessionDraft = undefined;
   inspectedNodeId = undefined;
   branchSourceNodeId = undefined;
   messageContextNodeId = undefined;
@@ -557,12 +574,14 @@ function renderProjects(): void {
 function renderAgents(): void {
   if (!view) return;
   const current = currentSession();
+  const agentId = currentNewSessionDraft()?.agentId ?? current?.agentId;
   composerAgent.innerHTML = view.agents
     .filter((agent) => agent.enabled && (!agent.ownerSessionId || agent.id === current?.agentId))
-    .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === current?.agentId ? " selected" : ""}>${escapeHtml(agent.ownerSessionId ? "Custom configuration" : agentLabel(agent))}</option>`)
+    .map((agent) => `<option value="${escapeAttribute(agent.id)}"${agent.id === agentId ? " selected" : ""}>${escapeHtml(agent.ownerSessionId ? "Custom configuration" : agentLabel(agent))}</option>`)
     .join("");
+  if (currentNewSessionDraft()) composerAgent.value = agentId ?? "";
   composerAgent.disabled = !current || current.active;
-  const agent = view.agents.find((candidate) => candidate.id === current?.agentId);
+  const agent = view.agents.find((candidate) => candidate.id === agentId);
   const label = agent ? agentLabel(agent) : "No Agent";
   $("#agent-chip").textContent = label;
   $("#composer-config-label").textContent = label;
@@ -585,10 +604,11 @@ function renderConversation(): void {
   if (!view) return;
   const session = currentSession();
   if (!session) {
+    const draft = currentNewSessionDraft();
     renderedSessionId = undefined;
-    $("#session-title").textContent = "No session selected";
+    $("#session-title").textContent = draft ? "New Session" : "No session selected";
     $("#session-breadcrumb").textContent = currentProject()?.name ?? "No Project";
-    conversation.innerHTML = `<div class="empty-state"><p>${currentProject() ? "Create or choose a Session to begin." : "Create a Project to begin."}</p></div>`;
+    conversation.innerHTML = `<div class="empty-state"><p>${draft ? "Send your first message to start this Session." : currentProject() ? "Create or choose a Session to begin." : "Create a Project to begin."}</p></div>`;
     return;
   }
   const project = view.projects.find((candidate) => candidate.id === session.projectId);
@@ -937,6 +957,7 @@ function switchTreeBranch(branchRootId: string | undefined): void {
   const headId = resolveBranchHead(messages, sessions, branchRootId);
   if (!headId) return;
   const session = sessionForBranch(messages, sessions, branchRootId);
+  resetTreeView();
   if (session) selectedSessionId = session.id;
   viewedTreeHeadId = session ? undefined : headId;
   inspectedNodeId = branchRootId;
@@ -982,7 +1003,7 @@ function renderNodeDetails(): void {
 
 function renderBranchContext(): void {
   const pendingBranch = currentPendingBranch();
-  const sourceId = pendingBranch?.sourceMessageId ?? branchSourceNodeId;
+  const sourceId = pendingBranch?.sourceMessageId ?? currentNewSessionDraft()?.sourceMessageId ?? branchSourceNodeId;
   const source = view?.messages.find((message) => message.id === sourceId);
   const context = $("#branch-context");
   context.classList.toggle("is-hidden", !source);
@@ -993,12 +1014,18 @@ function renderBranchContext(): void {
     : "Deriving from";
   $("#branch-node-label").textContent = `${messageSourceLabel(source)} · ${shortId(source.id)} · ${preview}`;
   const clear = $<HTMLButtonElement>("#clear-branch");
-  clear.disabled = Boolean(pendingBranch);
-  clear.classList.toggle("is-hidden", Boolean(pendingBranch));
+  const submitting = Boolean(pendingBranch || currentNewSessionDraft()?.submitting);
+  clear.disabled = submitting;
+  clear.classList.toggle("is-hidden", submitting);
 }
 
 function clearBranchSource(): void {
-  if (currentPendingBranch()) return;
+  if (currentPendingBranch() || currentNewSessionDraft()?.submitting) return;
+  if (currentNewSessionDraft()) {
+    resetTreeView();
+    renderAll();
+    return;
+  }
   branchSourceNodeId = undefined;
   renderBranchContext();
   updateComposerState();
@@ -1006,33 +1033,42 @@ function clearBranchSource(): void {
 
 async function submitMessage(): Promise<void> {
   const session = currentSession();
+  const draft = currentNewSessionDraft();
+  const projectId = draft?.projectId ?? session?.projectId;
   const content = messageInput.value.trim();
-  if (!view || !session || !content || sendButton.disabled) return;
-  const source = branchSourceNodeId
-    ? view.messages.find((message) => message.id === branchSourceNodeId)
+  if (!view || !projectId || (!session && !draft) || !content || sendButton.disabled) return;
+  if (draft) {
+    await submitNewSession(draft, content);
+    return;
+  }
+  const sourceId = branchSourceNodeId;
+  const source = sourceId
+    ? view.messages.find((message) => message.id === sourceId && message.projectId === projectId)
     : undefined;
-  if (branchSourceNodeId && !source) {
+  if (sourceId && !source) {
     branchSourceNodeId = undefined;
     renderAll();
     showToast("The selected Message is no longer available.", true);
     return;
   }
-  pendingSessions.add(session.id);
+  if (session) pendingSessions.add(session.id);
+  renderBranchContext();
   updateComposerState();
   sendButton.disabled = true;
   sendButton.textContent = "…";
-  const mutation = projectViews.beginMutation(session.projectId);
+  const mutation = projectViews.beginMutation(projectId);
   try {
     if (source) {
       const result = await window.ait.fork({
-        projectId: session.projectId,
-        currentSessionId: session.id,
+        projectId,
+        ...(session ? { currentSessionId: session.id } : {}),
         sourceMessageId: source.id,
         agentId: composerAgent.value,
         content,
       });
+      if (result.status !== "accepted") throw new Error(result.message);
       // Track accepted work even if a later navigation supersedes its visible view.
-      if (!result.reusedCurrentSession) {
+      if (session && !result.reusedCurrentSession) {
         pendingBranches.set(result.runId, {
           projectId: session.projectId,
           sourceSessionId: session.id,
@@ -1041,7 +1077,9 @@ async function submitMessage(): Promise<void> {
           runId: result.runId,
         });
       }
-      if (!projectViews.commitMutation(mutation, result.project) || !acceptLoadedProjectView()) return;
+      const project = await window.ait.project(projectId);
+      sidebar.replace(projectId, project.sessions);
+      if (!projectViews.commitMutation(mutation, project) || !acceptLoadedProjectView()) return;
       branchSourceNodeId = undefined;
       pendingTitles.register(result.runId, result.selectedSessionId, content);
       if (result.reusedCurrentSession) {
@@ -1052,7 +1090,7 @@ async function submitMessage(): Promise<void> {
         reconcilePendingBranch();
         if (currentPendingBranch()) showToast("Creating the new Session. The current path will stay in place until it is ready.");
       }
-    } else {
+    } else if (session) {
       const result = await window.ait.sendMessage({
         projectId: session.projectId,
         sessionId: session.id,
@@ -1074,9 +1112,57 @@ async function submitMessage(): Promise<void> {
     } catch { /* Keep the last visible view if disconnected. */ }
     showToast(errorMessage(error), true);
   } finally {
-    pendingSessions.delete(session.id);
+    if (session) pendingSessions.delete(session.id);
+    renderBranchContext();
     sendButton.textContent = "↑";
     updateComposerState();
+  }
+}
+
+function reconcileAcceptedDraft(): void {
+  const draft = currentNewSessionDraft();
+  const receipt = draft?.receipt;
+  if (!receipt || activePage !== "sessions"
+    || !view?.sessions.some((session) => session.id === receipt.selectedSessionId)) return;
+  selectedSessionId = receipt.selectedSessionId;
+  resetTreeView();
+}
+
+async function submitNewSession(draft: NewSessionDraft, content: string): Promise<void> {
+  const recovering = Boolean(draft.submission);
+  draft.submission ??= { id: crypto.randomUUID(), content, agentId: draft.agentId };
+  const submission = draft.submission;
+  draft.submitting = true;
+  renderAll();
+  try {
+    if (!draft.receipt) {
+      const result = await window.ait.fork({
+        projectId: draft.projectId,
+        sourceMessageId: draft.sourceMessageId,
+        agentId: submission.agentId,
+        content: submission.content,
+        submissionId: submission.id,
+        recover: recovering,
+      });
+      if (result.status !== "accepted") {
+        if (result.status === "rejected") delete draft.submission;
+        throw new Error(result.message);
+      }
+      // Consumption is independent of navigation and Project view generations.
+      draft.receipt = result;
+      pendingTitles.register(result.runId, result.selectedSessionId, submission.content);
+    }
+    if (currentNewSessionDraft() === draft) {
+      // Refresh does not supersede a newer navigation or commit a stale mutation.
+      if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
+    }
+    await refreshSidebarProject(draft.projectId);
+    startReadySessionTitles();
+  } catch (error) {
+    if (currentNewSessionDraft() === draft) showToast(errorMessage(error), true);
+  } finally {
+    draft.submitting = false;
+    renderAll();
   }
 }
 
@@ -1086,14 +1172,12 @@ async function generateFirstSessionTitle(sessionId: string, prompt: string): Pro
   const session = view?.sessions.find((candidate) => candidate.id === sessionId);
   if (!session || !title || !modelPrompt) return;
   try {
-    let mutation = projectViews.beginMutation(session.projectId);
-    const titled = await window.ait.setSessionTitle({ projectId: session.projectId, sessionId, title });
-    if (!projectViews.commitMutation(mutation, titled) || !acceptLoadedProjectView()) return;
-    renderAll();
-    mutation = projectViews.beginMutation(session.projectId);
-    const generated = await window.ait.generateSessionTitle({ projectId: session.projectId, sessionId, prompt: modelPrompt });
-    if (!projectViews.commitMutation(mutation, generated) || !acceptLoadedProjectView()) return;
-    renderAll();
+    // Automatic titles update data, not the user's navigation intent.
+    await window.ait.setSessionTitle({ projectId: session.projectId, sessionId, title });
+    scheduleViewRefresh();
+    await window.ait.generateSessionTitle({ projectId: session.projectId, sessionId, prompt: modelPrompt });
+    await refreshSidebarProject(session.projectId);
+    scheduleViewRefresh();
   } catch (error) {
     console.warn("Session title generation failed; keeping the temporary title.", error);
   }
@@ -1135,7 +1219,10 @@ function startBranchFromContextMenu(): void {
   const sourceId = messageContextNodeId;
   const source = view?.messages.find((message) => message.id === sourceId);
   closeMessageContextMenu();
-  if (!source || currentPendingBranch()) return;
+  if (!source || currentPendingBranch() || currentNewSessionDraft()?.submitting) return;
+  // A draft has no Session to reuse; keep its chosen source explicit.
+  const draft = currentNewSessionDraft();
+  if (draft) draft.sourceMessageId = source.id;
   inspectedNodeId = source.id;
   branchSourceNodeId = source.id;
   renderTree();
@@ -1208,6 +1295,12 @@ function positionComposerConfig(): void {
 async function changeSessionAgent(): Promise<void> {
   const session = currentSession();
   const agentId = composerAgent.value;
+  const draft = currentNewSessionDraft();
+  if (draft) {
+    if (!draft.submission && agentId) draft.agentId = agentId;
+    renderAgents();
+    return;
+  }
   if (!session || session.active || pendingSessions.has(session.id) || !agentId || agentId === session.agentId) return;
   pendingSessions.add(session.id);
   updateComposerState();
@@ -1233,43 +1326,56 @@ async function changeSessionAgent(): Promise<void> {
 
 function updateComposerState(): void {
   const session = currentSession();
+  const draft = currentNewSessionDraft();
+  const hasTarget = Boolean(session || draft);
+  const draftAgentAvailable = !draft || view?.agents.some((agent) => agent.id === draft.agentId && agent.enabled && !agent.ownerSessionId);
   const pendingBranch = currentPendingBranch();
   const deriving = Boolean(branchSourceNodeId);
-  const submissionBusy = !!session
-    && (pendingSessions.has(session.id) || Boolean(pendingBranch) || session.active && !deriving);
-  const configBusy = !!session
-    && (session.active || pendingSessions.has(session.id) || Boolean(pendingBranch));
-  if (!session || session.active || (configuringSessionId && configuringSessionId !== session.id)) {
+  const submissionBusy = Boolean(draft?.submitting || session
+    && (pendingSessions.has(session.id) || Boolean(pendingBranch) || session.active && !deriving));
+  const configBusy = Boolean(draft?.submission || session
+    && (session.active || pendingSessions.has(session.id) || Boolean(pendingBranch)));
+  if (!hasTarget || session?.active || (configuringSessionId && configuringSessionId !== session?.id)) {
     composerConfigPanel.hidePopover();
   }
-  sendButton.disabled = !session || messageInput.value.trim().length === 0 || submissionBusy || permissionSaving;
-  composerPermission.disabled = !settings || !session || submissionBusy || permissionSaving;
+  sendButton.disabled = !hasTarget || (!draft?.submission && (!draftAgentAvailable || messageInput.value.trim().length === 0)) || submissionBusy || permissionSaving;
+  composerPermission.disabled = !settings || !hasTarget || submissionBusy || Boolean(draft?.submission) || permissionSaving;
   if (!permissionSaving) {
     const sandbox = session?.active && !deriving
       ? view?.runs.find((run) => run.id === session.activeRunId)?.permissionProfile.sandbox
       : settings?.values["permissions.sandbox"];
     composerPermission.value = sandbox === "workspace_write" || sandbox === "full_access" ? sandbox : "read_only";
   }
-  messageInput.disabled = !session || submissionBusy;
-  composerConfigTrigger.disabled = !session || configBusy;
-  composerAgent.disabled = !session || configBusy;
+  messageInput.disabled = !hasTarget || submissionBusy || Boolean(draft?.submission);
+  const sendLabel = draft?.receipt ? "Open Session" : draft?.submission ? "Check submission" : "Send message";
+  sendButton.textContent = draft?.submitting ? "…" : draft?.submission ? "↻" : "↑";
+  sendButton.title = sendLabel;
+  sendButton.setAttribute("aria-label", sendLabel);
+  composerConfigTrigger.disabled = !hasTarget || configBusy;
+  composerAgent.disabled = !hasTarget || configBusy;
   composerModel.disabled = !session || configBusy;
   composerProvider.disabled = !session || configBusy;
   composerReasoning.disabled = composerReasoning.options.length <= 1 || !session || configBusy;
-  messageInput.placeholder = !session
+  messageInput.placeholder = !hasTarget
     ? "Create a Session to start…"
-    : pendingBranch
+    : pendingBranch || draft?.submitting
       ? "Creating the new Session…"
       : branchSourceNodeId
         ? "Write a message derived from this point…"
         : submissionBusy
           ? "This Session is running…"
           : "Send a message to this Session…";
-  $("#composer-hint").textContent = pendingBranch
-    ? "The current Session path stays visible until the new Session is fully generated"
-    : branchSourceNodeId
-      ? "A current leaf continues this Session when idle; otherwise sending creates a new Session · ⌘ Enter to send"
-      : "Send to the current Session · Right-click any Message to derive from it · ⌘ Enter to send";
+  $("#composer-hint").textContent = draft?.receipt
+    ? "Message accepted. Retry opening the Session."
+    : draft?.submission && !draft.submitting
+      ? "Confirming your first message. Retry to check its status."
+      : draft
+        ? "Sending your first message creates this Session · ⌘ Enter to send"
+        : pendingBranch
+          ? "The current Session path stays visible until the new Session is fully generated"
+          : branchSourceNodeId
+            ? "A current leaf continues this Session when idle; otherwise sending creates a new Session · ⌘ Enter to send"
+            : "Send to the current Session · Right-click any Message to derive from it · ⌘ Enter to send";
 }
 
 async function changeSessionConfig(modelChanged: boolean, providerChanged = false): Promise<void> {
@@ -1504,29 +1610,48 @@ async function saveProjectSettings(): Promise<void> {
 }
 
 async function createSession(projectId = selectedProjectId): Promise<void> {
-  if (!view || creatingSessionProjectId || currentPendingBranch()) return;
+  if (!view || creatingSessionProjectId) return;
   const project = view.projects.find((candidate) => candidate.id === projectId);
   if (!project) {
     openProjectDialog();
     return;
   }
+  const configuredAgentId = project.defaultAgentId ?? settings?.values["agents.default_agent"];
+  const agentId = typeof configuredAgentId === "string"
+    && view.agents.some((agent) => agent.id === configuredAgentId && agent.enabled && !agent.ownerSessionId)
+    ? configuredAgentId
+    : undefined;
+  if (!agentId) {
+    showToast(`Set an enabled default Agent for ${project.name} in Project settings or Settings.`, true);
+    return;
+  }
   creatingSessionProjectId = project.id;
   const mutation = projectViews.beginMutation(project.id);
+  const generation = pageGeneration;
   renderProjects();
   try {
-    const result = await window.ait.createSession({ projectId: project.id });
-    if (!projectViews.commitMutation(mutation, result.project)) {
-      if (await projectViews.refresh() && acceptLoadedProjectView()) renderAll();
+    const loaded = await window.ait.project(project.id);
+    if (generation !== pageGeneration) {
+      projectViews.discardMutation(mutation);
       return;
     }
+    if (loaded.projectId !== project.id) throw new Error("The selected Project is unavailable.");
+    const source = loaded.messages.find((message) => message.id === project.rootMessageId
+      && message.projectId === project.id && message.role === "system" && !message.parentMessageId);
+    if (!source) throw new Error("The Project's initial system Message is unavailable.");
+    if (!projectViews.commitMutation(mutation, loaded)) return;
     if (!acceptLoadedProjectView()) return;
-    selectedSessionId = result.selectedSessionId;
+    selectedSessionId = undefined;
     sidebar.expanded.add(project.id);
     resetTreeView();
+    newSessionDraft = { projectId: project.id, sourceMessageId: source.id, agentId, submitting: false };
+    branchSourceNodeId = source.id;
+    inspectedNodeId = source.id;
+    viewedTreeHeadId = source.id;
+    messageInput.value = "";
     showPage("sessions");
     renderAll();
     messageInput.focus();
-    showToast("Session created.");
   } catch (error) {
     projectViews.discardMutation(mutation);
     try {
