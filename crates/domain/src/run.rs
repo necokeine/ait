@@ -5,8 +5,27 @@ use serde_json::Value;
 
 use crate::{
     AgentConfigSnapshot, AgentId, CostMicros, CronId, DomainError, DurationMs, ErrorCode,
-    MessageId, ProjectId, RunId, SessionId, TimestampMs,
+    MessageId, ProjectId, SessionId, TimestampMs,
 };
+
+/// Stable identity of a Run.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RunId(String);
+
+impl RunId {
+    /// Creates an externally assigned Run identity.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Returns the string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// Stable identity of one underlying Run attempt.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

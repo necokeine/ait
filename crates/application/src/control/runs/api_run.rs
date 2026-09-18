@@ -956,25 +956,14 @@ fn append_projection(
     {
         return Err(conflict());
     }
-    let text = message
-        .sub_messages
-        .iter()
-        .filter_map(|p| match p {
-            SubMessage::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<String>();
-    state.messages_mut().push(MessageState {
-        id: message.id.as_uuid().to_string(),
-        project_id: view.project_id.clone(),
-        parent_message_id: message.parent_message_id.map(|id| id.as_uuid().to_string()),
-        role: message.role,
-        kind: message.kind,
-        text: (!text.is_empty()).then_some(text),
-        created_at: message.created_at.0,
-        git_commit: None,
-        data: Some(json!({"native_message":message,"agent_revision":run.agent_revision})),
-    });
+    let mut message_state = MessageState::from(message);
+    message_state
+        .data
+        .as_mut()
+        .and_then(Value::as_object_mut)
+        .expect("domain Message projection is an object")
+        .insert("agent_revision".into(), json!(run.agent_revision));
+    state.messages_mut().push(message_state);
     if let Some(session) = state
         .sessions_mut()
         .iter_mut()

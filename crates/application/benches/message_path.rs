@@ -42,7 +42,7 @@ fn message_path(c: &mut Criterion) {
     let head = MessageId::from_u128(DEPTH);
     c.bench_function("message_path/10k_depth", |b| {
         b.iter(|| {
-            ait_domain::message_path::message_path(black_box(head), |id| messages.get(id)).unwrap()
+            ait_domain::message::message_path(black_box(head), black_box(&messages)).unwrap()
         });
     });
 }
