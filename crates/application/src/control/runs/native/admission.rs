@@ -1,6 +1,6 @@
 //! Resolve new and existing Codex Sessions without publishing speculative input.
 use ait_contracts::{AgentMode, ApiError, Command};
-use ait_domain::{ErrorCode, SessionSource};
+use ait_domain::{ErrorCode, SessionSource, SessionStatus};
 
 use crate::control::{
     LocalControlService,
@@ -142,6 +142,7 @@ impl LocalControlService {
             .find(|session| session.id == session_id)
             .ok_or_else(|| error(ErrorCode::SessionNotFound, "Session not found", false))?
             .clone();
+        validate_input_target(&session)?;
         let agent = require_agent(&state, session.agent_id())?.clone();
         if validate_config(&state, &agent.config)?.kind != AgentMode::Codex {
             return Ok(None);
@@ -168,6 +169,7 @@ impl LocalControlService {
             .find(|session| session.id == session_id)
             .ok_or_else(|| error(ErrorCode::SessionNotFound, "Session not found", false))?
             .clone();
+        validate_input_target(&session)?;
         let agent = require_agent(&loaded.original, session.agent_id())?.clone();
         validate_unbound(&loaded.original, &session)?;
         Ok(Plan {
@@ -178,6 +180,17 @@ impl LocalControlService {
             text: text.into(),
         })
     }
+}
+
+fn validate_input_target(session: &SessionRecord) -> Result<(), ApiError> {
+    if session.status == SessionStatus::Archived {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "archived sessions cannot accept new input",
+            false,
+        ));
+    }
+    Ok(())
 }
 
 fn validate_unbound(state: &ConversationContext, session: &SessionRecord) -> Result<(), ApiError> {

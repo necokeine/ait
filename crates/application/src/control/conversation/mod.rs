@@ -251,6 +251,7 @@ pub(in crate::control) fn derive_reuses_source(
     at_message_id: &str,
 ) -> bool {
     source.project_id == project_id
+        && source.status == SessionStatus::Active
         && source.active_run_id().is_none()
         && source.current_message_id() == at_message_id
         && source.agent_id() == agent_id

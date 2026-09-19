@@ -156,16 +156,23 @@ test("a stale archive refresh cannot restore a Session that was restored while i
   await page.locator("#settings-fields").getByText("Archived Alpha", { exact: true }).waitFor();
   await page.locator('[data-archived-project="b"] [role="alert"]').waitFor();
 
-  await page.evaluate(() => { window.fixture.delayedSessionReads.add("a"); });
-  await page.locator('[data-archived-project="b"] [data-archived-retry]').click();
+  await page.locator("#settings-cancel").click();
+  await page.evaluate(() => { window.fixture.sessionReadFailures.add("a"); });
+  await page.locator("#settings-trigger").click();
+  await page.locator('[data-archived-project="a"] [role="alert"]').waitFor();
+  await page.evaluate(() => {
+    window.fixture.sessionReadFailures.delete("a");
+    window.fixture.delayedSessionReads.add("a");
+  });
+  await page.locator('[data-archived-project="a"] [data-archived-retry]').click();
   await page.waitForFunction(() => Boolean(window.fixture.releaseSessionReads.a));
   await page.getByRole("button", { name: "Restore" }).click();
   await page.waitForFunction(() => window.fixture.sessions.find((session) => session.id === "archived-a").status === "active");
   await page.evaluate(() => window.fixture.releaseSessionReads.a());
-  await page.waitForFunction(() => document.querySelector("#settings-state")?.textContent !== "Refreshing archived Sessions…");
+  await page.locator('[data-archived-project="a"]').getByText("Loading archived Sessions…").waitFor({ state: "detached" });
 
   assert.equal(await page.locator("#settings-fields").getByText("Archived Alpha", { exact: true }).count(), 0);
-  assert.equal(await page.locator("#settings-state").textContent(), "0 archived Sessions");
+  assert.match(await page.locator("#settings-state").textContent(), /^0 archived Sessions\./);
   assert.match(await page.locator('[data-archived-project="b"] [role="alert"]').textContent(), /Sessions unavailable/);
   assert.equal(await page.locator('[data-archived-project="b"] [data-archived-retry]').count(), 1);
 });
