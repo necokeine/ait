@@ -107,6 +107,8 @@ The Project creation picker starts in the saved default directory. Name-only
 Project creation continues to allocate a new folder in Documents.
 The core's empty path remains a host-default marker: Electron main resolves it
 for display without writing settings or changing their optimistic revision.
+Settings → Archived Sessions loads the archived Session catalog for every Project
+and keeps empty and unavailable Projects visible as separate groups.
 
 The composer toolbar starts with Run permissions, followed by a single Agent/model
 configuration button that also shows the current reasoning level. Its popover groups
@@ -182,11 +184,12 @@ the `.p12`, its password, or an Apple app-specific password to the repository.
 
 ## Providers and Agent presets
 
-Settings → Models manages shared Codex/OpenAI/DeepSeek/Gemini/MiniMax provider connections, API
-keys, model discovery and per-model reasoning levels. DeepSeek discovery supplies
+The Agents page manages shared Codex/OpenAI/DeepSeek/Gemini/MiniMax provider connections in a
+dedicated popup, including API keys, model discovery and per-model reasoning levels. DeepSeek discovery supplies
 the adapter-owned `off`, `low`, `high`, `max` levels, so a selected DeepSeek model
 shows the same conversation reasoning control as a reasoning-capable Codex model.
-Settings → Agents saves
-named presets for Projects and Sessions. Changing Provider, Model or Reasoning
+The same page saves named presets for Projects and Sessions, selects the global
+Default and Small Agent roles, and labels the presets currently assigned to those roles.
+Changing Provider, Model or Reasoning
 in a Session immediately saves a private Agent configuration. Running Sessions
 reject new messages and configuration changes; no client version is sent.

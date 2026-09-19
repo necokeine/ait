@@ -3,22 +3,36 @@ import type { AgentCatalog, DesktopState } from "./types.js";
 
 type AgentsPageView = Pick<DesktopState, "agents" | "providers" | "projects" | "sessions">;
 
+export interface AgentRoleAssignments {
+  defaultAgentId: string;
+  smallAgentId: string;
+}
+
+export type AgentRole = "default" | "small";
+
 interface AgentsPageActions {
   update(view: AgentCatalog): void;
   notify(message: string, failure?: boolean): void;
   configureProvider(id: string): void;
+  setRole(role: AgentRole, agentId: string): Promise<void>;
 }
 
 export function createAgentsPage(container: Element, actions: AgentsPageActions) {
   let view: AgentsPageView | undefined;
   container.innerHTML = `<header class="agents-page-header"><div><span class="eyebrow">Workspace</span><h1 id="agents-page-title" tabindex="-1">Agents</h1><p>Connections and reusable configurations for your Projects and Sessions.</p></div><button id="agent-create" class="primary-button" type="button">New Agent</button></header>
     <div class="agents-page-scroll">
+      <section class="agents-catalog-section" aria-labelledby="agent-roles-title"><header class="catalog-heading"><div><h2 id="agent-roles-title">Agent roles</h2><p>Choose workspace defaults for new work and short background tasks.</p></div></header><div class="agent-role-settings">
+        <label class="catalog-field"><span>Default Agent</span><select id="default-agent-role"></select></label>
+        <label class="catalog-field"><span>Small Agent</span><select id="small-agent-role"></select></label>
+      </div></section>
       <section class="agents-catalog-section" aria-label="Named Agent configurations"><header class="catalog-heading"><div><p>Choose a preset in any Project or Session. Session-specific configurations stay in their Session.</p></div></header><div id="agent-editor" class="agent-editor is-hidden"></div><div id="named-agent-list" class="named-agent-list"></div></section>
       <section class="agents-catalog-section" aria-labelledby="providers-title"><header class="catalog-heading"><div><h2 id="providers-title">Agent providers</h2><p>Shared connections and the models you have enabled.</p></div><button id="agents-add-provider" class="secondary-button" type="button">Add provider</button></header><div id="agents-provider-list" class="provider-cards"></div></section>
     </div>`;
   const get = <T extends Element>(selector: string): T => container.querySelector<T>(selector)!;
   const editor = get<HTMLElement>("#agent-editor");
   let saving = false;
+  let roleSaving = false;
+  let roles: AgentRoleAssignments = { defaultAgentId: "", smallAgentId: "" };
 
   const closeEditor = (): void => {
     if (saving) return;
@@ -105,8 +119,22 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
   get("#agent-create").addEventListener("click", () => edit());
   get("#agents-add-provider").addEventListener("click", () => actions.configureProvider(""));
 
-  const render = (updated: AgentsPageView): void => {
+  const render = (updated: AgentsPageView, updatedRoles: AgentRoleAssignments): void => {
     view = updated;
+    roles = updatedRoles;
+    const namedAgents = view.agents.filter((agent) => !agent.ownerSessionId);
+    const roleOptions = (selected: string): string => namedAgents
+      .filter((agent) => agent.enabled || agent.id === selected)
+      .map((agent) => option(agent.id, `${agent.name}${agent.enabled ? "" : " (disabled)"}`, selected))
+      .join("");
+    const defaultRole = get<HTMLSelectElement>("#default-agent-role");
+    const smallRole = get<HTMLSelectElement>("#small-agent-role");
+    defaultRole.innerHTML = `<option value="">Not configured</option>${roleOptions(roles.defaultAgentId)}`;
+    smallRole.innerHTML = `<option value="">Use Default Agent</option>${roleOptions(roles.smallAgentId)}`;
+    defaultRole.value = roles.defaultAgentId;
+    smallRole.value = roles.smallAgentId;
+    defaultRole.disabled = roleSaving;
+    smallRole.disabled = roleSaving;
     get("#agents-provider-list").innerHTML = view.providers.map((provider) => {
       const remote = ["openai", "deepseek", "gemini", "minimax"].includes(provider.kind);
       return `<article class="provider-card"><header><strong>${escape(provider.name)}</strong><span class="catalog-badge${remote && !provider.has_secret ? " needs-setup" : ""}">${remote ? provider.has_secret ? "Secret saved" : "Needs secret" : "Built-in"}</span></header>
@@ -114,14 +142,35 @@ export function createAgentsPage(container: Element, actions: AgentsPageActions)
         <details><summary>${provider.models.length} enabled models</summary><ul>${provider.models.map((model) => `<li><strong>${escape(model.name)}</strong><code>${escape(model.id)}</code><small>${model.reasoning_efforts.length ? escape(model.reasoning_efforts.join(" · ")) : "Default reasoning"}</small></li>`).join("") || "<li>No models selected.</li>"}</ul></details>
         <button class="secondary-button" type="button" data-configure-provider="${escape(provider.id)}" aria-label="Configure ${escape(provider.name)} provider">Configure</button></article>`;
     }).join("") || '<div class="catalog-empty">Add your first provider to choose its models.</div>';
-    get("#named-agent-list").innerHTML = view.agents.filter((agent) => !agent.ownerSessionId).map((agent) => {
+    get("#named-agent-list").innerHTML = namedAgents.map((agent) => {
       const provider = view!.providers.find((provider) => provider.id === agent.config.provider_id);
       const sessions = view!.sessions.filter((session) => session.agentId === agent.id).length;
       const projects = view!.projects.filter((project) => project.defaultAgentId === agent.id).length;
-      return `<article class="named-agent-row"><div class="named-agent-identity"><span class="named-agent-icon" aria-hidden="true">◇</span><div><strong>${escape(agent.name)}</strong><small>${escape(provider?.name ?? "Unavailable provider")}${agent.enabled ? "" : " · Disabled"}</small></div></div><div class="named-agent-model"><strong>${escape(agent.config.model)}</strong><small>${escape(agent.config.reasoning_effort ?? "Provider default")}</small></div><small class="named-agent-usage">${projects} Projects · ${sessions} Sessions</small><button class="secondary-button" type="button" data-edit-agent="${escape(agent.id)}" aria-label="Edit ${escape(agent.name)} Agent">Edit</button></article>`;
+      const roleBadges = `${agent.id === roles.defaultAgentId ? '<span class="catalog-badge">Default Agent</span>' : ""}${agent.id === roles.smallAgentId ? '<span class="catalog-badge">Small Agent</span>' : ""}`;
+      return `<article class="named-agent-row"><div class="named-agent-identity"><span class="named-agent-icon" aria-hidden="true">◇</span><div><div class="named-agent-name"><strong>${escape(agent.name)}</strong><span class="agent-role-badges">${roleBadges}</span></div><small>${escape(provider?.name ?? "Unavailable provider")}${agent.enabled ? "" : " · Disabled"}</small></div></div><div class="named-agent-model"><strong>${escape(agent.config.model)}</strong><small>${escape(agent.config.reasoning_effort ?? "Provider default")}</small></div><small class="named-agent-usage">${projects} Projects · ${sessions} Sessions</small><button class="secondary-button" type="button" data-edit-agent="${escape(agent.id)}" aria-label="Edit ${escape(agent.name)} Agent">Edit</button></article>`;
     }).join("") || '<div class="catalog-empty">No named Agents yet. Create one to reuse a model and reasoning configuration.</div>';
     container.querySelectorAll<HTMLElement>("[data-configure-provider]").forEach((button) => button.addEventListener("click", () => actions.configureProvider(button.dataset.configureProvider!)));
     container.querySelectorAll<HTMLElement>("[data-edit-agent]").forEach((button) => button.addEventListener("click", () => edit(button.dataset.editAgent!)));
   };
+  const saveRole = async (role: AgentRole, agentId: string): Promise<void> => {
+    if (!view || roleSaving) return;
+    roleSaving = true;
+    render(view, roles);
+    try {
+      await actions.setRole(role, agentId);
+      actions.notify(`${role === "default" ? "Default" : "Small"} Agent updated.`);
+    } catch (failure) {
+      actions.notify(failure instanceof Error ? failure.message : "Could not update Agent role.", true);
+    } finally {
+      roleSaving = false;
+      if (view) render(view, roles);
+    }
+  };
+  get<HTMLSelectElement>("#default-agent-role").addEventListener("change", (event) => {
+    void saveRole("default", (event.target as HTMLSelectElement).value);
+  });
+  get<HTMLSelectElement>("#small-agent-role").addEventListener("change", (event) => {
+    void saveRole("small", (event.target as HTMLSelectElement).value);
+  });
   return { render, closeEditor };
 }

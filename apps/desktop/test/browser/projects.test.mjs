@@ -173,7 +173,8 @@ test("keeps available Project archives restorable when another Project is unavai
 
   await page.evaluate(() => window.fixture.sessionFailures.delete("b"));
   await unavailable.getByRole("button", { name: "Retry" }).click();
-  await unavailable.waitFor({ state: "detached" });
+  await unavailable.locator('[role="alert"]').waitFor({ state: "detached" });
+  assert.match(await unavailable.textContent(), /No archived Sessions/);
 });
 
 test("ignores an archived Session snapshot captured before Restore completes", async (t) => {

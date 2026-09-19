@@ -205,6 +205,47 @@ fn synthetic_defaults_never_authorize_deletes() {
 }
 
 #[test]
+fn settings_codec_hydrates_agent_roles_and_removes_retired_values() {
+    let loaded = decode_records::<SettingsContext>(&read(
+        3,
+        vec![record(
+            Kind::Settings,
+            "settings",
+            json!({
+                "values": {
+                    "interface.theme": "dark",
+                    "network.proxy": "http://legacy.invalid",
+                    "models.legacy": "retired"
+                },
+                "revision": 7
+            }),
+        )],
+    ))
+    .unwrap();
+
+    assert_eq!(loaded.original.settings_revision, 7);
+    assert_eq!(loaded.original.settings.0["interface.theme"], "dark");
+    let defaults = ait_contracts::default_settings();
+    assert_eq!(
+        loaded.original.settings.0["agents.default_agent"],
+        defaults.0["agents.default_agent"]
+    );
+    assert_eq!(
+        loaded.original.settings.0["agents.small_agent"],
+        defaults.0["agents.small_agent"]
+    );
+    assert!(!loaded.original.settings.0.contains_key("network.proxy"));
+    assert!(!loaded.original.settings.0.contains_key("models.legacy"));
+    assert!(
+        !loaded
+            .original
+            .settings
+            .0
+            .contains_key("permissions.approval")
+    );
+}
+
+#[test]
 fn hydrated_unchanged_records_are_not_reencoded_or_rewritten() {
     let loaded = decode_records::<ArchiveContext>(&read(
         1,

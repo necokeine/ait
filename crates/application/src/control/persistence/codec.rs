@@ -150,8 +150,8 @@ pub(in crate::control) fn decode_records<C: RecordContext>(
         }
     }
     if let Some(settings) = value["settings"].as_object_mut() {
-        settings.retain(|id, _| !id.starts_with("models."));
         let defaults = default_settings();
+        settings.retain(|id, _| defaults.0.contains_key(id));
         for id in [DEFAULT_AGENT_SETTING_ID, SMALL_AGENT_SETTING_ID] {
             settings.entry(id).or_insert_with(|| defaults.0[id].clone());
         }
