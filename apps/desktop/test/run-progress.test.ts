@@ -113,10 +113,11 @@ test("mixed live events keep one stable disclosure while new kinds and final out
   });
   const html = renderRunProgress(progress, "Codex", true);
   assert.equal(html.match(/class="message-disclosure"/g)?.length, 1);
-  assert.equal(html.match(/class="activity-item"/g)?.length, 3);
+  assert.equal(html.match(/class="activity-item"/g)?.length, 2);
+  assert.equal(html.match(/class="activity-static"/g)?.length, 1);
   assert.equal(/data-disclosure-id="([^"]+)"/.exec(html)?.[1], /data-disclosure-id="([^"]+)"/.exec(initial)?.[1]);
   assert.ok(!html.includes("message-event-kind"));
-  for (const text of ["Inspecting", "Reasoning", "read", "tool_result"]) assert.ok(html.includes(text));
+  for (const text of ["Inspecting", "Reason", "read", "tool_result"]) assert.ok(html.includes(text));
   assert.ok(html.indexOf("</details>") < html.indexOf("Final response"));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
 });

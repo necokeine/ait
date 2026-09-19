@@ -387,8 +387,8 @@ function renderSections(sections: MessageSection[], agents: AgentSummary[], sele
         ? renderActivityParts(section.parts, section.key)
         : section.parts.map((part) => renderPart(part, isInput)).join("");
       return section.message
-        ? renderMessageShell(section.message, agents, html, section.message.id === selectedId, Boolean(section.kind))
-        : `<div class="activity-section">${html}</div>`;
+        ? renderMessageShell(section.message, agents, html, section.message.id === selectedId, section.kind)
+        : `<div class="activity-section${section.kind && section.kind !== "Process" ? " activity-folds" : ""}">${html}</div>`;
     }).join("");
     return first.kind
       ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>Activity</span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
@@ -422,10 +422,10 @@ export function replaceConversationContent(container: Element, html: string, pre
   });
 }
 
-function renderMessageShell(message: DesktopMessage, agents: AgentSummary[], content: string, selected: boolean, activity = false): string {
+function renderMessageShell(message: DesktopMessage, agents: AgentSummary[], content: string, selected: boolean, activity?: DisclosureKind): string {
   const author = messageAuthor(message, agents);
   const isInput = message.role === "user" && message.kind !== "tool_result";
-  return `<article class="message ${message.role}${isInput ? " user-input" : ""}${activity ? " message-activity" : ""}${selected ? " is-selected" : ""}" data-message-id="${escapeHtml(message.id)}" tabindex="0" aria-current="${selected}" aria-label="${escapeHtml(author)} message">
+  return `<article class="message ${message.role}${isInput ? " user-input" : ""}${activity ? ` message-activity${activity !== "Process" ? " activity-folds" : ""}` : ""}${selected ? " is-selected" : ""}" data-message-id="${escapeHtml(message.id)}" tabindex="0" aria-current="${selected}" aria-label="${escapeHtml(author)} message">
     <div class="message-body"><div class="${activity ? "activity-metadata" : "message-heading"}">${isInput ? "" : `<strong>${escapeHtml(author)}</strong>`}${renderMessageTime(message.createdAt)}</div>
       <div class="${isInput ? "user-input-bubble" : "message-parts"}">${content}</div>
     </div>
@@ -491,8 +491,9 @@ function renderPart(part: DesktopMessage["parts"][number], isInput = false): str
 const commandIcon = icon('<rect x="3" y="4" width="18" height="16" rx="4"/><path d="m7 9 3 3-3 3m6 0h4"/>');
 const thoughtIcon = icon('<path d="M9 18h6m-5 3h4M8 15a7 7 0 1 1 8 0c-1 .8-1 1.5-1 3H9c0-1.5 0-2.2-1-3Z"/>');
 const toolIcon = icon('<path d="m14 6 4 4M8 16l-3 3m9-14a5 5 0 0 0-6 6l-5 5a3 3 0 0 0 4 4l5-5a5 5 0 0 0 6-6l-3 3-3-3 3-3Z"/>');
+const chevronIcon = icon('<path d="m9 5 7 7-7 7"/>');
 
-function isCommand(part: DesktopMessage["parts"][number]): boolean {
+function isCommand(part: DesktopMessage["parts"][number]): part is Extract<DesktopMessage["parts"][number], { type: "operation" }> & { kind: "command" | "commandExecution" } {
   return part.type === "operation" && ["command", "commandExecution"].includes(part.kind);
 }
 
@@ -525,18 +526,26 @@ function renderActivityParts(parts: DesktopMessage["parts"], key: string): strin
         : first.type === "tool_use" ? `Called ${first.tool_name}`
           : first.type === "operation" ? first.title : "Tool result";
     const content = group.parts.map((part) => {
+      if (isCommand(part)) return renderCommand(part, key);
+      if (thinking && part.type === "operation" && !part.summary?.trim() && !part.detail?.trim() && !part.paths.some((path) => path.trim())) return "";
       if (part.type === "structured" && thinking) {
         try {
           const value: unknown = JSON.parse(part.value);
           if (value && typeof value === "object" && "reasoning" in value && typeof value.reasoning === "string") {
-            return renderMessageText(value.reasoning);
+            return value.reasoning.trim() ? renderMessageText(value.reasoning) : "";
           }
         } catch { /* Keep malformed provider content inspectable in its original form. */ }
       }
       return renderPart(part);
     }).join("");
-    return `<details class="activity-item" data-disclosure-id="${escapeHtml(`${key}:activity:${group.index}`)}"><summary class="activity-summary">${command ? commandIcon : thinking ? thoughtIcon : toolIcon}<span class="activity-label">${escapeHtml(label)}</span>${activityStatuses(group.parts)}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="activity-item-content">${content}</div></details>`;
+    if (thinking && !content) return `<div class="activity-static">${thoughtIcon}<span class="activity-label">Reason</span>${activityStatuses(group.parts)}</div>`;
+    return `<details class="activity-item" data-disclosure-id="${escapeHtml(`${key}:activity:${group.index}`)}"><summary class="activity-summary">${command ? commandIcon : thinking ? thoughtIcon : toolIcon}<span class="activity-label">${escapeHtml(label)}</span>${activityStatuses(group.parts)}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="activity-item-content${command ? " command-list" : ""}">${content}</div></details>`;
   }).join("");
+}
+
+function renderCommand(part: Extract<DesktopMessage["parts"][number], { type: "operation" }>, key: string): string {
+  const label = part.summary?.trim() || part.title;
+  return `<details class="command-disclosure" data-disclosure-id="${escapeHtml(`${key}:command:${part.id}`)}"><summary class="command-summary">${commandIcon}<span class="command-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>${activityStatuses([part])}<span class="command-chevron" aria-hidden="true">${chevronIcon}</span></summary><div class="command-content">${renderOperation(part)}</div></details>`;
 }
 
 function renderOperation(part: Extract<DesktopMessage["parts"][number], { type: "operation" }>): string {

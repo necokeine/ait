@@ -174,9 +174,12 @@ for (const system of ["light", "dark"]) {
       const aggregate = page.locator(".live-run .activity-summary .operation-status");
       assert.equal(await aggregate.innerText(), "2 running");
       await page.locator(".live-run .activity-summary").click();
-      assert.equal(await page.locator(".live-run .activity-item-content .operation-status").count(), 2);
+      assert.deepEqual(await page.locator(".live-run .command-summary .operation-status").allTextContents(), ["running", "running"]);
+      await assertReadableText(page, ".live-run .command-summary .operation-status", ".conversation-pane");
+      for (const summary of await page.locator(".live-run .command-summary").all()) await summary.click();
+      assert.equal(await page.locator(".live-run .command-content .operation-status").count(), 2);
       for (const status of ["inprogress", "in_progress"]) {
-        const selector = `.live-run .activity-item-content .operation-status.status-${status}`;
+        const selector = `.live-run .command-content .operation-status.status-${status}`;
         assert.equal(await page.locator(selector).isVisible(), true);
         const ratio = await assertReadableText(page, selector, ".conversation-pane");
         t.diagnostic(`${status}: ${ratio.toFixed(2)}:1`);
