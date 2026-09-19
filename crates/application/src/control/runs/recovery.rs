@@ -194,6 +194,42 @@ impl LocalControlService {
                 }
                 Err(failure) => return Err(failure),
             };
+            let recovery_state = self.read_run_records(&run_id).await?.original;
+            let legacy_native = recovery_state.runs.iter().find(|run| {
+                run.id == run_id
+                    && run.codex_input.is_none()
+                    && recovery_state.sessions.iter().any(|session| {
+                        Some(&session.id) == run.session_id.as_ref()
+                            && matches!(session.source, ait_domain::SessionSource::CodexThread(_))
+                    })
+            });
+            if legacy_native.is_some_and(|run| !run.status().is_terminal()) {
+                recovered.push(self.interrupt_recovery_run(&run_id, &error(ErrorCode::CodexInputOutcomeUnknown,
+                    "legacy native Run has no durable input correlation; automatic replay is disabled", false)).await?);
+                continue;
+            }
+            let native = recovery_state
+                .runs
+                .into_iter()
+                .find(|run| run.id == run_id && run.codex_input.is_some());
+            if let Some(run) = native {
+                if !run.status().is_terminal() {
+                    match self.recover_native_run(&run).await {
+                        Ok(run) => recovered.push(run),
+                        Err(failure)
+                            if matches!(
+                                failure.code,
+                                ErrorCode::CodexThreadActiveElsewhere
+                                    | ErrorCode::CodexThreadWriterBusy
+                                    | ErrorCode::ProjectWorkspaceBusy
+                            ) => {}
+                        Err(failure) => {
+                            recovered.push(self.interrupt_recovery_run(&run_id, &failure).await?);
+                        }
+                    }
+                }
+                continue;
+            }
             let claim = self.claim_startup_recovery(&run_id).await?;
             let lease = match claim {
                 WorkspaceRecoveryClaim::Recovered(run) => {

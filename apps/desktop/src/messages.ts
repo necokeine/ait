@@ -44,6 +44,7 @@ function messageParts(message: WorkspaceMessage): MessagePart[] {
       }];
       if (part.type === "file_ref") return [{ type: "file", name: String(part.name ?? "Attachment"), media_type: String(part.media_type ?? "") }];
       if (part.type === "structured_data") return [{ type: "structured", media_type: String(part.media_type ?? "application/json"), value: String(part.value ?? "") }];
+      if (part.type === "provider_item") return providerItemParts(part);
       return [];
     });
     if (parts.length > 0) return parts;
@@ -105,6 +106,38 @@ function messageParts(message: WorkspaceMessage): MessagePart[] {
     arguments: JSON.stringify(toolUse.arguments ?? {}),
   }];
   return [{ type: "structured", media_type: "application/json", value: JSON.stringify(message.data ?? {}) }];
+}
+
+function providerItemParts(part: Record<string, unknown>): MessagePart[] {
+  const item = objectValue(part.payload);
+  const kind = stringValue(part.item_type) ?? stringValue(item.type) ?? "unknown";
+  const id = stringValue(part.external_item_id) ?? stringValue(item.id) ?? "native-item";
+  if (kind === "agentMessage" && typeof item.text === "string") {
+    return [{ type: "codex_message", id, phase: stringValue(item.phase) ?? "final_answer", text: item.text }];
+  }
+  if (kind === "plan" && typeof item.text === "string") {
+    return [{ type: "operation", id, kind, status: "completed", title: "Plan", paths: [], detail: item.text }];
+  }
+  if (kind === "reasoning") {
+    const summary = Array.isArray(item.summary) ? item.summary.filter((text): text is string => typeof text === "string").join("\n") : "";
+    return [{ type: "operation", id, kind, status: "completed", title: "Reasoning", paths: [], ...(summary ? { detail: summary } : {}) }];
+  }
+  const titles: Record<string, string> = {
+    commandExecution: "Command", fileChange: "File changes", mcpToolCall: "MCP tool",
+    dynamicToolCall: "Tool", collabAgentToolCall: "Agent", webSearch: "Web search",
+    imageView: "Image", imageGeneration: "Image generation", contextCompaction: "Context compaction",
+    enteredReviewMode: "Review started", exitedReviewMode: "Review completed",
+  };
+  const title = Object.hasOwn(titles, kind) ? titles[kind] : undefined;
+  if (title) {
+    const paths = Array.isArray(item.changes) ? item.changes.map((change) => stringValue(objectValue(change).path)).filter((path): path is string => !!path) : [];
+    const summary = stringValue(item.command) ?? stringValue(item.query) ?? stringValue(item.tool) ?? stringValue(item.prompt);
+    const detail = stringValue(item.aggregatedOutput);
+    return [{ type: "operation", id, kind, status: stringValue(item.status) ?? "completed", title, paths: paths.slice(0, 32),
+      ...(summary ? { summary } : {}), ...(detail ? { detail } : {}) }];
+  }
+  // Unknown provider variants stay individually inspectable without dumping the Message envelope.
+  return [{ type: "structured", media_type: "application/json", value: JSON.stringify({ type: kind, id, payload: item }) }];
 }
 
 function operationParts(value: unknown): Extract<MessagePart, { type: "operation" }>[] {

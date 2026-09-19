@@ -10,10 +10,11 @@
 
 ## 背景
 
-Ait 当前把 Codex app-server 当作一次 Workspace Agent 调用边界：每次 invocation 启动
+本 ADR 提出前，Ait 把 Codex app-server 当作一次 Workspace Agent 调用边界：每次 invocation 启动
 app-server，执行 `initialize -> thread/start|resume -> turn/start`，再把部分流事件归一化为
 Ait progress 和最终 assistant Message。Codex Thread ID 只作为恢复 checkpoint 暴露，Ait 不会列出、
 读取或导入 Codex 已经持久化的历史，也不能从 Ait 无缝继续其他 Codex 客户端创建的 Thread。
+当前实现进度见“实现复核”；下文的设计目标不等同于已交付功能清单。
 
 新的产品目标是让 Ait 与 Codex CLI、IDE、App 和其他 app-server 客户端互操作：
 
@@ -617,7 +618,38 @@ item payload、命令输出或凭证材料。
 6. **Managed adoption**：显式把原生 Thread fork/采用到 Ait worktree，保持两种 workspace mode 可见且
    不混淆。
 
+### 实现复核（2026-09-19）
+
+本轮修正实现审查中发现的八项问题，继续使用上述 0.153.4 协议基线：
+
+- native writer port 分为 `resume -> connection.start/read -> close`。独占进程取得 writer 后，
+  核验返回的 Thread、model、modelProvider、cwd、sandbox 类型、approvalPolicy 和
+  approvalsReviewer，再完整读取历史。resume 不覆盖 NativeCwd 或原生 developerInstructions；
+  `turn/start` 显式设置 effort、完整 sandboxPolicy 与 `approvalsReviewer: user`。
+  model/effort 和实际 modelProvider 随 Run/输入记录冻结；配置或 cwd lease 不一致则在发送前拒绝。
+- SendMessage 准入仅写 queued Run 和 durable input，不写乐观的 user Message；Run.base 是
+  writer 下重新确认的历史 head。发送前提交 send_unknown，使用 Run ID 作为 clientUserMessageId。
+  当前单输入实现保存 queued/send_unknown/published/rejected 四态；完整终态历史才确认发布。
+- 完成、失败和中断均走同一套完整 Turn 投影；按 `userMessage.clientId` 对账，按父链赋原 Run ID
+  与连续 run_seq，后续 sync 复用相同 Message ID。零匹配保留结果不明，多匹配拒绝猜测归属。
+  对账恢复的 Run 与 history 同事务提交，并发出 run.updated，驱动已连接桌面刷新状态。
+  重启恢复只取得 writer 并读取对账，不自动重发；旧实现缺少 durable correlation 的 Run 禁止重放。
+- close 会终止并回收专属子进程；进度 drain 和审批结算后才提交终态并释放 Session。
+  writer busy 识别实际错误 `thread <id> already has an active writer`，与发送结果不明分开。
+- 同步在外部读取前取得本地 revision，CAS 冲突后重新读取原生历史。冷读 interrupted/null
+  completedAt 不阻止取得 writer；writer 确认 idle 后可发布，但不伪造 completedAt。后续冷读仅在
+  Turn 内容哈希与已发布记录相同时复用确认结果。
+- 桌面逐项显示 ProviderItem 的回复、推理摘要、计划和操作；未知类型保留单 item fallback。
+
+这仍是 NativeCwd 单输入路径。同 Run steer、周期扫描、原生 fork/ManagedWorktree adoption、
+独立 staging/projection 索引及完整 binding reservation/receipt 协议尚未作为本轮交付完成。
+首条输入的实时回显仍应作为独立 pending 展示处理，不能通过提前创建 Message 实现。
+ADR 的整体状态保持 Proposed，不把上述后续分期标为已完成。
+
 ## 验证
+
+以下是完整 ADR 的验收要求；本轮实际执行结果见
+[实现修正与验证报告](../reports/adr-016-implementation-fixes.md)。
 
 - adapter fixture 覆盖非归档/归档分页、显式 source kinds、结构化 source、重复 cursor、未知字段、
   未知 item、含 `localAudio` 的 user input、`text_elements`、toolOutput；区分 legacy/paginated

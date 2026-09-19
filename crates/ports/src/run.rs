@@ -305,57 +305,6 @@ pub struct WorkspaceAgentInvocation {
     pub integration_gate: Option<Arc<dyn WorkspaceIntegrationGate>>,
 }
 
-/// One writable continuation of an already-persisted native Codex Thread.
-#[derive(Clone)]
-pub struct CodexThreadInvocation {
-    /// Stable Ait Run identity and native input correlation value.
-    pub request_id: String,
-    /// Authoritative native Thread identity passed to `thread/resume`.
-    pub thread_id: String,
-    /// New user input only; the resumed Thread already owns its history.
-    pub prompt: String,
-    /// Native working directory retained for cross-client interoperability.
-    pub cwd: PathBuf,
-    /// Model fixed by the bound Ait Agent policy.
-    pub model: String,
-    /// Optional reasoning effort fixed for this Ait Run.
-    pub reasoning_effort: Option<String>,
-    /// Effective permission policy snapshotted for the Run.
-    pub permission_profile: RunPermissionProfile,
-    /// Run-scoped native approval boundary.
-    pub approvals: Arc<dyn WorkspaceApproval>,
-    /// Cooperative cancellation shared with the application supervisor.
-    pub cancellation: CancellationToken,
-}
-
-impl std::fmt::Debug for CodexThreadInvocation {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CodexThreadInvocation")
-            .field("request_id", &self.request_id)
-            .field("thread_id", &self.thread_id)
-            .field("prompt", &self.prompt)
-            .field("cwd", &self.cwd)
-            .field("model", &self.model)
-            .field("reasoning_effort", &self.reasoning_effort)
-            .field("permission_profile", &self.permission_profile)
-            .field("approvals", &"<workspace approval port>")
-            .field("cancellation", &self.cancellation)
-            .finish()
-    }
-}
-
-/// Writable native Codex Thread boundary, separate from managed Git workspaces.
-#[async_trait]
-pub trait CodexThreadWriter: Send + Sync {
-    /// Resumes `thread_id`, starts one Turn, and returns its final display projection.
-    async fn continue_thread(
-        &self,
-        request: CodexThreadInvocation,
-        progress: Arc<dyn WorkspaceProgressReporter>,
-    ) -> Result<WorkspaceAgentResponse, DomainError>;
-}
-
 impl std::fmt::Debug for WorkspaceAgentInvocation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

@@ -184,6 +184,9 @@ pub struct CodexTurnSnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexThreadSnapshot {
+    /// Local ownership evidence, never accepted from provider JSON or persisted as a lease.
+    #[serde(skip)]
+    pub writer_confirmed: bool,
     /// Native Thread identity.
     pub id: String,
     /// Native session metadata; it is not an Ait lineage identity.

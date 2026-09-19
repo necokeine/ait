@@ -130,11 +130,6 @@ impl LocalControlService {
         project_id: &str,
         agent_id: &str,
     ) -> Result<CommandResult, ApiError> {
-        let snapshot = self
-            .require_codex_history_source()?
-            .read_thread(thread_id)
-            .await
-            .map_err(|failure| history_api_error(ErrorCode::CodexHistoryReadFailed, failure))?;
         for _ in 0..4 {
             let loaded = self
                 .records()
@@ -144,8 +139,14 @@ impl LocalControlService {
                     ControlFilter::id(ControlRecordKind::Provider, provider_id),
                     ControlFilter::all(ControlRecordKind::Session),
                     ControlFilter::project(ControlRecordKind::Message, project_id),
+                    ControlFilter::project(ControlRecordKind::Run, project_id),
                 ])
                 .await?;
+            let snapshot = self
+                .require_codex_history_source()?
+                .read_thread(thread_id)
+                .await
+                .map_err(|failure| history_api_error(ErrorCode::CodexHistoryReadFailed, failure))?;
             validate_import_binding(
                 &loaded.original,
                 &snapshot,
@@ -153,7 +154,7 @@ impl LocalControlService {
                 project_id,
                 agent_id,
             )?;
-            let materialization = materialize_thread(
+            let mut materialization = materialize_thread(
                 &snapshot,
                 CodexImportIdentity {
                     provider_id,
@@ -166,6 +167,11 @@ impl LocalControlService {
             .map_err(project_error)?;
             let session_view = materialization.session.view();
             let mut updated = loaded.original.clone();
+            crate::control::runs::native::attribute_inputs(
+                &snapshot,
+                &mut materialization.messages,
+                &mut updated.runs,
+            )?;
             updated.messages.extend(materialization.messages);
             if let Some(index) = updated
                 .sessions
@@ -176,7 +182,7 @@ impl LocalControlService {
             } else {
                 updated.sessions.push(materialization.session);
             }
-            let events = vec![pending(
+            let mut events = vec![pending(
                 "codex.history.synced",
                 Some(session_view.id.clone()),
                 &json!({
@@ -186,6 +192,10 @@ impl LocalControlService {
                     "session_id": session_view.id,
                 }),
             )];
+            events.extend(crate::control::runs::native::run_updates(
+                &loaded.original.runs,
+                &updated.runs,
+            ));
             match self.persist_records(&loaded, &updated, events).await {
                 Ok(()) => return Ok(CommandResult::Session(session_view)),
                 Err(ControlStoreError::Conflict) => {}
@@ -350,6 +360,10 @@ struct Segment {
 ///
 /// Returns a stable Codex history error for malformed identities, incomplete non-tail
 /// history, conflicting bindings, or invalid provider items.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Projection identity and Session reconciliation form one deterministic boundary"
+)]
 pub(in crate::control) fn materialize_thread(
     snapshot: &CodexThreadSnapshot,
     identity: CodexImportIdentity<'_>,
@@ -363,7 +377,11 @@ pub(in crate::control) fn materialize_thread(
         &snapshot.id,
         identity.project_id,
     )?;
-    let (projected_turns, completeness) = normalize_turns(snapshot.turns.clone())?;
+    let (projected_turns, completeness) = normalize_turns(
+        snapshot.turns.clone(),
+        snapshot.writer_confirmed,
+        existing_messages,
+    )?;
     let (lineage_id, relationship_state) = resolve_lineage(
         snapshot,
         identity.provider_id,
@@ -506,12 +524,33 @@ fn bound_session<'a>(
 
 fn normalize_turns(
     turns: Vec<CodexTurnSnapshot>,
+    writer_confirmed: bool,
+    existing_messages: &[MessageRecord],
 ) -> Result<(Vec<ProjectedTurn>, ProviderHistoryCompleteness), DomainError> {
+    let confirmed: HashSet<&str> = existing_messages
+        .iter()
+        .filter_map(|message| {
+            message
+                .data
+                .as_ref()
+                .and_then(|data| data.pointer("/native_message/metadata/codex/turn_content_hash"))
+                .and_then(Value::as_str)
+        })
+        .collect();
     let mut projected = Vec::with_capacity(turns.len());
     let mut incomplete = false;
     for turn in turns {
+        let items = turn
+            .items
+            .iter()
+            .map(|item| sanitize_provider_value(item, 0))
+            .collect::<Vec<_>>();
+        let content_hash = turn_content_hash(&turn, &items)?;
         let terminal = matches!(turn.status.as_str(), "completed" | "failed")
-            || turn.status == "interrupted" && turn.completed_at.is_some();
+            || turn.status == "interrupted"
+                && (turn.completed_at.is_some()
+                    || writer_confirmed
+                    || confirmed.contains(content_hash.as_str()));
         if turn.items_view != CodexItemsView::Full || !terminal {
             incomplete = true;
             continue;
@@ -522,13 +561,7 @@ fn normalize_turns(
                 "Codex history contains a publishable Turn after an incomplete tail",
             ));
         }
-        let items = turn
-            .items
-            .iter()
-            .map(|item| sanitize_provider_value(item, 0))
-            .collect::<Vec<_>>();
         validate_item_identities(&items)?;
-        let content_hash = turn_content_hash(&turn, &items)?;
         projected.push(ProjectedTurn {
             snapshot: turn,
             items,

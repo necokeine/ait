@@ -1,0 +1,97 @@
+{
+  "scope": {
+    "date": "2026-09-19",
+    "platform": "macOS arm64",
+    "features": "default",
+    "command": "cargo llvm-cov --workspace --html",
+    "base_commit": "d080d257f6085fbb70a7ef460eb8fd6bf035d6fb",
+    "revision": "working-tree fixes"
+  },
+  "baseline": {
+    "workspace": {
+      "covered": 22928,
+      "count": 29259,
+      "percent": 78.3622
+    },
+    "application": {
+      "covered": 9373,
+      "count": 11201,
+      "percent": 83.68
+    },
+    "agent-adapters": {
+      "covered": 4006,
+      "count": 5646,
+      "percent": 70.9529
+    },
+    "ports": {
+      "covered": 130,
+      "count": 233,
+      "percent": 55.794
+    }
+  },
+  "current": {
+    "workspace": {
+      "covered": 23567,
+      "count": 29910,
+      "percent": 78.793
+    },
+    "application": {
+      "covered": 9763,
+      "count": 11675,
+      "percent": 83.6231
+    },
+    "agent-adapters": {
+      "covered": 4242,
+      "count": 5823,
+      "percent": 72.849
+    },
+    "ports": {
+      "covered": 130,
+      "count": 233,
+      "percent": 55.794
+    }
+  },
+  "changed_files": {
+    "crates/agent-adapters/src/codex/native.rs": {
+      "covered": 150,
+      "count": 226,
+      "percent": 66.3717
+    },
+    "crates/agent-adapters/src/codex/protocol.rs": {
+      "covered": 1165,
+      "count": 1452,
+      "percent": 80.2342
+    },
+    "crates/application/src/control/codex_history.rs": {
+      "covered": 752,
+      "count": 897,
+      "percent": 83.835
+    },
+    "crates/application/src/control/runs/native.rs": {
+      "covered": 261,
+      "count": 342,
+      "percent": 76.3158
+    },
+    "crates/application/src/control/runs/native/publication.rs": {
+      "covered": 189,
+      "count": 229,
+      "percent": 82.5328
+    }
+  },
+  "tests": {
+    "workspace": {
+      "passed": 484,
+      "failed": 0,
+      "ignored": 5
+    },
+    "instrumented": {
+      "passed": 483,
+      "failed": 0,
+      "ignored": 5
+    },
+    "desktop": {
+      "passed": 135,
+      "failed": 0
+    }
+  }
+}

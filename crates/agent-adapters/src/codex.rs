@@ -17,13 +17,12 @@ use ait_domain::{
     NativeApprovalKind, NativeApprovalTarget, ProviderKind, ProviderModel, SandboxAccess,
 };
 use ait_ports::{
-    AgentProviderGateway, CodexHistorySource, CodexThreadInvocation, CodexThreadSnapshot,
-    CodexThreadSourceKind, CodexThreadWriter, GeneratedSessionTitle, HostProviderModelCatalog,
-    ProviderMessage, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceApprovalDecision,
-    WorkspaceApprovalRequest, WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate,
-    WorkspaceOperation, WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
-    WorkspaceResultSink,
+    AgentProviderGateway, CodexHistorySource, CodexThreadSnapshot, CodexThreadSourceKind,
+    GeneratedSessionTitle, HostProviderModelCatalog, ProviderMessage, SessionTitleGenerator,
+    SessionTitleRequest, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    WorkspaceApproval, WorkspaceApprovalDecision, WorkspaceApprovalRequest,
+    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
+    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
 };
 use async_trait::async_trait;
 use cap_fs_ext::DirExt as _;
@@ -333,58 +332,6 @@ impl CodexHistorySource for CodexAppServerAdapter {
         })
         .await
         .map_err(|failure| codex_history_adapter_error(failure, ErrorCode::CodexHistoryReadFailed))
-    }
-}
-
-#[async_trait]
-impl CodexThreadWriter for CodexAppServerAdapter {
-    async fn continue_thread(
-        &self,
-        request: CodexThreadInvocation,
-        progress: Arc<dyn WorkspaceProgressReporter>,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let sandbox = match request.permission_profile.sandbox {
-            SandboxAccess::ReadOnly => crate::SandboxMode::ReadOnly,
-            SandboxAccess::WorkspaceWrite => crate::SandboxMode::WorkspaceWrite,
-            SandboxAccess::FullAccess => crate::SandboxMode::DangerFullAccess,
-        };
-        let approval_policy = match request.permission_profile.approval {
-            ait_domain::ApprovalMode::OnRequest => crate::ApprovalPolicy::OnRequest,
-            ait_domain::ApprovalMode::UntrustedOnly => crate::ApprovalPolicy::Untrusted,
-        };
-        let approval_handler = Arc::new(WorkspaceApprovalBridge {
-            run_id: request.request_id.clone(),
-            sandbox: request.permission_profile.sandbox,
-            isolated_cwd: request.cwd.clone(),
-            project_cwd: request.cwd.clone(),
-            approvals: request.approvals,
-        });
-        let cancellation = request.cancellation.clone();
-        let stream = self
-            .run(AgentRunRequest {
-                request_id: request.request_id,
-                model: Some(request.model),
-                reasoning_effort: request.reasoning_effort,
-                project_instructions: None,
-                prompt: request.prompt,
-                cwd: request.cwd,
-                resume_thread_id: Some(request.thread_id),
-                ephemeral: false,
-                sandbox,
-                approval_policy,
-                approval_handler: Some(approval_handler),
-                output_schema: None,
-                cancellation: cancellation.clone(),
-            })
-            .await
-            .map_err(|failure| {
-                domain_error(
-                    ErrorCode::CodexInputNotAccepted,
-                    failure.message,
-                    failure.retryable,
-                )
-            })?;
-        collect_native_thread_output(stream, &progress, &cancellation).await
     }
 }
 
@@ -1124,98 +1071,6 @@ async fn collect_workspace_output(
         )));
     }
     Ok((assistant_text, operations, output_items))
-}
-
-async fn collect_native_thread_output(
-    mut stream: AgentStream,
-    progress: &Arc<dyn WorkspaceProgressReporter>,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<WorkspaceAgentResponse, DomainError> {
-    let mut completed = false;
-    let mut output = CodexOutputCollector::default();
-    while let Some(event) = stream.next().await {
-        let event = event.map_err(codex_thread_write_error)?;
-        match event {
-            AgentEvent::MessageDelta { item_id, delta } => {
-                progress
-                    .report(WorkspaceProgressEvent::TextDelta {
-                        id: item_id.clone(),
-                        delta: delta.clone(),
-                    })
-                    .await;
-                output.message_delta(item_id, &delta);
-            }
-            AgentEvent::ItemStarted { item } => {
-                report_item(Some(progress), &item, false).await;
-                output.item_started(&item);
-            }
-            AgentEvent::ItemCompleted { item } => {
-                report_item(Some(progress), &item, true).await;
-                output.item_completed(&item);
-            }
-            AgentEvent::AdapterWarning {
-                message,
-                retrying,
-                code,
-            } => {
-                progress
-                    .report(WorkspaceProgressEvent::Warning {
-                        message,
-                        retrying,
-                        code,
-                    })
-                    .await;
-            }
-            AgentEvent::Completed { status, error, .. } => {
-                progress
-                    .report(WorkspaceProgressEvent::TurnStatus {
-                        status: agent_run_status(status).into(),
-                        error: error.clone(),
-                    })
-                    .await;
-                if status != AgentRunStatus::Completed {
-                    let cancelled =
-                        status == AgentRunStatus::Interrupted && cancellation.is_cancelled();
-                    return Err(if cancelled {
-                        domain_error(
-                            ErrorCode::RunCancelled,
-                            error.unwrap_or_else(|| "Codex turn was cancelled".into()),
-                            false,
-                        )
-                    } else {
-                        domain_error(
-                            ErrorCode::ProviderFailed,
-                            error.unwrap_or_else(|| format!("Codex turn ended with {status:?}")),
-                            status == AgentRunStatus::Unknown,
-                        )
-                    });
-                }
-                completed = true;
-            }
-            _ => {}
-        }
-    }
-    if !completed {
-        return Err(domain_error(
-            ErrorCode::ProviderFailed,
-            "Codex stream ended before turn completion",
-            true,
-        ));
-    }
-    let (assistant_text, operations, output_items) = output.finish();
-    if assistant_text.trim().is_empty() {
-        return Err(domain_error(
-            ErrorCode::ProviderFailed,
-            "Codex returned an empty assistant result",
-            false,
-        ));
-    }
-    Ok(WorkspaceAgentResponse {
-        assistant_text,
-        commit_id: None,
-        operations,
-        output_items,
-    })
 }
 
 struct IsolatedWorkspace {
@@ -4636,7 +4491,8 @@ fn codex_history_adapter_error(error: AdapterError, fallback: ErrorCode) -> Doma
 fn codex_thread_write_error(error: AdapterError) -> DomainError {
     let message = error.message;
     let lowered = message.to_ascii_lowercase();
-    let code = if lowered.contains("already active")
+    let code = if lowered.contains("already has an active writer")
+        || lowered.contains("already active")
         || lowered.contains("active thread")
         || lowered.contains("thread is active")
     {
@@ -4760,6 +4616,7 @@ impl AgentAdapter for CodexAppServerAdapter {
     }
 }
 
+mod native;
 mod protocol;
 
 pub use protocol::{

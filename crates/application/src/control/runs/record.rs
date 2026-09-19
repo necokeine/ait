@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::control) struct RunRecord {
     pub compatibility_repair: bool,
+    pub codex_input: Option<super::native::CodexPendingInput>,
     /// Canonical host runtime state for API Providers; absent for native harness Runs.
     pub lifecycle: RunLifecycle,
 
@@ -283,16 +284,28 @@ impl RunRecord {
         }
     }
 }
+#[derive(Serialize, Deserialize)]
+struct PersistedRun {
+    #[serde(flatten)]
+    view: RunView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_input: Option<super::native::CodexPendingInput>,
+}
+
 impl Serialize for RunRecord {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.validate_execution()
             .map_err(serde::ser::Error::custom)?;
-        self.record().serialize(serializer)
+        PersistedRun {
+            view: self.record(),
+            codex_input: self.codex_input.clone(),
+        }
+        .serialize(serializer)
     }
 }
 impl<'de> Deserialize<'de> for RunRecord {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let view = RunView::deserialize(deserializer)?;
+        let PersistedRun { view, codex_input } = PersistedRun::deserialize(deserializer)?;
         let status: LifecycleStatus =
             serde_json::from_value(serde_json::Value::String(view.status))
                 .map_err(|_| serde::de::Error::custom("unknown Run status"))?;
@@ -324,6 +337,7 @@ impl<'de> Deserialize<'de> for RunRecord {
         let mut state = Self {
             lifecycle,
             compatibility_repair: false,
+            codex_input,
             id: view.id,
             project_id: view.project_id,
             base_message_id: view.base_message_id,

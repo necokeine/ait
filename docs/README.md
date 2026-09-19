@@ -10,6 +10,9 @@
   Thread 投影为 Ait Session，完整终态 Turn 按 userMessage 边界原子发布为普通 Message 链。
   基于 0.153.4 schema 与隔离实测，定义稳定分页、writer 接管/释放、输入结果不明对账、同 Run
   steer、Project 内 fork 来源与共享、全局绑定预留和 NativeCwd 互操作边界；待 Accepted 后生效。
+  2026-09-19 实现复核已补 writer/config 准入、durable input、统一终态投影、CAS 重读、冷尾部确认
+  和桌面 ProviderItem；具体支持范围及未完成分期见该 ADR 的“实现复核”。
+  [实现修正与验证报告](reports/adr-016-implementation-fixes.md)记录回归测试及覆盖率比较。
 
 - `decisions/adr-015-workspace-capability.md`：Project Workspace 文件/Git/lease 能力独立为
   `ait-workspace`，本机实现为 `ait-workspace-local`；Run execution 的 Workspace 协议仍留在

@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 pub(in crate::control) mod api_run;
 pub(in crate::control) mod finalization;
 pub(in crate::control) mod journal;
+pub(in crate::control) mod native;
 pub(in crate::control) mod progress;
 pub(in crate::control) mod recovery;
 pub(in crate::control) mod settlement;
@@ -47,7 +48,7 @@ pub(in crate::control) fn cancel_run(
         ));
     }
     let mut run = state.runs()[index].clone();
-    if run.execution().is_some() {
+    if run.execution().is_some() || run.codex_input.is_some() {
         run.set_status(LifecycleStatus::Cancelling);
         crate::control::tool_approvals::expire(&mut run, ait_domain::ToolApprovalState::Cancelled);
         state.runs_mut()[index] = run.clone();

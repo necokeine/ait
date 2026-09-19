@@ -44,17 +44,33 @@ impl LocalControlService {
         let mut session_admission = self.acquire_session(&command)?;
         let derive_source_locked = session_admission.derive_source_locked();
         let workspace_lease = self.acquire_workspace_write(&command).await?;
-        match self
-            .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
-            .await?
-        {
+        let control = Arc::new(RunControl::new());
+        let native = self
+            .admit_native_command(&command, &control, workspace_lease.as_ref())
+            .await?;
+        let (outcome, connection) = if let Some(native) = native {
+            (
+                CommandOutcome::for_new_run(native.run),
+                Some(native.connection),
+            )
+        } else {
+            (
+                self.commit_with_finalization_gate(
+                    command,
+                    workspace_lease.clone(),
+                    derive_source_locked,
+                )
+                .await?,
+                None,
+            )
+        };
+        match outcome {
             CommandOutcome::ExecuteRun(run) => {
                 let accepted = (*run).clone();
                 if let Some(session_id) = &accepted.session_id {
                     session_admission.retain_for_session(session_id);
                 }
                 let run_id = run.id.clone();
-                let control = Arc::new(RunControl::new());
                 let invocation = InvocationGuard::new(
                     Arc::clone(&self.cancellations),
                     &run_id,
@@ -70,7 +86,13 @@ impl LocalControlService {
                         invocation,
                         control_guard,
                     );
-                    let _ = service.supervise_run(run_id, control).await;
+                    let _ = if let Some(connection) = connection {
+                        service
+                            .supervise_native_run(run_id, control, connection)
+                            .await
+                    } else {
+                        service.supervise_run(run_id, control).await
+                    };
                 });
                 Ok(CommandResult::Run(accepted.view()))
             }
@@ -78,6 +100,10 @@ impl LocalControlService {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Command routing retains admission guards through both execution supervisors"
+    )]
     pub(in crate::control) async fn try_execute(
         &self,
         command: Command,
@@ -134,9 +160,26 @@ impl LocalControlService {
         let workspace_lease = self.acquire_workspace_write(&command).await?;
         // Commit retries may reapply state changes, but never repeat an external
         // Agent invocation. Only the command that created the Run can request it.
-        let outcome = self
-            .commit_with_finalization_gate(command, workspace_lease.clone(), derive_source_locked)
+        let control = Arc::new(RunControl::new());
+        let native = self
+            .admit_native_command(&command, &control, workspace_lease.as_ref())
             .await?;
+        let (outcome, connection) = if let Some(native) = native {
+            (
+                CommandOutcome::for_new_run(native.run),
+                Some(native.connection),
+            )
+        } else {
+            (
+                self.commit_with_finalization_gate(
+                    command,
+                    workspace_lease.clone(),
+                    derive_source_locked,
+                )
+                .await?,
+                None,
+            )
+        };
         match outcome {
             CommandOutcome::Ready(result) => Ok(*result),
             CommandOutcome::ExecuteRun(run) => {
@@ -144,7 +187,6 @@ impl LocalControlService {
                 if let Some(session_id) = &run.session_id {
                     session_admission.retain_for_session(session_id);
                 }
-                let control = Arc::new(RunControl::new());
                 let invocation = InvocationGuard::new(
                     Arc::clone(&self.cancellations),
                     &run_id,
@@ -163,7 +205,13 @@ impl LocalControlService {
                         invocation,
                         control_guard,
                     );
-                    let result = service.supervise_run(run_id, control).await;
+                    let result = if let Some(connection) = connection {
+                        service
+                            .supervise_native_run(run_id, control, connection)
+                            .await
+                    } else {
+                        service.supervise_run(run_id, control).await
+                    };
                     let _ = sender.send(result);
                 });
                 receiver

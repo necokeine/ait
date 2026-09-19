@@ -14,10 +14,7 @@ use crate::control::persistence::{
 };
 use crate::control::project::git::{GitBaseline, is_git_commit};
 use ait_contracts::ApiError;
-use ait_domain::{
-    CodexWorkspaceMode, DomainMetadata, ErrorCode, Message, MessageId, MessageOrigin, ProjectId,
-    RunId, SessionId, SessionSource, SubMessage, TimestampMs,
-};
+use ait_domain::{ErrorCode, SessionSource};
 use ait_ports::PendingEvent;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -62,78 +59,30 @@ pub(in crate::control) fn send_message(
     let provider = validate_config(state, &agent.config)?.clone();
     let permission_profile =
         effective_permission_profile(state.settings(), &provider, permission_limits)?;
-    let native_identity = match &session.source {
-        SessionSource::CodexThread(source)
-            if matches!(source.workspace_mode, CodexWorkspaceMode::NativeCwd { .. }) =>
-        {
-            Some((source.provider_id.clone(), source.thread_id.clone()))
-        }
-        SessionSource::Managed | SessionSource::CodexThread(_) => None,
-    };
-    let native_codex = native_identity.is_some();
-    let git_baseline = if native_codex {
-        None
-    } else {
-        Some(git_baseline.ok_or_else(|| {
-            error(
-                ErrorCode::ProjectGitHeadUnavailable,
-                "Git HEAD/index snapshot is missing for user message",
-                false,
-            )
-        })?)
-    };
-    let run_id = Uuid::new_v4().to_string();
-    let user = if let Some((provider_id, thread_id)) = native_identity {
-        let mut metadata = DomainMetadata::default();
-        metadata.0.insert(
-            "codex".into(),
-            serde_json::json!({
-                "submitted_via": "ait",
-                "workspace_mode": "native_cwd",
-                "provider_id": provider_id,
-                "thread_id": thread_id,
-            }),
-        );
-        let message = Message {
-            id: MessageId::new(Uuid::new_v4()),
-            project_id: ProjectId::new(&session.project_id),
-            parent_message_id: Some(MessageId::parse(&session.current_message_id()).map_err(
-                |_| {
-                    error(
-                        ErrorCode::InvalidMessageId,
-                        "invalid Session Message",
-                        false,
-                    )
-                },
-            )?),
-            role: ait_domain::MessageRole::User,
-            kind: ait_domain::MessageKind::Standard,
-            origin: MessageOrigin::Human,
-            sub_messages: vec![SubMessage::Text { text }],
-            created_by_session_id: Some(SessionId::new(&session.id)),
-            run_id: Some(RunId::new(&run_id)),
-            run_seq: Some(1),
-            tool_result: None,
-            git_commit: None,
-            metadata,
-            created_at: TimestampMs(now()),
-        };
-        message.validate().map_err(|failure| {
-            let failure = ait_domain::DomainError::from(failure);
-            error(failure.code, failure.message, failure.retryable)
-        })?;
-        MessageRecord::from(message)
-    } else {
-        message(
-            &session.project_id,
-            Some(&session.current_message_id()),
-            ait_domain::MessageRole::User,
-            ait_domain::MessageKind::Standard,
-            Some(text),
-            git_baseline.map(|baseline| baseline.commit.as_str()),
-            None,
+    if matches!(session.source, SessionSource::CodexThread(_)) {
+        return Err(error(
+            ErrorCode::CodexThreadCapabilityUnsupported,
+            "native Codex input requires exclusive writer admission",
+            false,
+        ));
+    }
+    let git_baseline = git_baseline.ok_or_else(|| {
+        error(
+            ErrorCode::ProjectGitHeadUnavailable,
+            "Git HEAD/index snapshot is missing for user message",
+            false,
         )
-    };
+    })?;
+    let run_id = Uuid::new_v4().to_string();
+    let user = message(
+        &session.project_id,
+        Some(&session.current_message_id()),
+        ait_domain::MessageRole::User,
+        ait_domain::MessageKind::Standard,
+        Some(text),
+        Some(&git_baseline.commit),
+        None,
+    );
     state.messages_mut().push(user.clone());
     let reference = &mut state.sessions_mut()[index].reference;
     reference
@@ -153,11 +102,11 @@ pub(in crate::control) fn send_message(
     reference
         .acquire(ait_domain::RunId::new(&run_id))
         .map_err(|e| error(e.code, e.message, e.retryable))?;
-    let workspace_base_commit = git_baseline.map(|baseline| baseline.commit.clone());
-    let workspace_base_index_tree =
-        git_baseline.map(|baseline| baseline.index_tree.clone().into_boxed_str());
+    let workspace_base_commit = Some(git_baseline.commit.clone());
+    let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
     let run = RunRecord {
         compatibility_repair: false,
+        codex_input: None,
         lifecycle: RunLifecycle::queued(),
         id: run_id.clone(),
         project_id: session.project_id,

@@ -207,6 +207,7 @@ pub(in crate::control) fn trigger_cron(
     }
     state.runs_mut().push(RunRecord {
         compatibility_repair: false,
+        codex_input: None,
         lifecycle: RunLifecycle::queued(),
         id: run_id.clone(),
         project_id: cron.project_id,

@@ -1,7 +1,6 @@
 //! Reliable workspace terminal persistence and output publication.
 use crate::control::LocalControlService;
 use crate::control::approvals::expire_pending_native_approvals;
-use crate::control::conversation::MessageRecord;
 use crate::control::conversation::messages::{append_output, message};
 use crate::control::conversation::release_session;
 use crate::control::errors::{error, recovery_error, store_error};
@@ -13,10 +12,7 @@ use crate::control::runs::journal::{
 };
 use crate::control::runs::{api_run, is_terminal_run_status};
 use ait_contracts::ApiError;
-use ait_domain::{
-    DomainError, DomainMetadata, ErrorCode, Message, MessageId, MessageKind, MessageOrigin,
-    MessageRole, NativeApprovalStatus, ProjectId, RunId, SessionId, SubMessage, TimestampMs,
-};
+use ait_domain::{DomainError, ErrorCode, NativeApprovalStatus};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::{ControlStoreError, WorkspaceAgentResponse, WorkspaceOutputItem};
 use serde_json::json;
@@ -28,10 +24,6 @@ async fn wait_for_workspace_terminal_persistence(failures: &mut u32) {
     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "terminal Run state and its immutable assistant Message are one atomic projection"
-)]
 fn apply_workspace_terminal_result(
     state: &mut (impl HasMessages + HasSessions),
     run: &mut RunRecord,
@@ -84,58 +76,15 @@ fn apply_workspace_terminal_result(
                 .as_deref()
                 .unwrap_or(&run.base_message_id)
                 .to_owned();
-            let native_submission = state
-                .messages()
-                .iter()
-                .find(|message| message.id == run.base_message_id)
-                .and_then(|message| message.data.as_ref())
-                .and_then(|value| value.pointer("/native_message/metadata/codex"))
-                .is_some_and(|metadata| {
-                    metadata
-                        .get("submitted_via")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("ait")
-                        && metadata
-                            .get("workspace_mode")
-                            .and_then(serde_json::Value::as_str)
-                            == Some("native_cwd")
-                });
-            let reply = if native_submission {
-                let mut metadata = DomainMetadata::default();
-                if let Some(codex) = data.as_ref().and_then(|value| value.get("codex")).cloned() {
-                    metadata.0.insert("codex".into(), codex);
-                }
-                MessageRecord::from(Message {
-                    id: MessageId::new(uuid::Uuid::new_v4()),
-                    project_id: ProjectId::new(&run.project_id),
-                    parent_message_id: Some(
-                        MessageId::parse(&parent).expect("validated Run Message parent"),
-                    ),
-                    role: MessageRole::Assistant,
-                    kind: MessageKind::Standard,
-                    origin: MessageOrigin::Agent,
-                    sub_messages: vec![SubMessage::Text {
-                        text: output.assistant_text.clone(),
-                    }],
-                    created_by_session_id: run.session_id.as_deref().map(SessionId::new),
-                    run_id: Some(RunId::new(&run.id)),
-                    run_seq: Some(2),
-                    tool_result: None,
-                    git_commit: None,
-                    metadata,
-                    created_at: TimestampMs(crate::control::events::now()),
-                })
-            } else {
-                message(
-                    &run.project_id,
-                    Some(&parent),
-                    MessageRole::Assistant,
-                    MessageKind::Standard,
-                    Some(output.assistant_text.clone()),
-                    None,
-                    data,
-                )
-            };
+            let reply = message(
+                &run.project_id,
+                Some(&parent),
+                ait_domain::MessageRole::Assistant,
+                ait_domain::MessageKind::Standard,
+                Some(output.assistant_text.clone()),
+                None,
+                data,
+            );
             append_output(state, run, reply);
             run.set_status(LifecycleStatus::Completed);
             run.set_error(None);

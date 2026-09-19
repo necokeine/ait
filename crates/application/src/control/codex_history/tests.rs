@@ -37,6 +37,7 @@ fn turn(id: &str, items: Vec<Value>) -> CodexTurnSnapshot {
 
 fn snapshot(id: &str, turns: Vec<CodexTurnSnapshot>) -> CodexThreadSnapshot {
     CodexThreadSnapshot {
+        writer_confirmed: false,
         id: id.into(),
         session_id: format!("session-{id}"),
         forked_from_id: None,

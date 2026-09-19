@@ -53,7 +53,7 @@ struct CodexReasoningEffort {
     reasoning_effort: String,
 }
 
-async fn initialize_protocol<R, W>(
+pub(super) async fn initialize_protocol<R, W>(
     lines: &mut tokio::io::Lines<R>,
     writer: &mut W,
     client: ClientInfo,
@@ -257,16 +257,31 @@ where
     }
     let mut lines = BufReader::new(reader).lines();
     initialize_protocol(&mut lines, &mut writer, client).await?;
+    read_thread_history(&mut lines, &mut writer, &thread_id, &mut 1).await
+}
+
+pub(super) async fn read_thread_history<R, W>(
+    lines: &mut tokio::io::Lines<R>,
+    writer: &mut W,
+    thread_id: &str,
+    next_id: &mut i64,
+) -> Result<CodexThreadSnapshot, AdapterError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let read_id = *next_id;
+    *next_id += 1;
     write_message(
-        &mut writer,
+        writer,
         &json!({
             "method": "thread/read",
-            "id": 1,
+            "id": read_id,
             "params": {"threadId": thread_id, "includeTurns": true}
         }),
     )
     .await?;
-    let (result, _) = wait_for_response(&mut lines, 1).await?;
+    let (result, _) = wait_for_response(lines, read_id).await?;
     let mut thread = serde_json::from_value::<CodexThreadReadResult>(result)
         .map_err(|error| {
             AdapterError::protocol(format!("invalid Codex thread/read response: {error}"))
@@ -282,8 +297,9 @@ where
     let mut turn_ids = HashSet::new();
     let mut seen_cursors = HashSet::new();
     let mut cursor: Option<String> = None;
-    let mut request_id = 2_i64;
     loop {
+        let request_id = *next_id;
+        *next_id += 1;
         let mut params = json!({
             "threadId": thread_id,
             "limit": 100,
@@ -294,12 +310,11 @@ where
             params["cursor"] = json!(value);
         }
         write_message(
-            &mut writer,
+            writer,
             &json!({"method": "thread/turns/list", "id": request_id, "params": params}),
         )
         .await?;
-        let (result, _) = wait_for_response(&mut lines, request_id).await?;
-        request_id += 1;
+        let (result, _) = wait_for_response(lines, request_id).await?;
         let page: CodexTurnPage = serde_json::from_value(result).map_err(|error| {
             AdapterError::protocol(format!("invalid Codex thread/turns/list response: {error}"))
         })?;
@@ -354,6 +369,7 @@ where
         "cwd": request.cwd,
         "sandbox": request.sandbox.as_wire_value(),
         "approvalPolicy": request.approval_policy.as_wire_value(),
+        "approvalsReviewer": "user",
         "developerInstructions": CodexToolSet
             .developer_instructions(request.project_instructions.as_deref()),
     });
@@ -393,12 +409,40 @@ where
     )
     .await?;
 
+    drive_turn_protocol(
+        &mut lines,
+        &mut writer,
+        request,
+        thread_id,
+        approvals,
+        sender,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep the turn RPC, approval dispatch and terminal drain in one protocol loop"
+)]
+pub(super) async fn drive_turn_protocol<R, W>(
+    lines: &mut tokio::io::Lines<R>,
+    writer: &mut W,
+    request: AgentRunRequest,
+    thread_id: String,
+    approvals: Arc<dyn ApprovalHandler>,
+    sender: &mpsc::Sender<Result<AgentEvent, AdapterError>>,
+) -> Result<(), AdapterError>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut turn_params = json!({
         "threadId": thread_id,
         "input": [{"type": "text", "text": request.prompt}],
         "clientUserMessageId": request.request_id,
         "cwd": request.cwd,
         "approvalPolicy": request.approval_policy.as_wire_value(),
+        "approvalsReviewer": "user",
         // Explicitly replace native defaults, including user-configured write
         // roots and implicit temporary-directory access, on every new/resumed turn.
         "sandboxPolicy": match request.sandbox {
@@ -420,11 +464,11 @@ where
         turn_params["outputSchema"] = output_schema;
     }
     write_message(
-        &mut writer,
+        writer,
         &json!({"method": "turn/start", "id": 2, "params": turn_params}),
     )
     .await?;
-    let (turn_result, deferred) = wait_for_response(&mut lines, 2).await?;
+    let (turn_result, deferred) = wait_for_response(lines, 2).await?;
     let turn_id = turn_result
         .pointer("/turn/id")
         .and_then(Value::as_str)
@@ -453,7 +497,7 @@ where
                 biased;
                 () = request.cancellation.cancelled() => {
                     write_message(
-                        &mut writer,
+                        writer,
                         &json!({
                             "method": "turn/interrupt",
                             "id": 3,
@@ -465,7 +509,7 @@ where
                     expire_protocol_approvals(&approvals, &mut pending_approvals).await;
                     return Err(AdapterError::cancelled());
                 }
-                message = read_message(&mut lines) => Some(message?),
+                message = read_message(lines) => Some(message?),
                 resolution = approval_tasks.join_next(), if !approval_tasks.is_empty() => {
                     let Some(resolution) = resolution else {
                         continue;
@@ -479,7 +523,7 @@ where
                             };
                             if resolution.decision == ApprovalDecision::Cancel {
                                 write_message(
-                                    &mut writer,
+                                    writer,
                                     &json!({
                                         "method": "turn/interrupt",
                                         "id": 3,
@@ -495,7 +539,7 @@ where
                             match approval_response(&resolution.method, resolution.decision) {
                                 Ok(result) => {
                                     write_message(
-                                        &mut writer,
+                                        writer,
                                         &json!({"id": resolution.request_id, "result": result}),
                                     )
                                     .await?;
@@ -516,7 +560,7 @@ where
                                     )
                                     .await?;
                                     write_rpc_error(
-                                        &mut writer,
+                                        writer,
                                         &resolution.request_id,
                                         -32602,
                                         error.message,
@@ -565,7 +609,7 @@ where
                 params,
                 &thread_id,
                 &turn_id,
-                &mut writer,
+                writer,
                 Arc::clone(&approvals),
                 sender,
                 &mut approval_tasks,
@@ -588,7 +632,7 @@ where
     }
 }
 
-async fn wait_for_response<R>(
+pub(super) async fn wait_for_response<R>(
     lines: &mut tokio::io::Lines<R>,
     expected_id: i64,
 ) -> Result<(Value, Vec<Value>), AdapterError>
@@ -636,7 +680,7 @@ where
         .map_err(|error| AdapterError::protocol(format!("invalid Codex JSONL: {error}")))
 }
 
-async fn write_message<W>(writer: &mut W, message: &Value) -> Result<(), AdapterError>
+pub(super) async fn write_message<W>(writer: &mut W, message: &Value) -> Result<(), AdapterError>
 where
     W: AsyncWrite + Unpin,
 {

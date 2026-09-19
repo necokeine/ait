@@ -12,13 +12,9 @@ use crate::control::runs::progress::ProgressPump;
 use crate::control::runs::recovery::WorkspaceRecoveryClaim;
 use ait_contracts::{AgentMode, ApiError};
 use ait_domain::LifecycleStatus;
-use ait_domain::{
-    CodexWorkspaceMode, DomainError, ErrorCode, ProviderHistoryCompleteness, ProviderSyncState,
-    SessionSource,
-};
+use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    CodexThreadInvocation, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval,
-    WorkspaceResultSink,
+    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApproval, WorkspaceResultSink,
 };
 use futures_util::FutureExt;
 use std::panic::AssertUnwindSafe;
@@ -118,75 +114,6 @@ pub(in crate::control) fn workspace_invocation(
     })
 }
 
-fn native_codex_invocation(
-    state: &(impl HasMessages + HasSessions),
-    run: &RunRecord,
-    control: &Arc<RunControl>,
-    approvals: Arc<dyn WorkspaceApproval>,
-) -> Result<CodexThreadInvocation, DomainError> {
-    let input = state
-        .messages()
-        .iter()
-        .find(|message| message.id == run.base_message_id)
-        .and_then(|message| message.text.clone())
-        .ok_or_else(|| DomainError::invariant(ErrorCode::MessageNotFound, "run input not found"))?;
-    let session = run
-        .session_id
-        .as_deref()
-        .and_then(|session_id| {
-            state
-                .sessions()
-                .iter()
-                .find(|session| session.id == session_id)
-        })
-        .ok_or_else(|| {
-            DomainError::invariant(ErrorCode::SessionNotFound, "run Session not found")
-        })?;
-    let SessionSource::CodexThread(source) = &session.source else {
-        return Err(DomainError::invariant(
-            ErrorCode::InvalidSession,
-            "native Codex invocation requires an imported Session",
-        ));
-    };
-    if source.sync_state != ProviderSyncState::Synced
-        || source.history_completeness != ProviderHistoryCompleteness::Full
-    {
-        return Err(DomainError::invariant(
-            ErrorCode::CodexThreadNotSynced,
-            "Codex Thread requires a complete history synchronization before input",
-        ));
-    }
-    if source.writer_state == ait_domain::CodexWriterState::BusyElsewhere {
-        return Err(DomainError::invariant(
-            ErrorCode::CodexThreadWriterBusy,
-            "Codex Thread writer is owned by another process",
-        ));
-    }
-    if source.native_status.as_deref() == Some("active") {
-        return Err(DomainError::invariant(
-            ErrorCode::CodexThreadActiveElsewhere,
-            "Codex Thread has an active Turn owned outside this Ait Run",
-        ));
-    }
-    let CodexWorkspaceMode::NativeCwd { cwd } = &source.workspace_mode else {
-        return Err(DomainError::invariant(
-            ErrorCode::InvalidSession,
-            "managed Codex Session must use the workspace execution path",
-        ));
-    };
-    Ok(CodexThreadInvocation {
-        request_id: run.id.clone(),
-        thread_id: source.thread_id.clone(),
-        prompt: input,
-        cwd: cwd.clone(),
-        model: run.config.model.clone(),
-        reasoning_effort: run.config.reasoning_effort.clone(),
-        permission_profile: run.permission_profile,
-        approvals,
-        cancellation: control.cancellation.clone(),
-    })
-}
-
 impl LocalControlService {
     #[allow(
         clippy::too_many_lines,
@@ -205,19 +132,6 @@ impl LocalControlService {
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
         let run = run.clone();
-        let native_codex = run.session_id.as_deref().is_some_and(|session_id| {
-            state.sessions.iter().any(|session| {
-                session.id == session_id
-                    && matches!(
-                        &session.source,
-                        SessionSource::CodexThread(source)
-                            if matches!(
-                                source.workspace_mode,
-                                CodexWorkspaceMode::NativeCwd { .. }
-                            )
-                    )
-            })
-        });
         if matches!(
             run.provider.kind,
             AgentMode::OpenAI | AgentMode::DeepSeek | AgentMode::Gemini | AgentMode::MiniMax
@@ -257,24 +171,14 @@ impl LocalControlService {
                     "API Run must use the host coordinator",
                 )),
                 AgentMode::Codex => {
-                    if native_codex {
-                        self.invoke_codex_native_thread(
-                            &state,
-                            &run,
-                            control.clone(),
-                            reporter.clone(),
-                        )
-                        .await
-                    } else {
-                        self.invoke_codex_workspace_checkpointed(
-                            &state,
-                            &run,
-                            control.clone(),
-                            reporter.clone(),
-                            &result_sink,
-                        )
-                        .await
-                    }
+                    self.invoke_codex_workspace_checkpointed(
+                        &state,
+                        &run,
+                        control.clone(),
+                        reporter.clone(),
+                        &result_sink,
+                    )
+                    .await
                 }
                 #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
                 AgentMode::Mock => Ok(Self::invoke_mock()),
@@ -316,10 +220,7 @@ impl LocalControlService {
             // state must not bypass the reliable terminal persistence path.
             let _ = self.set_run_settling(&lease).await;
         }
-        if run.provider.kind == AgentMode::Codex
-            && !native_codex
-            && result.is_ok()
-            && !result_sink.is_checkpointed()
+        if run.provider.kind == AgentMode::Codex && result.is_ok() && !result_sink.is_checkpointed()
         {
             return self
                 .finish_workspace_run(
@@ -334,10 +235,7 @@ impl LocalControlService {
         // A worker can die after the result checkpoint or Git publication but
         // before its final reply. Reuse NEC-212's durable claim/reconciliation;
         // this increments the epoch and never invokes the model again.
-        if run.provider.kind == AgentMode::Codex
-            && !native_codex
-            && result.is_err()
-            && self.run_dispatcher.is_some()
+        if run.provider.kind == AgentMode::Codex && result.is_err() && self.run_dispatcher.is_some()
         {
             let latest = self.read_run_records(&run.id).await?.original;
             if latest
@@ -394,23 +292,6 @@ impl LocalControlService {
         executor
             .invoke_with_progress_and_checkpoint(invocation, progress, result_sink)
             .await
-    }
-
-    async fn invoke_codex_native_thread(
-        &self,
-        state: &(impl HasMessages + HasSessions),
-        run: &RunRecord,
-        control: Arc<RunControl>,
-        progress: Arc<dyn ait_ports::WorkspaceProgressReporter>,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let writer = self.codex_thread_writer.as_ref().ok_or_else(|| {
-            DomainError::invariant(
-                ErrorCode::CodexThreadCapabilityUnsupported,
-                "Codex native Thread writer is not configured",
-            )
-        })?;
-        let invocation = native_codex_invocation(state, run, &control, Arc::new(self.clone()))?;
-        writer.continue_thread(invocation, progress).await
     }
 
     pub(in crate::control) async fn supervise_run(

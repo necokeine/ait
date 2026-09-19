@@ -93,10 +93,12 @@ define_record_context!(CodexImportContext {
     providers: Vec<ProviderRecord>,
     sessions: Vec<SessionRecord>,
     messages: Vec<MessageRecord>,
+    runs: Vec<RunRecord>,
 } [
     "projects" => Project,
     "agents" => Agent,
     "providers" => Provider,
     "sessions" => Session,
-    "messages" => Message
+    "messages" => Message,
+    "runs" => Run
 ]);
