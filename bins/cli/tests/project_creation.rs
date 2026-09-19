@@ -321,6 +321,8 @@ async fn wf10_create_project_with_real_codex_and_commit() {
         )
         .await;
     assert_eq!(session["current_message_id"], project["root_message_id"]);
+    let session_workdir = PathBuf::from(session["workdir"].as_str().unwrap());
+    assert_eq!(session_workdir, directory.join(".ait/hello-world"));
 
     // Permissions are snapshotted at Run admission. Defaults prohibit code writes.
     let settings = workflow.cli("settings", &["config", "get"], 20).await;
@@ -371,13 +373,15 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     assert_eq!(final_session["current_message_id"], assistant["id"]);
     assert!(final_session["active_run_id"].is_null());
 
-    let (head, output) = verify_program_and_commit(&directory, &initial_commit).await;
+    let (head, output) =
+        verify_program_and_commit(&session_workdir, &directory, &initial_commit).await;
     assert_eq!(assistant["data"]["codex"]["commit_id"], head);
     let report = json!({
         "workflow": "WF-10", "result": "passed", "model": model,
         "project_id": project["id"], "run_id": run["id"], "run_status": run["status"],
         "initial_commit": initial_commit, "commit": head, "commit_count": 2,
-        "stdout": output, "worktree_clean": true,
+        "session_workdir": session_workdir,
+        "stdout": output, "worktree_clean": true, "project_checkout_clean": true,
     });
     fs::write(
         workflow.root.join("verification.json"),
@@ -387,57 +391,74 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     eprintln!("{report}");
 }
 
-async fn verify_program_and_commit(directory: &Path, initial_commit: &str) -> (String, String) {
-    let head = git(directory, &["rev-parse", "HEAD"])
+async fn verify_program_and_commit(
+    session_workdir: &Path,
+    project_workdir: &Path,
+    initial_commit: &str,
+) -> (String, String) {
+    let head = git(session_workdir, &["rev-parse", "HEAD"])
         .await
         .trim()
         .to_owned();
     assert_ne!(head, initial_commit);
     assert_eq!(
-        git(directory, &["rev-list", "--count", "HEAD"])
+        git(session_workdir, &["rev-list", "--count", "HEAD"])
             .await
             .trim(),
         "2"
     );
     assert_eq!(
-        git(directory, &["rev-parse", "HEAD^"]).await.trim(),
+        git(session_workdir, &["rev-parse", "HEAD^"]).await.trim(),
         initial_commit
     );
     assert!(
-        git(directory, &["log", "-1", "--pretty=%s"])
+        git(session_workdir, &["log", "-1", "--pretty=%s"])
             .await
             .starts_with("ait: ")
     );
     for path in ["Cargo.toml", "Cargo.lock", "src/main.rs", ".gitignore"] {
-        git(directory, &["cat-file", "-e", &format!("HEAD:{path}")]).await;
+        git(
+            session_workdir,
+            &["cat-file", "-e", &format!("HEAD:{path}")],
+        )
+        .await;
     }
     assert!(
         git(
-            directory,
+            session_workdir,
             &["ls-tree", "-r", "--name-only", "HEAD", "target"]
         )
         .await
         .is_empty()
     );
     assert!(
-        git(directory, &["status", "--porcelain=v1"])
+        git(session_workdir, &["status", "--porcelain=v1"])
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        git(project_workdir, &["rev-parse", "HEAD"]).await.trim(),
+        initial_commit
+    );
+    assert!(
+        git(project_workdir, &["status", "--porcelain=v1"])
             .await
             .is_empty()
     );
     let output = checked_output(
         Command::new("cargo")
             .args(["run", "--offline", "--locked", "--quiet"])
-            .current_dir(directory)
+            .current_dir(session_workdir)
             .env(
                 "CARGO_TARGET_DIR",
-                directory.parent().unwrap().join("cargo-target"),
+                project_workdir.parent().unwrap().join("cargo-target"),
             ),
         120,
     )
     .await;
     assert_eq!(output, "Hello, world!\n");
     assert!(
-        git(directory, &["status", "--porcelain=v1"])
+        git(session_workdir, &["status", "--porcelain=v1"])
             .await
             .is_empty()
     );

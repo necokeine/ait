@@ -112,6 +112,25 @@ pub enum MessageOrigin {
     Scheduler,
     /// Host-generated input.
     System,
+    /// Content imported from an authoritative provider history.
+    Provider,
+}
+
+/// One provider-native history item retained without adopting Ait's tool protocol.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderItem {
+    /// Stable provider kind, for example `codex`.
+    pub provider_kind: String,
+    /// Provider-assigned item identity.
+    pub external_item_id: String,
+    /// Provider-native item discriminator.
+    pub item_type: String,
+    /// Zero-based position in the provider Turn's final item snapshot.
+    pub ordinal: u32,
+    /// Bounded provider payload after the adapter's sensitive-field policy.
+    pub payload: serde_json::Value,
+    /// Version of the payload normalization contract.
+    pub payload_schema_version: u32,
 }
 
 /// Final status represented by a `ToolResult` Message.
@@ -181,6 +200,8 @@ pub enum SubMessage {
         /// Canonical encoded value.
         value: String,
     },
+    /// Provider-native history item that is not an Ait `ToolUse` or `ToolResult`.
+    ProviderItem(ProviderItem),
 }
 
 impl Serialize for SubMessage {
@@ -209,6 +230,14 @@ impl Serialize for SubMessage {
                 media_type: &'a str,
                 value: &'a str,
             },
+            ProviderItem {
+                provider_kind: &'a str,
+                external_item_id: &'a str,
+                item_type: &'a str,
+                ordinal: u32,
+                payload: &'a serde_json::Value,
+                payload_schema_version: u32,
+            },
         }
 
         match self {
@@ -233,6 +262,15 @@ impl Serialize for SubMessage {
             Self::StructuredData { media_type, value } => {
                 Wire::StructuredData { media_type, value }.serialize(serializer)
             }
+            Self::ProviderItem(item) => Wire::ProviderItem {
+                provider_kind: &item.provider_kind,
+                external_item_id: &item.external_item_id,
+                item_type: &item.item_type,
+                ordinal: item.ordinal,
+                payload: &item.payload,
+                payload_schema_version: item.payload_schema_version,
+            }
+            .serialize(serializer),
         }
     }
 }
@@ -265,6 +303,14 @@ impl<'de> Deserialize<'de> for SubMessage {
                 media_type: String,
                 value: String,
             },
+            ProviderItem {
+                provider_kind: String,
+                external_item_id: String,
+                item_type: String,
+                ordinal: u32,
+                payload: serde_json::Value,
+                payload_schema_version: u32,
+            },
         }
 
         Ok(match Wire::deserialize(deserializer)? {
@@ -292,6 +338,21 @@ impl<'de> Deserialize<'de> for SubMessage {
             Wire::StructuredData { media_type, value } => {
                 Self::StructuredData { media_type, value }
             }
+            Wire::ProviderItem {
+                provider_kind,
+                external_item_id,
+                item_type,
+                ordinal,
+                payload,
+                payload_schema_version,
+            } => Self::ProviderItem(ProviderItem {
+                provider_kind,
+                external_item_id,
+                item_type,
+                ordinal,
+                payload,
+                payload_schema_version,
+            }),
         })
     }
 }
@@ -358,13 +419,7 @@ impl Message {
             return Err(MessageValidationError::InvalidRootMessage);
         }
 
-        let contains_tool_use = self
-            .sub_messages
-            .iter()
-            .any(|part| matches!(part, SubMessage::ToolUse(_)));
-        if contains_tool_use && self.role != MessageRole::Assistant {
-            return Err(MessageValidationError::ToolUseRequiresAssistant);
-        }
+        let contains_tool_use = validate_sub_message_roles(self.role, &self.sub_messages)?;
 
         match (&self.run_id, self.run_seq) {
             (None, None) | (Some(_), Some(1..)) => {}
@@ -386,6 +441,12 @@ impl Message {
                 ..
             } => !attachment_id.is_empty() && !media_type.is_empty(),
             SubMessage::StructuredData { media_type, .. } => !media_type.is_empty(),
+            SubMessage::ProviderItem(item) => {
+                !item.provider_kind.is_empty()
+                    && !item.external_item_id.is_empty()
+                    && !item.item_type.is_empty()
+                    && item.payload_schema_version > 0
+            }
             SubMessage::Text { .. } => true,
         });
         if !tool_uses_valid {
@@ -421,7 +482,8 @@ impl Message {
             _ if self.role == MessageRole::User
                 && self.kind == MessageKind::Standard
                 && self.origin == MessageOrigin::Human
-                && self.git_commit.is_none() =>
+                && self.git_commit.is_none()
+                && !is_native_codex_human_input(&self.metadata) =>
             {
                 Err(MessageValidationError::HumanMessageGitCommitRequired)
             }
@@ -435,6 +497,46 @@ impl Message {
             _ => Ok(()),
         }
     }
+}
+
+fn validate_sub_message_roles(
+    role: MessageRole,
+    sub_messages: &[SubMessage],
+) -> Result<bool, MessageValidationError> {
+    let contains_tool_use = sub_messages
+        .iter()
+        .any(|part| matches!(part, SubMessage::ToolUse(_)));
+    if contains_tool_use && role != MessageRole::Assistant {
+        return Err(MessageValidationError::ToolUseRequiresAssistant);
+    }
+    if role != MessageRole::Assistant
+        && sub_messages
+            .iter()
+            .any(|part| matches!(part, SubMessage::ProviderItem(_)))
+    {
+        return Err(MessageValidationError::InvalidSubMessage);
+    }
+    Ok(contains_tool_use)
+}
+
+fn is_native_codex_human_input(metadata: &DomainMetadata) -> bool {
+    let Some(codex) = metadata.0.get("codex") else {
+        return false;
+    };
+    codex
+        .get("submitted_via")
+        .and_then(serde_json::Value::as_str)
+        == Some("ait")
+        && codex
+            .get("workspace_mode")
+            .and_then(serde_json::Value::as_str)
+            == Some("native_cwd")
+        && ["provider_id", "thread_id"].iter().all(|field| {
+            codex
+                .get(*field)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
 }
 
 /// Resolves one root-to-head path, checking cycles, ownership, and the root role.

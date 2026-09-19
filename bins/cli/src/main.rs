@@ -86,6 +86,7 @@ async fn send(
         Command::GetSettings
             | Command::ListProjects
             | Command::ListAgents
+            | Command::ListCodexThreads { .. }
             | Command::ListAgentProviders
             | Command::ListSessions { .. }
             | Command::ListMessages { .. }
@@ -97,6 +98,9 @@ async fn send(
             Command::ListSessions { project_id }
             | Command::ListMessages { project_id }
             | Command::ListRuns { project_id } => request.query(&[("project_id", project_id)]),
+            Command::ListCodexThreads { provider_id } => {
+                request.query(&[("provider_id", provider_id)])
+            }
             _ => request,
         };
         return request.send().await?.error_for_status()?.json().await;
@@ -126,6 +130,8 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::SaveAgentProvider { .. } => "/v1/agent-provider/save",
         Command::DiscoverProviderModels { .. } => "/v1/agent-provider/discover-models",
         Command::RefreshProviderModels { .. } => "/v1/agent-provider/refresh-models",
+        Command::ListCodexThreads { .. } => "/v1/codex/thread/list",
+        Command::SyncCodexThread { .. } => "/v1/codex/thread/sync",
         Command::SetSessionConfig { .. } => "/v1/session/set-config",
         Command::CreateSession { .. } => "/v1/session/create",
         Command::SetSessionAgent { .. } => "/v1/session/set-agent",

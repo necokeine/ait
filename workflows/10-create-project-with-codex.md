@@ -112,6 +112,7 @@ ait agent create --id codex --name Codex --provider-id builtin-codex \
   --model "${AIT_WORKFLOW_MODEL:-gpt-5.6-sol}" --reasoning-effort high
 ait session create --id hello-world --project-id example-project --agent-id codex \
   | tee "$WF_ROOT/session.json"
+export SESSION_WORKDIR="$(jq -r '.result.value.workdir' "$WF_ROOT/session.json")"
 # 新建设置默认 workspace_write；为兼容已保存的 Readonly，发送前显式设置工作区写入权限
 ait config get > "$WF_ROOT/settings.json"
 REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
@@ -125,10 +126,12 @@ jq -e '.ok == true and .result.value.status == "completed" and .result.value.err
 ait session list --project-id example-project | tee "$WF_ROOT/final-sessions.json"
 ait message list --project-id example-project | tee "$WF_ROOT/final-messages.json"
 ait run list --project-id example-project | tee "$WF_ROOT/final-runs.json"
-git -C "$WF_ROOT/example-project" log --oneline
+git -C "$SESSION_WORKDIR" log --oneline
+git -C "$SESSION_WORKDIR" status --porcelain=v1
+git -C "$WF_ROOT/example-project" rev-parse HEAD
 git -C "$WF_ROOT/example-project" status --porcelain=v1
 (
-  cd "$WF_ROOT/example-project"
+  cd "$SESSION_WORKDIR"
   cargo run --offline --locked --quiet
 )
 ```
@@ -146,9 +149,11 @@ AIT 通过 [Codex app-server](https://developers.openai.com/codex/app-server) �
 - Project 的 `base_commit` 等于手动创建的空提交；注册不移动 Git HEAD。
 - Codex 的 Run 完成，包含非空 assistant 输出；Session 指向最终 Message 且 `active_run_id=null`。
 - user Message 的 `git_commit` 等于初始提交；assistant Message 的
-  `data.codex.commit_id` 等于生成后的 Git HEAD。
-- 历史恰好两个提交；第二个以初始提交为父，subject 以 `ait: ` 开头，包含
+  `data.codex.commit_id` 等于 Session worktree 的新 HEAD。
+- Session worktree 的历史恰好两个提交；第二个以初始提交为父，subject 以 `ait: ` 开头，包含
   `Cargo.toml`、`Cargo.lock`、`src/main.rs`、`.gitignore`，没有提交 `target` 构建产物。
+- Project 主检出的 HEAD 仍等于初始提交且工作树干净；Session 的提交不会推进 Project 或其他
+  Session，符合 ADR-013 的隔离语义。
 - 独立执行 `cargo run --offline --locked --quiet` 的 stdout 严格为 `Hello, world!\n`。
   验证前后工作树均干净，不能只依据模型的文字回复判定成功。
 

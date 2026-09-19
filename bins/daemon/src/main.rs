@@ -55,6 +55,10 @@ struct Arguments {
 }
 
 #[tokio::main]
+#[allow(
+    clippy::too_many_lines,
+    reason = "daemon startup keeps dependency wiring in one auditable composition root"
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
     if !arguments.listen.ip().is_loopback() {
@@ -79,7 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider_gateway: Arc<dyn AgentProviderGateway> =
         Arc::new(ait_agent_adapters::RigProviderGateway);
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(
-        CodexSessionTitleGenerator::new(adapter).with_provider_gateway(provider_gateway.clone()),
+        CodexSessionTitleGenerator::new(adapter.clone())
+            .with_provider_gateway(provider_gateway.clone()),
     );
     let mut service = LocalControlService::with_workspace_agent(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
@@ -96,7 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_provider_gateway(provider_gateway)
     .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
     .with_run_dispatcher(supervisor.clone())
-    .with_host_provider_catalog(catalog);
+    .with_host_provider_catalog(catalog)
+    .with_codex_history_source(adapter.clone())
+    .with_codex_thread_writer(adapter);
     if arguments.max_run_cost_micros.is_none() {
         service = service.with_session_title_generator(titles);
     }

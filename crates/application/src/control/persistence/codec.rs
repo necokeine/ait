@@ -179,7 +179,15 @@ fn hydrate_session_workdirs(value: &mut Value) -> Result<(), ApiError> {
             else {
                 continue;
             };
-            let expected = session_worktree_path(&project.workdir, &session.id)?;
+            let expected = match &session.source {
+                ait_domain::SessionSource::Managed => {
+                    session_worktree_path(&project.workdir, &session.id)?
+                }
+                ait_domain::SessionSource::CodexThread(source) => match &source.workspace_mode {
+                    ait_domain::CodexWorkspaceMode::NativeCwd { cwd } => cwd.clone(),
+                    ait_domain::CodexWorkspaceMode::ManagedWorktree { workdir } => workdir.clone(),
+                },
+            };
             if session.workdir.is_empty() {
                 session.workdir = expected.to_string_lossy().into_owned();
             } else if Path::new(&session.workdir) != expected {

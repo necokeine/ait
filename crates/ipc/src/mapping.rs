@@ -293,7 +293,8 @@ enumeration!(MessageOrigin {
     Agent,
     Tool,
     Scheduler,
-    System
+    System,
+    Provider
 });
 record!(ToolResult {
     call_id,
@@ -417,6 +418,25 @@ enumeration!(ErrorCode {
     InvalidAgentConfiguration,
     InvalidConfiguration,
     ProviderFailed,
+    CodexHistoryListFailed,
+    CodexHistoryReadFailed,
+    CodexHistorySchemaUnsupported,
+    CodexHistoryIncomplete,
+    CodexThreadIdConflict,
+    CodexTurnIdConflict,
+    CodexThreadProjectUnbound,
+    CodexThreadProjectAmbiguous,
+    CodexThreadBindingConflict,
+    CodexHistoryReconcileConflict,
+    CodexHistoryCursorRepeated,
+    CodexThreadNotSynced,
+    CodexThreadActiveElsewhere,
+    CodexThreadWriterBusy,
+    CodexThreadCapabilityUnsupported,
+    CodexForkBoundaryUnsupported,
+    CodexInputNotAccepted,
+    CodexInputOutcomeUnknown,
+    CodexInputCorrelationFailed,
     InvalidRun,
     RunNotResumable,
     RunAlreadyTerminal,
@@ -470,6 +490,14 @@ impl Wire for d::SubMessage {
                 media_type: media_type.to_wire(),
                 value: value.to_wire(),
             },
+            Self::ProviderItem(item) => w::SubMessage::ProviderItem(w::ProviderItem {
+                provider_kind: item.provider_kind.to_wire(),
+                external_item_id: item.external_item_id.to_wire(),
+                item_type: item.item_type.to_wire(),
+                ordinal: item.ordinal.to_wire(),
+                payload: item.payload.to_wire(),
+                payload_schema_version: item.payload_schema_version.to_wire(),
+            }),
         }
     }
     fn from_wire(value: Self::Value) -> Result<Self, ProtocolError> {
@@ -491,6 +519,14 @@ impl Wire for d::SubMessage {
                 media_type: Wire::from_wire(media_type)?,
                 value: Wire::from_wire(value)?,
             },
+            w::SubMessage::ProviderItem(item) => Self::ProviderItem(ait_domain::ProviderItem {
+                provider_kind: Wire::from_wire(item.provider_kind)?,
+                external_item_id: Wire::from_wire(item.external_item_id)?,
+                item_type: Wire::from_wire(item.item_type)?,
+                ordinal: Wire::from_wire(item.ordinal)?,
+                payload: Wire::from_wire(item.payload)?,
+                payload_schema_version: Wire::from_wire(item.payload_schema_version)?,
+            }),
         })
     }
 }

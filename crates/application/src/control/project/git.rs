@@ -9,7 +9,7 @@ use crate::control::persistence::{
 use crate::control::project::worktrees::session_worktree_path;
 use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{AgentMode, ApiError, Command};
-use ait_domain::ErrorCode;
+use ait_domain::{CodexWorkspaceMode, ErrorCode, SessionSource};
 use ait_workspace::ProjectWorkspace;
 use std::path::{Path, PathBuf};
 
@@ -45,14 +45,21 @@ pub(in crate::control) async fn command_git_baseline(
     command: &Command,
 ) -> Result<Option<GitBaseline>, ApiError> {
     let path = match command {
-        Command::SendMessage { session_id, .. } => Some(PathBuf::from(
-            &state
+        Command::SendMessage { session_id, .. } => {
+            let session = state
                 .sessions()
                 .iter()
                 .find(|session| session.id == *session_id)
-                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?
-                .workdir,
-        )),
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            if matches!(
+                &session.source,
+                SessionSource::CodexThread(source)
+                    if matches!(source.workspace_mode, CodexWorkspaceMode::NativeCwd { .. })
+            ) {
+                return Ok(None);
+            }
+            Some(PathBuf::from(&session.workdir))
+        }
         Command::ForkSession { id, project_id, .. } => {
             let project = state
                 .projects()

@@ -16,7 +16,7 @@ use crate::control::project::git::PreparedProject;
 use crate::control::project::{require_project_view, validate_project_workdir};
 use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{ApiError, Command, ProjectExport};
-use ait_domain::ErrorCode;
+use ait_domain::{CodexWorkspaceMode, ErrorCode, SessionSource};
 use ait_workspace::{ProjectWorkspace, WorkspaceLease};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,6 +81,11 @@ pub(in crate::control) fn run_workdir(
         .iter()
         .find(|session| session.id == session_id && session.project_id == run.project_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "run Session not found", false))?;
+    if let SessionSource::CodexThread(source) = &session.source
+        && let CodexWorkspaceMode::NativeCwd { cwd } = &source.workspace_mode
+    {
+        return Ok(cwd.clone());
+    }
     let expected = session_worktree_path(&project.workdir, session_id)?;
     if Path::new(&session.workdir) != expected {
         return Err(error(
@@ -273,6 +278,18 @@ async fn prepare_derived_session_worktree(
         .iter()
         .find(|session| session.id == source_session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    if matches!(
+        &source.source,
+        SessionSource::CodexThread(native)
+            if matches!(native.workspace_mode, CodexWorkspaceMode::NativeCwd { .. })
+    ) && !derive_reuses_source(state, id, project_id, source, agent_id, at_message_id)
+    {
+        return Err(error(
+            ErrorCode::CodexForkBoundaryUnsupported,
+            "imported Codex Sessions require an explicit native Thread fork",
+            false,
+        ));
+    }
     if !derive_reuses_source(state, id, project_id, source, agent_id, at_message_id) {
         return prepare_new_session_worktree(
             workspace,
@@ -311,6 +328,13 @@ async fn prepare_existing_session_worktree(
         .iter()
         .find(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    if matches!(
+        &session.source,
+        SessionSource::CodexThread(source)
+            if matches!(source.workspace_mode, CodexWorkspaceMode::NativeCwd { .. })
+    ) {
+        return Ok(());
+    }
     let project = require_project_view(state, &session.project_id)?;
     let baseline = workspace
         .git_head(Path::new(&session.workdir))

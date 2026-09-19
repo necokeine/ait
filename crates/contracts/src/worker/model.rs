@@ -354,6 +354,25 @@ pub enum MessageOrigin {
     Scheduler,
     /// Host-generated input.
     System,
+    /// Content imported from an authoritative provider history.
+    Provider,
+}
+
+/// Worker v1 provider-native history item.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderItem {
+    /// Stable provider kind.
+    pub provider_kind: String,
+    /// Provider-assigned item identity.
+    pub external_item_id: String,
+    /// Provider-native item discriminator.
+    pub item_type: String,
+    /// Zero-based position in the provider Turn.
+    pub ordinal: u32,
+    /// Bounded, non-secret native payload.
+    pub payload: Value,
+    /// Payload normalization contract version.
+    pub payload_schema_version: u32,
 }
 
 /// Worker v1 `ToolResult` record; independent of domain serialization.
@@ -424,6 +443,8 @@ pub enum SubMessage {
         /// Canonical encoded value.
         value: String,
     },
+    /// Provider-native item kept separate from Ait's tool lifecycle.
+    ProviderItem(ProviderItem),
 }
 
 /// Worker v1 `ProjectedMessage` record; independent of domain serialization.
@@ -685,6 +706,44 @@ pub enum ErrorCode {
     InvalidConfiguration,
     /// Provider invocation failed after adapter normalization.
     ProviderFailed,
+    /// Codex Thread catalog listing failed.
+    CodexHistoryListFailed,
+    /// Codex Thread history could not be read or normalized.
+    CodexHistoryReadFailed,
+    /// Codex history schema lacks a required compatible capability.
+    CodexHistorySchemaUnsupported,
+    /// Codex history is not complete enough for immutable publication.
+    CodexHistoryIncomplete,
+    /// Codex Thread identities conflict.
+    CodexThreadIdConflict,
+    /// Codex Turn or item identities conflict.
+    CodexTurnIdConflict,
+    /// Codex Thread cannot be associated with an Ait Project.
+    CodexThreadProjectUnbound,
+    /// Codex Thread matches more than one Ait Project.
+    CodexThreadProjectAmbiguous,
+    /// Codex Thread is already bound incompatibly.
+    CodexThreadBindingConflict,
+    /// Codex history could not be reconciled with immutable local history.
+    CodexHistoryReconcileConflict,
+    /// Codex pagination repeated a cursor.
+    CodexHistoryCursorRepeated,
+    /// Codex Thread needs synchronization before an operation.
+    CodexThreadNotSynced,
+    /// A native Turn is active outside the current Ait Run.
+    CodexThreadActiveElsewhere,
+    /// Another app-server process owns the native Thread writer.
+    CodexThreadWriterBusy,
+    /// The native Thread needs a capability unavailable in Ait.
+    CodexThreadCapabilityUnsupported,
+    /// A native fork was requested at an unsupported Message boundary.
+    CodexForkBoundaryUnsupported,
+    /// Codex explicitly rejected an input before acceptance.
+    CodexInputNotAccepted,
+    /// Input acceptance is unknown and must be reconciled without resending.
+    CodexInputOutcomeUnknown,
+    /// A pending input cannot be uniquely correlated with native history.
+    CodexInputCorrelationFailed,
     /// Run aggregate fields are inconsistent.
     InvalidRun,
     /// Run cannot be resumed from its current state.

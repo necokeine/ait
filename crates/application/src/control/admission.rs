@@ -21,6 +21,22 @@ pub(in crate::control) fn workspace_write_path(
     _permission_limits: PermissionPolicyLimits,
 ) -> Result<Option<PathBuf>, ApiError> {
     if let Some(project_id) = session_command_project_id(state, command)? {
+        if let Command::SendMessage { session_id, .. } = command
+            && let Some(session) = state
+                .sessions()
+                .iter()
+                .find(|session| session.id == *session_id)
+            && matches!(
+                &session.source,
+                ait_domain::SessionSource::CodexThread(source)
+                    if matches!(
+                        source.workspace_mode,
+                        ait_domain::CodexWorkspaceMode::NativeCwd { .. }
+                    )
+            )
+        {
+            return Ok(Some(PathBuf::from(&session.workdir)));
+        }
         let project = require_project_view(state, project_id)?;
         return Ok(Some(PathBuf::from(&project.workdir)));
     }
@@ -176,13 +192,30 @@ impl LocalControlService {
             .iter()
             .find(|run| run.id == run_id)
             .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-        let project = state
-            .projects
-            .iter()
-            .find(|project| project.id == run.project_id)
-            .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-        self.acquire_workspace_path(Path::new(&project.workdir))
-            .await
+        let native_workdir = run
+            .session_id
+            .as_deref()
+            .and_then(|session_id| {
+                state
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+            })
+            .and_then(|session| match &session.source {
+                ait_domain::SessionSource::CodexThread(source) => match &source.workspace_mode {
+                    ait_domain::CodexWorkspaceMode::NativeCwd { cwd } => Some(cwd.clone()),
+                    ait_domain::CodexWorkspaceMode::ManagedWorktree { .. } => None,
+                },
+                ait_domain::SessionSource::Managed => None,
+            });
+        let workdir = native_workdir.map_or_else(
+            || {
+                require_project_view(&state, &run.project_id)
+                    .map(|project| PathBuf::from(&project.workdir))
+            },
+            Ok,
+        )?;
+        self.acquire_workspace_path(&workdir).await
     }
 
     async fn acquire_workspace_path(

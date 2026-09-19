@@ -86,3 +86,17 @@ define_record_context!(SessionTitleContext {
     "runs" => Run,
     "settings" => Settings
 ]);
+
+define_record_context!(CodexImportContext {
+    projects: Vec<ProjectRecord>,
+    agents: Vec<AgentRecord>,
+    providers: Vec<ProviderRecord>,
+    sessions: Vec<SessionRecord>,
+    messages: Vec<MessageRecord>,
+} [
+    "projects" => Project,
+    "agents" => Agent,
+    "providers" => Provider,
+    "sessions" => Session,
+    "messages" => Message
+]);

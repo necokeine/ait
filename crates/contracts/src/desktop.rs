@@ -57,6 +57,8 @@ pub struct DesktopSession {
     pub project_id: String,
     /// Absolute manager-owned linked worktree used by this Session.
     pub workdir: String,
+    /// Native or Ait-managed source semantics.
+    pub source: ait_domain::SessionSource,
     /// Optional member-authored name, empty when unset.
     pub name: String,
     /// Display title.
@@ -81,6 +83,7 @@ impl From<&Session> for DesktopSession {
             id: session.id.as_str().to_owned(),
             project_id: session.project_id.as_str().to_owned(),
             workdir: session.workdir.to_string_lossy().into_owned(),
+            source: session.source.clone(),
             name: session.name.clone(),
             title: if session.name.trim().is_empty() {
                 session.title.clone().unwrap_or_else(|| {
@@ -133,6 +136,21 @@ pub enum DesktopMessagePart {
         media_type: String,
         /// Canonical bounded payload.
         value: String,
+    },
+    /// Safe provider-native history item.
+    ProviderItem {
+        /// Stable provider kind.
+        provider_kind: String,
+        /// Provider-assigned item identity.
+        external_item_id: String,
+        /// Provider-native item discriminator.
+        item_type: String,
+        /// Position in the provider Turn.
+        ordinal: u32,
+        /// Bounded payload after adapter redaction.
+        payload: Value,
+        /// Payload normalization version.
+        payload_schema_version: u32,
     },
     /// Redaction marker preserving graph shape.
     Redacted,
@@ -209,6 +227,14 @@ impl From<Message> for DesktopMessage {
                 ait_domain::SubMessage::StructuredData { media_type, value } => {
                     DesktopMessagePart::Structured { media_type, value }
                 }
+                ait_domain::SubMessage::ProviderItem(item) => DesktopMessagePart::ProviderItem {
+                    provider_kind: item.provider_kind,
+                    external_item_id: item.external_item_id,
+                    item_type: item.item_type,
+                    ordinal: item.ordinal,
+                    payload: item.payload,
+                    payload_schema_version: item.payload_schema_version,
+                },
             })
             .collect();
         Self {

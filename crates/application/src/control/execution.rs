@@ -82,6 +82,22 @@ impl LocalControlService {
         &self,
         command: Command,
     ) -> Result<CommandResult, ApiError> {
+        match &command {
+            Command::ListCodexThreads { provider_id } => {
+                return self.list_codex_threads(provider_id).await;
+            }
+            Command::SyncCodexThread {
+                provider_id,
+                thread_id,
+                project_id,
+                agent_id,
+            } => {
+                return self
+                    .sync_codex_thread(provider_id, thread_id, project_id, agent_id)
+                    .await;
+            }
+            _ => {}
+        }
         if matches!(
             command,
             Command::GetRun { .. }

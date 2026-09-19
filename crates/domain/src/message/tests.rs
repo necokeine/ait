@@ -97,6 +97,34 @@ fn sub_message_wire_shape_matches_sqlite_projection() {
 }
 
 #[test]
+fn provider_item_is_an_assistant_sub_message_without_tool_semantics() {
+    let part = SubMessage::ProviderItem(ProviderItem {
+        provider_kind: "codex".into(),
+        external_item_id: "item-1".into(),
+        item_type: "commandExecution".into(),
+        ordinal: 2,
+        payload: serde_json::json!({"status": "completed"}),
+        payload_schema_version: 1,
+    });
+    let encoded = serde_json::to_value(&part).unwrap();
+    assert_eq!(encoded["type"], "provider_item");
+
+    let mut assistant = message(MessageRole::Assistant);
+    assistant.origin = MessageOrigin::Provider;
+    assistant.sub_messages.push(part.clone());
+    assistant.validate().unwrap();
+    assert_eq!(serde_json::from_value::<SubMessage>(encoded).unwrap(), part);
+
+    let mut user = message(MessageRole::User);
+    user.origin = MessageOrigin::Provider;
+    user.sub_messages.push(part);
+    assert_eq!(
+        user.validate().unwrap_err(),
+        MessageValidationError::InvalidSubMessage
+    );
+}
+
+#[test]
 fn run_identity_and_sequence_are_atomic() {
     let mut candidate = message(MessageRole::Assistant);
     candidate.run_id = Some(RunId::new("run-1"));
@@ -125,6 +153,29 @@ fn human_user_message_requires_exclusive_valid_git_provenance() {
     );
 
     assert!(serde_json::from_str::<GitCommit>("\"short\"").is_err());
+}
+
+#[test]
+fn native_codex_human_input_can_use_provider_provenance_instead_of_git() {
+    let mut user = message(MessageRole::User);
+    user.git_commit = None;
+    user.metadata.0.insert(
+        "codex".into(),
+        serde_json::json!({
+            "submitted_via": "ait",
+            "workspace_mode": "native_cwd",
+            "provider_id": "builtin-codex",
+            "thread_id": "thread-1",
+        }),
+    );
+    user.validate().unwrap();
+
+    user.metadata.0.get_mut("codex").unwrap()["thread_id"] =
+        serde_json::Value::String(String::new());
+    assert_eq!(
+        user.validate().unwrap_err(),
+        MessageValidationError::HumanMessageGitCommitRequired
+    );
 }
 
 #[test]

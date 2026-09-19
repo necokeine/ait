@@ -99,3 +99,23 @@ fn busy_binding_and_late_release_preserve_the_new_owner() {
         reference
     );
 }
+
+#[test]
+fn provider_reconcile_can_move_to_a_non_child_but_not_while_busy() {
+    let root = MessageId::from_u128(1);
+    let replacement = MessageId::from_u128(9);
+    let mut reference = SessionReference::new(root, AgentId::new("agent"));
+    reference.reconcile(root, 1, replacement).unwrap();
+    assert_eq!(reference.head(), replacement);
+    assert_eq!(reference.version(), 2);
+
+    reference.acquire(RunId::new("run")).unwrap();
+    assert_eq!(
+        reference
+            .reconcile(replacement, 2, MessageId::from_u128(10))
+            .unwrap_err()
+            .code,
+        ErrorCode::SessionBusy
+    );
+    assert_eq!(reference.head(), replacement);
+}

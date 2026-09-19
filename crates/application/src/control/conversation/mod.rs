@@ -52,8 +52,13 @@ pub(in crate::control) fn fork_session(
         &input.agent_id,
         Some(input.at_message_id),
     )?;
-    let (result, mut run_events) =
-        send_message(state, input.id, input.text, git_baseline, permission_limits)?;
+    let (result, mut run_events) = send_message(
+        state,
+        input.id,
+        input.text,
+        Some(git_baseline),
+        permission_limits,
+    )?;
     events.append(&mut run_events);
     Ok((result, events))
 }
@@ -150,7 +155,7 @@ pub(in crate::control) fn derive_session(
             state,
             source_session_id.to_owned(),
             input.text,
-            git_baseline,
+            Some(git_baseline),
             permission_limits,
         );
     }
@@ -213,6 +218,7 @@ pub(in crate::control) fn create_session(
         id: id.clone(),
         project_id,
         workdir: session_workdir.to_string_lossy().into_owned(),
+        source: ait_domain::SessionSource::Managed,
         name: String::new(),
         title: None,
         description: String::new(),
@@ -332,8 +338,8 @@ mod context;
 mod message_record;
 mod record;
 pub(in crate::control) use context::{
-    ConversationContext, MessagesContext, NewSessionContext, SessionBindingContext,
-    SessionConfigContext, SessionTitleContext, SessionsContext,
+    CodexImportContext, ConversationContext, MessagesContext, NewSessionContext,
+    SessionBindingContext, SessionConfigContext, SessionTitleContext, SessionsContext,
 };
 pub(in crate::control) use message_record::domain_path;
 pub(in crate::control) use record::{MessageRecord, SessionRecord};

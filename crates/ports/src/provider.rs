@@ -2,6 +2,8 @@
 
 use ait_domain::{AgentConfiguration, AgentProvider, DomainError, ProviderModel};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 /// A provider adapter resolves credential references without exposing secrets to state.
 #[async_trait]
@@ -103,4 +105,134 @@ pub struct ProviderMessage {
     pub role: String,
     /// Text content.
     pub text: String,
+}
+
+/// Codex source categories accepted by `thread/list` in the pinned stable schema.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub enum CodexThreadSourceKind {
+    /// Interactive CLI thread.
+    #[serde(rename = "cli")]
+    Cli,
+    /// VS Code extension thread.
+    #[serde(rename = "vscode")]
+    Vscode,
+    /// Non-interactive `codex exec` thread.
+    #[serde(rename = "exec")]
+    Exec,
+    /// app-server client thread.
+    #[serde(rename = "appServer")]
+    AppServer,
+    /// Any sub-agent thread.
+    #[serde(rename = "subAgent")]
+    SubAgent,
+    /// Review sub-agent thread.
+    #[serde(rename = "subAgentReview")]
+    SubAgentReview,
+    /// Compaction sub-agent thread.
+    #[serde(rename = "subAgentCompact")]
+    SubAgentCompact,
+    /// Spawned sub-agent thread.
+    #[serde(rename = "subAgentThreadSpawn")]
+    SubAgentThreadSpawn,
+    /// Other sub-agent thread.
+    #[serde(rename = "subAgentOther")]
+    SubAgentOther,
+    /// Unknown or forward-compatible source.
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+/// Completeness marker returned with one Codex Turn's `items` field.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CodexItemsView {
+    /// Items were not loaded.
+    NotLoaded,
+    /// Items contain only a display summary.
+    Summary,
+    /// Items contain the complete persisted projection.
+    #[default]
+    Full,
+}
+
+/// One native Codex Turn read from persisted app-server history.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexTurnSnapshot {
+    /// Native Turn identity.
+    pub id: String,
+    /// Native terminal or active status.
+    pub status: String,
+    /// Persisted `ThreadItems` in provider order.
+    #[serde(default)]
+    pub items: Vec<Value>,
+    /// Completeness of `items`.
+    #[serde(default)]
+    pub items_view: CodexItemsView,
+    /// Native failure payload, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
+    /// Provider start time in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
+    /// Provider completion time in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
+/// Complete metadata and ordered Turn history for one native Codex Thread.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexThreadSnapshot {
+    /// Native Thread identity.
+    pub id: String,
+    /// Native session metadata; it is not an Ait lineage identity.
+    pub session_id: String,
+    /// Source Thread when this Thread was forked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from_id: Option<String>,
+    /// Working directory captured by Codex.
+    pub cwd: String,
+    /// Native app-server project metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// User-assigned Thread name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Provider preview text.
+    #[serde(default)]
+    pub preview: String,
+    /// String or structured native source value.
+    pub source: Value,
+    /// Native history storage contract.
+    #[serde(default)]
+    pub history_mode: String,
+    /// Current process-local runtime status.
+    pub status: Value,
+    /// Whether this entry came from the archived listing.
+    #[serde(default)]
+    pub archived: bool,
+    /// Provider creation time in Unix seconds.
+    pub created_at: i64,
+    /// Provider update time in Unix seconds.
+    pub updated_at: i64,
+    /// Ordered native Turns; list results normally leave this empty.
+    #[serde(default)]
+    pub turns: Vec<CodexTurnSnapshot>,
+    /// Forward-compatible Thread metadata not modeled by the stable Ait port.
+    #[serde(default, flatten)]
+    pub metadata: Map<String, Value>,
+}
+
+/// Read-only authoritative Codex history boundary.
+#[async_trait]
+pub trait CodexHistorySource: Send + Sync {
+    /// Lists every archived and non-archived Thread for explicit source categories.
+    async fn list_threads(
+        &self,
+        source_kinds: &[CodexThreadSourceKind],
+    ) -> Result<Vec<CodexThreadSnapshot>, DomainError>;
+
+    /// Reads metadata and every Turn with `itemsView=full` in provider order.
+    async fn read_thread(&self, thread_id: &str) -> Result<CodexThreadSnapshot, DomainError>;
 }

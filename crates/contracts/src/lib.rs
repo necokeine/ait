@@ -81,6 +81,22 @@ pub enum Command {
         /// Provider identifier.
         provider_id: String,
     },
+    /// Discovers native Codex Threads without importing their history.
+    ListCodexThreads {
+        /// Codex Provider catalog identity.
+        provider_id: String,
+    },
+    /// Imports or reconciles one native Codex Thread into an Ait Session.
+    SyncCodexThread {
+        /// Codex Provider catalog identity.
+        provider_id: String,
+        /// Native Codex Thread identity.
+        thread_id: String,
+        /// Explicit target Ait Project identity.
+        project_id: String,
+        /// Enabled Codex Agent bound to the imported Session.
+        agent_id: String,
+    },
     /// Selects the `UpdateAgent` variant.
     UpdateAgent {
         /// Id value.
@@ -363,6 +379,9 @@ pub struct SessionView {
     /// Absolute manager-owned linked worktree used by this Session.
     #[serde(default)]
     pub workdir: String,
+    /// Native or Ait-managed Session source semantics.
+    #[serde(default)]
+    pub source: ait_domain::SessionSource,
     #[serde(default)]
     /// Name value.
     pub name: String,
@@ -383,6 +402,46 @@ pub struct SessionView {
     pub active_run_id: Option<String>,
     /// Version value.
     pub version: u64,
+}
+
+/// Provider catalog projection for one discovered native Codex Thread.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CodexThreadView {
+    /// Codex Provider catalog identity.
+    pub provider_id: String,
+    /// Native Thread identity.
+    pub thread_id: String,
+    /// Native session metadata identity.
+    pub codex_session_id: String,
+    /// Source Thread identity for a native fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from_thread_id: Option<String>,
+    /// Native working directory.
+    pub cwd: String,
+    /// User-assigned native Thread name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Bounded provider preview.
+    #[serde(default)]
+    pub preview: String,
+    /// Forward-compatible native source metadata.
+    pub source: Value,
+    /// Native runtime status object.
+    pub status: Value,
+    /// Whether the native Thread is archived.
+    pub archived: bool,
+    /// Provider creation time in Unix seconds.
+    pub created_at: i64,
+    /// Provider update time in Unix seconds.
+    pub updated_at: i64,
+    /// Bounded forward-compatible native Thread metadata.
+    pub native_metadata: Value,
+    /// Materialized Ait Session, when already bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Bound Ait Project, when already materialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -786,6 +845,8 @@ pub enum CommandResult {
     AgentProvider(AgentProviderView),
     /// Selects the `ProviderModels` variant.
     ProviderModels(Vec<ProviderModel>),
+    /// Selects the `CodexThreads` variant.
+    CodexThreads(Vec<CodexThreadView>),
     /// Selects the `Session` variant.
     Session(SessionView),
     /// Selects the `Run` variant.

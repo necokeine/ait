@@ -6,7 +6,7 @@ use crate::control::project::worktrees::run_workdir;
 use crate::control::runs::RunRecord;
 use crate::control::runs::is_terminal_run_status;
 use ait_contracts::{AgentMode, ApiError};
-use ait_domain::ErrorCode;
+use ait_domain::{CodexWorkspaceMode, ErrorCode, SessionSource};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::{ControlStoreError, WorkspaceAgentResponse};
 use serde::{Deserialize, Serialize};
@@ -117,14 +117,31 @@ impl LocalControlService {
                 .as_deref()
                 .map_or_else(|| format!("workspace-{run_id}"), str::to_owned);
             let lease_epoch = state.runs[index].lease_epoch.saturating_add(1);
-            let baseline_ref = if state.runs[index].provider.kind == AgentMode::Codex {
-                self.project_workspace
-                    .symbolic_head(&run_workdir(&state, &state.runs[index])?)
-                    .await
-                    .map_err(crate::control::errors::project_error)?
-            } else {
-                None
-            };
+            let native_codex = state.runs[index]
+                .session_id
+                .as_deref()
+                .is_some_and(|session_id| {
+                    state.sessions.iter().any(|session| {
+                        session.id == session_id
+                            && matches!(
+                                &session.source,
+                                SessionSource::CodexThread(source)
+                                    if matches!(
+                                        source.workspace_mode,
+                                        CodexWorkspaceMode::NativeCwd { .. }
+                                    )
+                            )
+                    })
+                });
+            let baseline_ref =
+                if state.runs[index].provider.kind == AgentMode::Codex && !native_codex {
+                    self.project_workspace
+                        .symbolic_head(&run_workdir(&state, &state.runs[index])?)
+                        .await
+                        .map_err(crate::control::errors::project_error)?
+                } else {
+                    None
+                };
             let run = &mut state.runs[index];
             run.set_status(LifecycleStatus::Running);
             run.set_phase(Some(LifecyclePhase::CallingAgent));

@@ -13,6 +13,9 @@ pub(in crate::control) struct SessionRecord {
     /// Absolute manager-owned linked worktree used by this Session.
     #[serde(default)]
     pub workdir: String,
+    /// Native or Ait-managed source semantics.
+    #[serde(default)]
+    pub source: ait_domain::SessionSource,
     #[serde(default)]
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +48,7 @@ impl SessionRecord {
             id: self.id.clone(),
             project_id: self.project_id.clone(),
             workdir: self.workdir.clone(),
+            source: self.source.clone(),
             name: self.name.clone(),
             title: self.title.clone(),
             description: self.description.clone(),

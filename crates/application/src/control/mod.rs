@@ -3,8 +3,8 @@
 use crate::control::runs::finalization::RunControl;
 use ait_contracts::{Command, Response};
 use ait_ports::{
-    AgentProviderGateway, ControlStore, HostProviderModelCatalog, SessionTitleGenerator,
-    WorkspaceAgent, WorkspaceApprovalDecision,
+    AgentProviderGateway, CodexHistorySource, CodexThreadWriter, ControlStore,
+    HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent, WorkspaceApprovalDecision,
 };
 use ait_workspace::{ProjectDirectoryCreator, ProjectWorkspace};
 use std::collections::HashMap;
@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 pub(in crate::control) mod admission;
 pub(in crate::control) mod approvals;
 pub(in crate::control) mod catalog;
+pub(in crate::control) mod codex_history;
 pub(in crate::control) mod conversation;
 pub(in crate::control) mod cron;
 pub(in crate::control) mod errors;
@@ -54,6 +55,8 @@ pub struct LocalControlService {
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
     workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
+    codex_history_source: Option<Arc<dyn CodexHistorySource>>,
+    codex_thread_writer: Option<Arc<dyn CodexThreadWriter>>,
 }
 
 impl LocalControlService {
@@ -90,6 +93,8 @@ impl LocalControlService {
             host_provider_catalog: None,
             workspace_agent: None,
             session_title_generator: None,
+            codex_history_source: None,
+            codex_thread_writer: None,
         }
     }
 
@@ -120,6 +125,8 @@ impl LocalControlService {
             host_provider_catalog: None,
             workspace_agent: Some(workspace_agent),
             session_title_generator: None,
+            codex_history_source: None,
+            codex_thread_writer: None,
         }
     }
 
@@ -178,6 +185,20 @@ impl LocalControlService {
         generator: Arc<dyn SessionTitleGenerator>,
     ) -> Self {
         self.session_title_generator = Some(generator);
+        self
+    }
+
+    /// Adds authoritative Codex Thread discovery and history reads.
+    #[must_use]
+    pub fn with_codex_history_source(mut self, source: Arc<dyn CodexHistorySource>) -> Self {
+        self.codex_history_source = Some(source);
+        self
+    }
+
+    /// Adds writable continuation for imported native Codex Threads.
+    #[must_use]
+    pub fn with_codex_thread_writer(mut self, writer: Arc<dyn CodexThreadWriter>) -> Self {
+        self.codex_thread_writer = Some(writer);
         self
     }
 

@@ -178,7 +178,11 @@ fn project_path(path: Vec<ProjectedMessage>) -> Result<Vec<Message>, DomainError
                     {
                         content.push(serde_json::from_str(&value).map_err(|_| invalid())?);
                     }
-                    _ => return Err(invalid()),
+                    SubMessage::StructuredData { .. }
+                    | SubMessage::ProviderItem(_)
+                    | SubMessage::FileRef { .. } => {
+                        return Err(invalid());
+                    }
                 }
             }
             history.push(Message::Assistant { id: None, content });
@@ -188,7 +192,10 @@ fn project_path(path: Vec<ProjectedMessage>) -> Result<Vec<Message>, DomainError
                 .into_iter()
                 .filter_map(|part| match part {
                     SubMessage::Text { text } => Some(text),
-                    _ => None,
+                    SubMessage::FileRef { .. }
+                    | SubMessage::ToolUse(_)
+                    | SubMessage::StructuredData { .. }
+                    | SubMessage::ProviderItem(_) => None,
                 })
                 .collect();
             history.push(if message.role == ait_domain::MessageRole::System {

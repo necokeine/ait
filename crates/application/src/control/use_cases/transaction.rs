@@ -491,7 +491,7 @@ impl CommandTransaction {
                         &mut state,
                         session_id,
                         text,
-                        require_user_git_baseline(user_git_baseline)?,
+                        user_git_baseline,
                         permission_limits,
                     )
                 })

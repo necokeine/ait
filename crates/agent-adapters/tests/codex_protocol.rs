@@ -12,9 +12,13 @@ use std::{
 use ait_agent_adapters::{
     AgentEvent, AgentRunRequest, AgentRunStatus, ApprovalDecision, ApprovalHandler, ApprovalPolicy,
     ApprovalRequest, SandboxMode,
-    codex::{ClientInfo, drive_model_list_protocol, drive_protocol},
+    codex::{
+        ClientInfo, drive_model_list_protocol, drive_protocol, drive_thread_list_protocol,
+        drive_thread_read_protocol,
+    },
 };
 use ait_domain::{NativeApprovalFileChange, NativeApprovalFileChangeKind, NativeApprovalTarget};
+use ait_ports::CodexThreadSourceKind;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::{
@@ -182,6 +186,209 @@ async fn discovers_picker_visible_models_and_reasoning_efforts_across_pages() {
     assert_eq!(models[1].id, "gpt-fast");
     assert_eq!(models[1].name, "gpt-fast");
     assert_eq!(models[1].reasoning_efforts, ["medium"]);
+}
+
+fn thread(id: &str) -> Value {
+    json!({
+        "id": id,
+        "sessionId": format!("session-{id}"),
+        "forkedFromId": null,
+        "cwd": "/workspace",
+        "projectId": null,
+        "name": null,
+        "preview": "hello",
+        "source": "cli",
+        "historyMode": "paginated",
+        "model": "gpt-5.6-sol",
+        "reasoningEffort": "high",
+        "status": {"type": "notLoaded"},
+        "createdAt": 1,
+        "updatedAt": 2,
+        "turns": []
+    })
+}
+
+#[tokio::test]
+async fn lists_archived_and_non_archived_threads_with_explicit_sources() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        assert_eq!(read_json(&mut lines).await["method"], "initialize");
+        write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
+        assert_eq!(read_json(&mut lines).await["method"], "initialized");
+
+        let active = read_json(&mut lines).await;
+        assert_eq!(active["method"], "thread/list");
+        assert_eq!(active["params"]["archived"], false);
+        assert_eq!(active["params"]["sourceKinds"], json!(["cli", "appServer"]));
+        assert_eq!(active["params"]["sortDirection"], "asc");
+        write_json(
+            &mut server_write,
+            json!({"id": 1, "result": {"data": [thread("active")], "nextCursor": null}}),
+        )
+        .await;
+
+        let archived = read_json(&mut lines).await;
+        assert_eq!(archived["method"], "thread/list");
+        assert_eq!(archived["params"]["archived"], true);
+        write_json(
+            &mut server_write,
+            json!({"id": 2, "result": {"data": [thread("archived")], "nextCursor": null}}),
+        )
+        .await;
+    });
+
+    let threads = drive_thread_list_protocol(
+        client_read,
+        client_write,
+        client(),
+        vec![CodexThreadSourceKind::Cli, CodexThreadSourceKind::AppServer],
+    )
+    .await
+    .unwrap();
+    server.await.unwrap();
+    assert_eq!(threads.len(), 2);
+    assert!(!threads[0].archived);
+    assert!(threads[1].archived);
+    assert_eq!(threads[0].metadata["model"], "gpt-5.6-sol");
+    assert_eq!(threads[0].metadata["reasoningEffort"], "high");
+}
+
+#[tokio::test]
+async fn rejects_repeated_history_cursor() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
+        read_json(&mut lines).await;
+        let first = read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id": first["id"], "result": {"data": [], "nextCursor": "same"}}),
+        )
+        .await;
+        let second = read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id": second["id"], "result": {"data": [], "nextCursor": "same"}}),
+        )
+        .await;
+    });
+
+    let failure = drive_thread_list_protocol(
+        client_read,
+        client_write,
+        client(),
+        vec![CodexThreadSourceKind::Cli],
+    )
+    .await
+    .unwrap_err();
+    server.await.unwrap();
+    assert!(failure.message.contains("repeated pagination cursor"));
+}
+
+#[tokio::test]
+async fn reads_all_turn_pages_with_full_items_in_provider_order() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
+        read_json(&mut lines).await;
+
+        let read = read_json(&mut lines).await;
+        assert_eq!(read["method"], "thread/read");
+        assert_eq!(read["params"]["includeTurns"], true);
+        write_json(
+            &mut server_write,
+            json!({"id": 1, "result": {"thread": thread("thread-1")}}),
+        )
+        .await;
+
+        let first = read_json(&mut lines).await;
+        assert_eq!(first["method"], "thread/turns/list");
+        assert_eq!(first["params"]["itemsView"], "full");
+        assert_eq!(first["params"]["sortDirection"], "asc");
+        write_json(
+            &mut server_write,
+            json!({"id": 2, "result": {
+                "data": [{
+                    "id": "turn-1", "status": "completed", "itemsView": "full",
+                    "items": [{"id": "user-1", "type": "userMessage", "content": []}]
+                }],
+                "nextCursor": "next"
+            }}),
+        )
+        .await;
+        let second = read_json(&mut lines).await;
+        assert_eq!(second["params"]["cursor"], "next");
+        write_json(
+            &mut server_write,
+            json!({"id": 3, "result": {
+                "data": [{
+                    "id": "turn-2", "status": "failed", "itemsView": "full",
+                    "items": [{"id": "agent-1", "type": "agentMessage", "text": "done"}],
+                    "error": {"message": "failed"}
+                }],
+                "nextCursor": null
+            }}),
+        )
+        .await;
+    });
+
+    let snapshot =
+        drive_thread_read_protocol(client_read, client_write, client(), "thread-1".into())
+            .await
+            .unwrap();
+    server.await.unwrap();
+    assert_eq!(snapshot.turns.len(), 2);
+    assert_eq!(snapshot.turns[0].id, "turn-1");
+    assert_eq!(snapshot.turns[1].id, "turn-2");
+}
+
+#[tokio::test]
+async fn rejects_summary_turns_during_complete_history_read() {
+    let (client_io, server_io) = tokio::io::duplex(32 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
+        read_json(&mut lines).await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id": 1, "result": {"thread": thread("thread-1")}}),
+        )
+        .await;
+        read_json(&mut lines).await;
+        write_json(
+            &mut server_write,
+            json!({"id": 2, "result": {
+                "data": [{
+                    "id": "turn-1", "status": "completed", "itemsView": "summary",
+                    "items": []
+                }],
+                "nextCursor": null
+            }}),
+        )
+        .await;
+    });
+
+    let failure =
+        drive_thread_read_protocol(client_read, client_write, client(), "thread-1".into())
+            .await
+            .unwrap_err();
+    server.await.unwrap();
+    assert!(failure.message.contains("incomplete Turn"));
 }
 
 #[tokio::test]
@@ -403,6 +610,43 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
     )
     .await
     .unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn resume_rejects_a_different_returned_thread_identity() {
+    let (client_io, server_io) = tokio::io::duplex(8 * 1024);
+    let (client_read, client_write) = split(client_io);
+    let (server_read, mut server_write) = split(server_io);
+    let server = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        read_json(&mut lines).await;
+        write_json(&mut server_write, json!({"id": 0, "result": {}})).await;
+        read_json(&mut lines).await;
+        let resume = read_json(&mut lines).await;
+        assert_eq!(resume["method"], "thread/resume");
+        write_json(
+            &mut server_write,
+            json!({"id": 1, "result": {"thread": {"id": "other-thread"}}}),
+        )
+        .await;
+    });
+    let mut request = request();
+    request.resume_thread_id = Some("expected-thread".into());
+    let (sender, _receiver) = mpsc::channel(4);
+
+    let failure = drive_protocol(
+        client_read,
+        client_write,
+        request,
+        client(),
+        Arc::new(ait_agent_adapters::DenyAllApprovals),
+        &sender,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(failure.message.contains("different Thread id"));
     server.await.unwrap();
 }
 

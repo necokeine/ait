@@ -6,9 +6,10 @@
 
 ## 当前基线
 
-- `decisions/adr-016-codex-history-import.md`：以 Codex app-server 历史为权威，将 Thread 投影为
-  Ait Session，并按 userMessage 边界把 Turn 投影为普通 user/assistant Message 链与有序
-  provider-item sub-message；定义历史同步、继续输入、steer、fork 共享和 NativeCwd 互操作边界。
+- `decisions/adr-016-codex-history-import.md`（Proposed）：以 Codex app-server 历史为权威，将
+  Thread 投影为 Ait Session，完整终态 Turn 按 userMessage 边界原子发布为普通 Message 链。
+  基于 0.153.4 schema 与隔离实测，定义稳定分页、writer 接管/释放、输入结果不明对账、同 Run
+  steer、Project 内 fork 来源与共享、全局绑定预留和 NativeCwd 互操作边界；待 Accepted 后生效。
 
 - `decisions/adr-015-workspace-capability.md`：Project Workspace 文件/Git/lease 能力独立为
   `ait-workspace`，本机实现为 `ait-workspace-local`；Run execution 的 Workspace 协议仍留在

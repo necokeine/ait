@@ -52,6 +52,11 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// Discover and import native Codex Threads.
+    Codex {
+        #[command(subcommand)]
+        command: CodexCommand,
+    },
     /// Manage Session operations.
     Session {
         #[command(subcommand)]
@@ -185,6 +190,26 @@ pub(crate) enum AgentProviderCommand {
     Save(ProviderArgs),
     /// Discover models without saving the connection.
     DiscoverModels(ProviderArgs),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CodexCommand {
+    /// List native Threads from the Codex app-server history catalog.
+    List {
+        #[arg(long, value_parser = input::id, default_value = "builtin-codex")]
+        provider_id: String,
+    },
+    /// Import or reconcile one native Thread into an Ait Session.
+    Sync {
+        #[arg(long, value_parser = input::id, default_value = "builtin-codex")]
+        provider_id: String,
+        #[arg(long, value_parser = input::id)]
+        thread_id: String,
+        #[arg(long, value_parser = input::id)]
+        project_id: String,
+        #[arg(long, value_parser = input::id)]
+        agent_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -589,6 +614,7 @@ impl CliCommand {
         let command = match self {
             Self::Project { command } => return command.into_action(stdin),
             Self::Agent { command } => command.into_command(stdin, source)?,
+            Self::Codex { command } => command.into(),
             Self::Session { command } => command.into_command(stdin)?,
             Self::Message { command } => command.into(),
             Self::Run { command } => command.into(),
@@ -601,6 +627,25 @@ impl CliCommand {
             Self::Import(args) => args.read(stdin)?,
         };
         Ok(Action::Execute(command))
+    }
+}
+
+impl From<CodexCommand> for Command {
+    fn from(value: CodexCommand) -> Self {
+        match value {
+            CodexCommand::List { provider_id } => Command::ListCodexThreads { provider_id },
+            CodexCommand::Sync {
+                provider_id,
+                thread_id,
+                project_id,
+                agent_id,
+            } => Command::SyncCodexThread {
+                provider_id,
+                thread_id,
+                project_id,
+                agent_id,
+            },
+        }
     }
 }
 

@@ -778,6 +778,9 @@ impl RecordAccess {
     ) -> Result<CommandTransaction, ApiError> {
         use ControlRecordKind as Kind;
         match command {
+            Command::ListCodexThreads { .. } | Command::SyncCodexThread { .. } => {
+                unreachable!("Codex history commands bypass ordinary command transactions")
+            }
             Command::RegisterProject { id, workdir, .. } => ({
                 self.read_records(project_identity_plan(id, workdir.as_deref()))
                     .await

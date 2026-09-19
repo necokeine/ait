@@ -62,6 +62,8 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
             "/v1/agent-provider/refresh-models",
             post(refresh_provider_models),
         )
+        .route("/v1/codex/thread/list", get(list_codex_threads))
+        .route("/v1/codex/thread/sync", post(sync_codex_thread))
         .route("/v1/session/set-config", post(set_session_config))
         .route("/v1/session/create", post(create_session))
         .route("/v1/session/list", get(list_sessions))
@@ -688,6 +690,54 @@ async fn list_agent_providers(State(state): State<ApiState>) -> Json<Response> {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexThreadQuery {
+    provider_id: String,
+}
+
+async fn list_codex_threads(
+    State(state): State<ApiState>,
+    Query(query): Query<CodexThreadQuery>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::ListCodexThreads {
+            provider_id: query.provider_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the HTTP contract intentionally uses explicit identifier field names"
+)]
+struct SyncCodexThreadRequest {
+    provider_id: String,
+    thread_id: String,
+    project_id: String,
+    agent_id: String,
+}
+
+async fn sync_codex_thread(
+    State(state): State<ApiState>,
+    Json(request): Json<SyncCodexThreadRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SyncCodexThread {
+            provider_id: request.provider_id,
+            thread_id: request.thread_id,
+            project_id: request.project_id,
+            agent_id: request.agent_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
 struct ProjectQuery {
     project_id: String,
 }
@@ -974,6 +1024,14 @@ fn correlation_for_command(command: &Command) -> Correlation {
             correlation.project_id = Some(project_id.clone());
             correlation.session_id = Some(source_session_id.clone());
         }
+        Command::SyncCodexThread {
+            project_id,
+            thread_id,
+            ..
+        } => {
+            correlation.project_id = Some(project_id.clone());
+            correlation.session_id = Some(thread_id.clone());
+        }
         Command::SetSessionConfig { session_id, .. }
         | Command::SetSessionAgent { session_id, .. }
         | Command::RenameSession { session_id, .. }
@@ -1002,6 +1060,7 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::SaveAgentProvider { .. }
         | Command::DiscoverProviderModels { .. }
         | Command::RefreshProviderModels { .. }
+        | Command::ListCodexThreads { .. }
         | Command::RegisterAgent { .. }
         | Command::SetCronEnabled { .. }
         | Command::TriggerCron { .. }
@@ -1050,6 +1109,7 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
         Some(
             CommandResult::AgentProvider(_)
             | CommandResult::ProviderModels(_)
+            | CommandResult::CodexThreads(_)
             | CommandResult::Agent(_)
             | CommandResult::Cron(_)
             | CommandResult::Settings(_)
@@ -1075,6 +1135,8 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::SaveAgentProvider { .. } => "save_agent_provider",
         Command::DiscoverProviderModels { .. } => "discover_provider_models",
         Command::RefreshProviderModels { .. } => "refresh_provider_models",
+        Command::ListCodexThreads { .. } => "list_codex_threads",
+        Command::SyncCodexThread { .. } => "sync_codex_thread",
         Command::SetSessionConfig { .. } => "set_session_config",
         Command::CreateSession { .. } => "create_session",
         Command::SetSessionAgent { .. } => "set_session_agent",

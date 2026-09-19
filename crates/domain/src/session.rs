@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     AgentId, DomainError, ErrorCode, MessageId, ProjectId, RunId, SystemMessage, TimestampMs,
@@ -35,6 +36,137 @@ pub enum SessionStatus {
     Archived,
 }
 
+/// Workspace semantics used when continuing a Codex Thread.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CodexWorkspaceMode {
+    /// Continue in the native working directory recorded by app-server.
+    NativeCwd {
+        /// Canonical provider working directory.
+        cwd: PathBuf,
+    },
+    /// Continue in an Ait-owned linked worktree.
+    ManagedWorktree {
+        /// Canonical Ait worktree.
+        workdir: PathBuf,
+    },
+}
+
+/// Last known ownership state of a writable Codex Thread.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexWriterState {
+    /// No exclusive writer has been verified.
+    #[default]
+    Unknown,
+    /// The current supervised Ait process owns the writer.
+    OwnedByAit,
+    /// app-server reported that another process owns the writer.
+    BusyElsewhere,
+}
+
+/// Completeness of the locally materialized provider history.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderHistoryCompleteness {
+    /// Only list/summary metadata is available.
+    SummaryOnly,
+    /// A bounded prefix or subset has been loaded.
+    Partial,
+    /// Every published terminal Turn was read with full items.
+    #[default]
+    Full,
+}
+
+/// Synchronization state for a provider-backed Session.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSyncState {
+    /// Local history matches the last complete provider snapshot.
+    #[default]
+    Synced,
+    /// A provider change is waiting for a complete reconciliation.
+    Pending,
+    /// The latest read was incomplete and cannot be published.
+    Incomplete,
+    /// Direct provider verification confirmed that the Thread is missing.
+    ProviderMissing,
+}
+
+/// Verification state of a native fork relationship.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRelationshipState {
+    /// The Thread has no verified source relationship.
+    #[default]
+    Independent,
+    /// A source identity exists but its history is unavailable or unverified.
+    Unresolved,
+    /// The source history is a verified prefix in the same Ait Project.
+    Verified,
+}
+
+/// Durable source metadata for one imported Codex Thread.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CodexThreadSource {
+    /// Ait Provider catalog identity.
+    pub provider_id: String,
+    /// Native Codex Thread identity.
+    pub thread_id: String,
+    /// Native session metadata returned for this Thread.
+    pub codex_session_id: String,
+    /// Ait-assigned lineage identity; never derived from `codex_session_id`.
+    pub lineage_id: String,
+    /// Native source Thread when app-server exposes a fork relationship.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from_thread_id: Option<String>,
+    /// Verification state for `forked_from_thread_id`.
+    #[serde(default)]
+    pub relationship_state: ProviderRelationshipState,
+    /// Forward-compatible native source metadata.
+    #[serde(default)]
+    pub source: Value,
+    /// Native storage history mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_mode: Option<String>,
+    /// Whether the authoritative Thread is archived.
+    #[serde(default)]
+    pub archived: bool,
+    /// Native working directory observed during synchronization.
+    pub native_cwd: PathBuf,
+    /// Native project metadata, not an Ait Project identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_project_id: Option<String>,
+    /// Last observed provider runtime status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_status: Option<String>,
+    /// Bounded forward-compatible native Thread metadata.
+    #[serde(default)]
+    pub native_metadata: Value,
+    /// Cross-process writer state, kept separate from runtime status.
+    #[serde(default)]
+    pub writer_state: CodexWriterState,
+    /// Directory and Git semantics used for writable continuation.
+    pub workspace_mode: CodexWorkspaceMode,
+    /// Local provider synchronization state.
+    #[serde(default)]
+    pub sync_state: ProviderSyncState,
+    /// Completeness of the most recently accepted history snapshot.
+    #[serde(default)]
+    pub history_completeness: ProviderHistoryCompleteness,
+}
+
+/// Origin of a Session reference.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SessionSource {
+    /// Session created and fully managed by Ait.
+    #[default]
+    Managed,
+    /// Session materialized from a native Codex Thread.
+    CodexThread(Box<CodexThreadSource>),
+}
+
 /// A movable reference into a Project's immutable Message forest.
 ///
 /// A Session owns no Message history. `active_run_id` is only an exclusive
@@ -47,6 +179,9 @@ pub struct Session {
     pub project_id: ProjectId,
     /// Manager-owned linked worktree used for every interactive execution.
     pub workdir: PathBuf,
+    /// Native or Ait-managed source semantics.
+    #[serde(default)]
+    pub source: SessionSource,
     /// Human-readable reference name.
     #[serde(default)]
     pub name: String,
@@ -89,6 +224,7 @@ impl Session {
             id,
             project_id,
             workdir,
+            source: SessionSource::Managed,
             name: name.into(),
             title: None,
             description: String::new(),
@@ -123,6 +259,23 @@ impl Session {
                 ErrorCode::InvalidSession,
                 "session identity, pointer, binding, version, or timestamps are invalid",
             ));
+        }
+        if let SessionSource::CodexThread(source) = &self.source {
+            let source_valid = !source.provider_id.is_empty()
+                && !source.thread_id.is_empty()
+                && !source.codex_session_id.is_empty()
+                && !source.lineage_id.is_empty()
+                && source.native_cwd.is_absolute()
+                && match &source.workspace_mode {
+                    CodexWorkspaceMode::NativeCwd { cwd } => cwd == &self.workdir,
+                    CodexWorkspaceMode::ManagedWorktree { workdir } => workdir == &self.workdir,
+                };
+            if !source_valid {
+                return Err(DomainError::invariant(
+                    ErrorCode::InvalidSession,
+                    "Codex Session source identity or workspace is invalid",
+                ));
+            }
         }
         Ok(())
     }
@@ -206,6 +359,39 @@ impl SessionReference {
         }
         self.current_message_id = child;
         self.version = self.version.saturating_add(1);
+        Ok(())
+    }
+
+    /// Reconciles a provider-backed Session to an immutable history head.
+    ///
+    /// Unlike [`Self::advance`], the target can be a non-child because a provider
+    /// history correction creates a new immutable suffix before moving the ref.
+    ///
+    /// # Errors
+    ///
+    /// Returns a pointer conflict when the expected head or version is stale.
+    pub fn reconcile(
+        &mut self,
+        expected: MessageId,
+        version: u64,
+        target: MessageId,
+    ) -> Result<(), DomainError> {
+        if self.active_run_id.is_some() {
+            return Err(DomainError::invariant(
+                ErrorCode::SessionBusy,
+                "active Session cannot reconcile provider history",
+            ));
+        }
+        if self.current_message_id != expected || self.version != version {
+            return Err(DomainError::invariant(
+                ErrorCode::SessionPointerConflict,
+                "Session pointer changed during provider history reconciliation",
+            ));
+        }
+        if self.current_message_id != target {
+            self.current_message_id = target;
+            self.version = self.version.saturating_add(1);
+        }
         Ok(())
     }
 

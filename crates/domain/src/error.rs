@@ -82,6 +82,44 @@ pub enum ErrorCode {
     InvalidConfiguration,
     /// Provider invocation failed after adapter normalization.
     ProviderFailed,
+    /// Codex Thread enumeration failed.
+    CodexHistoryListFailed,
+    /// Codex Thread history could not be read completely.
+    CodexHistoryReadFailed,
+    /// Codex app-server schema lacks a required history capability.
+    CodexHistorySchemaUnsupported,
+    /// Codex history is incomplete and cannot be published.
+    CodexHistoryIncomplete,
+    /// A native Thread identity conflicts with an existing binding.
+    CodexThreadIdConflict,
+    /// A native Turn identity conflicts with immutable local history.
+    CodexTurnIdConflict,
+    /// A native Thread cannot be assigned to an Ait Project.
+    CodexThreadProjectUnbound,
+    /// More than one Ait Project matches a native Thread.
+    CodexThreadProjectAmbiguous,
+    /// A native Thread is already bound to another Project or Session.
+    CodexThreadBindingConflict,
+    /// Immutable history reconciliation failed its precondition.
+    CodexHistoryReconcileConflict,
+    /// A provider pagination cursor repeated within one scan.
+    CodexHistoryCursorRepeated,
+    /// A writable operation requires a newer complete synchronization.
+    CodexThreadNotSynced,
+    /// Another client owns the active native Turn.
+    CodexThreadActiveElsewhere,
+    /// Another app-server process owns the Thread writer.
+    CodexThreadWriterBusy,
+    /// The imported Thread depends on an unsupported native capability.
+    CodexThreadCapabilityUnsupported,
+    /// Native fork cannot represent the selected Message boundary.
+    CodexForkBoundaryUnsupported,
+    /// app-server explicitly rejected the pending input.
+    CodexInputNotAccepted,
+    /// Transport failure left input acceptance indeterminate.
+    CodexInputOutcomeUnknown,
+    /// Provider history cannot uniquely correlate a pending input.
+    CodexInputCorrelationFailed,
     /// Run aggregate fields are inconsistent.
     InvalidRun,
     /// Run cannot be resumed from its current state.
@@ -169,6 +207,25 @@ impl ErrorCode {
             Self::InvalidAgentConfiguration => "INVALID_AGENT_CONFIGURATION",
             Self::InvalidConfiguration => "INVALID_CONFIGURATION",
             Self::ProviderFailed => "PROVIDER_FAILED",
+            Self::CodexHistoryListFailed => "CODEX_HISTORY_LIST_FAILED",
+            Self::CodexHistoryReadFailed => "CODEX_HISTORY_READ_FAILED",
+            Self::CodexHistorySchemaUnsupported => "CODEX_HISTORY_SCHEMA_UNSUPPORTED",
+            Self::CodexHistoryIncomplete => "CODEX_HISTORY_INCOMPLETE",
+            Self::CodexThreadIdConflict => "CODEX_THREAD_ID_CONFLICT",
+            Self::CodexTurnIdConflict => "CODEX_TURN_ID_CONFLICT",
+            Self::CodexThreadProjectUnbound => "CODEX_THREAD_PROJECT_UNBOUND",
+            Self::CodexThreadProjectAmbiguous => "CODEX_THREAD_PROJECT_AMBIGUOUS",
+            Self::CodexThreadBindingConflict => "CODEX_THREAD_BINDING_CONFLICT",
+            Self::CodexHistoryReconcileConflict => "CODEX_HISTORY_RECONCILE_CONFLICT",
+            Self::CodexHistoryCursorRepeated => "CODEX_HISTORY_CURSOR_REPEATED",
+            Self::CodexThreadNotSynced => "CODEX_THREAD_NOT_SYNCED",
+            Self::CodexThreadActiveElsewhere => "CODEX_THREAD_ACTIVE_ELSEWHERE",
+            Self::CodexThreadWriterBusy => "CODEX_THREAD_WRITER_BUSY",
+            Self::CodexThreadCapabilityUnsupported => "CODEX_THREAD_CAPABILITY_UNSUPPORTED",
+            Self::CodexForkBoundaryUnsupported => "CODEX_FORK_BOUNDARY_UNSUPPORTED",
+            Self::CodexInputNotAccepted => "CODEX_INPUT_NOT_ACCEPTED",
+            Self::CodexInputOutcomeUnknown => "CODEX_INPUT_OUTCOME_UNKNOWN",
+            Self::CodexInputCorrelationFailed => "CODEX_INPUT_CORRELATION_FAILED",
             Self::InvalidRun => "INVALID_RUN",
             Self::RunNotResumable => "RUN_NOT_RESUMABLE",
             Self::RunAlreadyTerminal => "RUN_ALREADY_TERMINAL",

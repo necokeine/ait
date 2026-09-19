@@ -23,6 +23,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/agent-provider/save` | `SaveAgentProvider` |
 | `POST` | `/v1/agent-provider/discover-models` | `DiscoverProviderModels` |
 | `POST` | `/v1/agent-provider/refresh-models` | `RefreshProviderModels` |
+| `POST` | `/v1/codex/thread/sync` | `SyncCodexThread` |
 | `POST` | `/v1/session/set-agent` | `SetSessionAgent` |
 | `POST` | `/v1/session/set-config` | `SetSessionConfig` |
 | `POST` | `/v1/session/create` | `CreateSession` |
@@ -46,6 +47,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `GET` | `/v1/project/list` | `ListProjects` |
 | `GET` | `/v1/agent/list` | `ListAgents` |
 | `GET` | `/v1/agent-provider/list` | `ListAgentProviders` |
+| `GET` | `/v1/codex/thread/list` | `ListCodexThreads` |
 | `GET` | `/v1/session/list?project_id=<id>` | `ListSessions` |
 | `GET` | `/v1/message/list?project_id=<id>` | `ListMessages` |
 | `GET` | `/v1/run/list?project_id=<id>` | `ListRuns` |

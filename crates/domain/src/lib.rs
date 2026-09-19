@@ -43,8 +43,8 @@ pub use instruction::{InstructionSnapshot, InstructionSourceSnapshot, Instructio
 pub use lifecycle::{LifecyclePhase, LifecycleStatus};
 pub use message::{
     Message, MessageId, MessageKind, MessageOrigin, MessageRole, MessageValidationError,
-    ProjectedMessage, StoredMessage, SubMessage, SystemMessage, SystemMessageComponent, ToolResult,
-    ToolResultStatus, ToolUse, message_path,
+    ProjectedMessage, ProviderItem, StoredMessage, SubMessage, SystemMessage,
+    SystemMessageComponent, ToolResult, ToolResultStatus, ToolUse, message_path,
 };
 pub use permission::{
     ApprovalGrantScope, ApprovalMode, NativeApprovalFileChange, NativeApprovalFileChangeKind,
@@ -58,5 +58,9 @@ pub use run::{
     RunBudget, RunId, RunPhase, RunQueueItem, RunQueueItemId, RunQueueItemKind, RunQueueItemStatus,
     RunStatus, RunStopReason, RunTerminationBlocker, RunTerminationReadiness, RunTrigger, RunUsage,
 };
-pub use session::{Session, SessionId, SessionReference, SessionRoot, SessionStatus};
+pub use session::{
+    CodexThreadSource, CodexWorkspaceMode, CodexWriterState, ProviderHistoryCompleteness,
+    ProviderRelationshipState, ProviderSyncState, Session, SessionId, SessionReference,
+    SessionRoot, SessionSource, SessionStatus,
+};
 pub use tool::{ToolApprovalStatus, ToolExecution, ToolExecutionId, ToolExecutionStatus};

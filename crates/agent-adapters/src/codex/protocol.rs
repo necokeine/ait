@@ -7,6 +7,7 @@ use ait_domain::{
     NativeApprovalFileChange, NativeApprovalFileChangeKind, NativeApprovalTarget,
     NativeNetworkProtocol, ProviderModel,
 };
+use ait_ports::{CodexItemsView, CodexThreadSnapshot, CodexThreadSourceKind, CodexTurnSnapshot};
 use ait_tools::codex::CodexToolSet;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -147,6 +148,188 @@ where
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexThreadPage {
+    data: Vec<CodexThreadSnapshot>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CodexThreadReadResult {
+    thread: CodexThreadSnapshot,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexTurnPage {
+    data: Vec<CodexTurnSnapshot>,
+    next_cursor: Option<String>,
+}
+
+/// Drives an initialized scan of archived and non-archived Codex Threads.
+#[doc(hidden)]
+pub async fn drive_thread_list_protocol<R, W>(
+    reader: R,
+    mut writer: W,
+    client: ClientInfo,
+    source_kinds: Vec<CodexThreadSourceKind>,
+) -> Result<Vec<CodexThreadSnapshot>, AdapterError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if source_kinds.is_empty() {
+        return Err(AdapterError::protocol(
+            "Codex history scan requires explicit source kinds",
+        ));
+    }
+    let mut lines = BufReader::new(reader).lines();
+    initialize_protocol(&mut lines, &mut writer, client).await?;
+    let source_kinds = serde_json::to_value(source_kinds).map_err(|error| {
+        AdapterError::protocol(format!("invalid Codex source kind request: {error}"))
+    })?;
+    let mut threads = Vec::new();
+    let mut thread_ids = HashSet::new();
+    let mut request_id = 1_i64;
+    for archived in [false, true] {
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = HashSet::new();
+        loop {
+            let mut params = json!({
+                "archived": archived,
+                "limit": 100,
+                "sortDirection": "asc",
+                "sortKey": "updated_at",
+                "sourceKinds": source_kinds,
+            });
+            if let Some(value) = &cursor {
+                params["cursor"] = json!(value);
+            }
+            write_message(
+                &mut writer,
+                &json!({"method": "thread/list", "id": request_id, "params": params}),
+            )
+            .await?;
+            let (result, _) = wait_for_response(&mut lines, request_id).await?;
+            request_id += 1;
+            let page: CodexThreadPage = serde_json::from_value(result).map_err(|error| {
+                AdapterError::protocol(format!("invalid Codex thread/list response: {error}"))
+            })?;
+            for mut thread in page.data {
+                if !thread_ids.insert(thread.id.clone()) {
+                    return Err(AdapterError::protocol(
+                        "Codex thread/list returned a duplicate Thread id",
+                    ));
+                }
+                thread.archived = archived;
+                thread.turns.clear();
+                threads.push(thread);
+            }
+            let Some(next) = page.next_cursor.filter(|value| !value.trim().is_empty()) else {
+                break;
+            };
+            if !seen_cursors.insert(next.clone()) {
+                return Err(AdapterError::protocol(
+                    "Codex thread/list returned a repeated pagination cursor",
+                ));
+            }
+            cursor = Some(next);
+        }
+    }
+    Ok(threads)
+}
+
+/// Drives an initialized complete read of one Codex Thread and all full Turns.
+#[doc(hidden)]
+pub async fn drive_thread_read_protocol<R, W>(
+    reader: R,
+    mut writer: W,
+    client: ClientInfo,
+    thread_id: String,
+) -> Result<CodexThreadSnapshot, AdapterError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if thread_id.trim().is_empty() {
+        return Err(AdapterError::protocol("Codex Thread id must not be empty"));
+    }
+    let mut lines = BufReader::new(reader).lines();
+    initialize_protocol(&mut lines, &mut writer, client).await?;
+    write_message(
+        &mut writer,
+        &json!({
+            "method": "thread/read",
+            "id": 1,
+            "params": {"threadId": thread_id, "includeTurns": true}
+        }),
+    )
+    .await?;
+    let (result, _) = wait_for_response(&mut lines, 1).await?;
+    let mut thread = serde_json::from_value::<CodexThreadReadResult>(result)
+        .map_err(|error| {
+            AdapterError::protocol(format!("invalid Codex thread/read response: {error}"))
+        })?
+        .thread;
+    if thread.id != thread_id {
+        return Err(AdapterError::protocol(
+            "Codex thread/read returned a different Thread id",
+        ));
+    }
+
+    let mut turns = Vec::new();
+    let mut turn_ids = HashSet::new();
+    let mut seen_cursors = HashSet::new();
+    let mut cursor: Option<String> = None;
+    let mut request_id = 2_i64;
+    loop {
+        let mut params = json!({
+            "threadId": thread_id,
+            "limit": 100,
+            "sortDirection": "asc",
+            "itemsView": "full",
+        });
+        if let Some(value) = &cursor {
+            params["cursor"] = json!(value);
+        }
+        write_message(
+            &mut writer,
+            &json!({"method": "thread/turns/list", "id": request_id, "params": params}),
+        )
+        .await?;
+        let (result, _) = wait_for_response(&mut lines, request_id).await?;
+        request_id += 1;
+        let page: CodexTurnPage = serde_json::from_value(result).map_err(|error| {
+            AdapterError::protocol(format!("invalid Codex thread/turns/list response: {error}"))
+        })?;
+        for turn in page.data {
+            if turn.items_view != CodexItemsView::Full {
+                return Err(AdapterError::protocol(
+                    "Codex complete history read returned an incomplete Turn",
+                ));
+            }
+            if !turn_ids.insert(turn.id.clone()) {
+                return Err(AdapterError::protocol(
+                    "Codex thread/turns/list returned a duplicate Turn id",
+                ));
+            }
+            turns.push(turn);
+        }
+        let Some(next) = page.next_cursor.filter(|value| !value.trim().is_empty()) else {
+            break;
+        };
+        if !seen_cursors.insert(next.clone()) {
+            return Err(AdapterError::protocol(
+                "Codex thread/turns/list returned a repeated pagination cursor",
+            ));
+        }
+        cursor = Some(next);
+    }
+    thread.turns = turns;
+    Ok(thread)
+}
+
 #[doc(hidden)]
 #[allow(clippy::too_many_lines)]
 pub async fn drive_protocol<R, W>(
@@ -191,9 +374,17 @@ where
     let thread_id = thread_result
         .pointer("/thread/id")
         .and_then(Value::as_str)
-        .or(request.resume_thread_id.as_deref())
         .ok_or_else(|| AdapterError::protocol("Codex thread response has no thread id"))?
         .to_owned();
+    if request
+        .resume_thread_id
+        .as_deref()
+        .is_some_and(|expected| expected != thread_id)
+    {
+        return Err(AdapterError::protocol(
+            "Codex thread/resume returned a different Thread id",
+        ));
+    }
     send_event(
         sender,
         AgentEvent::ThreadStarted {
