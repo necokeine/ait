@@ -538,7 +538,7 @@ function renderActivityParts(parts: DesktopMessage["parts"], key: string): strin
       }
       return renderPart(part);
     }).join("");
-    if (thinking && !content) return `<div class="activity-static">${thoughtIcon}<span class="activity-label">Reason</span>${activityStatuses(group.parts)}</div>`;
+    if (thinking && !content) return `<div class="activity-static">${thoughtIcon}<span class="activity-label">Reasoning</span>${activityStatuses(group.parts)}</div>`;
     return `<details class="activity-item" data-disclosure-id="${escapeHtml(`${key}:activity:${group.index}`)}"><summary class="activity-summary">${command ? commandIcon : thinking ? thoughtIcon : toolIcon}<span class="activity-label">${escapeHtml(label)}</span>${activityStatuses(group.parts)}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="activity-item-content${command ? " command-list" : ""}">${content}</div></details>`;
   }).join("");
 }

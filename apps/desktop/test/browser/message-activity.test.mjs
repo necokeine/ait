@@ -53,9 +53,9 @@ for (const theme of ["light", "dark"]) {
     await page.keyboard.press("Enter");
     assert.equal(await page.locator('[data-codex-item-id="before"]').isVisible(), true);
     assert.equal(await activity.locator(".message-heading, .message-event-kind, .message-event-count").count(), 0);
-    assert.deepEqual(await activity.locator(".activity-label").allTextContents(), ["Reason", "Ran 2 commands", "Ran a command"]);
+    assert.deepEqual(await activity.locator(".activity-label").allTextContents(), ["Reasoning", "Ran 2 commands", "Ran a command"]);
     const reason = activity.locator(".activity-static");
-    assert.equal(await reason.innerText(), "Reason");
+    assert.equal(await reason.innerText(), "Reasoning");
     assert.equal(await reason.locator("summary, details, .operation-chevron, .activity-item-content").count(), 0);
     assert.equal(await reason.evaluate((element) => element.tabIndex), -1);
     assert.equal(await reason.evaluate((element) => getComputedStyle(element).cursor), "default");
@@ -156,7 +156,7 @@ test("empty reasoning stays static until streamed content is available", async (
     }, type);
     const activity = page.locator(".live-run .message-disclosure");
     await activity.locator(":scope > summary").click();
-    assert.equal(await activity.locator(".activity-static .activity-label").innerText(), "Reason");
+    assert.equal(await activity.locator(".activity-static .activity-label").innerText(), "Reasoning");
     assert.equal(await activity.locator("details, .activity-item-content").count(), 0);
     if (type === "operation") assert.equal(await activity.locator(".activity-static .operation-status").innerText(), "running");
     await page.evaluate(() => {
