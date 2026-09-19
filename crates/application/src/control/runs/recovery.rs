@@ -34,6 +34,7 @@ pub(in crate::control) enum RecoveryClaim {
 pub struct StartupRecoveryPlan {
     pub(in crate::control) run_ids: Vec<String>,
     unavailable_projects: Vec<(String, String)>,
+    owners: std::collections::BTreeMap<String, ait_domain::ProjectOwner>,
 }
 
 impl StartupRecoveryPlan {
@@ -126,25 +127,53 @@ impl LocalControlService {
         let mut plan = StartupRecoveryPlan {
             run_ids: Vec::new(),
             unavailable_projects: Vec::new(),
+            owners: std::collections::BTreeMap::new(),
         };
         for project in catalog.projects {
+            let was_open = self
+                .store
+                .project_is_open(&project.id)
+                .await
+                .map_err(store_error)?;
+            let previous = plan.run_ids.len();
             match self.records().read_project_run_records(&project.id).await {
-                Ok(state) => plan.run_ids.extend(
-                    state
-                        .original
-                        .runs
-                        .into_iter()
-                        .filter(|run| {
-                            !is_terminal_run_status(run.status())
-                                || api_run::needs_terminal_repair(run)
-                                || run.compatibility_repair
-                                || run
-                                    .auto_commit
-                                    .as_ref()
-                                    .is_some_and(super::git_commit::AutoCommit::pending)
-                        })
-                        .map(|run| run.id),
-                ),
+                Ok(state) => {
+                    if let Some(version) = state.version.projects.get(&project.id) {
+                        for run in &state.original.runs {
+                            plan.owners
+                                .insert(run.id.clone(), version.owner(&project.id));
+                        }
+                    }
+                    if self
+                        .store
+                        .project_can_recover(&project.id)
+                        .await
+                        .map_err(store_error)?
+                    {
+                        plan.run_ids.extend(
+                            state
+                                .original
+                                .runs
+                                .into_iter()
+                                .filter(|run| {
+                                    !is_terminal_run_status(run.status())
+                                        || api_run::needs_terminal_repair(run)
+                                        || run.compatibility_repair
+                                        || run
+                                            .auto_commit
+                                            .as_ref()
+                                            .is_some_and(super::git_commit::AutoCommit::pending)
+                                })
+                                .map(|run| run.id),
+                        );
+                    }
+                    if !was_open && plan.run_ids.len() == previous {
+                        self.store
+                            .release_idle_project(&project.id)
+                            .await
+                            .map_err(store_error)?;
+                    }
+                }
                 Err(failure) => plan
                     .unavailable_projects
                     .push((project.id, failure.message)),
@@ -173,7 +202,11 @@ impl LocalControlService {
     ) -> Result<Vec<RunRecord>, ApiError> {
         let mut recovered = Vec::new();
         for run_id in plan.run_ids {
-            let workspace_lease = match self.acquire_workspace_write_for_run(&run_id).await {
+            let service = plan.owners.get(&run_id).map_or_else(
+                || self.clone(),
+                |owner| self.clone().with_project_owner(owner.clone()),
+            );
+            let workspace_lease = match service.acquire_workspace_write_for_run(&run_id).await {
                 Ok(lease) => lease,
                 Err(failure) if failure.code == ErrorCode::ProjectWorkspaceBusy => {
                     // A live executor still owns this Project. It also owns the
@@ -181,12 +214,12 @@ impl LocalControlService {
                     continue;
                 }
                 Err(failure) if is_local_recovery_failure(failure.code) => {
-                    recovered.push(self.interrupt_recovery_run(&run_id, &failure).await?);
+                    recovered.push(service.interrupt_recovery_run(&run_id, &failure).await?);
                     continue;
                 }
                 Err(failure) => return Err(failure),
             };
-            let recovery_state = self.read_run_records(&run_id).await?.original;
+            let recovery_state = service.read_run_records(&run_id).await?.original;
             let native = recovery_state
                 .runs
                 .into_iter()
@@ -201,11 +234,11 @@ impl LocalControlService {
                         .as_ref()
                         .is_some_and(super::git_commit::AutoCommit::pending)
                 {
-                    recovered.push(self.finalize_native_git(run).await?);
+                    recovered.push(service.finalize_native_git(run).await?);
                     continue;
                 }
                 if !run.status().is_terminal() {
-                    match self.recover_native_run(&run).await {
+                    match service.recover_native_run(&run).await {
                         Ok(run) => recovered.push(run),
                         Err(failure)
                             if matches!(
@@ -215,13 +248,14 @@ impl LocalControlService {
                                     | ErrorCode::ProjectWorkspaceBusy
                             ) => {}
                         Err(failure) => {
-                            recovered.push(self.interrupt_recovery_run(&run_id, &failure).await?);
+                            recovered
+                                .push(service.interrupt_recovery_run(&run_id, &failure).await?);
                         }
                     }
                 }
                 continue;
             }
-            let claim = self.claim_startup_recovery(&run_id).await?;
+            let claim = service.claim_startup_recovery(&run_id).await?;
             match claim {
                 RecoveryClaim::Recovered(run) => {
                     recovered.push(*run);
@@ -232,13 +266,13 @@ impl LocalControlService {
             }
             let control = Arc::new(RunControl::new());
             let invocation = InvocationGuard::new(
-                Arc::clone(&self.cancellations),
+                Arc::clone(&service.cancellations),
                 &run_id,
                 control.cancellation.clone(),
             );
             let control_guard =
-                RunControlGuard::new(Arc::clone(&self.run_controls), &run_id, &control);
-            let result = self.supervise_run(run_id.clone(), control.clone()).await;
+                RunControlGuard::new(Arc::clone(&service.run_controls), &run_id, &control);
+            let result = service.supervise_run(run_id.clone(), control.clone()).await;
             drop((workspace_lease, invocation, control_guard, control));
             match result {
                 Ok(run) => recovered.push(run),

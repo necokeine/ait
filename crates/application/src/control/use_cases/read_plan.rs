@@ -113,7 +113,7 @@ impl RecordAccess {
                 filters.push(ControlFilter::id(Kind::Provider, id));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == anchor.revision {
+            if read.version.compatible_with(&anchor.version) {
                 return decode_records(&read);
             }
         }
@@ -177,7 +177,7 @@ impl RecordAccess {
                 .read(&[ControlFilter::id(Kind::Agent, &agent_id)])
                 .await
                 .map_err(store_error)?;
-            if agent_read.revision != session_read.revision {
+            if !agent_read.version.compatible_with(&session_read.version) {
                 continue;
             }
             let agent = record_value(&agent_read, Kind::Agent, &agent_id).ok_or_else(|| {
@@ -199,7 +199,7 @@ impl RecordAccess {
             ];
             filters.extend(extra.iter().cloned());
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == session_read.revision {
+            if read.version.compatible_with(&session_read.version) {
                 return decode_records(&read);
             }
         }
@@ -250,7 +250,7 @@ impl RecordAccess {
                 .read(&[ControlFilter::id(Kind::Agent, &agent_id)])
                 .await
                 .map_err(store_error)?;
-            if agent_read.revision != anchor.revision {
+            if !agent_read.version.compatible_with(&anchor.version) {
                 continue;
             }
             let agent = record_value(&agent_read, Kind::Agent, &agent_id).ok_or_else(|| {
@@ -278,7 +278,7 @@ impl RecordAccess {
                 ])
                 .await
                 .map_err(store_error)?;
-            if read.revision == anchor.revision {
+            if read.version.compatible_with(&anchor.version) {
                 return decode_records(&read);
             }
         }
@@ -325,7 +325,7 @@ impl RecordAccess {
                 ));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == run_read.revision {
+            if read.version.compatible_with(&run_read.version) {
                 return decode_records(&read);
             }
         }
@@ -368,7 +368,7 @@ impl RecordAccess {
                 ));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == run_read.revision {
+            if read.version.compatible_with(&run_read.version) {
                 return decode_records(&read);
             }
         }
@@ -406,7 +406,7 @@ impl RecordAccess {
                 ));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == run_read.revision {
+            if read.version.compatible_with(&run_read.version) {
                 return decode_records(&read);
             }
         }
@@ -437,7 +437,7 @@ impl RecordAccess {
                     .map(|agent_id| ControlFilter::id(Kind::Agent, agent_id)),
             );
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == runs.revision {
+            if read.version.compatible_with(&runs.version) {
                 return decode_records(&read);
             }
         }
@@ -470,7 +470,7 @@ impl RecordAccess {
                 .read(&[ControlFilter::id(Kind::Agent, &agent_id)])
                 .await
                 .map_err(store_error)?;
-            if agent_read.revision != cron_read.revision {
+            if !agent_read.version.compatible_with(&cron_read.version) {
                 continue;
             }
             let agent = record_value(&agent_read, Kind::Agent, &agent_id).ok_or_else(|| {
@@ -497,7 +497,7 @@ impl RecordAccess {
                 ])
                 .await
                 .map_err(store_error)?;
-            if read.revision == cron_read.revision {
+            if read.version.compatible_with(&cron_read.version) {
                 return decode_records(&read);
             }
         }
@@ -539,7 +539,7 @@ impl RecordAccess {
                 ])
                 .await
                 .map_err(store_error)?;
-            if read.revision == anchors.revision {
+            if read.version.compatible_with(&anchors.version) {
                 return decode_records(&read);
             }
         }
@@ -576,7 +576,7 @@ impl RecordAccess {
                 .read(&[ControlFilter::id(Kind::Agent, &selected_agent_id)])
                 .await
                 .map_err(store_error)?;
-            if agent_read.revision != anchors.revision {
+            if !agent_read.version.compatible_with(&anchors.version) {
                 continue;
             }
             let agent =
@@ -605,7 +605,7 @@ impl RecordAccess {
                 filters.push(ControlFilter::id(Kind::ProviderCredential, provider_id));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == anchors.revision {
+            if read.version.compatible_with(&anchors.version) {
                 return decode_records(&read);
             }
         }
@@ -649,7 +649,7 @@ impl RecordAccess {
                 ])
                 .await
                 .map_err(store_error)?;
-            if agent_records.revision != anchors.revision {
+            if !agent_records.version.compatible_with(&anchors.version) {
                 continue;
             }
             let source_agent = record_value(&agent_records, Kind::Agent, &source_agent_id)
@@ -687,7 +687,7 @@ impl RecordAccess {
                 filters.push(ControlFilter::id(Kind::ProviderCredential, provider_id));
             }
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == anchors.revision {
+            if read.version.compatible_with(&anchors.version) {
                 return decode_records(&read);
             }
         }
@@ -737,7 +737,10 @@ impl RecordAccess {
                     .map(|agent_id| ControlFilter::id(Kind::Agent, agent_id)),
             );
             let agent_records = self.store.read(&filters).await.map_err(store_error)?;
-            if agent_records.revision != project_records.revision {
+            if !agent_records
+                .version
+                .compatible_with(&project_records.version)
+            {
                 continue;
             }
             let mut provider_ids = HashSet::new();
@@ -758,7 +761,7 @@ impl RecordAccess {
                     .map(|provider_id| ControlFilter::id(Kind::Provider, provider_id)),
             );
             let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.revision == project_records.revision {
+            if read.version.compatible_with(&project_records.version) {
                 return decode_records(&read);
             }
         }
@@ -776,7 +779,9 @@ impl RecordAccess {
     ) -> Result<CommandTransaction, ApiError> {
         use ControlRecordKind as Kind;
         match command {
-            Command::ListCodexThreads { .. }
+            Command::BindProjectAgent { .. }
+            | Command::CloseProject { .. }
+            | Command::ListCodexThreads { .. }
             | Command::SyncCodexThread { .. }
             | Command::RetryRunCommit { .. } => {
                 unreachable!("Codex history commands bypass ordinary command transactions")

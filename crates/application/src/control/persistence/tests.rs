@@ -122,7 +122,11 @@ fn record(kind: Kind, id: &str, value: Value) -> ControlRecord {
     }
 }
 fn read(revision: u64, records: Vec<ControlRecord>) -> ControlRead {
-    ControlRead { revision, records }
+    ControlRead {
+        revision,
+        version: ait_ports::ControlVersion::legacy(revision),
+        records,
+    }
 }
 fn project(root: &str) -> ControlRecord {
     record(

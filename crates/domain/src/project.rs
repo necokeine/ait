@@ -186,5 +186,7 @@ pub fn validate_registration(
     Ok(())
 }
 
+mod ownership;
 #[cfg(test)]
 mod tests;
+pub use ownership::ProjectOwner;

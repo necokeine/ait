@@ -22,6 +22,7 @@ async fn stalled_consumer_and_credential_echo_fail_boundedly() {
     let (input, _held_input) = tokio::io::duplex(1);
     let (output, _held_output) = tokio::io::duplex(1);
     let lease = Lease {
+        project_owner: None,
         scope_id: "r".into(),
         worker_instance_id: "w".into(),
         lease_epoch: 1,
@@ -48,6 +49,7 @@ async fn stalled_consumer_and_credential_echo_fail_boundedly() {
         Reader::new(input, MAX_FRAME_BYTES),
         Writer::new(output, MAX_FRAME_BYTES),
         Lease {
+            project_owner: None,
             scope_id: "r".into(),
             worker_instance_id: "w".into(),
             lease_epoch: 1,

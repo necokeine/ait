@@ -329,6 +329,14 @@ pub struct StoreServer {
     pub lease: Lease,
 }
 impl StoreServer {
+    pub(crate) fn worker_lease(&self) -> WorkerLease {
+        WorkerLease {
+            project_owner: self.lease.project_owner.clone(),
+            run_id: RunId::new(&self.lease.scope_id),
+            instance_id: self.lease.worker_instance_id.clone(),
+            epoch: self.lease.lease_epoch,
+        }
+    }
     /// Execute one correlated request. Caller must serialize store calls.
     ///
     /// # Errors
@@ -409,6 +417,7 @@ impl StoreServer {
                     .store
                     .request_tool_approval(
                         &WorkerLease {
+                            project_owner: lease.project_owner.clone(),
                             run_id: id,
                             instance_id: lease.worker_instance_id.clone(),
                             epoch: lease.lease_epoch,
@@ -437,6 +446,7 @@ impl StoreServer {
                     .store
                     .consume_tool_grant(
                         &WorkerLease {
+                            project_owner: lease.project_owner.clone(),
                             run_id: id,
                             instance_id: lease.worker_instance_id.clone(),
                             epoch: lease.lease_epoch,
@@ -457,6 +467,7 @@ impl StoreServer {
                     .store
                     .request_tool_interaction(
                         &WorkerLease {
+                            project_owner: lease.project_owner.clone(),
                             run_id: id,
                             instance_id: lease.worker_instance_id.clone(),
                             epoch: lease.lease_epoch,
@@ -520,6 +531,7 @@ impl StoreServer {
             .store
             .commit_worker(
                 &WorkerLease {
+                    project_owner: lease.project_owner.clone(),
                     run_id: id,
                     instance_id: lease.worker_instance_id.clone(),
                     epoch: lease.lease_epoch,

@@ -8,7 +8,9 @@ fn server() -> (Server, mpsc::Receiver<Reply>, mpsc::Sender<Action>) {
     let (replies, results) = mpsc::channel(2);
     (
         Server {
+            project_execution: None,
             lease: Lease {
+                project_owner: None,
                 scope_id: "auxiliary".into(),
                 worker_instance_id: "worker".into(),
                 lease_epoch: 1,

@@ -33,7 +33,7 @@ const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
-  "project.codex-threads", "project.sync-codex-thread",
+  "project.codex-threads", "project.sync-codex-thread", "project.close", "project.bind-agent",
   "session.set-agent", "session.rename", "session.set-archived", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
   "run.resolve-approval", "run.resolve-tool-approval", "run.resolve-tool-interaction", "run.active",
@@ -60,6 +60,7 @@ interface DaemonData {
   projects: Array<{
     id: string; name: string; workdir: string; repo_url?: string | null;
     base_commit: string; root_message_id: string; default_agent_id?: string | null;
+    execution_blocked?: string | null;
   }>;
   agents: AgentView[];
   providers: AgentProvider[];
@@ -97,12 +98,15 @@ interface DaemonData {
 }
 
 export class DaemonClient {
+  private readonly projectOwners = new Map<string, unknown>();
+  private readonly entityProjects = new Map<string, string>();
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
   private viewRevision = 0;
   private eventAbort: AbortController | undefined;
   private eventLoop: Promise<void> | undefined;
   private eventCursor = 0;
+  private eventNamespace = "";
   private streamConnected: boolean | undefined;
   private readonly deliveries = new Map<number, ReadyRunEventDelivery>();
 
@@ -202,10 +206,19 @@ export class DaemonClient {
       return { positioned: false };
     }
     if (method === "project.create") {
-      const id = randomUUID();
-      await registerDesktopProject(this.post.bind(this), id, params as unknown as ProjectCreationInput);
+      const id = await registerDesktopProject(this.post.bind(this), randomUUID(), params as unknown as ProjectCreationInput);
       const [catalog, project] = await Promise.all([this.projectCatalog(), this.projectView(id)]);
       return { catalog, project, selectedProjectId: id };
+    }
+    if (method === "project.bind-agent") {
+      return this.post("/v1/project/bind-agent", "project", {
+        project_id: boundedId(params.projectId, "Project"),
+        source_agent_id: boundedId(params.sourceAgentId, "Saved Agent"),
+        agent_id: boundedId(params.agentId, "Local Agent"),
+      });
+    }
+    if (method === "project.close") {
+      return this.post("/v1/project/close", "project", { project_id: boundedId(params.projectId, "Project") });
     }
     if (method === "project.sessions") {
       const projectId = boundedId(params.projectId, "Project");
@@ -563,8 +576,13 @@ export class DaemonClient {
   }
 
   private async post(path: string, kind: string, body: unknown): Promise<unknown> {
+    const input = body as Record<string, unknown>;
+    const entityId = input.session_id ?? input.run_id ?? input.cron_id ?? input.source_session_id;
+    const projectId = typeof input.project_id === "string" ? input.project_id
+      : typeof entityId === "string" ? this.entityProjects.get(entityId) : undefined;
+    const owner = projectId ? this.projectOwners.get(projectId) : undefined;
     return this.unwrap(await fetch(`${endpoint}${path}`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      method: "POST", headers: { "content-type": "application/json", ...(owner ? { "x-ait-project-owner": JSON.stringify(owner) } : {}) }, body: JSON.stringify(body),
     }), kind);
   }
 
@@ -575,6 +593,15 @@ export class DaemonClient {
       throw new DaemonRejection(envelope.error?.message ?? "Ait daemon rejected the operation.", envelope.error?.code);
     }
     if (envelope.result.kind !== expectedKind) throw new Error("Ait daemon returned an unexpected response.");
+    const rows = Array.isArray(envelope.result.value) ? envelope.result.value : [envelope.result.value];
+    for (const row of rows) {
+      if (typeof row !== "object" || row === null) continue;
+      const record = row as Record<string, unknown>;
+      if (typeof record.id !== "string") continue;
+      if (record.owner) this.projectOwners.set(record.id, record.owner);
+      else if ("root_message_id" in record) this.projectOwners.delete(record.id);
+      if (typeof record.project_id === "string") this.entityProjects.set(record.id, record.project_id);
+    }
     return envelope.result.value;
   }
 
@@ -588,7 +615,7 @@ export class DaemonClient {
     let retryDelay = 250;
     while (!signal.aborted) {
       try {
-        const response = await fetch(`${endpoint}/v1/event/stream?after=${this.eventCursor}`, { signal });
+        const response = await fetch(`${endpoint}/v1/event/stream?after=${this.eventCursor}&namespace=${encodeURIComponent(this.eventNamespace)}`, { signal });
         if (!response.ok || !response.body) throw new Error(`event stream returned HTTP ${response.status}`);
         this.publishConnection(true);
         retryDelay = 250;
@@ -627,6 +654,11 @@ export class DaemonClient {
     try {
       const event = JSON.parse(data) as ControlEvent;
       if (!Number.isSafeInteger(event.cursor) || typeof event.kind !== "string") return;
+      if (typeof event.namespace === "string" && event.namespace !== this.eventNamespace) {
+        if (this.eventNamespace) this.publish({ type: "resync", cursor: event.cursor });
+        this.eventNamespace = event.namespace;
+        this.eventCursor = 0;
+      }
       this.eventCursor = cursorAfterEvent(this.eventCursor, event);
       this.publish({ type: "event", event });
     } catch {
@@ -687,6 +719,7 @@ export class DaemonClient {
         id: project.id, name: project.name, workdir: project.workdir, description: "",
         repoUrl: project.repo_url ?? undefined, baseCommit: project.base_commit,
         rootMessageId: project.root_message_id, defaultAgentId: project.default_agent_id ?? null,
+        executionBlocked: project.execution_blocked ?? undefined,
       })),
     };
   }
@@ -719,6 +752,8 @@ export class DaemonClient {
       this.get("/v1/agent/list", "agents") as Promise<DaemonData["agents"]>,
     ]);
     for (const record of [...sessions, ...messages, ...runs]) assertProject(record, projectId);
+    // The history reads acquire ownership; collect its current request fence afterward.
+    await this.get("/v1/project/list", "projects");
     const messageAgents = messageAgentIds(messages, runs);
     const activeRunIds = new Set(sessions.flatMap((session) => session.active_run_id ? [session.active_run_id] : []));
     const runProgress = progressValues

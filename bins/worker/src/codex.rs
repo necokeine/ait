@@ -228,6 +228,7 @@ async fn run(
             }
             let result = adapter
                 .open(CodexThreadInvocation {
+                    project_execution: None,
                     request_id,
                     thread_id,
                     developer_instructions,

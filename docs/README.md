@@ -1,5 +1,8 @@
 # 概念与架构文档
 
+- [ADR-018：Project 独立恢复与运行期独占接管](decisions/adr-018-portable-project-runtime-ownership.md)（Accepted）：format-3 以运行锁和接管代次替代永久 coordinator 归属，项目事务/版本/事件自足，全局索引可重建；旧格式通过显式离线转换进入新协议。
+  [实现与验证报告](reports/adr-018-portable-project-runtime-ownership.md)记录接管、绑定、恢复与平台限制。
+
 - [ADR-017：Codex 统一原生 Thread 与 Worker](decisions/adr-017-unified-native-codex-worker.md)：所有 Codex 请求通过 ait-worker，删除每 Run worktree 与历史 prompt 包装；旧 Ait 会话一次性清理，自动 Git 提交成为独立 Run 收尾。
   [实现与验证报告](reports/adr-017-unified-native-execution.md)记录当前能力、回归范围与覆盖率；下列历史 ADR 中冲突的 Codex 执行条款以 ADR-017 为准。
   [项目菜单导入验证](reports/codex-project-import.md)：显式发现匹配 Thread、选择导入或同步、服务端项目归属筛选与桌面异步隔离。

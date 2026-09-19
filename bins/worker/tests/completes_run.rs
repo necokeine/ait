@@ -211,6 +211,7 @@ async fn stdio_process_commits_message_and_terminal_barrier() {
     let store = Arc::new(DaemonStore::seeded(run, messages));
     let bootstrap = Bootstrap {
         lease: Lease {
+            project_owner: None,
             scope_id: "run-worker-test".into(),
             worker_instance_id: "offline-test".into(),
             lease_epoch: 1,
@@ -458,7 +459,7 @@ if mode=='pollution':
     print('secret stdout pollution',flush=True);sys.exit(1)
 if mode=='exit':sys.exit(7)
 if mode=='handshake':time.sleep(10)
-def send(sequence,lease,payload,major=2,minor=0):
+def send(sequence,lease,payload,major={protocol_major},minor=0):
     data=json.dumps(dict(
         protocol_major=major,
         protocol_minor=minor,
@@ -470,8 +471,8 @@ def send(sequence,lease,payload,major=2,minor=0):
 def read():
     length=struct.unpack('>I',sys.stdin.buffer.read(4))[0]
     return json.loads(sys.stdin.buffer.read(length))
-major=3 if mode=='version' else 2
-capabilities=['run-store-v1','commit-ack-v1','lease-v1','tool-grants-v1','tool-interactions-v1','native-codex-v1']
+major={protocol_major}+1 if mode=='version' else {protocol_major}
+capabilities={capabilities}
 send(1,None,dict(
     type='hello',
     protocol_major=major,
@@ -489,7 +490,10 @@ child=subprocess.Popen(['sleep','30'])
 open({pidfile:?},'w').write(str(child.pid))
 time.sleep(30)
 ",
-            pidfile = pidfile.to_string_lossy()
+            pidfile = pidfile.to_string_lossy(),
+            protocol_major = ait_contracts::worker::PROTOCOL_MAJOR,
+            capabilities =
+                serde_json::to_string(ait_contracts::worker::REQUIRED_CAPABILITIES).unwrap()
         );
         std::fs::write(&worker, script).unwrap();
         std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -497,6 +501,7 @@ time.sleep(30)
         let store = Arc::new(DaemonStore::seeded(run, messages));
         let bootstrap = Bootstrap {
             lease: Lease {
+                project_owner: None,
                 scope_id: "run-worker-test".into(),
                 worker_instance_id: "fault".into(),
                 lease_epoch: 1,
@@ -556,6 +561,7 @@ async fn daemon_pipe_eof_terminates_real_worker() {
     writer.constrain(ack.max_frame_bytes);
     writer.write(None, Payload::HelloAck(ack)).await.unwrap();
     let lease = Lease {
+        project_owner: None,
         scope_id: "eof-run".into(),
         worker_instance_id: "eof-worker".into(),
         lease_epoch: 1,

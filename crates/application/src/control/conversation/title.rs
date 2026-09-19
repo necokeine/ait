@@ -107,10 +107,21 @@ impl LocalControlService {
         session_id: String,
         user_prompt: String,
     ) -> Response {
-        match self
-            .try_generate_session_title(&session_id, &user_prompt)
-            .await
-        {
+        let outcome = async {
+            let loaded = self.records().read_session_record(&session_id).await?;
+            let session = loaded
+                .original
+                .sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+            let service = self.project_service(&session.project_id).await?;
+            service
+                .try_generate_session_title(&session_id, &user_prompt)
+                .await
+        }
+        .await;
+        match outcome {
             Ok(session) => Response::success(CommandResult::Session(session.view())),
             Err(error) => Response::failure(error),
         }

@@ -127,7 +127,7 @@ pub(super) fn open_project(
     Ok(connection)
 }
 
-fn exclude_history(root: &Path) -> Result<(), ControlStoreError> {
+pub(crate) fn exclude_history(root: &Path) -> Result<(), ControlStoreError> {
     let top = git(root, &["rev-parse", "--show-toplevel"])?;
     if fs::canonicalize(top.trim()).map_err(io_error)?
         != fs::canonicalize(root).map_err(io_error)?

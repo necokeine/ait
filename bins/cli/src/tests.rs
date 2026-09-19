@@ -29,6 +29,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         format_version: 3,
         source_revision: 1,
         project: ProjectView {
+            owner: None,
+            execution_blocked: None,
             id: "p".into(),
             name: "Project".into(),
             workdir: "/old".into(),
@@ -65,6 +67,8 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         };
     }
     case!(&["project", "list"] => ListProjects);
+    case!(&["project","close","--project-id","p"] => CloseProject { project_id:"p".into() });
+    case!(&["project","bind-agent","--project-id","p","--source-agent-id","saved","--agent-id","local"] => BindProjectAgent { project_id:"p".into(),source_agent_id:"saved".into(),agent_id:"local".into() });
     case!(
         &["project", "register", "--id", "id", "--name", "name", "--workdir", "workdir",
           "--repo-url", "repo_url"] => RegisterProject {
@@ -563,11 +567,11 @@ fn malformed_daemon_addresses_and_endpoint_flag_are_rejected() {
 fn event_list_preserves_cursor_and_default() {
     assert!(matches!(
         action(&["event", "list", "--after", "12"], ""),
-        Action::Events { after: 12 }
+        Action::Events { after: 12, .. }
     ));
     assert!(matches!(
         action(&["event", "list"], ""),
-        Action::Events { after: 0 }
+        Action::Events { after: 0, .. }
     ));
 }
 

@@ -22,7 +22,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         input::StdinSource::Redirected
     };
     let action = arguments.command.into_action(&mut stdin.lock(), source)?;
-    let client = reqwest::Client::new();
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(owner) = arguments.project_owner {
+        let parsed: ait_domain::ProjectOwner = serde_json::from_str(&owner)?;
+        headers.insert(
+            "x-ait-project-owner",
+            serde_json::to_string(&parsed)?.parse()?,
+        );
+    }
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?;
     match action {
         Action::Execute(command) => {
             let response = send(&client, &endpoint, &command)
@@ -30,9 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|error| request_error(error, &command))?;
             print_response(&response, &command);
         }
-        Action::Events { after } => {
+        Action::Events { after, namespace } => {
             let body = client
-                .get(format!("{endpoint}/v1/event/list?after={after}"))
+                .get(format!("{endpoint}/v1/event/list"))
+                .query(&[("after", after.to_string()), ("namespace", namespace)])
                 .send()
                 .await?
                 .error_for_status()?
@@ -131,6 +142,8 @@ async fn send(
 const fn operation_path(command: &Command) -> &'static str {
     match command {
         Command::RegisterProject { .. } => "/v1/project/register",
+        Command::CloseProject { .. } => "/v1/project/close",
+        Command::BindProjectAgent { .. } => "/v1/project/bind-agent",
         Command::UpdateProject { .. } => "/v1/project/update",
         Command::SetProjectDefaultAgent { .. } => "/v1/project/set-default-agent",
         Command::RegisterAgent { .. } => "/v1/agent/register",

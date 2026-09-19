@@ -61,12 +61,35 @@ pub(in crate::control) enum CommandTransaction {
     Settings(RecordTransaction<SettingsContext>),
 }
 pub(in crate::control) struct CommandCommit {
-    pub(in crate::control) revision: u64,
+    pub(in crate::control) version: ait_ports::ControlVersion,
     pub(in crate::control) changes: Vec<ControlChange>,
     pub(in crate::control) events: Vec<PendingEvent>,
     pub(in crate::control) outcome: CommandOutcome,
 }
 impl CommandTransaction {
+    pub(in crate::control) fn version(&self) -> &ait_ports::ControlVersion {
+        match self {
+            Self::NewSession(transaction) => &transaction.version,
+            Self::SessionBinding(transaction) => &transaction.version,
+            Self::Agent(transaction) => &transaction.version,
+            Self::Agents(transaction) => &transaction.version,
+            Self::Archive(transaction) => &transaction.version,
+            Self::Conversation(transaction) => &transaction.version,
+            Self::CronCreate(transaction) => &transaction.version,
+            Self::CronTrigger(transaction) => &transaction.version,
+            Self::Crons(transaction) => &transaction.version,
+            Self::Messages(transaction) => &transaction.version,
+            Self::ProjectAgent(transaction) => &transaction.version,
+            Self::ProjectRegistration(transaction) => &transaction.version,
+            Self::Projects(transaction) => &transaction.version,
+            Self::Provider(transaction) => &transaction.version,
+            Self::RunControl(transaction) => &transaction.version,
+            Self::Runs(transaction) => &transaction.version,
+            Self::SessionConfig(transaction) => &transaction.version,
+            Self::Sessions(transaction) => &transaction.version,
+            Self::Settings(transaction) => &transaction.version,
+        }
+    }
     pub(in crate::control) fn check_admission(&self, command: &Command) -> Result<(), ApiError> {
         match self {
             Self::ProjectRegistration(tx) => {
@@ -365,7 +388,7 @@ impl CommandTransaction {
                 let mut $state = $loaded.original.clone();
                 let (outcome, events) = $expr?;
                 Ok(CommandCommit {
-                    revision: $loaded.revision,
+                    version: $loaded.version.clone(),
                     changes: $loaded.changes(&$state).map_err(store_error)?,
                     events,
                     outcome,

@@ -9,11 +9,12 @@ mod scheduler;
 
 pub use codex::{
     CodexPreparedThread, CodexThreadConnection, CodexThreadInvocation, CodexThreadWriter,
+    ProjectExecution,
 };
 pub use control::{
     ControlChange, ControlFilter, ControlRead, ControlRecord, ControlRecordKind, ControlStore,
-    ControlStoreError, DurableEvent, DurableEventPage, EventBounds, PendingEvent,
-    ProgressCheckpoint,
+    ControlStoreError, ControlVersion, DurableEvent, DurableEventPage, EventBounds, PendingEvent,
+    ProgressCheckpoint, ProjectVersion,
 };
 pub use dispatch::{ApiRunDispatch, RunDispatcher, RunMutation, RunReceipt, WorkerLease};
 pub use provider::{

@@ -52,7 +52,7 @@ pub use permission::{
     RunPermissionProfile, SandboxAccess, ToolApprovalRecord, ToolApprovalState, ToolApprovalTarget,
     ToolGrant,
 };
-pub use project::{Project, ProjectDefaults, ProjectId, ProjectStatus};
+pub use project::{Project, ProjectDefaults, ProjectId, ProjectOwner, ProjectStatus};
 pub use run::{
     CheckpointId, RetryPolicy, Run, RunAttempt, RunAttemptId, RunAttemptReason, RunAttemptStatus,
     RunBudget, RunId, RunPhase, RunQueueItem, RunQueueItemId, RunQueueItemKind, RunQueueItemStatus,

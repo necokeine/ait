@@ -346,6 +346,7 @@ function bindInteractions(): void {
   $("#project-create-trigger").addEventListener("click", openProjectDialog);
   $("#project-close").addEventListener("click", closeProjectDialog);
   $("#project-cancel").addEventListener("click", closeProjectDialog);
+  $("#project-bind-agent").addEventListener("click", () => { void bindProjectAgent(); });
   $("#project-settings-close").addEventListener("click", closeProjectSettingsDialog);
   $("#project-settings-cancel").addEventListener("click", closeProjectSettingsDialog);
   $("#rename-session-close").addEventListener("click", closeRenameSessionDialog);
@@ -438,6 +439,8 @@ function bindInteractions(): void {
     closeProjectContextMenu();
     if (project && view) codexImport.open({ project, agents: view.agents, providers: view.providers });
   });
+  $("#project-open-action").addEventListener("click", () => { void changeProjectOwnership(true); });
+  $("#project-close-action").addEventListener("click", () => { void changeProjectOwnership(false); });
   projectContextMenu.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
@@ -1564,10 +1567,42 @@ function closeProjectDialog(): void {
   projectDialog.classList.add("is-hidden");
 }
 
+async function changeProjectOwnership(open: boolean): Promise<void> {
+  const project = view?.projects.find((candidate) => candidate.id === projectContextId);
+  closeProjectContextMenu();
+  if (!project) return;
+  try {
+    if (open) {
+      const result = await window.ait.createProject({ name: project.name, workdir: project.workdir });
+      replaceProjectCatalog(result.catalog);
+      replaceProjectView(result.selectedProjectId, result.project);
+      sidebar.expanded.add(project.id);
+    } else {
+      await window.ait.closeProject(project.id);
+      sidebar.expanded.delete(project.id);
+      if (selectedProjectId === project.id) {
+        selectedSessionId = undefined;
+        replaceProjectView(undefined, emptyProjectView());
+      }
+    }
+    renderAll();
+    showToast(`${project.name} ${open ? "opened" : "closed"}.`);
+  } catch (error) { showToast(errorMessage(error), true); }
+}
+
 function openProjectSettingsDialog(projectId: string | undefined): void {
   const project = view?.projects.find((candidate) => candidate.id === projectId);
   if (!project) return;
   configuringProjectId = project.id;
+  $("#project-runtime-status").textContent = project.executionBlocked ?? "";
+  const sourceIds = new Set(view?.sessions.filter((session) => session.projectId === project.id).map((session) => session.agentId) ?? []);
+  if (project.defaultAgentId) sourceIds.add(project.defaultAgentId);
+  $<HTMLSelectElement>("#project-binding-source").innerHTML = [...sourceIds].map((id) => {
+    const name = view?.agents.find((agent) => agent.id === id)?.name ?? id;
+    return `<option value="${escapeAttribute(id)}">${escapeHtml(name)}</option>`;
+  }).join("");
+  $<HTMLSelectElement>("#project-binding-target").innerHTML = agentOptions();
+  $<HTMLButtonElement>("#project-bind-agent").disabled = sourceIds.size === 0;
   const options = agentOptions();
   const backend = $<HTMLSelectElement>("#project-backend");
   const availableAgentId = availableProjectDefaultAgentId(project, view?.agents ?? []);
@@ -1583,6 +1618,20 @@ function openProjectSettingsDialog(projectId: string | undefined): void {
   $("#project-settings-title").textContent = project.name;
   $("#project-backend-copy").textContent = `New Sessions in ${project.name} use this Agent by default.`;
   projectSettingsDialog.classList.remove("is-hidden");
+}
+
+async function bindProjectAgent(): Promise<void> {
+  if (!configuringProjectId) return;
+  const button = $<HTMLButtonElement>("#project-bind-agent");
+  const sourceAgentId = $<HTMLSelectElement>("#project-binding-source").value;
+  const agentId = $<HTMLSelectElement>("#project-binding-target").value;
+  if (!sourceAgentId || !agentId) return;
+  button.disabled = true;
+  try {
+    await window.ait.bindProjectAgent({ projectId: configuringProjectId, sourceAgentId, agentId });
+    showToast("Saved Agent connected to the selected local preset.");
+  } catch (error) { showToast(errorMessage(error), true); }
+  finally { button.disabled = false; }
 }
 
 function closeProjectSettingsDialog(): void {
@@ -1681,7 +1730,7 @@ async function createProject(): Promise<void> {
     closeProjectDialog();
     showPage("sessions");
     renderAll();
-    showToast(`${input.name} created with the selected backend.`);
+    showToast(`${input.name} opened.`);
   } catch (error) {
     showToast(errorMessage(error), true);
   } finally {
@@ -2176,7 +2225,9 @@ function showToast(message: string, error = false): void {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "The operation could not be completed.";
+  return error instanceof Error
+    ? error.message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, "")
+    : "The operation could not be completed.";
 }
 
 function roleLetter(role: DesktopMessage["role"]): string {

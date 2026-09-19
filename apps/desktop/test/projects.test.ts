@@ -105,6 +105,7 @@ test("name-only Desktop creation omits workdir through the HTTP bridge", async (
   const calls: unknown[] = [];
   await registerDesktopProject(async (path, kind, body) => {
     calls.push({ path, kind, body: JSON.parse(JSON.stringify(body)) });
+    return { id: "new-project" };
   }, "new-project", input);
   assert.deepEqual(calls, [
     { path: "/v1/project/register", kind: "project", body: { id: "new-project", name: "中文 project" } },
@@ -118,6 +119,7 @@ test("Project creation can inherit the global Default Agent without writing an o
   const calls: unknown[] = [];
   await registerDesktopProject(async (path, kind, body) => {
     calls.push({ path, kind, body });
+    return { id: "global-project" };
   }, "global-project", input);
   assert.deepEqual(calls, [{
     path: "/v1/project/register",
@@ -130,7 +132,7 @@ test("explicit Desktop directories keep their path and default folder name", asy
   const input = projectCreationInput("", "/tmp/existing project", "codex-local");
   assert.deepEqual(input, { name: "existing project", workdir: "/tmp/existing project", agentId: "codex-local" });
   const calls: unknown[] = [];
-  await registerDesktopProject(async (_path, _kind, body) => { calls.push(body); }, "p", input);
+  await registerDesktopProject(async (_path, _kind, body) => { calls.push(body); return { id: "p" }; }, "p", input);
   assert.equal((calls[0] as { workdir: string }).workdir, "/tmp/existing project");
   assert.throws(() => projectCreationInput(" ", "", "codex-local"), /project name/);
 });

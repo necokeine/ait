@@ -20,7 +20,7 @@ use ait_domain::DomainError;
 use ait_ports::{
     CodexThreadInvocation, ControlChange, ControlFilter, ControlRecordKind, ControlStore,
 };
-use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
+use ait_storage_sqlite::PortableSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -38,9 +38,12 @@ mod native;
 use native::{NativeHandler, NativeReply};
 
 struct SeedAgent;
+static RECOVERY_PROJECT_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static NATIVE_PROJECT_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn startup_scan_defers_an_offline_project_without_losing_its_run() {
+    let _identity = RECOVERY_PROJECT_TEST.lock().await;
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -106,6 +109,7 @@ async fn macos_gui_path_reaches_codex_in_the_worker() {
     reason = "the daemon acceptance flow intentionally remains one end-to-end scenario"
 )]
 async fn assert_codex_http_response(gui_launch: bool) {
+    let _identity = NATIVE_PROJECT_TEST.lock().await;
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -343,6 +347,7 @@ async fn assert_codex_http_response(gui_launch: bool) {
 #[tokio::test]
 async fn daemon_is_ready_and_rejects_unsent_native_recovery_without_replay() {
     const DESKTOP_READINESS_WINDOW: Duration = Duration::from_secs(15);
+    let _identity = RECOVERY_PROJECT_TEST.lock().await;
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -434,6 +439,7 @@ async fn daemon_is_ready_and_rejects_unsent_native_recovery_without_replay() {
 
 #[tokio::test]
 async fn bind_failure_does_not_claim_or_fence_a_queued_recovery() {
+    let _identity = RECOVERY_PROJECT_TEST.lock().await;
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -542,8 +548,8 @@ async fn seed_queued_run(database: &Path, project: &Path) -> String {
     session.value["active_run_id"] = Value::String(completed.id.clone());
     session.value["current_message_id"] = Value::String(completed.base_message_id.clone());
     store
-        .apply(
-            state.revision,
+        .apply_versioned(
+            &state.version,
             vec![ControlChange::Put(run), ControlChange::Put(session)],
             Vec::new(),
         )

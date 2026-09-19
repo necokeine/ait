@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// Protocol value `PROTOCOL_MAJOR`.
-pub const PROTOCOL_MAJOR: u16 = 2;
+pub const PROTOCOL_MAJOR: u16 = 3;
 /// Protocol value `PROTOCOL_MINOR`.
 pub const PROTOCOL_MINOR: u16 = 0;
 /// Protocol value `MINIMUM_PROTOCOL_MINOR`.
@@ -21,6 +21,7 @@ pub const REQUIRED_CAPABILITIES: &[&str] = &[
     "tool-grants-v1",
     "tool-interactions-v1",
     "native-codex-v1",
+    "project-owner-v1",
 ];
 /// Protocol value `SUPPORTED_CAPABILITIES`.
 pub const SUPPORTED_CAPABILITIES: &[&str] = REQUIRED_CAPABILITIES;
@@ -74,6 +75,8 @@ impl std::error::Error for ProtocolError {}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 /// Data carried by `Lease`.
 pub struct Lease {
+    /// Project owner acquisition; absent for catalog-only discovery operations.
+    pub project_owner: Option<ait_domain::ProjectOwner>,
     /// Execution scope identity: an API Run or an independent Codex operation.
     pub scope_id: String,
     /// Worker instance identifier.

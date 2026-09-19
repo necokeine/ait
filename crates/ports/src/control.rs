@@ -2,6 +2,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod version;
+pub use version::{ControlVersion, ProjectVersion};
+
 /// A durable control-plane entity family.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum ControlRecordKind {
@@ -164,6 +167,8 @@ pub struct ControlRecord {
 pub struct ControlRead {
     /// Revision value.
     pub revision: u64,
+    /// Catalog and Project dependencies observed by this read.
+    pub version: ControlVersion,
     /// Records value.
     pub records: Vec<ControlRecord>,
 }
@@ -264,6 +269,86 @@ impl std::error::Error for ControlStoreError {}
 /// Record-oriented persistence seam for the local control plane and event outbox.
 #[async_trait]
 pub trait ControlStore: Send + Sync {
+    /// Validates the runtime owner before a worker receives an executable bootstrap.
+    async fn register_worker_process(
+        &self,
+        _owner: &ait_domain::ProjectOwner,
+        _pid: u32,
+    ) -> Result<(), ControlStoreError> {
+        Ok(())
+    }
+    /// Removes a process claim only after its owned process tree has stopped.
+    async fn release_worker_process(
+        &self,
+        _owner: &ait_domain::ProjectOwner,
+        _pid: u32,
+    ) -> Result<(), ControlStoreError> {
+        Ok(())
+    }
+    /// Stops new Run and worker admission while preserving writes required for cancellation.
+    /// Returns an error when this runtime does not own the Project.
+    async fn begin_project_drain(&self, _project_id: &str) -> Result<(), ControlStoreError> {
+        Ok(())
+    }
+
+    /// Whether startup recovery may execute this Project using the current catalog.
+    /// Returns a storage error if the owned Project cannot be inspected.
+    async fn project_can_recover(&self, _project_id: &str) -> Result<bool, ControlStoreError> {
+        Ok(true)
+    }
+
+    /// Releases a temporary startup-scan guard without marking the Project explicitly closed.
+    /// Returns an error if a worker still owns execution in this Project.
+    async fn release_idle_project(&self, _project_id: &str) -> Result<(), ControlStoreError> {
+        Ok(())
+    }
+
+    /// Whether this runtime retains ownership; legacy stores are always open.
+    async fn project_is_open(&self, _project_id: &str) -> Result<bool, ControlStoreError> {
+        Ok(true)
+    }
+
+    /// Explicitly adopts a validated local Agent preset for a saved Project reference.
+    async fn bind_project_agent(
+        &self,
+        _version: &ControlVersion,
+        _project_id: &str,
+        _source_agent_id: &str,
+        _agent_id: &str,
+    ) -> Result<(), ControlStoreError> {
+        Err(ControlStoreError::Other(
+            "Project configuration binding is unavailable".into(),
+        ))
+    }
+
+    /// Opens an existing Project by directory, retaining its runtime ownership.
+    /// Returns `None` when the directory has no initialized Project database.
+    async fn open_project(
+        &self,
+        workdir: &str,
+    ) -> Result<Option<ControlRecord>, ControlStoreError> {
+        Ok(self
+            .read(&[ControlFilter::ProjectWorkdir {
+                workdir: workdir.to_owned(),
+            }])
+            .await?
+            .records
+            .into_iter()
+            .find(|record| record.kind == ControlRecordKind::Project))
+    }
+
+    /// Releases a Project after the application has drained all its execution work.
+    async fn close_project(&self, _project_id: &str) -> Result<(), ControlStoreError> {
+        Err(ControlStoreError::Other(
+            "Project closing is unavailable for this store".into(),
+        ))
+    }
+
+    /// Namespace of the local event stream; a changed namespace requires a fresh view.
+    async fn event_namespace(&self) -> Result<String, ControlStoreError> {
+        Ok(String::new())
+    }
+
     /// Reads only records selected by the supplied filters.
     async fn read(&self, filters: &[ControlFilter]) -> Result<ControlRead, ControlStoreError>;
 
@@ -274,6 +359,17 @@ pub trait ControlStore: Send + Sync {
         changes: Vec<ControlChange>,
         events: Vec<PendingEvent>,
     ) -> Result<u64, ControlStoreError>;
+
+    /// Commits changes against all observed dependencies and owner generations.
+    /// Legacy embedded adapters retain their single-revision transaction semantics.
+    async fn apply_versioned(
+        &self,
+        version: &ControlVersion,
+        changes: Vec<ControlChange>,
+        events: Vec<PendingEvent>,
+    ) -> Result<u64, ControlStoreError> {
+        self.apply(version.catalog_revision, changes, events).await
+    }
 
     /// Replays at most `limit` durable events after `cursor`.
     ///

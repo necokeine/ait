@@ -129,15 +129,13 @@ async fn registration_facts_are_verified_again_on_cas_conflict_before_persisting
     assert_eq!(
         *workspace.trace.lock().unwrap(),
         [
-            "facts", "prepare", "head", "verify", "persist", "verify", "persist"
+            "facts", "facts", "prepare", "head", "verify", "persist", "verify", "persist"
         ]
     );
     workspace.trace.lock().unwrap().clear();
-    assert!(!service.execute(registration()).await.ok);
-    assert!(
-        workspace.trace.lock().unwrap().is_empty(),
-        "invalid identity must fail before I/O"
-    );
+    let reopened = service.execute(registration()).await;
+    assert!(reopened.ok);
+    assert_eq!(*workspace.trace.lock().unwrap(), ["facts"]);
 }
 
 #[tokio::test]

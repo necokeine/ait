@@ -128,6 +128,7 @@ fn legacy_redundant_projection_is_rewritten_by_the_record_transaction() {
     value["phase"] = json!("calling_agent");
     let read = ControlRead {
         revision: 4,
+        version: ait_ports::ControlVersion::legacy(4),
         records: vec![ControlRecord {
             kind: ControlRecordKind::Run,
             id: "run".into(),

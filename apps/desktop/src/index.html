@@ -193,9 +193,16 @@
           <div class="action-form">
             <label class="field-label" for="project-settings-name">Name</label>
             <input id="project-settings-name" type="text" autocomplete="off" required />
+            <p id="project-runtime-status" class="field-help"></p>
             <p id="project-backend-copy" class="field-help">Choose the default Agent for new Sessions.</p>
             <label class="field-label" for="project-backend">Default Agent</label>
             <select id="project-backend"></select>
+            <p class="field-help">To use saved sessions from another Ait installation, explicitly connect their saved Agent to a local preset. Saved Codex sessions require native source verification and remain unavailable for rebinding.</p>
+            <label class="field-label" for="project-binding-source">Saved Agent</label>
+            <select id="project-binding-source"></select>
+            <label class="field-label" for="project-binding-target">Local Agent preset</label>
+            <select id="project-binding-target"></select>
+            <button id="project-bind-agent" class="secondary-button" type="button">Connect Agent</button>
           </div>
           <footer class="settings-footer">
             <button id="project-settings-cancel" class="secondary-button" type="button">Cancel</button>
@@ -205,8 +212,10 @@
       </div>
 
       <div id="project-context-menu" class="context-menu is-hidden" role="menu" aria-label="Project actions">
+        <button id="project-open-action" type="button" role="menuitem">Open project</button>
         <button id="project-codex-action" type="button" role="menuitem">Pull from Codex…</button>
         <button id="project-settings-action" type="button" role="menuitem">Project settings</button>
+        <button id="project-close-action" type="button" role="menuitem">Close project</button>
       </div>
 
       <div id="codex-import-dialog" class="modal-backdrop is-hidden" role="dialog" aria-modal="true" aria-labelledby="codex-import-title"></div>

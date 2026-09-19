@@ -30,6 +30,9 @@ pub(crate) struct Arguments {
         value_parser = clap::value_parser!(u16).range(1..)
     )]
     pub(crate) port: u16,
+    /// Expected Project owner JSON returned by project reads; rejects stale requests.
+    #[arg(long, global = true)]
+    pub(crate) project_owner: Option<String>,
     #[command(subcommand)]
     pub(crate) command: CliCommand,
 }
@@ -112,6 +115,20 @@ pub(crate) struct ImportArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum ProjectCommand {
+    /// Bind a saved Project Agent to an enabled local preset without rewriting history.
+    BindAgent {
+        #[arg(long,value_parser=input::id)]
+        project_id: String,
+        #[arg(long,value_parser=input::id)]
+        source_agent_id: String,
+        #[arg(long,value_parser=input::id)]
+        agent_id: String,
+    },
+    /// Cancel active work and release this backend's Project lock without deleting files.
+    Close {
+        #[arg(long, value_parser = input::id)]
+        project_id: String,
+    },
     /// List Projects.
     List,
     /// Register a workdir, or create a named folder in Documents, with a Git baseline.
@@ -412,6 +429,9 @@ pub(crate) enum EventCommand {
     List {
         #[arg(long, default_value_t = 0)]
         after: u64,
+        /// Catalog/feed namespace from the previous event page; changes reset the cursor.
+        #[arg(long, default_value = "")]
+        namespace: String,
     },
 }
 
@@ -620,7 +640,7 @@ impl ApprovalCommand {
 pub(crate) enum Action {
     Execute(Command),
     Export { command: Command, output: PathBuf },
-    Events { after: u64 },
+    Events { after: u64, namespace: String },
 }
 
 impl CliCommand {
@@ -639,8 +659,8 @@ impl CliCommand {
             Self::Cron { command } => command.into(),
             Self::Config { command } => command.into_command(stdin)?,
             Self::Event {
-                command: EventCommand::List { after },
-            } => return Ok(Action::Events { after }),
+                command: EventCommand::List { after, namespace },
+            } => return Ok(Action::Events { after, namespace }),
             Self::Export(args) => return Ok(args.into()),
             Self::Import(args) => args.read(stdin)?,
         };
@@ -696,6 +716,16 @@ impl ImportArgs {
 impl ProjectCommand {
     fn into_action(self, stdin: &mut dyn Read) -> Result<Action, io::Error> {
         let command = match self {
+            ProjectCommand::BindAgent {
+                project_id,
+                source_agent_id,
+                agent_id,
+            } => Command::BindProjectAgent {
+                project_id,
+                source_agent_id,
+                agent_id,
+            },
+            ProjectCommand::Close { project_id } => Command::CloseProject { project_id },
             ProjectCommand::List => Command::ListProjects,
             ProjectCommand::Register {
                 id,

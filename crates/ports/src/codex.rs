@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 /// One prepared writer for a persistent native Codex Thread.
 #[derive(Clone)]
 pub struct CodexThreadInvocation {
+    /// Project execution capability carried across the worker boundary.
+    pub project_execution: Option<Arc<dyn ProjectExecution>>,
     /// Stable Ait Run identity and native input correlation value.
     pub request_id: String,
     /// Existing native Thread identity; absent creates a persistent Thread.
@@ -31,10 +33,28 @@ pub struct CodexThreadInvocation {
     pub cancellation: CancellationToken,
 }
 
+/// Lifetime evidence and durable process claims for a native execution.
+#[async_trait]
+pub trait ProjectExecution: Send + Sync {
+    /// Acquisition identity stamped into every worker frame.
+    fn owner(&self) -> ait_domain::ProjectOwner;
+    /// Persist a process group before any request can produce side effects.
+    async fn register_process(&self, pid: u32) -> Result<(), DomainError>;
+    /// Remove the claim after the supervisor proves the process tree stopped.
+    async fn release_process(&self, pid: u32) -> Result<(), DomainError>;
+}
+
 impl std::fmt::Debug for CodexThreadInvocation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CodexThreadInvocation")
+            .field(
+                "project_execution",
+                &self
+                    .project_execution
+                    .as_ref()
+                    .map(|project| project.owner()),
+            )
             .field("request_id", &self.request_id)
             .field("thread_id", &self.thread_id)
             .field("prompt", &self.prompt)

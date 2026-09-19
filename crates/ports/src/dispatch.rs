@@ -41,6 +41,8 @@ pub struct RunReceipt {
 /// Lease fencing tuple kept outside the domain aggregate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkerLease {
+    /// Project runtime fence; absent only in embedded/test stores without ownership.
+    pub project_owner: Option<ait_domain::ProjectOwner>,
     /// Fixed Run.
     pub run_id: RunId,
     /// Unique spawned executor.

@@ -271,6 +271,8 @@ fn nonexistent_native_cwd_does_not_bind_by_lexical_prefix() {
     let directory = tempfile::tempdir().unwrap();
     let mut state = CodexImportContext::default();
     state.projects.push(ProjectRecord {
+        owner: None,
+        execution_blocked: None,
         id: "project".into(),
         name: "Project".into(),
         workdir: directory.path().display().to_string(),

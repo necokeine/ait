@@ -34,6 +34,7 @@ fn fixture(
     })
     .unwrap();
     let request = CodexThreadInvocation {
+        project_execution: None,
         request_id: "correlation".into(),
         thread_id: Some("thread".into()),
         developer_instructions: None,

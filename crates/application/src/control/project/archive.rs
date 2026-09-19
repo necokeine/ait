@@ -96,7 +96,12 @@ pub(in crate::control) fn export_project(
         format_version: PROJECT_EXPORT_VERSION,
         source_revision,
         providers,
-        project: project.view(),
+        project: {
+            let mut view = project.view();
+            view.owner = None;
+            view.execution_blocked = None;
+            view
+        },
         agents: agents
             .iter()
             .map(crate::control::catalog::AgentRecord::view)

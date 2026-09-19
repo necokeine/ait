@@ -85,7 +85,7 @@ impl LocalControlService {
                 );
                 let control_guard =
                     RunControlGuard::new(Arc::clone(&self.run_controls), &run_id, &control);
-                let service = Arc::clone(self);
+                let service = self.run_service(&run).await?;
                 tokio::spawn(async move {
                     let _owned = (
                         session_admission,
@@ -117,7 +117,47 @@ impl LocalControlService {
         command: Command,
     ) -> Result<CommandResult, ApiError> {
         match &command {
-            Command::RetryRunCommit { run_id } => return self.retry_run_commit(run_id).await,
+            Command::BindProjectAgent {
+                project_id,
+                source_agent_id,
+                agent_id,
+            } => {
+                return self
+                    .bind_project_agent(project_id, source_agent_id, agent_id)
+                    .await;
+            }
+            Command::CloseProject { project_id } => return self.close_project(project_id).await,
+            Command::RegisterProject {
+                workdir: Some(workdir),
+                ..
+            } => {
+                let canonical = canonical_project_path(
+                    self.project_workspace.as_ref(),
+                    std::path::Path::new(workdir),
+                )
+                .await?;
+                if let Some(record) = self
+                    .store
+                    .open_project(&canonical.to_string_lossy())
+                    .await
+                    .map_err(store_error)?
+                {
+                    let project: crate::control::project::ProjectRecord =
+                        serde_json::from_value(record.value)
+                            .map_err(crate::control::errors::serialization_error)?;
+                    return Ok(CommandResult::Project(project.view()));
+                }
+            }
+            Command::RetryRunCommit { run_id } => {
+                let loaded = self.read_run_records(run_id).await?;
+                let run = loaded
+                    .original
+                    .runs
+                    .iter()
+                    .find(|run| &run.id == run_id)
+                    .ok_or_else(|| error(ErrorCode::InvalidRun, "Run not found", false))?;
+                return self.run_service(run).await?.retry_run_commit(run_id).await;
+            }
             Command::ListCodexThreads {
                 provider_id,
                 project_id,
@@ -133,6 +173,8 @@ impl LocalControlService {
                 agent_id,
             } => {
                 return self
+                    .project_service(project_id)
+                    .await?
                     .sync_codex_thread(provider_id, thread_id, project_id, agent_id)
                     .await;
             }
@@ -215,7 +257,7 @@ impl LocalControlService {
                 );
                 let control_guard =
                     RunControlGuard::new(Arc::clone(&self.run_controls), &run_id, &control);
-                let service = self.clone();
+                let service = self.run_service(&run).await?;
                 let (sender, receiver) = tokio::sync::oneshot::channel();
                 tokio::spawn(async move {
                     // These guards deliberately live in the transport-independent
@@ -362,6 +404,13 @@ impl LocalControlService {
                 Some(self.read_command_records(&command).await?)
             };
             let loaded = loaded.as_ref().unwrap_or(&initial);
+            if !initial.version().same_owners(loaded.version()) {
+                return Err(error(
+                    ErrorCode::RunQueueConflict,
+                    "Project ownership changed; reopen the Project and retry",
+                    false,
+                ));
+            }
             loaded.check_admission(&command)?;
             if loaded.preparation_key(&command)? != preparation_key {
                 return Err(error(
@@ -403,7 +452,7 @@ impl LocalControlService {
             }
             match self
                 .store
-                .apply(commit.revision, commit.changes, commit.events)
+                .apply_versioned(&commit.version, commit.changes, commit.events)
                 .await
             {
                 Ok(_) => {

@@ -6,7 +6,7 @@ use ait_agent_adapters::codex::CodexSessionTitleGenerator;
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_domain::SandboxAccess;
 use ait_ports::{AgentProviderGateway, HostProviderModelCatalog, SessionTitleGenerator};
-use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
+use ait_storage_sqlite::PortableSqliteControlStore as SqliteControlStore;
 use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -31,6 +31,9 @@ struct Arguments {
     /// Global `SQLite` catalog; Project histories live in `<project>/.ait/project.sqlite3`.
     #[arg(long, default_value = "ait.sqlite3")]
     database: PathBuf,
+    /// Offline conversion of format-2 storage, then exit. Stop old daemons/workers first.
+    #[arg(long)]
+    upgrade_storage: bool,
     /// Loopback address exposed to local clients.
     #[arg(long, default_value = "127.0.0.1:7314")]
     listen: SocketAddr,
@@ -57,6 +60,10 @@ struct Arguments {
 )]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
+    if arguments.upgrade_storage {
+        SqliteControlStore::upgrade_storage(&arguments.database)?;
+        return Ok(());
+    }
     if !arguments.listen.ip().is_loopback() {
         return Err("local API must bind a loopback address".into());
     }
@@ -103,8 +110,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = Arc::new(service);
     let listener = tokio::net::TcpListener::bind(arguments.listen).await?;
     eprintln!("AIT daemon listening on http://{}", listener.local_addr()?);
-    // Binding is the daemon ownership boundary. Startup scanning is read-only,
-    // and every Run claim happens later while its Project advisory lock is held.
+    // Bind before acquiring any Project guards for recovery. A daemon which
+    // cannot serve its endpoint must not advance Project or Run ownership.
     let recovery_plan = service
         .prepare_startup_recovery()
         .await

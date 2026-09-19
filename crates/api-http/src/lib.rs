@@ -20,7 +20,7 @@ use ait_domain::{ApprovalGrantScope, ErrorCode};
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::Query,
     http::StatusCode,
     response::{
         IntoResponse, Response as HttpResponse,
@@ -41,6 +41,8 @@ pub fn router(service: Arc<LocalControlService>) -> Router {
 pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telemetry) -> Router {
     Router::new()
         .route("/v1/project/register", post(register_project))
+        .route("/v1/project/close", post(close_project))
+        .route("/v1/project/bind-agent", post(bind_project_agent))
         .route("/v1/project/list", get(list_projects))
         .route("/v1/project/update", post(update_project))
         .route(
@@ -110,6 +112,41 @@ struct ApiState {
     telemetry: Telemetry,
 }
 
+struct ScopedState(ApiState);
+
+impl axum::extract::FromRequestParts<ApiState> for ScopedState {
+    type Rejection = (StatusCode, &'static str);
+
+    fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &ApiState,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(scope_request(parts, state))
+    }
+}
+
+fn scope_request(
+    parts: &axum::http::request::Parts,
+    state: &ApiState,
+) -> Result<ScopedState, (StatusCode, &'static str)> {
+    let mut scoped = state.clone();
+    if let Some(header) = parts.headers.get("x-ait-project-owner") {
+        let text = header
+            .to_str()
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid Project ownership context"))?;
+        if text.len() > 2048 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Project ownership context too large",
+            ));
+        }
+        let owner: ait_domain::ProjectOwner = serde_json::from_str(text)
+            .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid Project ownership context"))?;
+        scoped.service = Arc::new(state.service.as_ref().clone().with_project_owner(owner));
+    }
+    Ok(ScopedState(scoped))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RegisterProjectRequest {
@@ -122,7 +159,7 @@ struct RegisterProjectRequest {
 }
 
 async fn register_project(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RegisterProjectRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -132,6 +169,46 @@ async fn register_project(
             name: request.name,
             workdir: request.workdir,
             repo_url: request.repo_url,
+        },
+    )
+    .await
+}
+
+async fn close_project(
+    ScopedState(state): ScopedState,
+    Json(request): Json<ProjectQuery>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::CloseProject {
+            project_id: request.project_id,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "wire identifiers distinguish the Project, saved Agent and local preset"
+)]
+struct BindProjectAgentRequest {
+    project_id: String,
+    source_agent_id: String,
+    agent_id: String,
+}
+
+async fn bind_project_agent(
+    ScopedState(state): ScopedState,
+    Json(request): Json<BindProjectAgentRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::BindProjectAgent {
+            project_id: request.project_id,
+            source_agent_id: request.source_agent_id,
+            agent_id: request.agent_id,
         },
     )
     .await
@@ -147,7 +224,7 @@ struct UpdateProjectRequest {
 }
 
 async fn update_project(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<UpdateProjectRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -169,7 +246,7 @@ struct SetProjectDefaultAgentRequest {
 }
 
 async fn set_project_default_agent(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SetProjectDefaultAgentRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -189,7 +266,7 @@ struct ExportProjectRequest {
 }
 
 async fn export_project(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<ExportProjectRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -209,7 +286,7 @@ struct ImportProjectRequest {
 }
 
 async fn import_project(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<ImportProjectRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -231,7 +308,7 @@ struct RegisterAgentRequest {
 }
 
 async fn register_agent(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RegisterAgentRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -257,7 +334,7 @@ struct CreateSessionRequest {
 }
 
 async fn create_session(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<CreateSessionRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -280,7 +357,7 @@ struct SetSessionAgentRequest {
 }
 
 async fn set_session_agent(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SetSessionAgentRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -301,7 +378,7 @@ struct RenameSessionRequest {
 }
 
 async fn rename_session(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RenameSessionRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -322,7 +399,7 @@ struct SetSessionArchivedRequest {
 }
 
 async fn set_session_archived(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SetSessionArchivedRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -343,7 +420,7 @@ struct SetSessionTitleRequest {
 }
 
 async fn set_session_title(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SetSessionTitleRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -364,7 +441,7 @@ struct GenerateSessionTitleRequest {
 }
 
 async fn generate_session_title(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<GenerateSessionTitleRequest>,
 ) -> Json<Response> {
     Json(
@@ -383,7 +460,7 @@ struct SendMessageRequest {
 }
 
 async fn send_message(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SendMessageRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -397,7 +474,7 @@ async fn send_message(
 }
 
 async fn submit_message(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SendMessageRequest>,
 ) -> Json<Response> {
     submit_command(
@@ -422,7 +499,7 @@ struct ForkSessionRequest {
 }
 
 async fn fork_session(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<ForkSessionRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -439,7 +516,7 @@ async fn fork_session(
 }
 
 async fn submit_fork_session(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<ForkSessionRequest>,
 ) -> Json<Response> {
     submit_command(
@@ -481,14 +558,14 @@ impl DeriveSessionRequest {
 }
 
 async fn derive_session(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<DeriveSessionRequest>,
 ) -> Json<Response> {
     execute_command(state, request.into_command()).await
 }
 
 async fn submit_derive_session(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<DeriveSessionRequest>,
 ) -> Json<Response> {
     submit_command(state, request.into_command()).await
@@ -500,7 +577,10 @@ struct RunRequest {
     run_id: String,
 }
 
-async fn get_run(State(state): State<ApiState>, Json(request): Json<RunRequest>) -> Json<Response> {
+async fn get_run(
+    ScopedState(state): ScopedState,
+    Json(request): Json<RunRequest>,
+) -> Json<Response> {
     execute_command(
         state,
         Command::GetRun {
@@ -511,7 +591,7 @@ async fn get_run(State(state): State<ApiState>, Json(request): Json<RunRequest>)
 }
 
 async fn retry_run_commit(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RunRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -524,7 +604,7 @@ async fn retry_run_commit(
 }
 
 async fn cancel_run(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RunRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -565,7 +645,7 @@ struct ResolveToolInteractionRequest {
 }
 
 async fn resolve_tool_interaction(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     request: Result<Json<ResolveToolInteractionRequest>, axum::extract::rejection::JsonRejection>,
 ) -> HttpResponse {
     let Json(request) = match request {
@@ -588,7 +668,7 @@ async fn resolve_tool_interaction(
 }
 
 async fn resolve_tool_approval(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     request: Result<Json<ResolveToolApprovalRequest>, axum::extract::rejection::JsonRejection>,
 ) -> HttpResponse {
     let Json(request) = match request {
@@ -619,7 +699,7 @@ fn malformed_permission_request(status: StatusCode) -> HttpResponse {
 }
 
 async fn resolve_native_approval(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     request: Result<Json<ResolveNativeApprovalRequest>, axum::extract::rejection::JsonRejection>,
 ) -> HttpResponse {
     let Json(request) = match request {
@@ -653,7 +733,7 @@ struct CreateCronRequest {
 }
 
 async fn create_cron(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<CreateCronRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -679,7 +759,7 @@ struct SetCronEnabledRequest {
 }
 
 async fn set_cron_enabled(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SetCronEnabledRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -700,7 +780,7 @@ struct TriggerCronRequest {
 }
 
 async fn trigger_cron(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<TriggerCronRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -713,15 +793,15 @@ async fn trigger_cron(
     .await
 }
 
-async fn list_projects(State(state): State<ApiState>) -> Json<Response> {
+async fn list_projects(ScopedState(state): ScopedState) -> Json<Response> {
     execute_command(state, Command::ListProjects).await
 }
 
-async fn list_agents(State(state): State<ApiState>) -> Json<Response> {
+async fn list_agents(ScopedState(state): ScopedState) -> Json<Response> {
     execute_command(state, Command::ListAgents).await
 }
 
-async fn list_agent_providers(State(state): State<ApiState>) -> Json<Response> {
+async fn list_agent_providers(ScopedState(state): ScopedState) -> Json<Response> {
     execute_command(state, Command::ListAgentProviders).await
 }
 
@@ -733,7 +813,7 @@ struct CodexThreadQuery {
 }
 
 async fn list_codex_threads(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<CodexThreadQuery>,
 ) -> Json<Response> {
     execute_command(
@@ -760,7 +840,7 @@ struct SyncCodexThreadRequest {
 }
 
 async fn sync_codex_thread(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SyncCodexThreadRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -781,7 +861,7 @@ struct ProjectQuery {
 }
 
 async fn list_sessions(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<ProjectQuery>,
 ) -> Json<Response> {
     execute_command(
@@ -794,7 +874,7 @@ async fn list_sessions(
 }
 
 async fn list_messages(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<ProjectQuery>,
 ) -> Json<Response> {
     execute_command(
@@ -807,7 +887,7 @@ async fn list_messages(
 }
 
 async fn list_runs(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<ProjectQuery>,
 ) -> Json<Response> {
     execute_command(
@@ -819,11 +899,11 @@ async fn list_runs(
     .await
 }
 
-async fn list_crons(State(state): State<ApiState>) -> Json<Response> {
+async fn list_crons(ScopedState(state): ScopedState) -> Json<Response> {
     execute_command(state, Command::ListCrons).await
 }
 
-async fn get_settings(State(state): State<ApiState>) -> Json<Response> {
+async fn get_settings(ScopedState(state): ScopedState) -> Json<Response> {
     execute_command(state, Command::GetSettings).await
 }
 
@@ -835,7 +915,7 @@ struct SaveSettingsRequest {
 }
 
 async fn save_settings(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     request: Result<Json<SaveSettingsRequest>, axum::extract::rejection::JsonRejection>,
 ) -> HttpResponse {
     let Json(request) = match request {
@@ -853,7 +933,7 @@ async fn save_settings(
     .into_response()
 }
 
-async fn reset_settings(State(state): State<ApiState>) -> Json<Response> {
+async fn reset_settings(ScopedState(state): ScopedState) -> Json<Response> {
     execute_command(state, Command::ResetSettings).await
 }
 
@@ -931,6 +1011,8 @@ async fn submit_command(state: ApiState, command: Command) -> Json<Response> {
 #[derive(Deserialize)]
 struct EventQuery {
     #[serde(default)]
+    namespace: String,
+    #[serde(default)]
     after: u64,
     #[serde(default = "default_limit")]
     limit: usize,
@@ -941,47 +1023,50 @@ const fn default_limit() -> usize {
 }
 
 async fn events(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<EventQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let events = match state.service.event_page(query.after, query.limit).await {
-        Ok(page) if page.cursor_valid => page.events,
+        Ok(page)
+            if page.cursor_valid && (query.after == 0 || query.namespace == page.namespace) =>
+        {
+            page.events
+        }
         Ok(page) => vec![reset_event(
             page.oldest_cursor,
             page.latest_cursor,
             page.latest_cursor.unwrap_or_default(),
+            page.namespace,
         )],
         Err(error) => vec![error_event(error)],
     };
-    let output = events.into_iter().map(|event| {
-        let data = serde_json::to_string(&event).unwrap_or_else(|_| "{}".into());
-        Ok(Event::default()
-            .id(event.cursor.to_string())
-            .event(event.kind)
-            .data(data))
-    });
+    let output = events.into_iter().map(|event| Ok(sse_event(&event)));
     Sse::new(stream::iter(output)).keep_alive(KeepAlive::default())
 }
 
 async fn event_stream(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<EventQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     const FOLLOW_PAGE_SIZE: usize = 256;
     let service = state.service;
     let output = async_stream::stream! {
         let mut cursor = query.after;
+        let mut namespace=query.namespace;
         loop {
             match service.event_page(cursor, FOLLOW_PAGE_SIZE).await {
-                Ok(page) if !page.cursor_valid => {
+                Ok(page) if !page.cursor_valid || cursor!=0 && namespace!=page.namespace => {
                     cursor = page.latest_cursor.unwrap_or_default();
-                    let event = reset_event(page.oldest_cursor, page.latest_cursor, cursor);
+                    namespace=page.namespace;
+                    let event = reset_event(page.oldest_cursor, page.latest_cursor, cursor, namespace.clone());
                     yield Ok(sse_event(&event));
                 }
                 Ok(page) if page.events.is_empty() => {
+                    namespace=page.namespace;
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
                 Ok(page) => {
+                    namespace=page.namespace;
                     for event in page.events {
                         cursor = event.cursor;
                         yield Ok(sse_event(&event));
@@ -998,7 +1083,7 @@ async fn event_stream(
 }
 
 async fn progress_checkpoints(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Query(query): Query<ProjectQuery>,
 ) -> Result<Json<Vec<Value>>, StatusCode> {
     state
@@ -1016,13 +1101,23 @@ async fn health() -> Json<Value> {
 fn sse_event(event: &ControlEvent) -> Event {
     let data = serde_json::to_string(event).unwrap_or_else(|_| "{}".into());
     Event::default()
-        .id(event.cursor.to_string())
+        .id(if event.namespace.is_empty() {
+            event.cursor.to_string()
+        } else {
+            format!("{}:{}", event.namespace, event.cursor)
+        })
         .event(event.kind.clone())
         .data(data)
 }
 
-fn reset_event(oldest: Option<u64>, latest: Option<u64>, cursor: u64) -> ControlEvent {
+fn reset_event(
+    oldest: Option<u64>,
+    latest: Option<u64>,
+    cursor: u64,
+    namespace: String,
+) -> ControlEvent {
     ControlEvent {
+        namespace,
         api_version: 1,
         cursor,
         kind: "stream.reset_required".into(),
@@ -1036,7 +1131,7 @@ fn reset_event(oldest: Option<u64>, latest: Option<u64>, cursor: u64) -> Control
     }
 }
 
-async fn metrics(State(state): State<ApiState>) -> Json<Vec<MetricPoint>> {
+async fn metrics(ScopedState(state): ScopedState) -> Json<Vec<MetricPoint>> {
     Json(state.telemetry.metrics().snapshot())
 }
 
@@ -1084,7 +1179,9 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::ResolveNativeApproval { run_id, .. } => {
             correlation.run_id = Some(run_id.clone());
         }
-        Command::UpdateProject { project_id, .. }
+        Command::BindProjectAgent { project_id, .. }
+        | Command::CloseProject { project_id }
+        | Command::UpdateProject { project_id, .. }
         | Command::SetProjectDefaultAgent { project_id, .. }
         | Command::CreateCron { project_id, .. }
         | Command::ExportProject { project_id }
@@ -1168,6 +1265,8 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
 const fn operation_name(command: &Command) -> &'static str {
     match command {
         Command::RegisterProject { .. } => "register_project",
+        Command::CloseProject { .. } => "close_project",
+        Command::BindProjectAgent { .. } => "bind_project_agent",
         Command::UpdateProject { .. } => "update_project",
         Command::SetProjectDefaultAgent { .. } => "set_project_default_agent",
         Command::RegisterAgent { .. } => "register_agent",
@@ -1220,6 +1319,7 @@ fn now() -> i64 {
 
 fn error_event(error: ApiError) -> ControlEvent {
     ControlEvent {
+        namespace: String::new(),
         api_version: 1,
         cursor: 0,
         kind: "stream.error".into(),
@@ -1246,7 +1346,7 @@ struct SaveAgentProviderRequest {
     secret: Option<ProviderSecret>,
 }
 async fn save_agent_provider(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SaveAgentProviderRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -1264,7 +1364,7 @@ struct RefreshProviderModelsRequest {
     provider_id: String,
 }
 async fn discover_provider_models(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SaveAgentProviderRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -1277,7 +1377,7 @@ async fn discover_provider_models(
     .await
 }
 async fn refresh_provider_models(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RefreshProviderModelsRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -1289,7 +1389,7 @@ async fn refresh_provider_models(
     .await
 }
 async fn update_agent(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<RegisterAgentRequest>,
 ) -> Json<Response> {
     execute_command(
@@ -1309,7 +1409,7 @@ struct SetSessionConfigRequest {
     config: AgentConfiguration,
 }
 async fn set_session_config(
-    State(state): State<ApiState>,
+    ScopedState(state): ScopedState,
     Json(request): Json<SetSessionConfigRequest>,
 ) -> Json<Response> {
     execute_command(

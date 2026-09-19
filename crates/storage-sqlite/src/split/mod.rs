@@ -15,7 +15,7 @@ use super::{
 
 mod cutover;
 mod migration;
-mod project;
+pub(crate) mod project;
 use project::{finish_project, open_project, prepare_project};
 
 const GLOBAL_APPLICATION_ID: u32 = 0x4149_4731; // AIG1
@@ -189,6 +189,7 @@ impl ControlStore for SplitSqliteControlStore {
             }
             Ok(ControlRead {
                 revision: revision(connection)?,
+                version: ait_ports::ControlVersion::legacy(revision(connection)?),
                 records: records.into_values().collect(),
             })
         })
@@ -614,7 +615,7 @@ fn submit(
     recover(connection)
 }
 
-fn recover(connection: &mut Connection) -> Result<(), ControlStoreError> {
+pub(crate) fn recover(connection: &mut Connection) -> Result<(), ControlStoreError> {
     let body: Option<String> = connection
         .query_row(
             "SELECT body_json FROM pending_commit WHERE singleton=1",

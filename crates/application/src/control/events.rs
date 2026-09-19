@@ -45,6 +45,7 @@ impl LocalControlService {
     ///
     /// Returns a stable recovery error when persistence cannot replay the outbox.
     pub async fn replay_events(&self, after: u64, limit: usize) -> Result<Vec<Event>, ApiError> {
+        let namespace = self.store.event_namespace().await.map_err(store_error)?;
         self.store
             .replay(after, limit.clamp(1, 1_000))
             .await
@@ -53,6 +54,7 @@ impl LocalControlService {
                 events
                     .into_iter()
                     .map(|event| Event {
+                        namespace: namespace.clone(),
                         api_version: API_VERSION,
                         cursor: event.cursor,
                         kind: event.kind,
@@ -71,16 +73,19 @@ impl LocalControlService {
     ///
     /// Returns a stable persistence error when bounds or events cannot be read.
     pub async fn event_page(&self, after: u64, limit: usize) -> Result<EventPage, ApiError> {
+        let namespace = self.store.event_namespace().await.map_err(store_error)?;
         let page = self
             .store
             .replay_page(after, limit.clamp(1, 1_000))
             .await
             .map_err(store_error)?;
         Ok(EventPage {
+            namespace: namespace.clone(),
             events: page
                 .events
                 .into_iter()
                 .map(|event| Event {
+                    namespace: namespace.clone(),
                     api_version: API_VERSION,
                     cursor: event.cursor,
                     kind: event.kind,

@@ -52,6 +52,22 @@ pub enum CompletionResult {
 /// preconditions and return [`RunStoreError::Conflict`] for stale writes.
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    /// Persist the spawned process group before sending executable work.
+    async fn register_worker_process(
+        &self,
+        _lease: &crate::WorkerLease,
+        _pid: u32,
+    ) -> Result<(), RunStoreError> {
+        Ok(())
+    }
+    /// Acknowledge reaping; adapters retain uncertain process claims for recovery.
+    async fn release_worker_process(
+        &self,
+        _lease: &crate::WorkerLease,
+        _pid: u32,
+    ) -> Result<(), RunStoreError> {
+        Ok(())
+    }
     /// Present a member-facing tool interaction for this exact worker lease.
     async fn request_tool_interaction(
         &self,

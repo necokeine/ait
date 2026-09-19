@@ -53,13 +53,15 @@ export async function registerDesktopProject(
   post: (path: string, kind: string, body: unknown) => Promise<unknown>,
   id: string,
   input: ProjectCreationInput,
-): Promise<void> {
-  await post("/v1/project/register", "project", {
+): Promise<string> {
+  const registered = await post("/v1/project/register", "project", {
     id, name: input.name, workdir: input.workdir, repo_url: input.repoUrl,
-  });
-  if (input.agentId) {
+  }) as { id: string };
+  if (!registered || typeof registered.id !== "string") throw new Error("Project registration returned no identity.");
+  if (input.agentId && registered.id === id) {
     await post("/v1/project/set-default-agent", "project", {
       project_id: id, agent_id: input.agentId,
     });
   }
+  return registered.id;
 }

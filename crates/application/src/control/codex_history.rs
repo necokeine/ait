@@ -172,6 +172,7 @@ impl LocalControlService {
                     ControlFilter::id(ControlRecordKind::Agent, agent_id),
                     ControlFilter::id(ControlRecordKind::Provider, provider_id),
                     ControlFilter::all(ControlRecordKind::Session),
+                    ControlFilter::project(ControlRecordKind::Session, project_id),
                     ControlFilter::project(ControlRecordKind::Message, project_id),
                     ControlFilter::project(ControlRecordKind::Run, project_id),
                 ])

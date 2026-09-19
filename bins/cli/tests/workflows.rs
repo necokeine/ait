@@ -36,21 +36,19 @@ async fn wf01_register_project_and_agent() {
         String::from_utf8(head.stdout).unwrap().trim()
     );
     let before = workspace.view().await;
-    workspace
-        .reject(
-            &[
-                "project",
-                "register",
-                "--id",
-                "duplicate",
-                "--name",
-                "Duplicate",
-                "--workdir",
-                workspace.path("project with spaces/.").to_str().unwrap(),
-            ],
-            "PROJECT_PATH_ALREADY_REGISTERED",
-        )
+    let reopened = workspace
+        .call(&[
+            "project",
+            "register",
+            "--id",
+            "duplicate",
+            "--name",
+            "Duplicate",
+            "--workdir",
+            workspace.path("project with spaces/.").to_str().unwrap(),
+        ])
         .await;
+    assert_eq!(reopened, project);
     workspace
         .reject(
             &[

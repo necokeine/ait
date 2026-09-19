@@ -103,6 +103,31 @@ fn validate_worker_transition(
 }
 
 impl ControlRunStore {
+    async fn validate_project_owner(
+        &self,
+        lease: &ait_ports::WorkerLease,
+    ) -> Result<(), RunStoreError> {
+        let loaded = self
+            .records
+            .read_run_view_records(&self.id)
+            .await
+            .map_err(store_failure)?;
+        if let Some(owner) = &lease.project_owner {
+            if loaded
+                .version
+                .projects
+                .get(&owner.project_id)
+                .map(|version| version.owner(&owner.project_id))
+                .as_ref()
+                != Some(owner)
+            {
+                return Err(conflict());
+            }
+        } else if !loaded.version.projects.is_empty() {
+            return Err(conflict());
+        }
+        Ok(())
+    }
     pub(super) fn new(service: LocalControlService, id: String) -> Self {
         let records = service.records();
         Self {
@@ -278,6 +303,15 @@ impl ControlRunStore {
                 .ok_or_else(conflict)?;
             let mut view = state.runs[index].clone();
             if let Some(operation) = &operation {
+                if loaded
+                    .version
+                    .projects
+                    .get(&view.project_id)
+                    .map(|version| version.owner(&view.project_id))
+                    != operation.lease.project_owner
+                {
+                    return Err(conflict());
+                }
                 if view.id != operation.lease.run_id.as_str()
                     || view.lease_epoch != operation.lease.epoch
                     || view
@@ -390,6 +424,35 @@ impl ControlRunStore {
 }
 #[async_trait]
 impl RunStore for ControlRunStore {
+    async fn register_worker_process(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        pid: u32,
+    ) -> Result<(), RunStoreError> {
+        self.validate_project_owner(lease).await?;
+        if let Some(owner) = &lease.project_owner {
+            self.records
+                .store
+                .register_worker_process(owner, pid)
+                .await
+                .map_err(store_failure)?;
+        }
+        Ok(())
+    }
+    async fn release_worker_process(
+        &self,
+        lease: &ait_ports::WorkerLease,
+        pid: u32,
+    ) -> Result<(), RunStoreError> {
+        if let Some(owner) = &lease.project_owner {
+            self.records
+                .store
+                .release_worker_process(owner, pid)
+                .await
+                .map_err(store_failure)?;
+        }
+        Ok(())
+    }
     async fn request_tool_interaction(
         &self,
         lease: &ait_ports::WorkerLease,
@@ -503,6 +566,11 @@ impl RunStore for ControlRunStore {
                 .ok_or_else(conflict)?
                 .worker_instance_id = Some(instance.into());
             let lease = ait_ports::WorkerLease {
+                project_owner: loaded
+                    .version
+                    .projects
+                    .get(&view.project_id)
+                    .map(|version| version.owner(&view.project_id)),
                 run_id: RunId::new(&self.id),
                 instance_id: instance.into(),
                 epoch: view.lease_epoch,
@@ -541,6 +609,7 @@ impl RunStore for ControlRunStore {
         mutation: ait_ports::RunMutation,
     ) -> Result<ait_ports::RunReceipt, RunStoreError> {
         use ait_ports::RunMutation;
+        self.validate_project_owner(lease).await?;
         if operation_id.is_empty() || operation_id.len() > 256 || lease.run_id.as_str() != self.id {
             return Err(conflict());
         }

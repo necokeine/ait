@@ -40,6 +40,7 @@ struct Assembly {
 }
 
 struct Server {
+    project_execution: Option<Arc<dyn ait_ports::ProjectExecution>>,
     lease: Lease,
     request_id: Option<String>,
     assembly: Mutex<Assembly>,
@@ -52,6 +53,24 @@ struct Server {
 
 #[async_trait]
 impl Handler for Server {
+    async fn spawned(&self, pid: u32) -> Result<(), ProtocolError> {
+        if let Some(project) = &self.project_execution {
+            project
+                .register_process(pid)
+                .await
+                .map_err(|_| ProtocolError::StaleWorkerLease)?;
+        }
+        Ok(())
+    }
+    async fn reaped(&self, pid: u32) -> Result<(), ProtocolError> {
+        if let Some(project) = &self.project_execution {
+            project
+                .release_process(pid)
+                .await
+                .map_err(|_| ProtocolError::StaleWorkerLease)?;
+        }
+        Ok(())
+    }
     fn capacity(&self) -> usize {
         16
     }
@@ -241,6 +260,12 @@ impl WorkerSupervisor {
     ) -> RemoteConnection {
         let identity = uuid::Uuid::new_v4().to_string();
         let lease = Lease {
+            project_owner: invocation.and_then(|request| {
+                request
+                    .project_execution
+                    .as_ref()
+                    .map(|project| project.owner())
+            }),
             scope_id: format!("codex:{identity}"),
             worker_instance_id: identity,
             lease_epoch: 1,
@@ -252,6 +277,7 @@ impl WorkerSupervisor {
         let (sender, replies) = mpsc::channel(2);
         let progress = Arc::new(Mutex::new(None));
         let server = Server {
+            project_execution: invocation.and_then(|request| request.project_execution.clone()),
             lease: lease.clone(),
             request_id: invocation.map(|request| request.request_id.clone()),
             assembly: Mutex::new(Assembly::default()),

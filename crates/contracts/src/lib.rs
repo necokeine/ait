@@ -41,6 +41,20 @@ pub enum Command {
         /// Repo url value.
         repo_url: Option<String>,
     },
+    /// Cancels and drains this runtime's work, then releases Project ownership.
+    CloseProject {
+        /// Stable Project identity; disk contents and registration are retained.
+        project_id: String,
+    },
+    /// Explicitly binds a saved Project Agent reference to a local preset.
+    BindProjectAgent {
+        /// Stable Project identity.
+        project_id: String,
+        /// Agent identity retained in the Project's history.
+        source_agent_id: String,
+        /// Enabled named preset in this host's catalog.
+        agent_id: String,
+    },
     /// Selects the `UpdateProject` variant.
     UpdateProject {
         /// Project identifier.
@@ -341,6 +355,12 @@ pub struct ApiError {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 /// Data carried by `ProjectView`.
 pub struct ProjectView {
+    /// Current runtime acquisition; send as `x-ait-project-owner` on scoped requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Box<ait_domain::ProjectOwner>>,
+    /// A retained prior worker prevents execution; committed history remains readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_blocked: Option<String>,
     /// Stable identifier.
     pub id: String,
     /// Name value.
@@ -937,6 +957,9 @@ impl Response {
 /// Reconnectable durable event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
+    /// Catalog and feed generation; sequence numbers are only comparable within it.
+    #[serde(default)]
+    pub namespace: String,
     /// Api version value.
     pub api_version: u16,
     /// Cursor value.
@@ -954,6 +977,9 @@ pub struct Event {
 /// One bounded replay page plus retained-cursor validity metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventPage {
+    /// Namespace required when reconnecting with a nonzero cursor.
+    #[serde(default)]
+    pub namespace: String,
     /// Events value.
     pub events: Vec<Event>,
     /// Oldest cursor value.

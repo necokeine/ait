@@ -36,6 +36,7 @@ fn fixture(
         ait_ipc::supervisor::WorkerSupervisor::new(PathBuf::from(env!("CARGO_BIN_EXE_ait-worker")))
             .with_codex_binary(binary);
     let request = CodexThreadInvocation {
+        project_execution: None,
         request_id: "run-input".into(),
         thread_id: None,
         developer_instructions: Some("Project instructions".into()),

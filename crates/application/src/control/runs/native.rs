@@ -82,7 +82,7 @@ impl LocalControlService {
                 ControlFilter::id(ControlRecordKind::Project, project_id),
                 ControlFilter::all(ControlRecordKind::Agent),
                 ControlFilter::all(ControlRecordKind::Provider),
-                ControlFilter::all(ControlRecordKind::Session),
+                ControlFilter::project(ControlRecordKind::Session, project_id),
                 ControlFilter::all(ControlRecordKind::Settings),
                 ControlFilter::project(ControlRecordKind::Message, project_id),
                 ControlFilter::project(ControlRecordKind::Run, project_id),
@@ -200,6 +200,8 @@ impl LocalControlService {
         };
         let mut connection = writer
             .open(CodexThreadInvocation {
+                project_execution: self
+                    .project_execution(&plan.loaded.version, &session.project_id),
                 request_id: run_id.clone(),
                 thread_id: source.map(|source| source.thread_id.clone()),
                 developer_instructions,
@@ -498,7 +500,8 @@ impl LocalControlService {
                 )
                 .await;
         }
-        let state = self.read_run_records(&run.id).await?.original;
+        let loaded = self.read_run_records(&run.id).await?;
+        let state = loaded.original;
         let session = state
             .sessions
             .iter()
@@ -513,6 +516,7 @@ impl LocalControlService {
         })?;
         let mut connection = writer
             .open(CodexThreadInvocation {
+                project_execution: self.project_execution(&loaded.version, &run.project_id),
                 request_id: run.id.clone(),
                 thread_id: Some(input.thread_id.clone()),
                 developer_instructions: None,

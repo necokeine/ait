@@ -13,6 +13,8 @@ use serde_json::Value;
 
 mod split;
 pub use split::SplitSqliteControlStore;
+mod portable;
+pub use portable::PortableSqliteControlStore;
 
 const RETAINED_EVENTS: usize = 50_000;
 const RECORD_SCHEMA: &str = "PRAGMA journal_mode = WAL;
@@ -220,6 +222,7 @@ impl ControlStore for SqliteControlStore {
         }
         Ok(ControlRead {
             revision,
+            version: ait_ports::ControlVersion::legacy(revision),
             records: records.into_values().collect(),
         })
     }

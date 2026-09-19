@@ -144,8 +144,9 @@ impl WorkerSupervisor {
         let mut child =
             ait_sandbox::spawn_worker(&self.binary, ait_contracts::worker::PROTOCOL_MAJOR)
                 .map_err(|_| ProtocolError::WorkerExited)?;
+        let pid = child.id().ok_or(ProtocolError::WorkerExited)?;
         let result = async {
-            let pid = child.id().ok_or(ProtocolError::WorkerExited)?;
+            server.spawned(pid).await?;
             let mut reader = Reader::new(
                 child.stdout().take().ok_or(ProtocolError::Io)?,
                 MAX_FRAME_BYTES,
@@ -203,7 +204,11 @@ impl WorkerSupervisor {
         // Also kill descendants after a clean leader exit. Never trust exit_report
         // as proof that a provider left no background child behind.
         let _ = child.start_kill();
-        let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+        match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
+            Ok(Ok(_)) if result.is_ok() => server.reaped(pid).await?,
+            Ok(Ok(_)) => {}
+            _ => return Err(ProtocolError::WorkerExited),
+        }
         result
     }
     async fn serve(
@@ -344,6 +349,7 @@ impl RunDispatcher for WorkerSupervisor {
             }
             let bootstrap = Bootstrap {
                 lease: Lease {
+                    project_owner: lease.project_owner.clone(),
                     scope_id: lease.run_id.as_str().into(),
                     worker_instance_id: lease.instance_id,
                     lease_epoch: lease.epoch,
@@ -389,6 +395,12 @@ impl RunDispatcher for WorkerSupervisor {
 /// Daemon ports serviced by one worker connection.
 #[async_trait]
 pub(crate) trait Handler: Send + Sync {
+    async fn spawned(&self, _pid: u32) -> Result<(), ProtocolError> {
+        Ok(())
+    }
+    async fn reaped(&self, _pid: u32) -> Result<(), ProtocolError> {
+        Ok(())
+    }
     fn capacity(&self) -> usize {
         1
     }
@@ -403,9 +415,22 @@ pub(crate) trait Handler: Send + Sync {
 }
 #[async_trait]
 impl Handler for StoreServer {
+    async fn spawned(&self, pid: u32) -> Result<(), ProtocolError> {
+        self.store
+            .register_worker_process(&self.worker_lease(), pid)
+            .await
+            .map_err(|_| ProtocolError::StaleWorkerLease)
+    }
+    async fn reaped(&self, pid: u32) -> Result<(), ProtocolError> {
+        self.store
+            .release_worker_process(&self.worker_lease(), pid)
+            .await
+            .map_err(|_| ProtocolError::StaleWorkerLease)
+    }
     fn disconnected(&self) {
         self.store
             .interrupt_tool_approvals(&ait_ports::WorkerLease {
+                project_owner: self.lease.project_owner.clone(),
                 run_id: ait_domain::RunId::new(&self.lease.scope_id),
                 instance_id: self.lease.worker_instance_id.clone(),
                 epoch: self.lease.lease_epoch,

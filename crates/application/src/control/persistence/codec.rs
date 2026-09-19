@@ -159,7 +159,7 @@ pub(in crate::control) fn decode_records<C: RecordContext>(
     hydrate_session_workdirs(&mut value)?;
     let original = serde_json::from_value(value).map_err(serialization_error)?;
     Ok(RecordTransaction::new(
-        read.revision,
+        read.version.clone(),
         original,
         &read.records,
     ))

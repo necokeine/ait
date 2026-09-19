@@ -53,6 +53,7 @@ export interface DesktopProject {
   baseCommit: string;
   rootMessageId: string;
   defaultAgentId: string | null;
+  executionBlocked?: string;
 }
 
 export interface AgentSummary {
@@ -179,6 +180,7 @@ export interface NativeApproval {
 }
 
 export interface ControlEvent {
+  namespace?: string;
   api_version: number;
   cursor: number;
   kind: string;
@@ -323,6 +325,8 @@ export interface AitDesktopApi {
   project(projectId: string): Promise<ProjectView>;
   projectSessions(projectId: string, status?: DesktopSession["status"]): Promise<DesktopSession[]>;
   codexThreads(input: { projectId: string; providerId: string }): Promise<CodexThreadSummary[]>;
+  bindProjectAgent(input: { projectId: string; sourceAgentId: string; agentId: string }): Promise<unknown>;
+  closeProject(projectId: string): Promise<unknown>;
   syncCodexThread(input: CodexThreadImport): Promise<{ projectId: string; sessionId: string }>;
   crons(): Promise<DesktopCron[]>;
   createCron(input: {

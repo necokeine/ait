@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::control) struct ProjectRecord {
+    #[serde(default, skip_serializing)]
+    pub owner: Option<ait_domain::ProjectOwner>,
+    #[serde(default, skip_serializing)]
+    pub execution_blocked: Option<String>,
     pub id: String,
     pub name: String,
     pub workdir: String,
@@ -28,6 +32,8 @@ impl ProjectRecord {
 
     pub(in crate::control) fn view(&self) -> ProjectView {
         ProjectView {
+            owner: self.owner.clone().map(Box::new),
+            execution_blocked: self.execution_blocked.clone(),
             id: self.id.clone(),
             name: self.name.clone(),
             workdir: self.workdir.clone(),

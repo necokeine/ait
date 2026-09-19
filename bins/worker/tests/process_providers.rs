@@ -645,6 +645,7 @@ impl ait_ports::RunDispatcher for FaultDispatcher {
                 .unwrap();
             let bootstrap = Bootstrap {
                 lease: Lease {
+                    project_owner: None,
                     scope_id: request.run_id.as_str().into(),
                     worker_instance_id: lease.instance_id,
                     lease_epoch: lease.epoch,
@@ -843,6 +844,7 @@ async fn receipts_survive_sqlite_commit_and_reject_stale_or_changed_replays() {
         .find(|(_, r)| r.completed == Some(true))
         .unwrap();
     let lease = ait_ports::WorkerLease {
+        project_owner: None,
         run_id: ait_domain::RunId::new(&view.id),
         instance_id: execution.worker_instance_id.clone().unwrap(),
         epoch: view.lease_epoch,

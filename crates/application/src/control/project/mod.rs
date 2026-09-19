@@ -11,7 +11,10 @@ use ait_ports::PendingEvent;
 use uuid::Uuid;
 
 pub(in crate::control) mod archive;
+mod execution;
+mod fenced_store;
 pub(in crate::control) mod git;
+mod lifecycle;
 pub(in crate::control) mod worktrees;
 
 pub(in crate::control) fn update_project(
@@ -105,6 +108,8 @@ pub(in crate::control) fn register_project(
     validate_project_workdir(state, &canonical_text)?;
     let root_id = Uuid::new_v4().to_string();
     let project = ProjectRecord {
+        owner: None,
+        execution_blocked: None,
         id: id.clone(),
         name,
         workdir: canonical_text,
