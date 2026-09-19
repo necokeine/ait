@@ -177,6 +177,34 @@ test("keeps available Project archives restorable when another Project is unavai
   assert.match(await unavailable.textContent(), /No archived Sessions/);
 });
 
+test("ignores an archived Session snapshot captured before Restore completes", async (t) => {
+  const page = await openFixture(t, () => {
+    window.fixture.sessions.find((item) => item.id === "session-a").status = "archived";
+  });
+
+  await page.locator("#settings-trigger").click();
+  await page.locator('#settings-nav [data-category="archived_sessions"]').click();
+  const restore = page.locator('[data-restore-session="session-a"]');
+  await restore.waitFor();
+  await page.locator("#settings-cancel").click();
+
+  const completedReads = await page.evaluate(() => {
+    window.fixture.delayedSessionReadProject = "a";
+    return window.fixture.sessionReadReturns.filter((projectId) => projectId === "a").length;
+  });
+  await page.locator("#settings-trigger").click();
+  await page.waitForFunction(() => window.fixture.sessionReadPending);
+  await restore.click();
+  await page.waitForFunction(() => window.fixture.sessions.find((item) => item.id === "session-a").status === "active");
+  assert.equal(await restore.count(), 0);
+
+  await page.evaluate(() => window.fixture.releaseSessionRead());
+  await page.waitForFunction((before) => window.fixture.sessionReadReturns.filter((projectId) => projectId === "a").length > before, completedReads);
+  assert.equal(await restore.count(), 0);
+  assert.equal(await page.locator("#settings-state").textContent(), "0 archived Sessions.");
+  assert.equal(await page.evaluate(() => window.fixture.sessions.find((item) => item.id === "session-a").status), "active");
+});
+
 test("refreshes and reselects the visible Session after an external archive event", async (t) => {
   const page = await openFixture(t, () => {
     const current = window.fixture.sessions.find((item) => item.id === "session-a");

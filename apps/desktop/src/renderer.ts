@@ -114,7 +114,7 @@ let settingsCategory: SettingCategory = "runtime";
 let archivedSessions: DesktopSession[] = [];
 const archivedSessionLoadingProjects = new Set<string>();
 const archivedSessionErrors = new Map<string, string>();
-const archivedSessionVersions = new Map<string, number>();
+const archivedSessionReadVersions = new Map<string, number>();
 let archivedSessionsGeneration = 0;
 let activePage: "sessions" | "agents" | "runs" | "crons" = "sessions";
 let pageGeneration = 0;
@@ -1895,30 +1895,30 @@ function renderArchivedSessions(): void {
 async function loadArchivedSessions(projectId?: string): Promise<void> {
   const generation = archivedSessionsGeneration;
   const projects = (view?.projects ?? []).filter((project) => !projectId || project.id === projectId);
-  const versions = new Map(projects.map((project) => [
-    project.id,
-    archivedSessionVersions.get(project.id) ?? 0,
-  ]));
-  for (const project of projects) {
+  const reads = projects.map((project) => ({
+    project,
+    version: advanceArchivedSessionRead(project.id),
+  }));
+  for (const { project } of reads) {
     archivedSessionLoadingProjects.add(project.id);
     archivedSessionErrors.delete(project.id);
   }
   if (settingsCategory === "archived_sessions") renderSettings();
-  await Promise.all(projects.map(async (project) => {
+  await Promise.all(reads.map(async ({ project, version }) => {
+    const isCurrent = (): boolean => generation === archivedSessionsGeneration
+      && archivedSessionReadVersions.get(project.id) === version;
     try {
       const sessions = await window.ait.projectSessions(project.id, "archived");
-      if (generation !== archivedSessionsGeneration
-        || versions.get(project.id) !== (archivedSessionVersions.get(project.id) ?? 0)) return;
+      if (!isCurrent()) return;
       archivedSessions = [
         ...archivedSessions.filter((session) => session.projectId !== project.id),
         ...sessions,
       ];
     } catch (error) {
-      if (generation !== archivedSessionsGeneration
-        || versions.get(project.id) !== (archivedSessionVersions.get(project.id) ?? 0)) return;
+      if (!isCurrent()) return;
       archivedSessionErrors.set(project.id, errorMessage(error));
     } finally {
-      if (generation === archivedSessionsGeneration) {
+      if (isCurrent()) {
         archivedSessionLoadingProjects.delete(project.id);
         if (settingsCategory === "archived_sessions" && !settingsDialog.classList.contains("is-hidden")) {
           renderSettings();
@@ -1933,6 +1933,17 @@ async function loadArchivedSessions(projectId?: string): Promise<void> {
   }
 }
 
+function advanceArchivedSessionRead(projectId: string): number {
+  const version = (archivedSessionReadVersions.get(projectId) ?? 0) + 1;
+  archivedSessionReadVersions.set(projectId, version);
+  return version;
+}
+
+function invalidateArchivedSessionRead(projectId: string): void {
+  advanceArchivedSessionRead(projectId);
+  archivedSessionLoadingProjects.delete(projectId);
+}
+
 async function restoreSession(button: HTMLButtonElement): Promise<void> {
   const projectId = button.dataset.restoreProject;
   const sessionId = button.dataset.restoreSession;
@@ -1941,7 +1952,7 @@ async function restoreSession(button: HTMLButtonElement): Promise<void> {
   button.disabled = true;
   try {
     const updated = await window.ait.setSessionArchived({ projectId, sessionId, archived: false });
-    archivedSessionVersions.set(projectId, (archivedSessionVersions.get(projectId) ?? 0) + 1);
+    invalidateArchivedSessionRead(projectId);
     archivedSessions = archivedSessions.filter((session) => session.id !== sessionId);
     sidebar.replace(projectId, updated.sessions);
     if (selectedProjectId === projectId) {
