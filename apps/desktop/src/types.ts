@@ -319,6 +319,9 @@ export interface BridgeErrorShape {
 }
 
 export interface AitDesktopApi {
+  startupRecovery(): Promise<{ databasePath: string } | null>;
+  resetStartupDatabase(): Promise<boolean>;
+  retryStartup(): Promise<void>;
   projects(): Promise<ProjectCatalog>;
   activeRuns(): Promise<ActiveRunsCatalog>;
   agents(): Promise<AgentCatalog>;

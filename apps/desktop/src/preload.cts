@@ -20,6 +20,9 @@ ipcRenderer.on("ait:run-event-frame", (_event, value: unknown) => {
 });
 
 const api: AitDesktopApi = {
+  startupRecovery: () => invoke("startup.recovery"),
+  resetStartupDatabase: () => invoke("startup.reset-database"),
+  retryStartup: () => invoke("startup.retry"),
   projects: () => invoke("project.list"),
   activeRuns: () => invoke("run.active"),
   agents: () => invoke("agent.catalog"),

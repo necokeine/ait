@@ -234,7 +234,7 @@ async function initialize(): Promise<void> {
     coreStatus.classList.add("is-ready");
     coreStatus.lastChild!.textContent = " Core ready";
   } catch (error) {
-    renderFatal(error);
+    await renderFatal(error);
   }
 }
 
@@ -1520,6 +1520,7 @@ function handleTreeKeyboard(event: KeyboardEvent): void {
 }
 
 function handleGlobalKeyboard(event: KeyboardEvent): void {
+  if (appShell.classList.contains("has-startup-error")) return;
   if ((event.metaKey || event.ctrlKey) && event.key === "1") {
     event.preventDefault();
     showPage("sessions");
@@ -2209,10 +2210,60 @@ function renderCommandResults(): void {
   });
 }
 
-function renderFatal(error: unknown): void {
+async function renderFatal(error: unknown): Promise<void> {
   $("#core-status").textContent = " Core unavailable";
-  conversation.innerHTML = `<div class="empty-state"><h2>Could not start Ait daemon</h2><p>${escapeHtml(errorMessage(error))}</p><p>Run <code>pnpm run build:daemon</code> and reopen the app.</p></div>`;
-  showToast(errorMessage(error), true);
+  $("#session-breadcrumb").textContent = "Ait / Startup";
+  $("#session-title").textContent = "Startup recovery";
+  appShell.classList.add("has-startup-error", "tree-collapsed");
+  for (const selector of ["#sidebar", ".titlebar", ".composer-wrap", "#tree-panel"]) {
+    $<HTMLElement>(selector).inert = true;
+  }
+  appShell.classList.remove("is-loading");
+  let recovery: Awaited<ReturnType<typeof window.ait.startupRecovery>> = null;
+  try { recovery = await window.ait.startupRecovery(); } catch { /* Keep the startup error available if IPC fails. */ }
+  conversation.innerHTML = `<section class="empty-state startup-recovery" aria-labelledby="startup-error-title">
+    <h2 id="startup-error-title">${recovery ? "Old local database detected" : "Could not start Ait"}</h2>
+    <p>${recovery ? "This database cannot be opened by this version of Ait. Delete it to start with a new, empty database." : "Ait could not start its local service. Retry startup or review the error details below."}</p>
+    ${recovery ? `<p>Saved Providers, Agents, settings, the project list, and any history in this database will be permanently deleted. No backup will be created.</p>
+    <p>Project folders and their databases will stay on disk. Older projects may still be incompatible.</p>
+    <p class="startup-database-path">${escapeHtml(recovery.databasePath)}</p>` : ""}
+    <div class="startup-recovery-actions">${recovery ? '<button id="startup-reset-database" class="secondary-button danger-button" type="button">Delete old database…</button>' : ""}<button id="startup-retry" class="secondary-button" type="button">Retry startup</button></div>
+    <p id="startup-recovery-error" class="catalog-error is-hidden" role="alert"></p>
+    <details><summary>Error details</summary><pre>${escapeHtml(errorMessage(error))}</pre></details>
+  </section>`;
+  const retry = $<HTMLButtonElement>("#startup-retry");
+  const reset = document.querySelector<HTMLButtonElement>("#startup-reset-database");
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    if (reset) reset.disabled = true;
+    retry.textContent = "Starting…";
+    try {
+      await window.ait.retryStartup();
+      window.location.reload();
+    } catch (retryError) {
+      await renderFatal(retryError);
+    }
+  });
+  reset?.addEventListener("click", async () => {
+    reset.disabled = true;
+    retry.disabled = true;
+    reset.textContent = "Waiting for confirmation…";
+    const failure = $("#startup-recovery-error");
+    failure.classList.add("is-hidden");
+    try {
+      if (await window.ait.resetStartupDatabase()) {
+        reset.textContent = "Restarting…";
+        window.location.reload();
+        return;
+      }
+    } catch (resetError) {
+      failure.textContent = errorMessage(resetError);
+      failure.classList.remove("is-hidden");
+    }
+    reset.disabled = false;
+    retry.disabled = false;
+    reset.textContent = "Delete old database…";
+  });
 }
 
 function showToast(message: string, error = false): void {

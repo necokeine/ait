@@ -1,5 +1,8 @@
 # 概念与架构文档
 
+- [ADR-019：桌面启动失败时删除旧本地数据库](decisions/adr-019-desktop-startup-database-reset.md)（Accepted）：旧 catalog 阻断启动时提供确认删除与空库重启入口，不备份、不迁移、不递归删除项目数据库。
+  [实现与验证报告](reports/desktop-startup-database-reset.md)记录删除范围和恢复流程验证。
+
 - [ADR-018：Project 独立恢复与运行期独占接管](decisions/adr-018-portable-project-runtime-ownership.md)（Accepted）：format-3 以运行锁和接管代次替代永久 coordinator 归属，项目事务/版本/事件自足，全局索引可重建；旧格式通过显式离线转换进入新协议。
   [实现与验证报告](reports/adr-018-portable-project-runtime-ownership.md)记录接管、绑定、恢复与平台限制。
 

@@ -23,13 +23,16 @@ import { projectReadPaths, sessionsWithStatus } from "./desktop-slices.js";
 import { configureDesktopIdentity } from "./branding.js";
 import { loadActiveRuns } from "./active-runs.js";
 import { defaultWorkdirSetting, desktopSettings, directoryDialogOptions } from "./desktop-settings.js";
+import { deleteStartupDatabase, LegacyDatabaseStartupError } from "./startup-recovery.js";
 
 configureDesktopIdentity(app);
 const here = dirname(fileURLToPath(import.meta.url));
 const appIcon = join(here, "logo.png");
 const daemonRuntime = desktopDaemonRuntime(app.isPackaged, process.env.AIT_DESKTOP_DEV_PORT);
 const endpoint = daemonRuntime.endpoint;
+const daemonDatabase = join(app.getPath("userData"), daemonRuntime.databaseFilename);
 const allowedMethods = new Set([
+  "startup.recovery", "startup.reset-database", "startup.retry",
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
@@ -102,6 +105,8 @@ export class DaemonClient {
   private readonly entityProjects = new Map<string, string>();
   private ownedProcess: ChildProcess | undefined;
   private startup: Promise<void> | undefined;
+  private legacyStartupFailure: LegacyDatabaseStartupError | undefined;
+  private resettingDatabase = false;
   private viewRevision = 0;
   private eventAbort: AbortController | undefined;
   private eventLoop: Promise<void> | undefined;
@@ -111,11 +116,14 @@ export class DaemonClient {
   private readonly deliveries = new Map<number, ReadyRunEventDelivery>();
 
   ensureStarted(): Promise<void> {
+    if (this.resettingDatabase) return Promise.reject(new Error("Database recovery is in progress."));
+    if (this.legacyStartupFailure) return Promise.reject(this.legacyStartupFailure);
     if (!this.startup) {
       this.startup = this.start().then(() => this.ensureBuiltInAgents()).then(() => {
         this.startEventStream();
       }).catch((error: unknown) => {
         this.startup = undefined;
+        if (error instanceof LegacyDatabaseStartupError) this.legacyStartupFailure = error;
         throw error;
       });
     }
@@ -124,6 +132,13 @@ export class DaemonClient {
 
   async request(method: string, rawParams: unknown): Promise<unknown> {
     if (!allowedMethods.has(method)) throw new Error("Unsupported desktop operation.");
+    if (method === "startup.recovery") return this.legacyStartupFailure ? { databasePath: daemonDatabase } : null;
+    if (method === "startup.reset-database") return this.resetStartupDatabase();
+    if (method === "startup.retry") {
+      if (this.resettingDatabase) throw new Error("Database recovery is in progress.");
+      this.legacyStartupFailure = undefined;
+      return this.ensureStarted();
+    }
     await this.ensureStarted();
     const params = objectParams(rawParams);
     if (method === "project.list") return this.projectCatalog();
@@ -475,6 +490,34 @@ export class DaemonClient {
     this.ownedProcess = undefined;
   }
 
+  private async resetStartupDatabase(): Promise<boolean> {
+    if (this.resettingDatabase) throw new Error("Database recovery is already in progress.");
+    this.resettingDatabase = true;
+    try {
+      await this.assertDatabaseResetAllowed();
+      const { response } = await dialog.showMessageBox({
+        type: "warning", title: "Delete old local database?",
+        message: "Permanently delete the old local database and start fresh?",
+        detail: `This deletes saved Providers, Agents, settings, the project list, and any history stored in this database. No backup will be created and this cannot be undone.\n\nProject folders and their databases are not deleted or upgraded. Older projects may still be incompatible.\n\nClose any other Ait apps, daemons and workers before continuing.\n\nDatabase: ${daemonDatabase}`,
+        buttons: ["Cancel", "Delete database and restart"], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      if (response !== 1) return false;
+      await this.assertDatabaseResetAllowed();
+      await deleteStartupDatabase(daemonDatabase);
+      this.legacyStartupFailure = undefined;
+      return true;
+    } finally {
+      this.resettingDatabase = false;
+    }
+  }
+
+  private async assertDatabaseResetAllowed(): Promise<void> {
+    if (!this.legacyStartupFailure || this.startup || this.ownedProcess) {
+      throw new Error("Database deletion is only available after the local daemon stops with an incompatible database.");
+    }
+    if (await this.isReady()) throw new Error("An Ait daemon is running. Close it before deleting the database.");
+  }
+
   private async start(): Promise<void> {
     if (await this.isReady()) {
       if (this.ownedProcess) return;
@@ -486,15 +529,15 @@ export class DaemonClient {
     const executable = app.isPackaged
       ? join(process.resourcesPath, "bin", executableName)
       : join(workspaceRoot, "target", "debug", executableName);
-    const database = join(app.getPath("userData"), daemonRuntime.databaseFilename);
-    const args = ["--database", database, "--listen", daemonRuntime.listen];
+    const args = ["--database", daemonDatabase, "--listen", daemonRuntime.listen];
     let stderr = "";
     this.ownedProcess = spawn(executable, args, { cwd: workspaceRoot, stdio: ["ignore", "ignore", "pipe"] });
     const child = this.ownedProcess;
     this.ownedProcess.stderr?.on("data", (chunk: Buffer) => {
-      const message = chunk.toString("utf8").trim();
+      const output = chunk.toString("utf8");
+      stderr = (stderr + output).slice(-4_096);
+      const message = output.trim();
       if (message) {
-        stderr = `${stderr}\n${message}`.trim().slice(-4_096);
         console.error(`[ait-daemon] ${message}`);
       }
     });
@@ -503,11 +546,13 @@ export class DaemonClient {
         if (this.ownedProcess === child) this.ownedProcess = undefined;
         resolveFailure(new Error(`Ait daemon could not be started: ${error.message}`));
       });
-      child.once("exit", (code, signal) => {
+      child.once("close", (code, signal) => {
         if (this.ownedProcess === child) this.ownedProcess = undefined;
         const reason = code === null ? `signal ${signal ?? "unknown"}` : `exit code ${code}`;
-        const detail = stderr ? `: ${stderr}` : "";
-        resolveFailure(new Error(`Ait daemon stopped before becoming ready (${reason})${detail}`));
+        const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+        const message = `Ait daemon stopped before becoming ready (${reason})${detail}`;
+        resolveFailure(stderr.includes("LEGACY_RECOVERY_REQUIRED:")
+          ? new LegacyDatabaseStartupError(message) : new Error(message));
       });
     });
     for (let attempt = 0; attempt < 60; attempt += 1) {

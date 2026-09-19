@@ -19,6 +19,7 @@
     "test:gui:approvals": "npm run build && node --test test/gui/tool-approval.test.mjs",
     "test:browser": "npm run build && node --test test/browser/*.test.mjs",
     "test:integration:codex-import": "npm run build && npm run build:daemon && node --test test/integration/codex-import.test.mjs",
+    "test:integration:startup-recovery": "npm run build && npm run build:daemon && node --test test/integration/startup-recovery.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:release": "node scripts/verify-release-version.mjs"
   },

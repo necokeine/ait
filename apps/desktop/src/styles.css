@@ -117,6 +117,15 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .conversation-scroll { min-height: 0; overflow: auto; scroll-behavior: smooth; }
 .conversation { width: min(760px, calc(100% - 56px)); margin: 0 auto; padding: 30px 0 48px; }
 .loading-state, .empty-state { min-height: 350px; display: grid; place-content: center; justify-items: center; color: var(--text-muted); font-size: 12px; }
+.startup-recovery { max-width: 560px; margin: 0 auto; justify-items: stretch; line-height: 1.6; }
+.startup-recovery h2 { color: var(--text); margin-bottom: 4px; }
+.startup-recovery p { margin: 7px 0; }
+.startup-database-path, .startup-recovery pre { overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; }
+.startup-recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+.startup-recovery .danger-button { color: var(--danger); border-color: var(--danger); }
+.startup-recovery details { margin-top: 14px; min-width: 0; }
+.startup-recovery summary { cursor: pointer; }
+.has-startup-error .header-meta, .has-startup-error .composer-wrap { display: none; }
 .spinner { width: 20px; height: 20px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .message { display: flex; align-items: flex-start; margin-bottom: 26px; }

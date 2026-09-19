@@ -1,0 +1,37 @@
+{
+  "base_revision": "85404b23611afd5cf6f342c3c8fb0cfae5a14add",
+  "scope": "Node V8 test coverage of the new deletion module executed with tsx; not Desktop-wide or Rust workspace coverage",
+  "command": "node --experimental-test-coverage --import tsx --test '--test-coverage-include=**/src/startup-recovery.ts' --test-reporter=lcov --test-reporter-destination=/tmp/ait-startup-recovery.lcov test/startup-recovery.test.ts",
+  "command_directory": "apps/desktop",
+  "node_version": "26.8.2",
+  "platform": "macOS arm64",
+  "source": "apps/desktop/src/startup-recovery.ts",
+  "source_sha256": "7dd0c0d167f5ad91b312141716932ddbd15c28635fe4aac4d16511e95cecc7d7",
+  "lines": {
+    "covered": 28,
+    "total": 28,
+    "percent": 100.0
+  },
+  "branches": {
+    "covered": 15,
+    "total": 16,
+    "percent": 93.75
+  },
+  "comparable_baseline": null,
+  "rust_workspace_coverage": "not measured; no Rust behavior changed",
+  "excluded_from_measurement": [
+    "main.ts",
+    "preload.cts",
+    "renderer.ts",
+    "other Desktop modules",
+    "Rust workspace"
+  ],
+  "uncovered_behavior": [
+    "unlink non-ENOENT I/O failure"
+  ],
+  "unavailable_platforms": [
+    "Linux",
+    "Windows"
+  ],
+  "skipped_tests": 0
+}
