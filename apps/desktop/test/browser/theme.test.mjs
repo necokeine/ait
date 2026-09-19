@@ -171,9 +171,12 @@ for (const system of ["light", "dark"]) {
       await chooseTheme(page, theme);
       await page.locator('[data-project-id="b"]').click();
       await page.locator(".live-run .message-disclosure > summary").click();
-      assert.equal(await page.locator(".live-run .operation-status").count(), 2);
+      const aggregate = page.locator(".live-run .activity-summary .operation-status");
+      assert.equal(await aggregate.innerText(), "2 running");
+      await page.locator(".live-run .activity-summary").click();
+      assert.equal(await page.locator(".live-run .activity-item-content .operation-status").count(), 2);
       for (const status of ["inprogress", "in_progress"]) {
-        const selector = `.live-run .operation-status.status-${status}`;
+        const selector = `.live-run .activity-item-content .operation-status.status-${status}`;
         assert.equal(await page.locator(selector).isVisible(), true);
         const ratio = await assertReadableText(page, selector, ".conversation-pane");
         t.diagnostic(`${status}: ${ratio.toFixed(2)}:1`);

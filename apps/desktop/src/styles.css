@@ -228,25 +228,41 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .operation-status.status-inprogress, .operation-status.status-in_progress { color: light-dark(#80601b, #d5ad56); }
 .operation-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
 .operation-copy strong { color: var(--text-soft); font-size: 10.5px; font-weight: 590; }
-.operation-copy small { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
+.operation-copy small { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .operation-paths { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
 .operation-paths .file-reference { font-size: 10px; }
 .operation-chevron { margin-left: auto; color: var(--text-muted); transition: transform 120ms ease; }
 .operation-record > pre { margin: 2px 0 8px; max-height: 240px; overflow: auto; border-left: 1px solid var(--line); padding: 7px 10px; color: var(--text-muted); font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.message-disclosure { margin: 2px 0 16px; min-width: 0; color: var(--text-muted); }
-.message-disclosure > summary { display: flex; align-items: center; gap: 12px; width: fit-content; max-width: 100%; min-height: 30px; padding: 5px 0; list-style: none; cursor: pointer; font-size: 11.5px; }
+.message-disclosure { margin: 2px 0 22px; min-width: 0; color: var(--text-muted); }
+.message-disclosure > summary { display: flex; align-items: center; gap: 7px; width: fit-content; max-width: 100%; min-height: 30px; padding: 5px 0; list-style: none; cursor: pointer; font-size: 12px; }
 .message-disclosure > summary::-webkit-details-marker { display: none; }
 .message-disclosure > summary:hover { color: var(--text); }
 .message-disclosure > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 .message-disclosure[open] > summary .operation-chevron { transform: rotate(180deg); }
-.message-disclosure-content { padding: 4px 0 4px 14px; border-left: 1px solid var(--line); }
-.message-disclosure-content > .message { margin-bottom: 14px; }
-.message-disclosure-content > .message:last-child { margin-bottom: 0; }
-.message-disclosure-content .message-content { color: var(--text-soft); font-size: 11.5px; }
+.message-disclosure-content { margin-top: 5px; padding: 18px 0 0; border-top: 1px solid var(--line-soft); }
+.message-disclosure-content > .message, .activity-section { margin: 0 0 16px; }
+.message-disclosure-content > :last-child { margin-bottom: 0; }
+.message-disclosure-content .message-content { color: var(--text); font-size: 12px; line-height: 1.7; }
 .message-disclosure-content .codex-output-message + .codex-output-message { margin-top: 10px; }
-.message-event-count { font-size: 10px; font-variant-numeric: tabular-nums; }
-.message-event + .message-event { margin-top: 12px; }
-.message-event-kind { margin-bottom: 4px; color: var(--text-muted); font-size: 10px; font-weight: 600; }
+.activity-metadata { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.activity-item { min-width: 0; margin: 4px 0; }
+.activity-summary { display: flex; align-items: center; gap: 8px; min-height: 30px; width: fit-content; max-width: 100%; padding: 4px 0; color: var(--text-muted); list-style: none; cursor: pointer; font-size: 12px; }
+.activity-summary::-webkit-details-marker { display: none; }
+.activity-summary > svg { flex: 0 0 15px; width: 15px; height: 15px; }
+.activity-label { min-width: 0; overflow-wrap: anywhere; }
+.activity-summary:hover { color: var(--text); }
+.activity-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.activity-summary .operation-chevron { margin-left: 0; font-size: 11px; }
+.activity-item[open] > .activity-summary .operation-chevron { transform: rotate(180deg); }
+.activity-item-content { margin: 7px 0 14px 23px; padding: 8px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface); }
+.activity-item-content .operation-record { margin: 0; }
+.activity-item-content .operation-record + .operation-record { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+.activity-item-content .operation-record > pre { border-left: 0; padding: 8px 0; margin-bottom: 0; }
+.activity-item-content .tool-card { border: 0; margin: 0; background: transparent; }
+.activity-item-content .tool-card header { height: auto; padding: 4px 0 8px; }
+.activity-item-content .tool-card pre { max-height: 240px; padding: 8px 0; overflow-wrap: anywhere; }
+.activity-item-content .markdown > :first-child { margin-top: 0; }
+.activity-item-content .markdown > :last-child { margin-bottom: 0; }
 .codex-final-answer { min-width: 0; }
 .composer-wrap { min-width: 0; padding: 0 24px 15px; background: linear-gradient(transparent, var(--bg) 18px); }
 .composer, .branch-context, .composer-hint { width: min(790px, 100%); margin-left: auto; margin-right: auto; }

@@ -5,6 +5,8 @@
   [项目菜单导入验证](reports/codex-project-import.md)：显式发现匹配 Thread、选择导入或同步、服务端项目归属筛选与桌面异步隔离。
   [重复 Thread ID 修复](reports/codex-thread-list-deduplication.md)：兼容分页重叠与归档移动，保留游标循环校验。
   [未绑定会话误判修复](reports/codex-import-optional-bindings.md)：对齐 Rust 可选字段序列化，补充真实 HTTP 与 Desktop 导入/同步集成回归。
+  [空元数据卡片修复](reports/codex-empty-text-metadata.md)：隐藏导入文本的空附加信息，保留原消息数据。
+  [过程折叠展示](reports/codex-activity-display.md)：过程正文与操作摘要分层展示，连续命令分组，保留详情、状态和展开位置。
 
 ## 工程规范
 

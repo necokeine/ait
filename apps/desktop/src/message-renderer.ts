@@ -343,11 +343,23 @@ function disclosureKind(part: DesktopMessage["parts"][number]): DisclosureKind |
   return undefined;
 }
 
+function isEmptyCodexTextMetadata(part: DesktopMessage["parts"][number]): boolean {
+  if (part.type !== "structured" || part.media_type !== "application/vnd.openai.codex.text-elements+json") return false;
+  try {
+    const elements: unknown = JSON.parse(part.value);
+    return Array.isArray(elements) && elements.length === 0;
+  } catch {
+    return false;
+  }
+}
+
 function messageSections(parts: DesktopMessage["parts"], key: string, message?: DesktopMessage, live = false): MessageSection[] {
   const sections: MessageSection[] = [];
   const fallbackFinalIndex = live || parts.some((part) => part.type === "codex_message" && part.phase === "final_answer")
     ? -1 : parts.findLastIndex((part) => part.type === "codex_message");
   parts.forEach((source, index) => {
+    // Keep imported metadata in history without creating an empty card or message shell.
+    if (isEmptyCodexTextMetadata(source)) return;
     const part = source.type === "codex_message" && index === fallbackFinalIndex
       ? { ...source, phase: "final_answer" } : source;
     const kind = message?.role === "user" && message.kind !== "tool_result" ? undefined : disclosureKind(part);
@@ -358,7 +370,7 @@ function messageSections(parts: DesktopMessage["parts"], key: string, message?: 
   return sections;
 }
 
-// All consecutive activity kinds share one Events disclosure. Visible content
+// All consecutive activity kinds share one disclosure. Visible content
 // ends the group; the immutable Message path, ids and times remain unchanged.
 function renderSections(sections: MessageSection[], agents: AgentSummary[], selectedId?: string): string {
   const groups: MessageSection[][] = [];
@@ -371,15 +383,15 @@ function renderSections(sections: MessageSection[], agents: AgentSummary[], sele
     const first = group[0]!;
     const content = group.map((section) => {
       const isInput = section.message?.role === "user" && section.message.kind !== "tool_result";
-      const html = section.parts.map((part) => renderPart(part, isInput)).join("");
-      const labeled = section.kind
-        ? `<section class="message-event"><div class="message-event-kind">${section.kind}</div>${html}</section>`
-        : html;
-      return section.message ? renderMessageShell(section.message, agents, labeled, section.message.id === selectedId) : labeled;
+      const html = section.kind && section.kind !== "Process"
+        ? renderActivityParts(section.parts, section.key)
+        : section.parts.map((part) => renderPart(part, isInput)).join("");
+      return section.message
+        ? renderMessageShell(section.message, agents, html, section.message.id === selectedId, Boolean(section.kind))
+        : `<div class="activity-section">${html}</div>`;
     }).join("");
-    const eventCount = group.reduce((count, section) => count + section.parts.length, 0);
     return first.kind
-      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>Events</span><span class="message-event-count">${eventCount}</span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
+      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>Activity</span>${activityStatuses(group.flatMap((section) => section.parts))}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
       : content;
   }).join("");
 }
@@ -396,20 +408,25 @@ export function renderMessage(message: DesktopMessage, agents: AgentSummary[], s
 
 // Keep an explicitly opened disclosure open as streamed content is repainted.
 export function replaceConversationContent(container: Element, html: string, preserveOpen: boolean): void {
+  const focused = container.contains(document.activeElement) && document.activeElement?.matches("summary")
+    ? document.activeElement.closest<HTMLDetailsElement>("details[data-disclosure-id]")?.dataset.disclosureId : undefined;
   const openIds = new Set(preserveOpen
     ? Array.from(container.querySelectorAll<HTMLDetailsElement>("details[data-disclosure-id][open]"), (element) => element.dataset.disclosureId)
     : []);
   container.innerHTML = html;
   container.querySelectorAll<HTMLDetailsElement>("details[data-disclosure-id]").forEach((element) => {
     element.open = openIds.has(element.dataset.disclosureId);
+    if (preserveOpen && focused && element.dataset.disclosureId === focused) {
+      element.querySelector<HTMLElement>(":scope > summary")?.focus({ preventScroll: true });
+    }
   });
 }
 
-function renderMessageShell(message: DesktopMessage, agents: AgentSummary[], content: string, selected: boolean): string {
+function renderMessageShell(message: DesktopMessage, agents: AgentSummary[], content: string, selected: boolean, activity = false): string {
   const author = messageAuthor(message, agents);
   const isInput = message.role === "user" && message.kind !== "tool_result";
-  return `<article class="message ${message.role}${isInput ? " user-input" : ""}${selected ? " is-selected" : ""}" data-message-id="${escapeHtml(message.id)}" tabindex="0" aria-current="${selected}" aria-label="${escapeHtml(author)} message">
-    <div class="message-body"><div class="message-heading">${isInput ? "" : `<strong>${escapeHtml(author)}</strong>`}${renderMessageTime(message.createdAt)}</div>
+  return `<article class="message ${message.role}${isInput ? " user-input" : ""}${activity ? " message-activity" : ""}${selected ? " is-selected" : ""}" data-message-id="${escapeHtml(message.id)}" tabindex="0" aria-current="${selected}" aria-label="${escapeHtml(author)} message">
+    <div class="message-body"><div class="${activity ? "activity-metadata" : "message-heading"}">${isInput ? "" : `<strong>${escapeHtml(author)}</strong>`}${renderMessageTime(message.createdAt)}</div>
       <div class="${isInput ? "user-input-bubble" : "message-parts"}">${content}</div>
     </div>
   </article>`;
@@ -469,6 +486,57 @@ function renderPart(part: DesktopMessage["parts"][number], isInput = false): str
   if (part.type === "file") return `<div class="tool-card"><header><strong>${escapeHtml(part.name)}</strong><small>${escapeHtml(part.media_type)}</small></header></div>`;
   if (part.type === "structured") return `<div class="tool-card"><header><strong>${escapeHtml(part.media_type)}</strong></header><pre>${escapeHtml(prettyJson(part.value))}</pre></div>`;
   return '<div class="message-content">Content redacted</div>';
+}
+
+const commandIcon = icon('<rect x="3" y="4" width="18" height="16" rx="4"/><path d="m7 9 3 3-3 3m6 0h4"/>');
+const thoughtIcon = icon('<path d="M9 18h6m-5 3h4M8 15a7 7 0 1 1 8 0c-1 .8-1 1.5-1 3H9c0-1.5 0-2.2-1-3Z"/>');
+const toolIcon = icon('<path d="m14 6 4 4M8 16l-3 3m9-14a5 5 0 0 0-6 6l-5 5a3 3 0 0 0 4 4l5-5a5 5 0 0 0 6-6l-3 3-3-3 3-3Z"/>');
+
+function isCommand(part: DesktopMessage["parts"][number]): boolean {
+  return part.type === "operation" && ["command", "commandExecution"].includes(part.kind);
+}
+
+function activityStatuses(parts: DesktopMessage["parts"]): string {
+  const counts = new Map<string, number>();
+  for (const part of parts) {
+    if (part.type !== "operation" && part.type !== "tool_result") continue;
+    const status = part.status.replace(/[^a-z\d_-]/gi, "-").toLowerCase();
+    if (!status || ["completed", "succeeded", "success"].includes(status)) continue;
+    const label = ["inprogress", "in_progress", "running"].includes(status) ? "running" : status;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts].map(([label, count]) => `<span class="operation-status status-${label === "running" ? "inprogress" : label}">${parts.length > 1 ? `${count} ` : ""}${escapeHtml(label)}</span>`).join("");
+}
+
+function renderActivityParts(parts: DesktopMessage["parts"], key: string): string {
+  const groups: Array<{ index: number; parts: DesktopMessage["parts"] }> = [];
+  parts.forEach((part, index) => {
+    const previous = groups.at(-1);
+    if (isCommand(part) && previous && isCommand(previous.parts[0]!)) previous.parts.push(part);
+    else groups.push({ index, parts: [part] });
+  });
+  return groups.map((group) => {
+    const first = group.parts[0]!;
+    const command = isCommand(first);
+    const thinking = disclosureKind(first) === "Reasoning";
+    const running = group.parts.some((part) => part.type === "operation" && /^(inprogress|in_progress|running)$/i.test(part.status));
+    const label = command ? `${running ? "Running" : "Ran"} ${group.parts.length > 1 ? `${group.parts.length} commands` : "a command"}`
+      : thinking ? "Reasoning"
+        : first.type === "tool_use" ? `Called ${first.tool_name}`
+          : first.type === "operation" ? first.title : "Tool result";
+    const content = group.parts.map((part) => {
+      if (part.type === "structured" && thinking) {
+        try {
+          const value: unknown = JSON.parse(part.value);
+          if (value && typeof value === "object" && "reasoning" in value && typeof value.reasoning === "string") {
+            return renderMessageText(value.reasoning);
+          }
+        } catch { /* Keep malformed provider content inspectable in its original form. */ }
+      }
+      return renderPart(part);
+    }).join("");
+    return `<details class="activity-item" data-disclosure-id="${escapeHtml(`${key}:activity:${group.index}`)}"><summary class="activity-summary">${command ? commandIcon : thinking ? thoughtIcon : toolIcon}<span class="activity-label">${escapeHtml(label)}</span>${activityStatuses(group.parts)}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="activity-item-content">${content}</div></details>`;
+  }).join("");
 }
 
 function renderOperation(part: Extract<DesktopMessage["parts"][number], { type: "operation" }>): string {

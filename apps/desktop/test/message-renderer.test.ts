@@ -35,7 +35,7 @@ test("hides only leading system messages without changing history or later syste
   assert.equal(renderConversationMessages([], []), "");
 });
 
-test("combines consecutive activity types into Events across message boundaries in order", () => {
+test("combines consecutive activities across message boundaries while preserving identity and order", () => {
   const messages = [
     transcriptMessage("thinking-a", [reasoning("Thought A"), reasoning("Thought B")]),
     transcriptMessage("thinking-b", [reasoning("Thought C"), { type: "text", text: "Inspecting files" }, call("read-a"), call("read-b")]),
@@ -46,13 +46,10 @@ test("combines consecutive activity types into Events across message boundaries 
   ];
   const snapshot = structuredClone(messages);
   const html = renderConversationMessages(messages, [], "result-b");
-  assert.deepEqual(disclosureTitles(html), ["Events", "Events", "Events"]);
-  const groups = Array.from(html.matchAll(/<details\b[^>]*>(.*?)<\/details>/gs), (match) => match[1]!);
-  assert.deepEqual(groups.map((group) => Number(/class="message-event-count">(\d+)/.exec(group)?.[1])), [3, 5, 2]);
-  assert.ok(groups.every((group) => !group.includes("Inspecting files") && !group.includes("Done")));
-  assert.ok(groups[1]!.includes("read-c") && groups[1]!.includes("output-read-b"));
-  assert.ok(groups[2]!.includes("Follow-up") && groups[2]!.includes("read-d"));
-  for (const kind of ["Reasoning", "Tool call", "Tool result"]) assert.ok(html.includes(`class="message-event-kind">${kind}</div>`));
+  assert.deepEqual(disclosureTitles(html), ["Activity", "Activity", "Activity"]);
+  for (const label of ["Reasoning", "Called read-c", "Tool result"]) assert.ok(html.includes(label));
+  assert.ok(!html.includes("message-event-kind"));
+  assert.ok(!html.includes("message-event-count"));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(!html.includes("message-avatar"));
   for (const message of messages) assert.ok(html.includes(`data-message-id="${message.id}"`));
@@ -68,31 +65,31 @@ test("keeps separated groups separate and leaves unrelated structured content vi
     call("first"), { type: "text", text: "Between calls" }, call("second"),
     { type: "structured", media_type: "application/json", value: '{"visible":true}' },
   ]), []);
-  assert.deepEqual(disclosureTitles(html), ["Events", "Events"]);
+  assert.deepEqual(disclosureTitles(html), ["Activity", "Activity"]);
   assert.ok(html.indexOf("</details>") < html.indexOf("Between calls"));
   assert.ok(html.lastIndexOf("</details>") < html.indexOf("application/json"));
 });
 
-test("collapses detail-free operations together without nesting disclosures", () => {
+test("groups operation summaries before an independent final answer", () => {
   const html = renderMessage(transcriptMessage("operations", [
     { type: "operation", id: "read", kind: "read", status: "completed", title: "Read file", paths: [] },
     { type: "operation", id: "write", kind: "fileChange", status: "failed", title: "Write file", detail: "<script>failed</script>", paths: [] },
     { type: "codex_message", id: "final", phase: "final_answer", text: "Final answer" },
   ]), []);
-  assert.deepEqual(disclosureTitles(html), ["Events"]);
-  assert.equal(html.match(/<details /g)?.length, 1);
+  assert.deepEqual(disclosureTitles(html), ["Activity"]);
+  assert.equal(html.match(/class="activity-item"/g)?.length, 2);
   assert.ok(html.includes("&lt;script&gt;failed&lt;/script&gt;"));
   assert.ok(html.indexOf("</details>") < html.indexOf("Final answer"));
 });
 
-test("user input ends an Events group even when it contains tool-shaped parts", () => {
+test("user input ends an activity group even when it contains tool-shaped parts", () => {
   const input = transcriptMessage("input", [{ type: "text", text: "User follow-up" }, call("input-call")], "user");
   const html = renderConversationMessages([
     transcriptMessage("before", [reasoning("Before input")]),
     input,
     transcriptMessage("after", [call("after-input"), result("after-input")]),
   ], []);
-  assert.deepEqual(disclosureTitles(html), ["Events", "Events"]);
+  assert.deepEqual(disclosureTitles(html), ["Activity", "Activity"]);
   const inputStart = html.indexOf('data-message-id="input"');
   assert.ok(html.indexOf("</details>") < inputStart);
   assert.ok(inputStart < html.lastIndexOf("<details "));
@@ -177,6 +174,44 @@ test("groups all input parts in one plain-text bubble without a user avatar", ()
   assert.ok(html.includes(`datetime="${new Date(timestamp).toISOString()}"`));
 });
 
+test("imported Codex text with empty metadata renders only the input without rewriting history", () => {
+  for (const value of ["[]", " [ \n ] "]) {
+    const stored: WorkspaceMessage = { ...input, text: "帮我打包一个apk出来。", data: { native_message: { sub_messages: [
+      { type: "text", text: "帮我打包一个apk出来。" },
+      { type: "structured_data", media_type: "application/vnd.openai.codex.text-elements+json", value },
+    ] } } };
+    const original = structuredClone(stored);
+    const message = projectMessage(stored, null);
+    const projected = structuredClone(message);
+    for (const html of [renderMessage(message, []), renderConversationMessages([message], [])]) {
+      assert.ok(html.includes("帮我打包一个apk出来。"));
+      assert.equal(html.match(/class="user-input-bubble"/g)?.length, 1);
+      assert.ok(!html.includes("tool-card"));
+      assert.ok(!html.includes("text-elements+json"));
+    }
+    assert.deepEqual(stored, original);
+    assert.deepEqual(message, projected);
+    assert.equal(renderMessage({ ...message, parts: message.parts.slice(1) }, []), "");
+  }
+});
+
+test("keeps nonempty or malformed Codex metadata and literal empty arrays inspectable", () => {
+  for (const value of ['[{"byteRange":{"start":0,"end":3}}]', "null", "{}", "[invalid]"]) {
+    const html = renderMessage(transcriptMessage("metadata", [{
+      type: "structured", media_type: "application/vnd.openai.codex.text-elements+json", value,
+    }], "user"), []);
+    assert.ok(html.includes("text-elements+json"));
+    assert.ok(html.includes("tool-card"));
+  }
+  const html = renderMessage(transcriptMessage("literal", [
+    { type: "text", text: "[]" },
+    { type: "structured", media_type: "application/json", value: "[]" },
+    { type: "structured", media_type: "application/vnd.openai.codex.user-input+json", value: "[]" },
+  ], "user"), []);
+  assert.ok(html.includes('<div class="message-content">[]</div>'));
+  assert.equal(html.match(/class="tool-card"/g)?.length, 2);
+});
+
 test("carries persisted times through projection for every role and tool result", () => {
   for (const role of ["system", "user", "assistant"] as const) {
     for (const kind of ["standard", "tool_result"] as const) {
@@ -214,7 +249,7 @@ test("projects and renders persisted Codex operation records with expandable det
   assert.equal(message.parts[0]?.type, "operation");
   assert.equal(message.parts[1]?.type, "codex_message");
   const html = renderMessage(message, []);
-  assert.ok(html.includes('<summary><span>Events</span>'));
+  assert.ok(html.includes('<summary><span>Activity</span>'));
   assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
   assert.ok(html.indexOf("Read file") < html.indexOf("Done."));
   assert.ok(html.includes('class="operation-record"'));
@@ -247,9 +282,9 @@ test("renders ordered Codex progress collapsed before an independent final answe
   assert.deepEqual(message.parts.map((part) => part.type), ["codex_message", "operation", "codex_message"]);
   assert.equal(messageText(message), "Implemented and verified.");
   const html = renderMessage(message, []);
-  assert.deepEqual(disclosureTitles(html), ["Events"]);
-  assert.ok(html.includes('class="message-event-kind">Process</div>'));
-  assert.ok(html.includes('class="message-event-kind">Tool call</div>'));
+  assert.deepEqual(disclosureTitles(html), ["Activity"]);
+  assert.ok(!html.includes("message-event-kind"));
+  assert.ok(html.includes('class="activity-summary"'));
   assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
   assert.ok(html.includes('class="codex-final-answer" data-codex-final-answer'));
   assert.ok(html.indexOf("Inspecting the repository.") < html.indexOf("Read file"));
@@ -289,7 +324,7 @@ test("projects native API tool results as collapsed records without exposing the
       data: { agent_revision: 9, native_message: { tool_result: { call_id: "call", status, output: '{"stdout":"<script>output</script>"}', error: status === "denied" ? "Permission denied" : null } } },
     }, null);
     const html = renderMessage(message, []);
-    assert.ok(html.includes('<summary><span>Events</span>'));
+    assert.ok(html.includes('<summary><span>Activity</span>'));
     assert.ok(!/<details[^>]*\sopen[\s>]/.test(html));
     assert.ok(html.includes("Tool result"));
     assert.ok(html.includes(status));
