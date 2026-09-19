@@ -12,13 +12,14 @@ export function installRendererFixture() {
     status, permissionProfile: { sandbox: "workspace_write", approval: "on_request" }, nativeApprovals: [],
   });
   const f = window.fixture = {
-    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false, sessionFailures: new Set(),
+    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], sessionReadReturns: [], updateFailure: false, sessionFailure: false, sessionFailures: new Set(),
     crons: [], cronCreates: [], cronRuns: [],
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
     runs: [run("run-b", "session-b")], sent: [], forks: [], forkAttempts: [], forkFailure: false, projectReads: [],
     createdMessages: [],
     catalogFailure: false, catalogDelay: false, viewFailure: false,
-    emit: () => {}, releaseCatalog: () => {},
+    delayedSessionReadProject: null, sessionReadPending: false,
+    emit: () => {}, releaseCatalog: () => {}, releaseSessionRead: () => {},
     async catalogRead() {
       if (f.catalogDelay) await new Promise((resolve) => { f.releaseCatalog = resolve; });
       if (f.catalogFailure) throw new Error("Project catalog unavailable");
@@ -56,7 +57,20 @@ export function installRendererFixture() {
     projectSessions: async (projectId, status = "active") => {
       f.sessionReads.push(projectId);
       if (f.sessionFailure || f.sessionFailures.has(projectId)) throw new Error("Sessions unavailable");
-      return structuredClone(f.sessions.filter((s) => s.projectId === projectId && s.status === status));
+      const snapshot = structuredClone(f.sessions.filter((s) => s.projectId === projectId && s.status === status));
+      if (f.delayedSessionReadProject === projectId) {
+        f.delayedSessionReadProject = null;
+        f.sessionReadPending = true;
+        await new Promise((resolve) => {
+          f.releaseSessionRead = () => {
+            f.sessionReadPending = false;
+            f.releaseSessionRead = () => {};
+            resolve();
+          };
+        });
+      }
+      f.sessionReadReturns.push(projectId);
+      return snapshot;
     },
     crons: async () => structuredClone(f.crons),
     createCron: async (input) => {
