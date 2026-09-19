@@ -116,6 +116,7 @@ let pageGeneration = 0;
 let disposeProviderSettings: (() => void) | undefined;
 let archivedSessions: Map<string, DesktopSession[]> | undefined;
 let archivedSessionErrors = new Map<string, string>();
+let archivedSessionVersions = new Map<string, number>();
 let archivedSessionsLoading = false;
 let archivedSessionsGeneration = 0;
 let toastTimer: number | undefined;
@@ -1779,6 +1780,7 @@ function openSettings(): void {
   archivedSessionsGeneration += 1;
   archivedSessions = undefined;
   archivedSessionErrors = new Map();
+  archivedSessionVersions = new Map();
   archivedSessionsLoading = false;
   settingsDraft = structuredClone(settings.values);
   settingsDialog.classList.remove("is-hidden");
@@ -1791,10 +1793,10 @@ function openProviderSettings(id: string): void {
   disposeProviderSettings?.();
   $("#provider-dialog-body").replaceChildren();
   providerDialog.classList.remove("is-hidden");
-  disposeProviderSettings = renderProviderSettings($("#provider-dialog-body"), view, (updated) => {
+  disposeProviderSettings = renderProviderSettings($("#provider-dialog-body"), view, (updated, editorIsCurrent) => {
     replaceAgentCatalog(updated);
     renderAll();
-    closeProviderSettings();
+    if (editorIsCurrent) closeProviderSettings();
   }, showToast, id);
 }
 
@@ -1893,6 +1895,10 @@ function renderArchivedSessions(): void {
 async function loadArchivedSessions(): Promise<void> {
   const projects = view?.projects ?? [];
   const generation = ++archivedSessionsGeneration;
+  const versions = new Map(projects.map((project) => [
+    project.id,
+    archivedSessionVersions.get(project.id) ?? 0,
+  ]));
   archivedSessionsLoading = true;
   if (settingsCategory === "archived_sessions") renderSettings();
   const results = await Promise.all(projects.map(async (project): Promise<{
@@ -1908,10 +1914,20 @@ async function loadArchivedSessions(): Promise<void> {
     }
   }));
   if (generation !== archivedSessionsGeneration) return;
-  archivedSessions = new Map(results.map((result) => [result.projectId, result.sessions] as const));
-  archivedSessionErrors = new Map(results.flatMap((result) => result.error
-    ? [[result.projectId, result.error] as const]
-    : []));
+  const nextSessions = new Map<string, DesktopSession[]>();
+  const nextErrors = new Map<string, string>();
+  for (const result of results) {
+    if ((archivedSessionVersions.get(result.projectId) ?? 0) !== versions.get(result.projectId)) {
+      nextSessions.set(result.projectId, archivedSessions?.get(result.projectId) ?? []);
+      const existingError = archivedSessionErrors.get(result.projectId);
+      if (existingError) nextErrors.set(result.projectId, existingError);
+      continue;
+    }
+    nextSessions.set(result.projectId, result.sessions);
+    if (result.error) nextErrors.set(result.projectId, result.error);
+  }
+  archivedSessions = nextSessions;
+  archivedSessionErrors = nextErrors;
   archivedSessionsLoading = false;
   if (settingsCategory === "archived_sessions" && !settingsDialog.classList.contains("is-hidden")) {
     renderSettings();
@@ -1926,6 +1942,7 @@ async function restoreSession(button: HTMLButtonElement): Promise<void> {
   button.disabled = true;
   try {
     const updated = await window.ait.setSessionArchived({ projectId, sessionId, archived: false });
+    archivedSessionVersions.set(projectId, (archivedSessionVersions.get(projectId) ?? 0) + 1);
     archivedSessions?.set(
       projectId,
       (archivedSessions.get(projectId) ?? []).filter((session) => session.id !== sessionId),
