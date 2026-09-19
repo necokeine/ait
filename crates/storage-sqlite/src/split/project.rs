@@ -79,7 +79,7 @@ pub(super) fn open_project(
             .pragma_update(None, "application_id", PROJECT_APPLICATION_ID)
             .map_err(sql_error)?;
         transaction
-            .pragma_update(None, "user_version", 1)
+            .pragma_update(None, "user_version", 2)
             .map_err(sql_error)?;
         transaction.commit().map_err(sql_error)?;
         #[cfg(unix)]
@@ -93,7 +93,7 @@ pub(super) fn open_project(
                 .sync_all()
                 .map_err(io_error)?;
         }
-    } else if version != 1 || application != PROJECT_APPLICATION_ID {
+    } else if !matches!(version, 1 | 2) || application != PROJECT_APPLICATION_ID {
         return Err(other(format!(
             concat!(
                 "unsupported Project database format for {} ",
@@ -120,6 +120,7 @@ pub(super) fn open_project(
             target.id
         )));
     }
+    super::cutover::reset_project(&mut connection, target)?;
     connection
         .execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")
         .map_err(sql_error)?;

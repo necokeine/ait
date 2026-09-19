@@ -1,6 +1,7 @@
 //! Native approvals regression coverage.
 #![allow(clippy::pedantic)]
 
+use crate::support::native::{NativeHandler, NativeReply};
 mod fixtures;
 mod support;
 
@@ -8,17 +9,14 @@ use crate::fixtures::control_fixtures::{
     config, ok, save_permission_settings, send, setup, view, wait_for_signal,
 };
 use crate::support::ControlStoreTestExt;
-use ait_agent_adapters::codex::CodexWorkspaceAgent;
+use ait_agent_adapters::codex::CodexAppServerAdapter;
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_contracts::{Command, NativeApprovalAction};
 use ait_domain::{
     ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, NativeApprovalTarget,
     SandboxAccess,
 };
-use ait_ports::{
-    WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceApprovalDecision,
-    WorkspaceApprovalRequest,
-};
+use ait_ports::{CodexThreadInvocation, WorkspaceApprovalDecision, WorkspaceApprovalRequest};
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -56,11 +54,8 @@ impl ApprovalAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for ApprovalAgent {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for ApprovalAgent {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         self.requested.add_permits(1);
         let permission_path = self
             .permission_path
@@ -104,9 +99,9 @@ impl WorkspaceAgent for ApprovalAgent {
             })
             .await?;
         *self.decision.lock().unwrap() = Some(decision);
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "approval settled".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -117,7 +112,7 @@ impl WorkspaceAgent for ApprovalAgent {
 async fn native_approval_wait_is_nonblocking_durable_and_duplicate_safe() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::CommandExecution));
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -192,35 +187,8 @@ async fn command_approval_secrets_never_reach_durable_or_reconnected_views() {
     std::fs::write(
         &binary,
         concat!(
-            r#"#!/bin/sh
-IFS= read -r _ || exit 60
-printf '%s\n' '{"id":0,"result":{}}'
-IFS= read -r _ || exit 61
-IFS= read -r _ || exit 62
-printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-a"}}}'
-IFS= read -r _ || exit 63
-printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-a"}}}'
-"#,
-            r#"printf '%s\n' '{"id":73,"method":"item/commandExecution/requestApproval","#,
-            r#""params":{"threadId":"thread-a","turnId":"turn-a","itemId":"command-a","#,
-            r#""command":"curl -H X-Api-Key:header-secret --header=\"Authorization: "#,
-            r#"Bearer auth-secret\" -H \"Cookie: session=cookie-secret\" "#,
-            r#"https://url-user:url-secret@example.test/v1","cwd":"/workspace","#,
-            r#""reason":"offline fixture"}}'
-"#,
-            r#"IFS= read -r approval_response || exit 64
-case "$approval_response" in
-  *'"id":73'*'"decision":"accept"'*) ;;
-  *) exit 65 ;;
-esac
-"#,
-            r#"printf '%s\n' '{"method":"item/agentMessage/delta","params":{"#,
-            r#""threadId":"thread-a","turnId":"turn-a","itemId":"answer-a","#,
-            r#""delta":"approved"}}'
-"#,
-            r#"printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-a","#,
-            r#""turn":{"id":"turn-a","items":[],"status":"completed"}}}'
-"#,
+            "#!/usr/bin/env python3\nAPPROVAL=True\nLOG=None\nDELAY=0\nANSWER='approved'\n",
+            include_str!("support/app_server.py")
         ),
     )
     .unwrap();
@@ -228,17 +196,19 @@ esac
 
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(
-        CodexWorkspaceAgent::from_config(CodexAppServerConfig {
+        CodexAppServerAdapter::new(CodexAppServerConfig {
             codex_binary: binary,
             ..CodexAppServerConfig::default()
         })
         .unwrap(),
     );
-    let service = Arc::new(LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-        store.clone(),
-        agent.clone(),
-    ));
+    let service = Arc::new(
+        LocalControlService::new(
+            std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+            store.clone(),
+        )
+        .with_codex_thread_writer(agent.clone()),
+    );
     let _directory = setup(&service, config("high")).await;
     save_permission_settings(&service, "full_access", "on_request").await;
     let running = {
@@ -262,11 +232,11 @@ esac
     }
 
     // A desktop reconnect obtains fresh Project-scoped slices from the same durable daemon state.
-    let reconnected_service = LocalControlService::with_workspace_agent(
+    let reconnected_service = LocalControlService::new(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
-        agent.clone(),
-    );
+    )
+    .with_codex_thread_writer(agent.clone());
     let reconnected = view(&reconnected_service).await;
     let approval = reconnected
         .runs
@@ -333,7 +303,7 @@ async fn denial_is_not_approval_and_session_grants_respect_administrator_policy(
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::Permissions));
     let service = Arc::new(
-        LocalControlService::with_workspace_agent(
+        crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             agent.clone(),
@@ -415,7 +385,7 @@ async fn reject_permission_write_for_read_only_run(max_sandbox: SandboxAccess) {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(ApprovalAgent::new(NativeApprovalKind::Permissions));
     let service = Arc::new(
-        LocalControlService::with_workspace_agent(
+        crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             agent.clone(),
@@ -479,7 +449,7 @@ async fn workspace_write_permission_grants_cannot_escape_the_project() {
     let agent = Arc::new(ApprovalAgent::permissions_at(
         outside.path().join("escaped.txt").to_string_lossy(),
     ));
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -559,7 +529,7 @@ async fn cancelling_each_native_approval_kind_cancels_the_run_without_hanging() 
     ] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let agent = Arc::new(ApprovalAgent::new(kind));
-        let service = Arc::new(LocalControlService::with_workspace_agent(
+        let service = Arc::new(crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             agent.clone(),
@@ -615,13 +585,7 @@ async fn cancelling_each_native_approval_kind_cancels_the_run_without_hanging() 
             ait_domain::NativeApprovalStatus::Cancelled,
             "{kind:?}"
         );
-        assert!(
-            snapshot
-                .messages
-                .iter()
-                .all(|message| message.role != "assistant"),
-            "{kind:?}"
-        );
+        assert!(run.git_commit.is_none());
         let duplicate = service
             .execute(Command::ResolveNativeApproval {
                 run_id,
@@ -653,7 +617,7 @@ async fn file_and_command_approvals_respect_each_run_sandbox() {
             NativeApprovalKind::LegacyCommand,
         ] {
             let agent = Arc::new(ApprovalAgent::new(kind));
-            let service = Arc::new(LocalControlService::with_workspace_agent(
+            let service = Arc::new(crate::support::native::native_service(
                 std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 Arc::new(SqliteControlStore::in_memory().unwrap()),
                 agent.clone(),
@@ -754,7 +718,7 @@ async fn workspace_file_grants_reject_outside_and_ambiguous_paths() {
                 }],
             });
             let agent = Arc::new(fixture);
-            let service = Arc::new(LocalControlService::with_workspace_agent(
+            let service = Arc::new(crate::support::native::native_service(
                 std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 Arc::new(SqliteControlStore::in_memory().unwrap()),
                 agent.clone(),
@@ -777,7 +741,7 @@ async fn workspace_file_grants_reject_symlinks_including_dangling_targets() {
             changes: Vec::new(),
         });
         let agent = Arc::new(fixture);
-        let service = Arc::new(LocalControlService::with_workspace_agent(
+        let service = Arc::new(crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::in_memory().unwrap()),
             agent.clone(),

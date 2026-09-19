@@ -107,6 +107,7 @@ export interface DesktopRun {
     sandbox: "read_only" | "workspace_write" | "full_access";
     approval: "on_request" | "untrusted_only";
   };
+  gitCommit?: { status: "pending" | "prepared" | "committed" | "skipped" | "failed"; commitId?: string | null; reason?: string | null };
   nativeApprovals: NativeApproval[];
   toolApprovals?: ToolApproval[];
   toolInteractions?: ToolInteraction[];
@@ -382,6 +383,7 @@ export interface AitDesktopApi {
     action: "approve" | "deny" | "cancel";
     scope?: "one_shot" | "turn" | "session";
   }): Promise<ProjectView>;
+  retryRunCommit(input: { runId: string; projectId: string }): Promise<ProjectView>;
   resolveToolApproval(input: {
     runId: string; projectId: string; approvalId: string; action: "approve" | "deny" | "cancel";
   }): Promise<ProjectView>;

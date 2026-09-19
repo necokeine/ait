@@ -12,7 +12,7 @@ pub(super) fn initialize(
 ) -> Result<(), ControlStoreError> {
     let application = pragma_number(connection, "application_id")?;
     let version = pragma_number(connection, "user_version")?;
-    if application != 0 && application != GLOBAL_APPLICATION_ID || version > 1 {
+    if application != 0 && application != GLOBAL_APPLICATION_ID || version > 2 {
         return Err(other(format!(
             "unsupported global database format (application={application}, version={version})"
         )));
@@ -33,7 +33,7 @@ pub(super) fn initialize(
             migrate(connection)?;
         }
         if pragma_number(connection, "application_id")? != GLOBAL_APPLICATION_ID
-            || pragma_number(connection, "user_version")? != 1
+            || !matches!(pragma_number(connection, "user_version")?, 1 | 2)
         {
             return Err(other("global database format marker is invalid"));
         }

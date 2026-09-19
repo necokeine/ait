@@ -645,7 +645,7 @@ impl ait_ports::RunDispatcher for FaultDispatcher {
                 .unwrap();
             let bootstrap = Bootstrap {
                 lease: Lease {
-                    run_id: request.run_id.as_str().into(),
+                    scope_id: request.run_id.as_str().into(),
                     worker_instance_id: lease.instance_id,
                     lease_epoch: lease.epoch,
                 },

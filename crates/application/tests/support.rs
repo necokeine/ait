@@ -3,6 +3,9 @@
 #![allow(dead_code)]
 #![allow(clippy::pedantic)]
 
+#[path = "support/native.rs"]
+pub(crate) mod native;
+
 use std::collections::{BTreeMap, HashMap};
 
 use ait_application::LocalControlService;

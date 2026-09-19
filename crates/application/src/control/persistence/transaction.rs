@@ -6,7 +6,6 @@ use crate::control::cron::CronRecord;
 use crate::control::project::ProjectRecord;
 use crate::control::runs::RunRecord;
 
-use crate::control::runs::journal::WorkspaceRunJournal;
 use ait_contracts::SettingsDocument;
 use ait_ports::{
     ControlChange, ControlRecord, ControlRecordKind as Kind, ControlStore, ControlStoreError,
@@ -31,7 +30,6 @@ pub(in crate::control) enum TypedChange {
     Cron(CronRecord),
     ProviderCredential(String, String),
     RunCredential(String, String),
-    WorkspaceRunJournal(String, WorkspaceRunJournal),
     Settings(SettingsDocument, u64),
     Delete(Kind, String),
 }

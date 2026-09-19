@@ -18,7 +18,6 @@ use ait_domain::{ErrorCode, SessionSource};
 use ait_ports::PendingEvent;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::fmt::Write as _;
 use uuid::Uuid;
 
 #[allow(
@@ -105,6 +104,7 @@ pub(in crate::control) fn send_message(
     let workspace_base_commit = Some(git_baseline.commit.clone());
     let workspace_base_index_tree = Some(git_baseline.index_tree.clone().into_boxed_str());
     let run = RunRecord {
+        auto_commit: None,
         compatibility_repair: false,
         codex_input: None,
         lifecycle: RunLifecycle::queued(),
@@ -141,31 +141,6 @@ pub(in crate::control) fn send_message(
     let run = state.runs().last().expect("new run exists").clone();
     let event = pending("run.updated", Some(run_id), &run);
     Ok((CommandOutcome::for_new_run(run), vec![event]))
-}
-
-pub(in crate::control) fn codex_prompt(
-    state: &impl HasMessages,
-    head_id: &str,
-) -> Result<(Option<String>, String), ApiError> {
-    let path = crate::control::conversation::domain_path(state.messages(), head_id)
-        .map_err(|e| error(e.code, e.message, e.retryable))?;
-    let mut instructions = Vec::new();
-    let mut prompt = String::from("Conversation:\n");
-    for message in &path {
-        for part in &message.sub_messages {
-            if let ait_domain::SubMessage::Text { text } = part {
-                if message.role == ait_domain::MessageRole::System {
-                    instructions.push(text.as_str());
-                } else {
-                    let _ = writeln!(prompt, "{}: {text}", message.role.as_str());
-                }
-            }
-        }
-    }
-    Ok((
-        (!instructions.is_empty()).then(|| instructions.join("\n\n")),
-        prompt,
-    ))
 }
 
 pub(in crate::control) fn append_output(

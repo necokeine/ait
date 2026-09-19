@@ -71,6 +71,7 @@ interface DaemonData {
   runs: Array<{
     id: string; project_id: string; session_id: string | null; agent_id: string;
     base_message_id: string; last_message_id: string | null; status: string;
+    git_commit?: { status: "pending" | "prepared" | "committed" | "skipped" | "failed"; commit_id?: string | null; reason?: string | null } | null;
     permission_profile: { sandbox: "read_only" | "workspace_write" | "full_access"; approval: "on_request" | "untrusted_only" };
     tool_approvals?: import("./types.js").ToolApproval[];
     tool_interactions?: Array<{
@@ -309,6 +310,13 @@ export class DaemonClient {
         ...(scope ? { scope } : {}),
       });
       assertProject(run, projectId);
+      return this.projectView(projectId);
+    }
+    if (method === "run.retry-commit") {
+      const projectId = boundedId(params.projectId, "Project");
+      const runId = boundedId(params.runId, "Run");
+      assertProject(await this.post("/v1/run/get", "run", { run_id: runId }), projectId);
+      assertProject(await this.post("/v1/run/retry-commit", "run", { run_id: runId }), projectId);
       return this.projectView(projectId);
     }
     if (method === "run.resolve-tool-approval") {
@@ -682,6 +690,7 @@ export class DaemonClient {
         lastMessageId: run.last_message_id,
         status: run.status,
         permissionProfile: run.permission_profile,
+        ...(run.git_commit ? { gitCommit: { status: run.git_commit.status, commitId: run.git_commit.commit_id, reason: run.git_commit.reason } } : {}),
         toolApprovals: run.tool_approvals ?? [],
         toolInteractions: (run.tool_interactions ?? []).map((interaction) => ({
           id: interaction.id,

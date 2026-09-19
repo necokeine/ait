@@ -1,5 +1,4 @@
 //! Provider catalog validation and Agent configuration reducers.
-use crate::control::LocalControlService;
 use crate::control::admission::ensure_idle;
 use crate::control::errors::error;
 use crate::control::events::pending;
@@ -251,6 +250,15 @@ pub(in crate::control) fn set_session_config(
         .position(|s| s.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
     ensure_idle(&state.sessions()[index])?;
+    if let ait_domain::SessionSource::CodexThread(source) = &state.sessions()[index].source
+        && config.provider_id != source.provider_id
+    {
+        return Err(error(
+            ErrorCode::CodexThreadBindingConflict,
+            "A native Codex task cannot switch providers",
+            false,
+        ));
+    }
     let current = require_agent(state, state.sessions()[index].agent_id())?.clone();
     let agent = if current.owner_session_id.as_deref() == Some(session_id) {
         let target = state
@@ -287,17 +295,6 @@ pub(in crate::control) fn set_session_config(
     ))
 }
 
-impl LocalControlService {
-    #[cfg(all(feature = "dev-mock-provider", debug_assertions))]
-    pub(in crate::control) fn invoke_mock() -> ait_ports::WorkspaceAgentResponse {
-        ait_ports::WorkspaceAgentResponse {
-            assistant_text: "Mock assistant response.".into(),
-            commit_id: None,
-            operations: Vec::new(),
-            output_items: Vec::new(),
-        }
-    }
-}
 mod context;
 mod record;
 pub(in crate::control) use context::{AgentContext, AgentsContext, ProviderContext};

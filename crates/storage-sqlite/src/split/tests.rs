@@ -55,7 +55,7 @@ async fn legacy_blob_migrates_directly_to_project_files() {
         .execute(
             "INSERT INTO control_state VALUES(1,7,?1)",
             [json!({
-                "projects":[{"id":"a","workdir":root}], "agents":[], "sessions":[],
+                "projects":[{"id":"a","workdir":root,"root_message_id":"root"}], "agents":[], "sessions":[],
                 "messages":[{"id":"root","project_id":"a","parent_message_id":null}],
                 "runs":[], "crons":[], "settings":{}, "settings_revision":3
             })
@@ -68,7 +68,7 @@ async fn legacy_blob_migrates_directly_to_project_files() {
         .read(&[ControlFilter::message_ancestors("root")])
         .await
         .unwrap();
-    assert_eq!(read.revision, 7);
+    assert_eq!(read.revision, 8);
     assert_eq!(read.records.len(), 1);
     let global = Connection::open(database).unwrap();
     assert_eq!(
@@ -194,7 +194,7 @@ fn project_records(root: &Path, id: &str) -> Vec<ControlChange> {
             ControlRecordKind::Project,
             id,
             Some(id),
-            json!({"id":id,"workdir":root}),
+            json!({"id":id,"workdir":root,"root_message_id":format!("{id}-root")}),
         ),
         put(
             ControlRecordKind::Message,
@@ -509,7 +509,7 @@ async fn unavailable_projects_do_not_break_catalog_or_other_project_reads() {
 }
 
 #[tokio::test]
-async fn migration_preserves_revision_cursors_and_all_project_records() {
+async fn layout_upgrade_discards_old_sessions_before_native_execution() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("a");
     git_project(&root);
@@ -529,10 +529,10 @@ async fn migration_preserves_revision_cursors_and_all_project_records() {
         .read(&PROJECT_KINDS.map(ControlFilter::all))
         .await
         .unwrap();
-    assert_eq!(read.revision, 1);
-    assert_eq!(read.records.len(), 5);
-    assert_eq!(store.replay(1, 10).await.unwrap()[0].cursor, 2);
-    assert_eq!(store.load_progress("a").await.unwrap().len(), 1);
+    assert_eq!(read.revision, 2);
+    assert_eq!(read.records.len(), 1);
+    assert!(store.replay(1, 10).await.unwrap().is_empty());
+    assert!(store.load_progress("a").await.unwrap().is_empty());
     assert!(
         temp.path()
             .join("legacy.sqlite3.pre-split.sqlite3")
@@ -541,7 +541,7 @@ async fn migration_preserves_revision_cursors_and_all_project_records() {
     drop(store);
     let reopened = SplitSqliteControlStore::open(&database).unwrap();
     reopened
-        .apply(1, Vec::new(), vec![event("a")])
+        .apply(2, Vec::new(), vec![event("a")])
         .await
         .unwrap();
     assert_eq!(reopened.replay(2, 10).await.unwrap()[0].cursor, 3);

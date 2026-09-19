@@ -216,9 +216,10 @@ async fn unchanged_preparation_survives_cas_without_new_files_or_duplicate_event
 async fn derive_rejects_a_default_agent_change_after_worktree_preparation() {
     let target = tempfile::tempdir().unwrap();
     let store = Probe::new(vec![]);
-    let service = LocalControlService::new(
+    let service = crate::native_fixture::native_service(
         Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
+        Arc::new(NoNativeInput),
     );
     let CommandResult::Project(project) = service
         .execute(Command::RegisterProject {
@@ -411,4 +412,15 @@ async fn symlink_alias_is_rejected_before_import_worktree_creation() {
     std::fs::create_dir(&target).unwrap();
     std::os::unix::fs::symlink(&target, &alias).unwrap();
     assert_alias_import_has_no_side_effects(&target, &alias).await;
+}
+
+struct NoNativeInput;
+#[async_trait::async_trait]
+impl crate::native_fixture::NativeHandler for NoNativeInput {
+    async fn invoke(
+        &self,
+        _: ait_ports::CodexThreadInvocation,
+    ) -> Result<crate::native_fixture::NativeReply, ait_domain::DomainError> {
+        panic!("changed default must reject before input");
+    }
 }

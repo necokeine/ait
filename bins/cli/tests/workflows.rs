@@ -162,20 +162,8 @@ async fn wf02_send_message_and_inspect_agent_reply() {
     )
     .join("untracked.txt");
     std::fs::write(&dirty, "unsaved work").unwrap();
-    workspace
-        .reject(
-            &[
-                "session",
-                "send",
-                "--session-id",
-                "main",
-                "--text",
-                "must not append",
-            ],
-            "PROJECT_GIT_DIRTY",
-        )
-        .await;
-    assert_eq!(workspace.view().await, before);
+    let dirty_run = workspace.send("main", 1, "dirty input is allowed").await;
+    assert_eq!(dirty_run["status"], "completed");
     std::fs::remove_file(dirty).unwrap();
 
     let text = "检查工具输出：\"hello\"\n第二行";
@@ -192,15 +180,25 @@ async fn wf02_send_message_and_inspect_agent_reply() {
     );
     let snapshot = workspace.view().await;
     let messages = snapshot["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 3);
-    let user = entity(&snapshot, "messages", &run["base_message_id"]);
+    assert_eq!(messages.len(), 6);
+    let user = messages
+        .iter()
+        .find(|message| message["text"] == text)
+        .unwrap();
     assert_eq!(user["text"], text);
-    assert_eq!(user["git_commit"], project["base_commit"]);
-    assert_eq!(user["parent_message_id"], project["root_message_id"]);
+    assert!(user["git_commit"].is_null());
+    assert_eq!(user["parent_message_id"], run["base_message_id"]);
+    let _ = project;
     let final_message = entity(&snapshot, "messages", &run["last_message_id"]);
     assert_eq!(final_message["parent_message_id"], user["id"]);
     assert_eq!(final_message["role"], "assistant");
-    assert_eq!(final_message["text"], format!("Completed: {text}"));
+    assert!(
+        final_message["data"]["native_message"]["sub_messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["payload"]["text"] == format!("Completed: {text}"))
+    );
     let session = entity(&snapshot, "sessions", &json!("main"));
     assert_eq!(session["current_message_id"], final_message["id"]);
     assert!(session["version"].as_u64().unwrap() > 1);
@@ -231,10 +229,11 @@ async fn wf03_branch_rename_and_rebind_session() {
             "--agent-id",
             "primary",
             "--at-message-id",
-            run["last_message_id"].as_str().unwrap(),
+            project["root_message_id"].as_str().unwrap(),
         ])
         .await;
-    assert_eq!(branch["current_message_id"], run["last_message_id"]);
+    assert_eq!(branch["current_message_id"], project["root_message_id"]);
+    let _ = run;
     assert_eq!(workspace.view().await["messages"], before["messages"]);
     let titled = workspace
         .call(&[
@@ -293,10 +292,7 @@ async fn wf03_branch_rename_and_rebind_session() {
     assert_eq!(fork["status"], "completed");
     let after = workspace.view().await;
     assert_eq!(entity(&after, "sessions", &json!("main")), &original);
-    assert_eq!(
-        entity(&after, "messages", &fork["base_message_id"])["parent_message_id"],
-        project["root_message_id"]
-    );
+    assert!(entity(&after, "messages", &fork["base_message_id"])["parent_message_id"].is_null());
     for old_message in before["messages"].as_array().unwrap() {
         assert_eq!(entity(&after, "messages", &old_message["id"]), old_message);
     }
@@ -318,7 +314,7 @@ async fn wf03_branch_rename_and_rebind_session() {
                 "--text",
                 "cross-project input",
             ],
-            "SESSION_MESSAGE_PROJECT_MISMATCH",
+            "CODEX_FORK_BOUNDARY_UNSUPPORTED",
         )
         .await;
     assert_eq!(workspace.view().await, before_rejection);
@@ -335,7 +331,7 @@ async fn wf04_observe_injected_provider_failure_and_continue() {
     let failed = workspace.send("main", 1, "simulate provider failure").await;
     assert_eq!(failed["status"], "failed");
     assert_eq!(failed["error"]["code"], "PROVIDER_FAILED");
-    assert_eq!(failed["error"]["retryable"], true);
+    assert_eq!(failed["error"]["retryable"], false);
     let snapshot = workspace.view().await;
     assert!(entity(&snapshot, "sessions", &json!("main"))["active_run_id"].is_null());
     assert_eq!(
@@ -351,7 +347,7 @@ async fn wf04_observe_injected_provider_failure_and_continue() {
 
 // WF-05: An occurrence is idempotent and creates an independent Session.
 #[tokio::test]
-async fn wf05_cron_occurrence_is_idempotent_and_independent() {
+async fn wf05_codex_cron_is_rejected_without_legacy_fallback() {
     let mut workspace = Workspace::new().await;
     let project = workspace.project("project").await;
     workspace.agent("primary").await;
@@ -394,54 +390,15 @@ async fn wf05_cron_occurrence_is_idempotent_and_independent() {
     workspace
         .call(&["cron", "enable", "--cron-id", "daily"])
         .await;
-    let run = workspace.call(trigger).await;
-    assert_eq!(run["base_message_id"], project["root_message_id"]);
-    assert_eq!(run["trigger"], "cron");
-    assert_eq!(run["status"], "completed");
-    let first_session_id = run["session_id"]
-        .as_str()
-        .expect("Cron occurrence creates a Session");
-    let once = workspace.view().await;
-    let event_count = events(&workspace.cli(&["event", "list"]).await).len();
-    assert_eq!(workspace.call(trigger).await, run);
-    assert_eq!(workspace.view().await, once);
-    assert_eq!(
-        events(&workspace.cli(&["event", "list"]).await).len(),
-        event_count
-    );
-    let second = workspace
-        .call(&[
-            "cron",
-            "trigger",
-            "--cron-id",
-            "daily",
-            "--scheduled-at",
-            "1788566400000",
-        ])
+    let before = workspace.view().await;
+    workspace
+        .reject(trigger, "CODEX_THREAD_CAPABILITY_UNSUPPORTED")
         .await;
-    assert_ne!(second["id"], run["id"]);
-    assert_ne!(second["session_id"], run["session_id"]);
-    let after = workspace.view().await;
-    assert_eq!(
-        after["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|session| session["id"] == sessions[0]["id"])
-            .count(),
-        1
-    );
-    assert_eq!(after["sessions"].as_array().unwrap().len(), 3);
-    let first_session = after["sessions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|session| session["id"] == first_session_id)
-        .expect("first Cron Session persists");
-    assert_eq!(first_session["current_message_id"], run["last_message_id"]);
-    assert!(first_session["active_run_id"].is_null());
-    assert_eq!(after["runs"].as_array().unwrap().len(), 2);
-    assert_eq!(after["messages"].as_array().unwrap().len(), 3);
+    workspace
+        .reject(trigger, "CODEX_THREAD_CAPABILITY_UNSUPPORTED")
+        .await;
+    assert_eq!(workspace.view().await, before);
+    assert_eq!(before["sessions"], sessions);
     workspace.stop().await;
 }
 
@@ -522,7 +479,6 @@ async fn wf07_export_and_import_project_archive() {
         ])
         .await;
     source.session("main", "project", "portable").await;
-    source.send("main", 1, "keep portable history").await;
     source
         .call(&[
             "session",
@@ -1056,7 +1012,12 @@ async fn typed_writes_stdin_and_files_reach_the_production_router() {
     );
     let snapshot = workspace.view().await;
     assert_eq!(
-        entity(&snapshot, "messages", &run["base_message_id"])["text"],
+        snapshot["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["text"] == text)
+            .unwrap()["text"],
         text
     );
     let text_file = workspace.path("中文 input with spaces.txt");
@@ -1072,9 +1033,11 @@ async fn typed_writes_stdin_and_files_reach_the_production_router() {
             "--source-session-id",
             "main",
             "--agent-id",
-            "agent",
+            entity(&snapshot, "sessions", &json!("main"))["agent_id"]
+                .as_str()
+                .unwrap(),
             "--at-message-id",
-            run["base_message_id"].as_str().unwrap(),
+            run["last_message_id"].as_str().unwrap(),
             "--text-file",
             text_file.to_str().unwrap(),
         ])

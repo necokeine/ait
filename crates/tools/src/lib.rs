@@ -12,7 +12,6 @@ use serde_json::Value;
 /// Interactive and bounded child-agent tools layered over host primitives.
 pub mod agent;
 /// Codex-native tools and layered instructions, separate from API catalogs.
-pub mod codex;
 /// Capability-scoped local host executors.
 pub mod host;
 

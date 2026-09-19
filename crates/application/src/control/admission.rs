@@ -21,19 +21,16 @@ pub(in crate::control) fn workspace_write_path(
     _permission_limits: PermissionPolicyLimits,
 ) -> Result<Option<PathBuf>, ApiError> {
     if let Some(project_id) = session_command_project_id(state, command)? {
-        if let Command::SendMessage { session_id, .. } = command
-            && let Some(session) = state
-                .sessions()
-                .iter()
-                .find(|session| session.id == *session_id)
-            && matches!(
-                &session.source,
-                ait_domain::SessionSource::CodexThread(source)
-                    if matches!(
-                        source.workspace_mode,
-                        ait_domain::CodexWorkspaceMode::NativeCwd { .. }
-                    )
-            )
+        let existing_id = match command {
+            Command::SendMessage { session_id, .. } => Some(session_id.as_str()),
+            Command::DeriveSession {
+                source_session_id, ..
+            } => Some(source_session_id.as_str()),
+            _ => None,
+        };
+        if let Some(session) =
+            existing_id.and_then(|id| state.sessions().iter().find(|session| session.id == id))
+            && matches!(session.source, ait_domain::SessionSource::CodexThread(_))
         {
             return Ok(Some(PathBuf::from(&session.workdir)));
         }

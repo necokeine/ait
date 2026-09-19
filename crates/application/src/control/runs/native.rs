@@ -21,6 +21,7 @@ use crate::control::{
     persistence::transaction::RecordTransaction,
 };
 
+mod admission;
 mod publication;
 pub(in crate::control) use publication::attribute_inputs;
 
@@ -38,6 +39,7 @@ pub(in crate::control) enum InputState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(in crate::control) struct CodexPendingInput {
     pub thread_id: String,
+    pub created_thread: bool,
     pub text: String,
     pub model_provider: String,
     pub state: InputState,
@@ -47,6 +49,7 @@ pub(in crate::control) struct CodexPendingInput {
 pub(in crate::control) struct NativeAdmission {
     pub run: RunRecord,
     pub connection: Box<dyn CodexThreadConnection>,
+    pub execution_lease: Option<crate::control::admission::WorkspaceWriteLease>,
 }
 
 fn conflict() -> ApiError {
@@ -97,43 +100,69 @@ impl LocalControlService {
         command: &Command,
         control: &Arc<RunControl>,
         workspace_lease: Option<&crate::control::admission::WorkspaceWriteLease>,
+        derive_source_locked: bool,
     ) -> Result<Option<NativeAdmission>, ApiError> {
-        let Command::SendMessage { session_id, text } = command else {
+        let Some(plan) = self.native_plan(command, derive_source_locked).await? else {
             return Ok(None);
         };
-        let initial = self.records().read_session_records(session_id).await?;
-        let session = initial
-            .original
-            .sessions
-            .iter()
-            .find(|s| s.id == *session_id)
-            .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
-        let SessionSource::CodexThread(source) = &session.source else {
-            return Ok(None);
-        };
-        if !matches!(&source.workspace_mode, ait_domain::CodexWorkspaceMode::NativeCwd { cwd } if cwd.as_path() == std::path::Path::new(&session.workdir))
-        {
-            return Err(error(
-                ErrorCode::CodexThreadCapabilityUnsupported,
-                "native continuation requires the bound NativeCwd",
-                false,
-            ));
-        }
+        let session = &plan.session;
+        let text = &plan.text;
+        let session_id = &session.id;
+        crate::control::admission::ensure_idle(session)?;
         crate::control::conversation::messages::validate_message_text(text)?;
+        let source = match &session.source {
+            SessionSource::CodexThread(source) => Some(source.as_ref()),
+            SessionSource::Managed => None,
+        };
+        if source.is_none() {
+            crate::control::project::worktrees::prepare_command_session_worktrees(
+                self.project_workspace.as_ref(),
+                workspace_lease.cloned(),
+                &plan.loaded.original,
+                command,
+                &mut Vec::new(),
+            )
+            .await?;
+        }
         let cwd = std::path::Path::new(&session.workdir);
         let facts = self
             .project_workspace
             .path_facts(cwd, cwd)
             .await
             .map_err(project_error)?;
-        if workspace_lease.is_none_or(|lease| lease.canonical_root() != facts.canonical_root) {
+        let expected_root = if source.is_some() {
+            facts.canonical_root.as_path()
+        } else {
+            std::path::Path::new(
+                &plan
+                    .loaded
+                    .original
+                    .projects
+                    .iter()
+                    .find(|project| project.id == session.project_id)
+                    .ok_or_else(conflict)?
+                    .workdir,
+            )
+        };
+        if workspace_lease.is_none_or(|lease| lease.canonical_root() != expected_root) {
             return Err(error(
                 ErrorCode::CodexThreadBindingConflict,
                 "native cwd changed after workspace admission",
                 false,
             ));
         }
-        let _admission = self.admission.read().await;
+        let execution_lease = if workspace_lease
+            .is_some_and(|lease| lease.canonical_root() != facts.canonical_root)
+        {
+            Some(
+                self.project_workspace
+                    .acquire_lease(&facts.canonical_root)
+                    .await
+                    .map_err(project_error)?,
+            )
+        } else {
+            None
+        };
         if self.draining.load(Ordering::Acquire) {
             return Err(error(ErrorCode::RunCancelled, "daemon is draining", false));
         }
@@ -144,9 +173,9 @@ impl LocalControlService {
                 false,
             )
         })?;
-        let agent = require_agent(&initial.original, session.agent_id())?.clone();
-        let provider = validate_config(&initial.original, &agent.config)?.clone();
-        if provider.id != source.provider_id || provider.kind != ait_contracts::AgentMode::Codex {
+        let agent = plan.agent.clone();
+        let provider = validate_config(&plan.loaded.original, &agent.config)?.clone();
+        if source.is_some_and(|source| provider.id != source.provider_id) {
             return Err(error(
                 ErrorCode::CodexThreadBindingConflict,
                 "native Agent provider changed",
@@ -154,17 +183,26 @@ impl LocalControlService {
             ));
         }
         let permission_profile = effective_permission_profile(
-            &initial.original.settings,
+            &plan.loaded.original.settings,
             &provider,
             self.permission_limits,
         )?;
         let run_id = uuid::Uuid::new_v4().to_string();
-        // Capture the store revision before contacting the native writer.
-        let loaded = self.native_records(&session.project_id).await?;
+        let developer_instructions = if source.is_none() {
+            plan.loaded
+                .original
+                .messages
+                .iter()
+                .find(|message| message.id == session.current_message_id())
+                .and_then(|message| message.text.clone())
+        } else {
+            None
+        };
         let mut connection = writer
-            .resume(CodexThreadInvocation {
+            .open(CodexThreadInvocation {
                 request_id: run_id.clone(),
-                thread_id: source.thread_id.clone(),
+                thread_id: source.map(|source| source.thread_id.clone()),
+                developer_instructions,
                 prompt: text.clone(),
                 cwd: session.workdir.clone().into(),
                 model: agent.config.model.clone(),
@@ -175,12 +213,26 @@ impl LocalControlService {
             })
             .await
             .map_err(project_error)?;
+        let auto_commit = self
+            .capture_auto_commit(
+                cwd,
+                plan.loaded
+                    .original
+                    .settings
+                    .0
+                    .get("codex.auto_commit")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .await;
         let mut run = RunRecord {
+            auto_commit,
             compatibility_repair: false,
             codex_input: Some(CodexPendingInput {
-                thread_id: source.thread_id.clone(),
+                thread_id: connection.prepared().history.id.clone(),
+                created_thread: source.is_none(),
                 text: text.clone(),
-                model_provider: connection.resumed().model_provider.clone(),
+                model_provider: connection.prepared().model_provider.clone(),
                 state: InputState::Queued,
             }),
             lifecycle: RunLifecycle::queued(),
@@ -205,39 +257,52 @@ impl LocalControlService {
             lease_epoch: 0,
         };
         let result = self
-            .commit_native_admission(loaded, &mut run, connection.as_mut())
+            .commit_native_admission(
+                plan,
+                &mut run,
+                connection.as_mut(),
+                (command, derive_source_locked),
+            )
             .await;
         if let Err(failure) = result {
             connection.close().await;
             return Err(failure);
         }
-        Ok(Some(NativeAdmission { run, connection }))
+        Ok(Some(NativeAdmission {
+            run,
+            connection,
+            execution_lease,
+        }))
     }
 
     async fn commit_native_admission(
         &self,
-        mut loaded: RecordTransaction<ConversationContext>,
+        plan: admission::Plan,
         run: &mut RunRecord,
         connection: &mut dyn CodexThreadConnection,
+        intent: (&Command, bool),
     ) -> Result<(), ApiError> {
-        let mut snapshot = connection.resumed().history.clone();
+        let (command, derive_source_locked) = intent;
+        let mut loaded = plan.loaded;
+        let mut snapshot = connection.prepared().history.clone();
         for attempt in 0..4 {
             if attempt > 0 {
-                loaded = self.native_records(&run.project_id).await?;
+                let refreshed = self
+                    .native_plan(command, derive_source_locked)
+                    .await?
+                    .ok_or_else(conflict)?;
+                if refreshed.session != plan.session
+                    || refreshed.agent != plan.agent
+                    || refreshed.new_session != plan.new_session
+                {
+                    return Err(conflict());
+                }
+                loaded = refreshed.loaded;
                 snapshot = connection.read().await.map_err(project_error)?;
             }
             let mut state = loaded.original.clone();
-            let index = state
-                .sessions
-                .iter()
-                .position(|s| Some(&s.id) == run.session_id.as_ref())
-                .ok_or_else(|| {
-                    error(
-                        ErrorCode::SessionNotFound,
-                        "native Session disappeared",
-                        false,
-                    )
-                })?;
+            let index =
+                admission::stage_session(&mut state, &plan.session, &plan.agent, plan.new_session)?;
             let session = &state.sessions[index];
             crate::control::admission::ensure_idle(session)?;
             let agent = require_agent(&state, session.agent_id())?.clone();
@@ -249,7 +314,14 @@ impl LocalControlService {
                 || session.workdir != snapshot.cwd
                 || effective_permission_profile(&state.settings, provider, self.permission_limits)?
                     != run.permission_profile
-                || !matches!(&session.source, SessionSource::CodexThread(source) if source.thread_id == snapshot.id && source.provider_id == provider.id)
+                || match &session.source {
+                    SessionSource::CodexThread(source) => {
+                        source.thread_id != snapshot.id || source.provider_id != provider.id
+                    }
+                    SessionSource::Managed => {
+                        session != &plan.session || !snapshot.turns.is_empty()
+                    }
+                }
             {
                 return Err(error(
                     ErrorCode::CodexThreadBindingConflict,
@@ -257,12 +329,11 @@ impl LocalControlService {
                     false,
                 ));
             }
-            if !snapshot.writer_confirmed || connection.resumed().model != run.config.model {
-                return Err(error(
-                    ErrorCode::CodexThreadNotSynced,
-                    "native writer has not confirmed an idle history",
-                    false,
-                ));
+            admission::validate_writer(&state, run, &snapshot, connection.prepared())?;
+            if matches!(state.sessions[index].source, SessionSource::Managed) {
+                let initial =
+                    publication::project(&snapshot, run, &state.sessions, &state.messages)?;
+                state.sessions[index].source = initial.session.source;
             }
             let mut projection =
                 publication::project(&snapshot, run, &state.sessions, &state.messages)?;
@@ -270,7 +341,7 @@ impl LocalControlService {
             run.base_message_id = projection.session.current_message_id();
             run.config
                 .reasoning_effort
-                .clone_from(&connection.resumed().reasoning_effort);
+                .clone_from(&connection.prepared().reasoning_effort);
             projection
                 .session
                 .reference
@@ -279,8 +350,24 @@ impl LocalControlService {
             state.sessions[index] = projection.session;
             state.messages.extend(projection.messages);
             state.runs.push(run.clone());
-            let events = run_updates(&loaded.original.runs, &state.runs);
-            match self.persist_records(&loaded, &state, events).await {
+            let mut events = run_updates(&loaded.original.runs, &state.runs);
+            events.push(pending(
+                if plan.new_session {
+                    "session.created"
+                } else {
+                    "session.updated"
+                },
+                Some(state.sessions[index].id.clone()),
+                &state.sessions[index].view(),
+            ));
+            // Shutdown never waits on app-server I/O. Fence only durable admission.
+            let admission = self.admission.read().await;
+            if self.draining.load(Ordering::Acquire) {
+                return Err(error(ErrorCode::RunCancelled, "daemon is draining", false));
+            }
+            let result = self.persist_records(&loaded, &state, events).await;
+            drop(admission);
+            match result {
                 Ok(()) => return Ok(()),
                 Err(ControlStoreError::Conflict) => {}
                 Err(failure) => return Err(store_error(failure)),
@@ -304,7 +391,23 @@ impl LocalControlService {
             Ok(run) => run,
             Err(failure) => {
                 connection.close().await;
-                return Err(failure);
+                let loaded = self.read_run_records(&run_id).await?;
+                let queued = loaded
+                    .original
+                    .runs
+                    .iter()
+                    .find(|run| run.id == run_id)
+                    .ok_or_else(conflict)?;
+                return self
+                    .finish_native_run(
+                        queued,
+                        Err(error(
+                            ErrorCode::CodexInputNotAccepted,
+                            format!("native input was not sent: {}", failure.message),
+                            false,
+                        )),
+                    )
+                    .await;
             }
         };
         let pump = ProgressPump::start(Arc::clone(&self.store), &run);
@@ -329,7 +432,8 @@ impl LocalControlService {
             };
         connection.close().await;
         let _ = pump.finish().await;
-        self.finish_native_run(&run, result).await
+        let run = self.finish_native_run(&run, result).await?;
+        self.finalize_native_git(run).await
     }
 
     async fn mark_native_send(&self, run_id: &str) -> Result<RunRecord, ApiError> {
@@ -382,6 +486,18 @@ impl LocalControlService {
         )
         .map_err(project_error)?;
         let input = run.codex_input.as_ref().ok_or_else(conflict)?;
+        if input.state == InputState::Queued {
+            return self
+                .finish_native_run(
+                    run,
+                    Err(error(
+                        ErrorCode::CodexInputNotAccepted,
+                        "daemon stopped before native input delivery; input was not replayed",
+                        false,
+                    )),
+                )
+                .await;
+        }
         let state = self.read_run_records(&run.id).await?.original;
         let session = state
             .sessions
@@ -396,9 +512,10 @@ impl LocalControlService {
             )
         })?;
         let mut connection = writer
-            .resume(CodexThreadInvocation {
+            .open(CodexThreadInvocation {
                 request_id: run.id.clone(),
-                thread_id: input.thread_id.clone(),
+                thread_id: Some(input.thread_id.clone()),
+                developer_instructions: None,
                 prompt: input.text.clone(),
                 cwd: session.workdir.clone().into(),
                 model: run.config.model.clone(),
@@ -409,8 +526,9 @@ impl LocalControlService {
             })
             .await
             .map_err(project_error)?;
-        let snapshot = connection.resumed().history.clone();
+        let snapshot = connection.prepared().history.clone();
         connection.close().await;
-        self.finish_native_run(run, Ok(snapshot)).await
+        let run = self.finish_native_run(run, Ok(snapshot)).await?;
+        self.finalize_native_git(run).await
     }
 }

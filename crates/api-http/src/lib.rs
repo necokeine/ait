@@ -80,6 +80,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/run/get", post(get_run))
         .route("/v1/run/list", get(list_runs))
         .route("/v1/run/cancel", post(cancel_run))
+        .route("/v1/run/retry-commit", post(retry_run_commit))
         .route("/v1/run/approval/resolve", post(resolve_native_approval))
         .route("/v1/run/tool-approval/resolve", post(resolve_tool_approval))
         .route(
@@ -481,6 +482,19 @@ async fn get_run(State(state): State<ApiState>, Json(request): Json<RunRequest>)
     execute_command(
         state,
         Command::GetRun {
+            run_id: request.run_id,
+        },
+    )
+    .await
+}
+
+async fn retry_run_commit(
+    State(state): State<ApiState>,
+    Json(request): Json<RunRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::RetryRunCommit {
             run_id: request.run_id,
         },
     )
@@ -1041,6 +1055,7 @@ fn correlation_for_command(command: &Command) -> Correlation {
         }
         Command::GetRun { run_id }
         | Command::CancelRun { run_id }
+        | Command::RetryRunCommit { run_id }
         | Command::ResolveNativeApproval { run_id, .. } => {
             correlation.run_id = Some(run_id.clone());
         }
@@ -1147,6 +1162,7 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::DeriveSession { .. } => "derive_session",
         Command::GetRun { .. } => "get_run",
         Command::CancelRun { .. } => "cancel_run",
+        Command::RetryRunCommit { .. } => "retry_run_commit",
         Command::ResolveNativeApproval { .. } => "resolve_native_approval",
         Command::CreateCron { .. } => "create_cron",
         Command::SetCronEnabled { .. } => "set_cron_enabled",

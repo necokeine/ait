@@ -306,6 +306,11 @@ pub(crate) enum MessageCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum RunCommand {
+    /// Retry Git finalization without rerunning Codex.
+    RetryCommit {
+        #[arg(long, value_parser = input::id)]
+        run_id: String,
+    },
     /// List Runs in one Project.
     List {
         #[arg(long, value_parser = input::id)]
@@ -830,6 +835,7 @@ impl From<RunCommand> for Command {
             RunCommand::List { project_id } => Command::ListRuns { project_id },
             RunCommand::Get { run_id } => Command::GetRun { run_id },
             RunCommand::Cancel { run_id } => Command::CancelRun { run_id },
+            RunCommand::RetryCommit { run_id } => Command::RetryRunCommit { run_id },
             RunCommand::Approval { command } => command.into_command(),
         }
     }

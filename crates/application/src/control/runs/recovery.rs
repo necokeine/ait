@@ -4,22 +4,14 @@ use crate::control::approvals::expire_pending_native_approvals;
 use crate::control::conversation::release_session;
 use crate::control::errors::{error, recovery_error, store_error};
 use crate::control::events::pending;
-use crate::control::permissions::validate_run_permission_ceiling;
-use crate::control::persistence::{
-    HasMessages, HasRuns, HasSessions, HasSettings, HasWorkspaceRunJournals,
-};
+use crate::control::persistence::{HasMessages, HasRuns, HasSessions, HasSettings};
 use crate::control::runs::RunRecord;
 use crate::control::runs::finalization::{InvocationGuard, RunControl, RunControlGuard};
-use crate::control::runs::journal::{
-    WorkspaceExecutionLease, ensure_current_lease, ensure_journal_lease,
-};
-use crate::control::runs::workspace::workspace_invocation;
 use crate::control::runs::{api_run, is_terminal_run_status};
 use ait_contracts::ApiError;
 use ait_domain::{ErrorCode, NativeApprovalStatus};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::ControlStoreError;
-use ait_ports::WorkspaceIntegrationGate;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -31,9 +23,8 @@ enum RecoveryPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(in crate::control) enum WorkspaceRecoveryClaim {
+pub(in crate::control) enum RecoveryClaim {
     Execute,
-    Finalize(WorkspaceExecutionLease),
     Recovered(Box<RunRecord>),
     Skip,
 }
@@ -92,16 +83,13 @@ fn is_local_recovery_failure(code: ErrorCode) -> bool {
 }
 
 fn settle_recovered_run(
-    state: &mut (impl HasMessages + HasRuns + HasSessions + HasWorkspaceRunJournals),
+    state: &mut (impl HasMessages + HasRuns + HasSessions),
     index: usize,
     status: LifecycleStatus,
     message: &str,
 ) -> Result<(), ApiError> {
     let mut run = state.runs()[index].clone();
     run.lease_epoch = run.lease_epoch.saturating_add(1);
-    if let Some(journal) = state.workspace_run_journals_mut().get_mut(&run.id) {
-        journal.lease_epoch = run.lease_epoch;
-    }
     run.set_status(status);
     run.set_phase(Some(LifecyclePhase::Terminal));
     run.set_error(Some(error(
@@ -150,6 +138,10 @@ impl LocalControlService {
                             !is_terminal_run_status(run.status())
                                 || api_run::needs_terminal_repair(run)
                                 || run.compatibility_repair
+                                || run
+                                    .auto_commit
+                                    .as_ref()
+                                    .is_some_and(super::git_commit::AutoCommit::pending)
                         })
                         .map(|run| run.id),
                 ),
@@ -195,24 +187,23 @@ impl LocalControlService {
                 Err(failure) => return Err(failure),
             };
             let recovery_state = self.read_run_records(&run_id).await?.original;
-            let legacy_native = recovery_state.runs.iter().find(|run| {
-                run.id == run_id
-                    && run.codex_input.is_none()
-                    && recovery_state.sessions.iter().any(|session| {
-                        Some(&session.id) == run.session_id.as_ref()
-                            && matches!(session.source, ait_domain::SessionSource::CodexThread(_))
-                    })
-            });
-            if legacy_native.is_some_and(|run| !run.status().is_terminal()) {
-                recovered.push(self.interrupt_recovery_run(&run_id, &error(ErrorCode::CodexInputOutcomeUnknown,
-                    "legacy native Run has no durable input correlation; automatic replay is disabled", false)).await?);
-                continue;
-            }
             let native = recovery_state
                 .runs
                 .into_iter()
                 .find(|run| run.id == run_id && run.codex_input.is_some());
             if let Some(run) = native {
+                if run
+                    .codex_input
+                    .as_ref()
+                    .is_some_and(|input| input.state == super::native::InputState::Published)
+                    && run
+                        .auto_commit
+                        .as_ref()
+                        .is_some_and(super::git_commit::AutoCommit::pending)
+                {
+                    recovered.push(self.finalize_native_git(run).await?);
+                    continue;
+                }
                 if !run.status().is_terminal() {
                     match self.recover_native_run(&run).await {
                         Ok(run) => recovered.push(run),
@@ -231,19 +222,15 @@ impl LocalControlService {
                 continue;
             }
             let claim = self.claim_startup_recovery(&run_id).await?;
-            let lease = match claim {
-                WorkspaceRecoveryClaim::Recovered(run) => {
+            match claim {
+                RecoveryClaim::Recovered(run) => {
                     recovered.push(*run);
                     continue;
                 }
-                WorkspaceRecoveryClaim::Skip => continue,
-                WorkspaceRecoveryClaim::Execute => None,
-                WorkspaceRecoveryClaim::Finalize(lease) => Some(lease),
-            };
-            let control = Arc::new(RunControl::new());
-            if let Some(lease) = lease.as_ref() {
-                control.bind_integration_lease(self.clone(), lease.clone())?;
+                RecoveryClaim::Skip => continue,
+                RecoveryClaim::Execute => {}
             }
+            let control = Arc::new(RunControl::new());
             let invocation = InvocationGuard::new(
                 Arc::clone(&self.cancellations),
                 &run_id,
@@ -251,10 +238,7 @@ impl LocalControlService {
             );
             let control_guard =
                 RunControlGuard::new(Arc::clone(&self.run_controls), &run_id, &control);
-            let result = match lease {
-                None => self.supervise_run(run_id.clone(), control.clone()).await,
-                Some(lease) => self.recover_checkpointed_run(&lease, control.clone()).await,
-            };
+            let result = self.supervise_run(run_id.clone(), control.clone()).await;
             drop((workspace_lease, invocation, control_guard, control));
             match result {
                 Ok(run) => recovered.push(run),
@@ -271,7 +255,7 @@ impl LocalControlService {
     pub(in crate::control) async fn claim_startup_recovery(
         &self,
         run_id: &str,
-    ) -> Result<WorkspaceRecoveryClaim, ApiError> {
+    ) -> Result<RecoveryClaim, ApiError> {
         for _ in 0..4 {
             let loaded = self.read_run_records(run_id).await?;
             let mut state = loaded.original.clone();
@@ -295,7 +279,7 @@ impl LocalControlService {
                     )?;
                 } else {
                     if !state.runs[index].compatibility_repair {
-                        return Ok(WorkspaceRecoveryClaim::Skip);
+                        return Ok(RecoveryClaim::Skip);
                     }
                     let run = state.runs[index].clone();
                     release_session(&mut state, &run);
@@ -309,7 +293,7 @@ impl LocalControlService {
                     )
                     .await
                 {
-                    Ok(()) => return Ok(WorkspaceRecoveryClaim::Recovered(Box::new(run))),
+                    Ok(()) => return Ok(RecoveryClaim::Recovered(Box::new(run))),
                     Err(ControlStoreError::Conflict) => continue,
                     Err(e) => return Err(store_error(e)),
                 }
@@ -324,73 +308,22 @@ impl LocalControlService {
                         LifecycleStatus::Cancelled,
                         "run cancellation was completed during daemon recovery",
                     )?;
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                    RecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::ResumeSafe if state.runs[index].execution().is_some() => {
-                    return Ok(WorkspaceRecoveryClaim::Execute);
+                    return Ok(RecoveryClaim::Execute);
                 }
                 RecoveryPolicy::ResumeSafe if status == LifecycleStatus::Queued => {
-                    return Ok(WorkspaceRecoveryClaim::Execute);
-                }
-                RecoveryPolicy::ResumeSafe if status == LifecycleStatus::Settling => {
-                    let operation_id = state.runs[index].operation_id.as_deref().map(str::to_owned);
-                    let valid = operation_id.as_ref().is_some_and(|operation_id| {
-                        state
-                            .workspace_run_journals
-                            .get(run_id)
-                            .is_some_and(|journal| {
-                                journal.operation_id == *operation_id
-                                    && journal.lease_epoch == state.runs[index].lease_epoch
-                                    && journal.result.is_some()
-                            })
-                    });
-                    if valid {
-                        let operation_id = operation_id
-                            .ok_or_else(|| recovery_error("validated operation id disappeared"))?;
-                        let lease_epoch = state.runs[index].lease_epoch.saturating_add(1);
-                        state
-                            .workspace_run_journals
-                            .get_mut(run_id)
-                            .ok_or_else(|| recovery_error("validated result journal disappeared"))?
-                            .lease_epoch = lease_epoch;
-                        state
-                            .workspace_run_journals
-                            .get_mut(run_id)
-                            .ok_or_else(|| recovery_error("result journal disappeared"))?
-                            .worker_instance_id = None;
-                        let run = &mut state.runs[index];
-                        run.lease_epoch = lease_epoch;
-                        run.set_phase(Some(LifecyclePhase::ReconcilingResult));
-                        run.set_error(None);
-                        WorkspaceRecoveryClaim::Finalize(WorkspaceExecutionLease {
-                            run_id: run_id.to_owned(),
-                            operation_id,
-                            lease_epoch,
-                        })
-                    } else {
-                        settle_recovered_run(
-                            &mut state,
-                            index,
-                            LifecycleStatus::Interrupted,
-                            concat!(
-                                "checkpointed workspace result is incomplete; recovery material ",
-                                "was preserved for review"
-                            ),
-                        )?;
-                        WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
-                    }
+                    return Ok(RecoveryClaim::Execute);
                 }
                 RecoveryPolicy::ResumeSafe => {
                     settle_recovered_run(
                         &mut state,
                         index,
                         LifecycleStatus::Interrupted,
-                        concat!(
-                            "run effects are not proven replay-safe; isolated workspace recovery ",
-                            "material was preserved for review"
-                        ),
+                        "run effects are not proven replay-safe; workspace changes were preserved",
                     )?;
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                    RecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Ask => {
                     settle_recovered_run(
@@ -399,7 +332,7 @@ impl LocalControlService {
                         LifecycleStatus::Interrupted,
                         "recovery policy requires user review; workspace changes were preserved",
                     )?;
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                    RecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
                 RecoveryPolicy::Fail => {
                     settle_recovered_run(
@@ -408,7 +341,7 @@ impl LocalControlService {
                         LifecycleStatus::Failed,
                         "run failed because the daemon restarted",
                     )?;
-                    WorkspaceRecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
+                    RecoveryClaim::Recovered(Box::new(state.runs[index].clone()))
                 }
             };
             let run = &state.runs[index];
@@ -442,59 +375,6 @@ impl LocalControlService {
     pub async fn recover_interrupted_runs(&self) -> Result<Vec<ait_contracts::RunView>, ApiError> {
         let plan = self.prepare_startup_recovery().await?;
         self.run_startup_recovery(plan).await
-    }
-
-    pub(in crate::control) async fn recover_checkpointed_run(
-        &self,
-        lease: &WorkspaceExecutionLease,
-        control: Arc<RunControl>,
-    ) -> Result<RunRecord, ApiError> {
-        let state = self.read_run_records(&lease.run_id).await?.original;
-        let run = state
-            .runs
-            .iter()
-            .find(|run| run.id == lease.run_id)
-            .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false))?;
-        ensure_current_lease(run, lease)?;
-        if let Err(failure) =
-            validate_run_permission_ceiling(run.permission_profile, self.permission_limits)
-        {
-            let failure = error(failure.code, failure.message, false);
-            return self.interrupt_recovery_run(&lease.run_id, &failure).await;
-        }
-        let journal = state
-            .workspace_run_journals
-            .get(&lease.run_id)
-            .ok_or_else(|| recovery_error("workspace result journal is missing"))?;
-        ensure_journal_lease(journal, lease)?;
-        let result = journal
-            .result
-            .clone()
-            .ok_or_else(|| recovery_error("workspace result checkpoint is missing"))?;
-        let executor = self.workspace_agent.as_ref().ok_or_else(|| {
-            error(
-                ErrorCode::InvalidConfiguration,
-                "Codex workspace executor is not configured",
-                false,
-            )
-        })?;
-        control
-            .begin_integration()
-            .await
-            .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
-        let invocation = workspace_invocation(&state, run, control, Arc::new(self.clone()))
-            .map_err(|failure| error(failure.code, failure.message, failure.retryable))?;
-        let output = match executor
-            .recover_checkpointed(invocation, result, journal.baseline_ref.clone())
-            .await
-        {
-            Ok(output) => output,
-            Err(failure) => {
-                let failure = error(failure.code, failure.message, failure.retryable);
-                return self.interrupt_recovery_run(&lease.run_id, &failure).await;
-            }
-        };
-        self.finish_workspace_run(lease, Ok(output)).await
     }
 
     async fn interrupt_recovery_run(
@@ -536,9 +416,6 @@ impl LocalControlService {
             api_run::append_terminal_results(&mut state, &mut run)
                 .map_err(|_| recovery_error("could not settle interrupted API children"))?;
             expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
-            if let Some(journal) = state.workspace_run_journals.get_mut(run_id) {
-                journal.lease_epoch = run.lease_epoch;
-            }
             release_session(&mut state, &run);
             state.runs[index] = run.clone();
             let event = pending("run.recovery_required", Some(run_id.to_owned()), &run);

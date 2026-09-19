@@ -48,14 +48,6 @@ pub struct WorkerLease {
     /// Monotonically increasing persisted epoch.
     pub epoch: u64,
 }
-/// Identity of one durable native-harness mutation, independent of wire DTOs.
-#[derive(Clone, Debug)]
-pub struct WorkspaceWorkerOperation {
-    /// Fenced process identity.
-    pub lease: WorkerLease,
-    /// Stable retry identity within the lease.
-    pub operation_id: String,
-}
 /// Fixed production API execution context. Debug deliberately omits credentials.
 pub struct ApiRunDispatch {
     /// Run identity.

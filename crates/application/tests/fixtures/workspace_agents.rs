@@ -2,8 +2,9 @@
 #![allow(clippy::pedantic)]
 #![allow(dead_code)]
 
+use crate::support::native::{NativeHandler, NativeReply};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::CodexThreadInvocation;
 use async_trait::async_trait;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -33,11 +34,8 @@ impl BlockingAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for BlockingAgent {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for BlockingAgent {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         let cancellation = request.cancellation.clone();
         self.requests
             .lock()
@@ -50,9 +48,9 @@ impl WorkspaceAgent for BlockingAgent {
                 return Err(DomainError::invariant(ErrorCode::RunCancelled, "cancelled"));
             }
         }
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "done".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -60,18 +58,15 @@ impl WorkspaceAgent for BlockingAgent {
 }
 
 #[derive(Default)]
-pub(crate) struct CapturingWorkspaceAgent(pub(crate) Mutex<Vec<WorkspaceAgentInvocation>>);
+pub(crate) struct CapturingNativeHandler(pub(crate) Mutex<Vec<CodexThreadInvocation>>);
 
 #[async_trait]
-impl WorkspaceAgent for CapturingWorkspaceAgent {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for CapturingNativeHandler {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         self.0.lock().unwrap().push(request);
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "native result".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })

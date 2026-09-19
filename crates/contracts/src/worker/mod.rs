@@ -1,13 +1,14 @@
 //! Private, versioned daemon/worker protocol. Never a public client API.
 
+pub mod codex;
 pub mod model;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// Protocol value `PROTOCOL_MAJOR`.
-pub const PROTOCOL_MAJOR: u16 = 1;
+pub const PROTOCOL_MAJOR: u16 = 2;
 /// Protocol value `PROTOCOL_MINOR`.
-pub const PROTOCOL_MINOR: u16 = 3;
+pub const PROTOCOL_MINOR: u16 = 0;
 /// Protocol value `MINIMUM_PROTOCOL_MINOR`.
 pub const MINIMUM_PROTOCOL_MINOR: u16 = 0;
 /// Protocol value `MAX_FRAME_BYTES`.
@@ -19,6 +20,7 @@ pub const REQUIRED_CAPABILITIES: &[&str] = &[
     "lease-v1",
     "tool-grants-v1",
     "tool-interactions-v1",
+    "native-codex-v1",
 ];
 /// Protocol value `SUPPORTED_CAPABILITIES`.
 pub const SUPPORTED_CAPABILITIES: &[&str] = REQUIRED_CAPABILITIES;
@@ -72,8 +74,8 @@ impl std::error::Error for ProtocolError {}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 /// Data carried by `Lease`.
 pub struct Lease {
-    /// Run identifier.
-    pub run_id: String,
+    /// Execution scope identity: an API Run or an independent Codex operation.
+    pub scope_id: String,
     /// Worker instance identifier.
     pub worker_instance_id: String,
     /// Lease epoch value.
@@ -149,7 +151,8 @@ impl Hello {
     /// Rejects incompatible ranges, missing required capabilities, and invalid bounds.
     pub fn negotiate(&self, daemon_max_frame_bytes: u32) -> Result<HelloAck, ProtocolError> {
         self.validate()?;
-        let protocol_minor = self.protocol_minor.min(PROTOCOL_MINOR);
+        // Protocol 2 currently has only minor 0.
+        let protocol_minor = PROTOCOL_MINOR;
         if protocol_minor < self.minimum_protocol_minor {
             return Err(ProtocolError::VersionMismatch);
         }
@@ -307,6 +310,13 @@ impl std::fmt::Debug for CredentialGrant {
 #[serde(tag = "kind", rename_all = "snake_case")]
 /// Variants represented by `Executor`.
 pub enum Executor {
+    /// Native Codex operation owned entirely by this worker.
+    Codex {
+        /// Trusted executable selected by the daemon.
+        binary: String,
+        /// Operation with its own lifetime and correlation identity.
+        operation: Box<codex::Operation>,
+    },
     /// Selects the `Api` variant.
     Api {
         /// Provider value.
@@ -325,38 +335,6 @@ pub enum Executor {
         /// Replies value.
         replies: Vec<Vec<model::SubMessage>>,
     },
-    /// Selects the `Workspace` variant.
-    Workspace {
-        /// Invocation value.
-        invocation: Box<WorkspaceInvocation>,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-/// Data carried by `WorkspaceInvocation`.
-pub struct WorkspaceInvocation {
-    /// Codex binary value.
-    pub codex_binary: String,
-    /// Request identifier.
-    pub request_id: String,
-    /// Model value.
-    pub model: String,
-    /// Reasoning effort value.
-    pub reasoning_effort: Option<String>,
-    /// Project instructions value.
-    pub project_instructions: Option<String>,
-    /// Prompt value.
-    pub prompt: String,
-    /// Commit subject value.
-    pub commit_subject: String,
-    /// Baseline commit value.
-    pub baseline_commit: String,
-    /// Baseline index tree value.
-    pub baseline_index_tree: String,
-    /// Recovery result value.
-    pub recovery_result: Option<model::WorkspaceAgentResponse>,
-    /// Baseline ref value.
-    pub baseline_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -395,29 +373,30 @@ pub struct ToolInteractionRequest {
 #[serde(tag = "method", rename_all = "snake_case")]
 /// Variants represented by `StoreRequest`.
 pub enum StoreRequest {
+    /// Ordered chunk of one serialized Codex result.
+    CodexChunk {
+        /// Byte offset within this result.
+        offset: usize,
+        /// Total serialized size.
+        total: usize,
+        /// Bounded bytes, never a diagnostic log.
+        bytes: Vec<u8>,
+    },
+    /// Wait for the next application admission command.
+    CodexNext,
+    /// The owned app-server has been closed and reaped.
+    CodexClosed,
     /// Selects the `WorkspaceProgress` variant.
     WorkspaceProgress {
         /// Event value.
         event: Box<model::WorkspaceProgressEvent>,
     },
-    /// Selects the `WorkspaceCheckpoint` variant.
-    WorkspaceCheckpoint {
-        /// Result value.
-        result: Box<model::WorkspaceAgentResponse>,
-    },
-    /// Selects the `WorkspaceIntegration` variant.
-    WorkspaceIntegration,
     /// Selects the `WorkspaceApproval` variant.
     WorkspaceApproval {
         /// Request value.
         request: Box<model::WorkspaceApprovalRequest>,
         /// Expire value.
         expire: bool,
-    },
-    /// Selects the `WorkspaceFinished` variant.
-    WorkspaceFinished {
-        /// Result value.
-        result: Box<model::WorkspaceAgentResponse>,
     },
     /// Selects the `LoadRun` variant.
     LoadRun,
@@ -513,6 +492,11 @@ pub enum StoreRequest {
 #[serde(tag = "kind", rename_all = "snake_case")]
 /// Variants represented by `StoreResponse`.
 pub enum StoreResponse {
+    /// Application command for a prepared writer.
+    CodexAction {
+        /// Exactly one next action.
+        action: codex::Action,
+    },
     /// Selects the `Unit` variant.
     Unit,
     /// Selects the `WorkspaceApproval` variant.

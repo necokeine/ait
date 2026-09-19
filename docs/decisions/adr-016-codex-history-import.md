@@ -1,5 +1,7 @@
 # ADR-016：以 Codex app-server 历史为权威的双向 Session、Message 与 sub-message 互操作
 
+> 执行路径与 Git 收尾以 [ADR-017](adr-017-unified-native-codex-worker.md) 为准；旧的 Ait-managed Codex 执行路径已被统一原生 Thread 路径取代。
+
 - 状态：Proposed
 - 日期：2026-09-19
 - 协议基线：Codex app-server v2，`codex-cli 0.153.4` 的稳定/实验 schema 与隔离协议实测

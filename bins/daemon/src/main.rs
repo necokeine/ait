@@ -2,14 +2,10 @@
 
 use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, sync::Arc};
 
-use ait_agent_adapters::codex::{
-    CodexAppServerAdapter, CodexAppServerConfig, CodexSessionTitleGenerator,
-};
+use ait_agent_adapters::codex::CodexSessionTitleGenerator;
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_domain::SandboxAccess;
-use ait_ports::{
-    AgentProviderGateway, HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent,
-};
+use ait_ports::{AgentProviderGateway, HostProviderModelCatalog, SessionTitleGenerator};
 use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use clap::{Parser, ValueEnum};
 
@@ -77,19 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ait_ipc::supervisor::WorkerSupervisor::new(worker_binary)
             .with_cost_ceiling(arguments.max_run_cost_micros),
     );
-    let adapter = Arc::new(CodexAppServerAdapter::new(CodexAppServerConfig::default())?);
-    let codex: Arc<dyn WorkspaceAgent> = supervisor.clone();
-    let catalog: Arc<dyn HostProviderModelCatalog> = adapter.clone();
+    let catalog: Arc<dyn HostProviderModelCatalog> = supervisor.clone();
     let provider_gateway: Arc<dyn AgentProviderGateway> =
         Arc::new(ait_agent_adapters::RigProviderGateway);
     let titles: Arc<dyn SessionTitleGenerator> = Arc::new(
-        CodexSessionTitleGenerator::new(adapter.clone())
+        CodexSessionTitleGenerator::remote(supervisor.clone())
             .with_provider_gateway(provider_gateway.clone()),
     );
-    let mut service = LocalControlService::with_workspace_agent(
+    let mut service = LocalControlService::new(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
-        codex,
     )
     .with_project_directory_creator(Arc::new(
         ait_workspace_local::DocumentsProjectDirectory::default(),
@@ -102,8 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_api_tools(Arc::new(ait_tools::host::HostToolFactory))
     .with_run_dispatcher(supervisor.clone())
     .with_host_provider_catalog(catalog)
-    .with_codex_history_source(adapter.clone())
-    .with_codex_thread_writer(adapter);
+    .with_codex_history_source(supervisor.clone())
+    .with_codex_thread_writer(supervisor.clone());
     if arguments.max_run_cost_micros.is_none() {
         service = service.with_session_title_generator(titles);
     }

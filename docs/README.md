@@ -1,5 +1,8 @@
 # 概念与架构文档
 
+- [ADR-017：Codex 统一原生 Thread 与 Worker](decisions/adr-017-unified-native-codex-worker.md)：所有 Codex 请求通过 ait-worker，删除每 Run worktree 与历史 prompt 包装；旧 Ait 会话一次性清理，自动 Git 提交成为独立 Run 收尾。
+  [实现与验证报告](reports/adr-017-unified-native-execution.md)记录当前能力、回归范围与覆盖率；下列历史 ADR 中冲突的 Codex 执行条款以 ADR-017 为准。
+
 ## 工程规范
 
 - [Rust style guide](policy/rust.md)：所有 Rust 修改必须遵循的代码规范，包括测试模块拆分与项目报告中的测试覆盖率要求。

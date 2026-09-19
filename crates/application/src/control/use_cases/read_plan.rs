@@ -312,7 +312,6 @@ impl RecordAccess {
                 ControlFilter::id(Kind::Run, run_id),
                 ControlFilter::id(Kind::Project, project_id),
                 ControlFilter::id(Kind::RunCredential, run_id),
-                ControlFilter::id(Kind::WorkspaceRunJournal, run_id),
                 ControlFilter::message_ancestors(message_id),
                 ControlFilter::id(Kind::Settings, "settings"),
             ];
@@ -396,7 +395,6 @@ impl RecordAccess {
             let mut filters = vec![
                 ControlFilter::id(Kind::Run, run_id),
                 ControlFilter::id(Kind::Project, required_string(run, "project_id")?),
-                ControlFilter::id(Kind::WorkspaceRunJournal, run_id),
             ];
             if let Some(session_id) = run.get("session_id").and_then(Value::as_str) {
                 filters.push(ControlFilter::id(Kind::Session, session_id));
@@ -778,7 +776,9 @@ impl RecordAccess {
     ) -> Result<CommandTransaction, ApiError> {
         use ControlRecordKind as Kind;
         match command {
-            Command::ListCodexThreads { .. } | Command::SyncCodexThread { .. } => {
+            Command::ListCodexThreads { .. }
+            | Command::SyncCodexThread { .. }
+            | Command::RetryRunCommit { .. } => {
                 unreachable!("Codex history commands bypass ordinary command transactions")
             }
             Command::RegisterProject { id, workdir, .. } => ({

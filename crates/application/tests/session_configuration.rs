@@ -133,10 +133,10 @@ async fn session_config_is_private_reused_and_copied_when_opening_another_sessio
 }
 
 #[tokio::test]
-async fn cancelling_an_active_call_releases_the_session_and_discards_its_output() {
+async fn cancelling_an_active_call_releases_session_and_retains_confirmed_native_input() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -163,7 +163,8 @@ async fn cancelling_an_active_call_releases_the_session_and_discards_its_output(
         panic!()
     };
     assert_eq!(cancelled.status, "cancelled");
-    assert_eq!(view(&service).await.messages.len(), 2);
+    assert_eq!(view(&service).await.messages.len(), 3);
+    assert!(cancelled.git_commit.is_none());
     agent.release.add_permits(1);
     let CommandResult::Run(next) = ok(&service, send("one")).await else {
         panic!()

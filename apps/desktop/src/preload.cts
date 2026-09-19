@@ -49,6 +49,7 @@ const api: AitDesktopApi = {
   generateSessionTitle: (input) => invoke("session.generate-title", input),
   sendMessage: (input) => invoke("session.send-message", input),
   resolveApproval: (input) => invoke("run.resolve-approval", input),
+  retryRunCommit: (input) => invoke("run.retry-commit", input),
   resolveToolApproval: (input) => invoke("run.resolve-tool-approval", input),
   resolveToolInteraction: (input) => invoke("run.resolve-tool-interaction", input),
   subscribeRunEvents: (listener) => {

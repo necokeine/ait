@@ -3,7 +3,13 @@
 fn main() {
     std::panic::set_hook(Box::new(|_| eprintln!("ait-worker: execution panic")));
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args != ["--stdio", "--protocol-major", "1"] {
+    if args
+        != [
+            "--stdio",
+            "--protocol-major",
+            &ait_contracts::worker::PROTOCOL_MAJOR.to_string(),
+        ]
+    {
         eprintln!("ait-worker: unsupported invocation or protocol major");
         std::process::exit(2);
     }

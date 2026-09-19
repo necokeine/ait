@@ -1,7 +1,8 @@
 # WF-07：迁移 Project 的消息与 Session
 
 用户目标：把 Project 的历史分支与 Session 引用带到另一个本地工作空间。
-前置条件：完成 WF-01，可先运行 WF-02/WF-03 产生历史；导出文件放在 Project 工作目录外。
+前置条件：完成 WF-01，使用尚未绑定原生 Thread 的 Session 或 API Provider 历史；导出文件放在 Project 工作目录外。
+原生 Codex Thread 保持自身历史与 cwd，目前不通过便携 Ait archive 迁移；含原生绑定的导入/导出返回 `CODEX_THREAD_CAPABILITY_UNSUPPORTED`。
 
 ## 操作
 
@@ -50,4 +51,4 @@ target/debug/ait-daemon --database '演练目录/target.sqlite3' --listen 127.0.
 - JSON 损坏或输入文件不存在属于本地错误，退出码 1，详情在 stderr。
 
 自动化：[`wf07_export_and_import_project_archive`](../bins/cli/tests/workflows.rs)，
-通过真实文件和两个隔离服务验证分支往返、活动引用清理、失败导出保护文件、重复/非法归档拒绝和源记录不变。
+通过真实文件和两个隔离服务验证未绑定 Session 往返、活动引用清理、失败导出保护文件、重复/非法归档拒绝和源记录不变。

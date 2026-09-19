@@ -1,11 +1,10 @@
 //! NEC-192: HTTP settings -> durable Run -> production Codex mapping / API gateway.
 #![allow(clippy::pedantic)]
 
-use ait_agent_adapters::{
-    AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
-    AgentStream, SandboxMode, codex::CodexWorkspaceAgent,
-};
-use ait_application::{LocalControlService, PermissionPolicyLimits};
+#[path = "../../application/tests/support/native.rs"]
+mod native;
+use ait_agent_adapters::SandboxMode;
+use ait_application::PermissionPolicyLimits;
 use ait_contracts::{AgentConfiguration, AgentProvider, ProviderModel};
 use ait_domain::{DomainError, SandboxAccess};
 use ait_ports::{AgentProviderGateway, ProviderMessage};
@@ -13,6 +12,7 @@ use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt;
+use native::{NativeHandler, NativeReply};
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
@@ -23,37 +23,23 @@ use tower::ServiceExt;
 #[derive(Default)]
 struct Native(Mutex<Vec<SandboxMode>>);
 #[async_trait]
-impl AgentAdapter for Native {
-    fn driver(&self) -> &'static str {
-        "http-permission-fixture"
-    }
-    fn capabilities(&self) -> AgentCapabilities {
-        AgentCapabilities {
-            streaming: true,
-            thread_resume: false,
-            approvals: true,
-            command_execution: true,
-            file_changes: true,
-            usage: false,
-        }
-    }
-    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
-        self.0.lock().unwrap().push(request.sandbox);
-        Ok(Box::pin(futures_util::stream::iter([
-            Ok(AgentEvent::ItemCompleted {
-                item: json!({
-                    "type": "agentMessage",
-                    "id": "answer",
-                    "phase": "final_answer",
-                    "text": "Read the project.",
-                }),
-            }),
-            Ok(AgentEvent::Completed {
-                turn_id: "turn".into(),
-                status: AgentRunStatus::Completed,
-                error: None,
-            }),
-        ])))
+impl NativeHandler for Native {
+    async fn invoke(
+        &self,
+        request: ait_ports::CodexThreadInvocation,
+    ) -> Result<NativeReply, DomainError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(match request.permission_profile.sandbox {
+                SandboxAccess::ReadOnly => SandboxMode::ReadOnly,
+                SandboxAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+                SandboxAccess::FullAccess => SandboxMode::DangerFullAccess,
+            });
+        Ok(NativeReply {
+            assistant_text: "Read the project.".into(),
+            ..Default::default()
+        })
     }
 }
 #[derive(Default)]
@@ -106,7 +92,11 @@ async fn request(app: &Router, path: &str, body: Option<Value>) -> Value {
     }
     .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
-    assert!(response.status().is_success());
+    assert!(
+        response.status().is_success(),
+        "{path}: {}",
+        response.status()
+    );
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
@@ -118,10 +108,10 @@ async fn ok(app: &Router, path: &str, body: Option<Value>) -> Value {
 async fn fixture(kind: &str, max_sandbox: SandboxAccess) -> Fixture {
     let native = Arc::new(Native::default());
     let text = Arc::new(TextGateway::default());
-    let service = LocalControlService::with_workspace_agent(
+    let service = native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
-        Arc::new(CodexWorkspaceAgent::new(native.clone())),
+        native.clone(),
     )
     .with_provider_gateway(text.clone())
     .with_permission_limits(PermissionPolicyLimits {
@@ -235,19 +225,22 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
                 run["permission_profile"],
                 json!({"sandbox":snapshot,"approval":"on_request"})
             );
-            let cron = ok(
+            let cron = request(
                 &fixture.app,
                 "/v1/cron/trigger",
                 Some(json!({"cron_id":"cron","scheduled_at":42})),
             )
             .await;
-            assert_eq!(cron["status"], "completed", "{cron}");
-            assert_eq!(cron["permission_profile"], run["permission_profile"]);
-            assert!(cron["session_id"].is_string());
             if kind == "codex" {
-                assert_eq!(*fixture.native.0.lock().unwrap(), vec![wire, wire]);
+                assert_eq!(cron["error"]["code"], "CODEX_THREAD_CAPABILITY_UNSUPPORTED");
+                assert_eq!(*fixture.native.0.lock().unwrap(), vec![wire]);
                 assert_eq!(fixture.text.0.load(Ordering::Relaxed), 0);
             } else {
+                assert_eq!(cron["result"]["value"]["status"], "completed", "{cron}");
+                assert_eq!(
+                    cron["result"]["value"]["permission_profile"],
+                    run["permission_profile"]
+                );
                 assert!(fixture.native.0.lock().unwrap().is_empty());
                 assert_eq!(fixture.text.0.load(Ordering::Relaxed), 2);
             }
@@ -260,15 +253,18 @@ async fn http_permission_profiles_reach_durable_runs_and_actual_codex_mapping() 
             )
             .await;
             assert_eq!(persisted, run);
-            assert_eq!(
-                ok(
-                    &fixture.app,
-                    "/v1/run/get",
-                    Some(json!({"run_id":cron["id"]}))
-                )
-                .await,
-                cron
-            );
+            if kind != "codex" {
+                let cron = &cron["result"]["value"];
+                assert_eq!(
+                    ok(
+                        &fixture.app,
+                        "/v1/run/get",
+                        Some(json!({"run_id":cron["id"]}))
+                    )
+                    .await,
+                    *cron
+                );
+            }
             assert!(!persisted.to_string().contains("fixture-secret"));
         }
     }

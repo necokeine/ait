@@ -690,26 +690,6 @@ impl Wire for ait_domain::NativeApprovalFileChange {
     }
 }
 
-impl Wire for ait_ports::WorkspaceAgentResponse {
-    type Value = w::WorkspaceAgentResponse;
-    fn to_wire(&self) -> Self::Value {
-        w::WorkspaceAgentResponse {
-            assistant_text: self.assistant_text.to_wire(),
-            commit_id: self.commit_id.to_wire(),
-            operations: self.operations.to_wire(),
-            output_items: self.output_items.to_wire(),
-        }
-    }
-    fn from_wire(v: Self::Value) -> Result<Self, ProtocolError> {
-        Ok(Self {
-            assistant_text: Wire::from_wire(v.assistant_text)?,
-            commit_id: Wire::from_wire(v.commit_id)?,
-            operations: Wire::from_wire(v.operations)?,
-            output_items: Wire::from_wire(v.output_items)?,
-        })
-    }
-}
-
 impl Wire for ait_ports::WorkspaceOperation {
     type Value = w::WorkspaceOperation;
     fn to_wire(&self) -> Self::Value {

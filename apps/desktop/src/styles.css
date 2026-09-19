@@ -170,6 +170,8 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 #run-detail { margin-top: 24px; }
 #run-detail h2 { font-size: 16px; overflow-wrap: anywhere; }
 .run-detail-status { color: var(--text-soft); font-size: 12px; }
+.run-git-commit { display: grid; justify-items: start; gap: 8px; margin: 14px 0; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; color: var(--text-soft); font-size: 12px; }
+.run-git-commit code, .run-git-commit p { margin: 0; overflow-wrap: anywhere; }
 .run-detail-result { white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-content { color: var(--text); font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message-content.markdown { white-space: normal; }

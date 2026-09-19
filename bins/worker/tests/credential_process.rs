@@ -10,7 +10,11 @@ async fn credential_environment_probe_child() {
     let Ok(binary) = std::env::var("AIT_TEST_ENV_PROBE") else {
         return;
     };
-    let mut child = ait_sandbox::spawn_worker(std::path::Path::new(&binary)).unwrap();
+    let mut child = ait_sandbox::spawn_worker(
+        std::path::Path::new(&binary),
+        ait_contracts::worker::PROTOCOL_MAJOR,
+    )
+    .unwrap();
     let mut output = String::new();
     child
         .stdout()
@@ -23,7 +27,11 @@ async fn credential_environment_probe_child() {
     let report: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(
         report["argv"],
-        serde_json::json!(["--stdio", "--protocol-major", "1"])
+        serde_json::json!([
+            "--stdio",
+            "--protocol-major",
+            &ait_contracts::worker::PROTOCOL_MAJOR.to_string()
+        ])
     );
     for key in [
         "OPENAI_API_KEY",
@@ -98,7 +106,11 @@ fn real_worker_protocol_diagnostic_never_echoes_sensitive_input() {
     })
     .to_string();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_ait-worker"))
-        .args(["--stdio", "--protocol-major", "1"])
+        .args([
+            "--stdio",
+            "--protocol-major",
+            &ait_contracts::worker::PROTOCOL_MAJOR.to_string(),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

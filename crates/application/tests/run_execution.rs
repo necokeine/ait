@@ -1,5 +1,6 @@
 //! Command execution, durable checkpoints, and read-only Run queries.
 
+use crate::support::native::{NativeHandler, NativeReply};
 #[path = "support/immediate_workspace.rs"]
 mod immediate_workspace;
 mod support;
@@ -16,10 +17,9 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProjectView, RunView};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    ControlChange, ControlFilter, ControlRead, ControlStore, ControlStoreError, DurableEvent,
-    DurableEventPage, EventBounds, PendingEvent, ProgressCheckpoint, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation, WorkspaceProgressEvent,
-    WorkspaceProgressReporter,
+    CodexThreadInvocation, ControlChange, ControlFilter, ControlRead, ControlStore,
+    ControlStoreError, DurableEvent, DurableEventPage, EventBounds, PendingEvent,
+    ProgressCheckpoint, WorkspaceOperation, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -127,7 +127,7 @@ impl ControlStore for PausingProgressStore {
         let terminal = terminal_run_status(&changes).is_some_and(|status| {
             matches!(
                 status,
-                "completed" | "failed" | "cancelled" | "limit_exceeded"
+                "completed" | "failed" | "cancelled" | "limit_exceeded" | "interrupted"
             )
         });
         let result = self.inner.apply(revision, changes, events).await;
@@ -193,11 +193,8 @@ struct RecordingAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for RecordingAgent {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for RecordingAgent {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let snapshot = self.store.load().await.unwrap();
         let run = snapshot.value["runs"]
@@ -221,22 +218,12 @@ impl WorkspaceAgent for RecordingAgent {
                 "fixture failure",
             ));
         }
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "fixture output".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
-    }
-
-    async fn recover_checkpointed(
-        &self,
-        _request: WorkspaceAgentInvocation,
-        result: WorkspaceAgentResponse,
-        _baseline_ref: Option<String>,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        self.recoveries.fetch_add(1, Ordering::Relaxed);
-        Ok(result)
     }
 }
 
@@ -284,7 +271,7 @@ impl Fixture {
             recoveries: AtomicUsize::new(0),
             fail: AtomicBool::new(false),
         });
-        let service = LocalControlService::with_workspace_agent(
+        let service = crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             agent.clone(),
@@ -356,10 +343,6 @@ async fn run_commands_return_persisted_results_without_repeating_external_calls_
             at_message_id: fixture.project.root_message_id.clone(),
             text: "implement a fork".into(),
         },
-        Command::TriggerCron {
-            cron_id: "cron".into(),
-            scheduled_at: 42,
-        },
     ]
     .into_iter()
     .enumerate()
@@ -405,23 +388,18 @@ async fn run_commands_return_persisted_results_without_repeating_external_calls_
             );
         }
     }
-    let replay = run(
-        &fixture.service,
-        Command::TriggerCron {
+    let response = fixture
+        .service
+        .execute(Command::TriggerCron {
             cron_id: "cron".into(),
             scheduled_at: 42,
-        },
-    )
-    .await;
-    assert_eq!(replay.status, "completed");
-    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 3);
+        })
+        .await;
     assert_eq!(
-        fixture.store.load().await.unwrap().value["runs"]
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        response.error.unwrap().code,
+        ErrorCode::CodexThreadCapabilityUnsupported
     );
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 2);
 }
 
 #[tokio::test]
@@ -464,74 +442,32 @@ async fn failed_creation_commit_never_invokes_the_agent() {
 }
 
 #[tokio::test]
-async fn post_admission_failures_queries_and_duplicate_cron_triggers_never_start_execution() {
+async fn post_admission_failures_and_queries_never_send_input() {
     let fixture = Fixture::new().await;
     *fixture.store.checkpoints.lock().unwrap() =
         VecDeque::from(["running", "running", "running", "running"]);
-    let interactive = run(&fixture.service, send_message()).await;
-    assert_eq!(interactive.status, "failed");
+    let result = run(&fixture.service, send_message()).await;
+    assert_eq!(result.status, "failed");
     assert_eq!(
-        interactive.error.as_ref().unwrap().code,
-        ErrorCode::RunQueueConflict
+        result.error.as_ref().unwrap().code,
+        ErrorCode::CodexInputNotAccepted
     );
-    let trigger = Command::TriggerCron {
-        cron_id: "cron".into(),
-        scheduled_at: 42,
-    };
-    *fixture.store.checkpoints.lock().unwrap() =
-        VecDeque::from(["running", "running", "running", "running"]);
-    let cron = run(&fixture.service, trigger.clone()).await;
-    assert_eq!(cron.status, "failed");
-    assert_eq!(
-        cron.error.as_ref().unwrap().code,
-        ErrorCode::RunQueueConflict
-    );
-    let before = fixture.store.load().await.unwrap();
-    for terminal in [&interactive, &cron] {
-        let result = run(
-            &fixture.service,
-            Command::GetRun {
-                run_id: terminal.id.clone(),
-            },
-        )
-        .await;
-        assert_eq!(&result, terminal);
-    }
-    let after = fixture.store.load().await.unwrap();
-    assert_eq!(before, after);
-    assert_eq!(run(&fixture.service, trigger).await, cron);
     assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), 0);
-    assert_eq!(fixture.store.load().await.unwrap().value, before.value);
-    let cancellation = fixture
-        .service
-        .execute(Command::CancelRun {
-            run_id: interactive.id,
-        })
-        .await;
     assert_eq!(
-        cancellation.error.unwrap().code,
-        ErrorCode::RunAlreadyTerminal
+        run(&fixture.service, Command::GetRun { run_id: result.id })
+            .await
+            .status,
+        "failed"
     );
     assert!(fixture.store.load().await.unwrap().value["sessions"][0]["active_run_id"].is_null());
-    assert!(
-        fixture
-            .service
-            .recover_interrupted_runs()
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let recovered = run(&fixture.service, Command::GetRun { run_id: cron.id }).await;
-    assert_eq!(recovered.status, "failed");
-    assert_eq!(recovered.error.unwrap().code, ErrorCode::RunQueueConflict);
 }
 
 #[tokio::test]
-async fn startup_recovery_executes_a_queued_run_once_without_query_side_effects() {
+async fn startup_recovery_rejects_unsent_input_without_replay_or_query_side_effects() {
     let fixture = Fixture::new().await;
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "queued").await;
-    let service = LocalControlService::with_workspace_agent(
+    let service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         fixture.store.clone(),
         fixture.agent.clone(),
@@ -550,41 +486,9 @@ async fn startup_recovery_executes_a_queued_run_once_without_query_side_effects(
 
     let recovered = service.recover_interrupted_runs().await.unwrap();
     assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].status, "completed");
-    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), before + 1);
+    assert_eq!(recovered[0].status, "failed");
+    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), before);
     assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test]
-async fn startup_recovery_finalizes_a_checkpoint_without_reinvoking_the_agent() {
-    let fixture = Fixture::new().await;
-    let completed = run(&fixture.service, send_message()).await;
-    rewind_completed_run(&fixture.store, &completed, "settling").await;
-    let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-        fixture.store.clone(),
-        fixture.agent.clone(),
-    );
-    let calls = fixture.agent.calls.load(Ordering::Relaxed);
-
-    let recovered = service.recover_interrupted_runs().await.unwrap();
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].status, "completed");
-    assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
-    assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), 1);
-    let snapshot = fixture.store.load().await.unwrap();
-    let run_messages = snapshot.value["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|message| {
-            message["parent_message_id"] == completed.base_message_id
-                && message["role"] == "assistant"
-        })
-        .count();
-    // The completed fixture's historical assistant Message is immutable; recovery
-    // appends exactly one finalized Message beside it.
-    assert_eq!(run_messages, 2);
 }
 
 #[tokio::test]
@@ -592,7 +496,7 @@ async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_se
     let fixture = Fixture::new().await;
     let completed = run(&fixture.service, send_message()).await;
     rewind_completed_run(&fixture.store, &completed, "running").await;
-    let service = LocalControlService::with_workspace_agent(
+    let service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         fixture.store.clone(),
         fixture.agent.clone(),
@@ -604,7 +508,7 @@ async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_se
     assert_eq!(recovered[0].status, "interrupted");
     assert_eq!(
         recovered[0].error.as_ref().unwrap().code,
-        ErrorCode::RunRecoveryFailed
+        ErrorCode::CodexInputOutcomeUnknown
     );
     assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
     assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), 0);
@@ -613,7 +517,7 @@ async fn startup_recovery_interrupts_unknown_running_effects_and_releases_the_se
 
 #[tokio::test]
 async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
-    for (policy, expected_status) in [("ask", "interrupted"), ("fail", "failed")] {
+    for (policy, expected_status) in [("ask", "failed"), ("fail", "failed")] {
         let fixture = Fixture::new().await;
         let completed = run(&fixture.service, send_message()).await;
         rewind_completed_run(&fixture.store, &completed, "queued").await;
@@ -626,7 +530,7 @@ async fn ask_and_fail_recovery_policies_never_replay_queued_work() {
             .await
             .unwrap();
         let calls = fixture.agent.calls.load(Ordering::Relaxed);
-        let service = LocalControlService::with_workspace_agent(
+        let service = crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             fixture.store.clone(),
             fixture.agent.clone(),
@@ -652,6 +556,14 @@ async fn rewind_completed_run(store: &ConflictingStore, completed: &RunView, sta
         .find(|run| run["id"] == completed.id)
         .unwrap();
     run["status"] = Value::String(status.into());
+    run["codex_input"]["state"] = Value::String(
+        if status == "queued" {
+            "queued"
+        } else {
+            "send_unknown"
+        }
+        .into(),
+    );
     run["phase"] = Value::String(if status == "settling" {
         "result_persisted".into()
     } else if status == "running" {
@@ -689,19 +601,16 @@ struct PanickingProgressAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for PanickingProgressAgent {
-    async fn invoke(
-        &self,
-        _request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for PanickingProgressAgent {
+    async fn invoke(&self, _request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         panic!("progress-aware entry point expected")
     }
 
     async fn invoke_with_progress(
         &self,
-        _request: WorkspaceAgentInvocation,
+        _request: CodexThreadInvocation,
         progress: Arc<dyn WorkspaceProgressReporter>,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+    ) -> Result<NativeReply, DomainError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         self.entered.add_permits(1);
         if call == 0 {
@@ -714,9 +623,9 @@ impl WorkspaceAgent for PanickingProgressAgent {
                 .await;
             panic!("injected adapter panic after progress")
         }
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "second run completed".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -724,19 +633,16 @@ impl WorkspaceAgent for PanickingProgressAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for SlowStreamingAgent {
-    async fn invoke(
-        &self,
-        _request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for SlowStreamingAgent {
+    async fn invoke(&self, _request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         panic!("streaming entry point expected")
     }
 
     async fn invoke_with_progress(
         &self,
-        _request: WorkspaceAgentInvocation,
+        _request: CodexThreadInvocation,
         progress: Arc<dyn WorkspaceProgressReporter>,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+    ) -> Result<NativeReply, DomainError> {
         progress
             .report(WorkspaceProgressEvent::MessageStarted {
                 id: "commentary".into(),
@@ -780,9 +686,9 @@ impl WorkspaceAgent for SlowStreamingAgent {
                 error: None,
             })
             .await;
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "done".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: vec![ait_ports::WorkspaceOutputItem::Message {
                 id: "final".into(),
@@ -809,7 +715,7 @@ async fn asynchronous_submission_streams_batched_progress_and_survives_replay_pa
         started: Semaphore::new(0),
         release: Semaphore::new(0),
     });
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         Arc::new(immediate_workspace::ImmediateWorkspace),
         store.clone(),
         agent.clone(),
@@ -1028,7 +934,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         calls: AtomicUsize::new(0),
         entered: Semaphore::new(0),
     });
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
@@ -1141,10 +1047,10 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
 
     let settled = workspace(&service).await;
     let failed = settled.runs.iter().find(|run| run.id == first.id).unwrap();
-    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.status, "interrupted");
     assert_eq!(
         failed.error.as_ref().unwrap().code,
-        ErrorCode::ProviderFailed
+        ErrorCode::CodexInputOutcomeUnknown
     );
     assert!(
         settled
@@ -1172,7 +1078,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
         .collect::<Vec<_>>();
     let terminal = run_events
         .iter()
-        .position(|event| event.kind == "run.updated" && event.body["status"] == "failed")
+        .position(|event| event.kind == "run.updated" && event.body["status"] == "interrupted")
         .expect("failed terminal event");
     assert!(
         run_events[..terminal]
@@ -1233,7 +1139,7 @@ async fn provider_panic_drains_progress_before_terminal_cleanup_and_releases_lea
 
 #[tokio::test]
 async fn recovery_rechecks_administrator_ceiling_without_changing_snapshot() {
-    for (phase, expected) in [("queued", "failed"), ("settling", "interrupted")] {
+    for (phase, expected) in [("queued", "interrupted"), ("settling", "interrupted")] {
         use ait_application::PermissionPolicyLimits;
         use ait_domain::SandboxAccess;
         let fixture = Fixture::new().await;
@@ -1252,7 +1158,7 @@ async fn recovery_rechecks_administrator_ceiling_without_changing_snapshot() {
         .await;
         let completed = run(&fixture.service, send_message()).await;
         rewind_completed_run(&fixture.store, &completed, phase).await;
-        let service = LocalControlService::with_workspace_agent(
+        let service = crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             fixture.store.clone(),
             fixture.agent.clone(),
@@ -1272,11 +1178,7 @@ async fn recovery_rechecks_administrator_ceiling_without_changing_snapshot() {
         );
         assert_eq!(
             recovered[0].error.as_ref().unwrap().code,
-            if phase == "queued" {
-                ErrorCode::InvalidConfiguration
-            } else {
-                ErrorCode::RunRecoveryFailed
-            }
+            ErrorCode::RunRecoveryFailed
         );
         assert_eq!(fixture.agent.calls.load(Ordering::Relaxed), calls);
         assert_eq!(fixture.agent.recoveries.load(Ordering::Relaxed), recoveries);

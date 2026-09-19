@@ -2,11 +2,13 @@ import { escapeCatalog as escape } from "./agent-settings.js";
 import { ActiveRunsMonitor, type ActiveRunsState } from "./active-runs-monitor.js";
 import type { ActiveRunsCatalog, ActiveRunSummary, AgentSummary } from "./types.js";
 import type { ProjectView } from "./types.js";
+import { renderRunCommit } from "./run-commit.js";
 import { renderToolApprovals } from "./tool-approval-ui.js";
 import { interactionResponse, renderToolInteractions } from "./tool-interaction-ui.js";
 
 interface RunsPageActions {
   read(): Promise<ActiveRunsCatalog>;
+  retryCommit(input: { projectId: string; runId: string }): Promise<ProjectView>;
   project(id: string): Promise<ProjectView>;
   resolve(input: { projectId: string; runId: string; approvalId: string; action: "approve" | "deny" | "cancel" }): Promise<ProjectView>;
   resolveInteraction(input: { projectId: string; runId: string; interactionId: string; action: "submit" | "approve" | "deny" | "cancel"; response?: Record<string, string | string[]> }): Promise<ProjectView>;
@@ -65,7 +67,7 @@ export function createRunsPage(container: Element, actions: RunsPageActions) {
       if (!run) { detail.textContent = "Run unavailable."; return; }
       const result = project.messages.find((message) => message.id === run.lastMessageId);
       const text = result?.parts.map((part) => part.type === "text" ? part.text : part.type === "tool_result" ? `Tool result: ${part.status}` : "").join("\n") ?? "";
-      detail.innerHTML = `<header><h2>Run ${escape(run.id)}</h2><p class="run-detail-status">${escape(labels[run.status] ?? run.status)}</p></header>${renderToolApprovals(run)}${renderToolInteractions(run)}<pre class="run-detail-result">${escape(text)}</pre>`;
+      detail.innerHTML = `<header><h2>Run ${escape(run.id)}</h2><p class="run-detail-status">${escape(labels[run.status] ?? run.status)}</p></header>${renderRunCommit(run)}${renderToolApprovals(run)}${renderToolInteractions(run)}<pre class="run-detail-result">${escape(text)}</pre>`;
     } catch { if (generation === detailGeneration) detail.textContent = "Could not refresh this Run. Use Refresh to try again."; }
   };
   const render = (state: ActiveRunsState): void => {
@@ -99,6 +101,15 @@ export function createRunsPage(container: Element, actions: RunsPageActions) {
   const monitor = new ActiveRunsMonitor(actions.read, render);
   refreshButton.addEventListener("click", () => void monitor.refresh());
   detail.addEventListener("click", (event) => {
+    const commitButton = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-retry-commit]") : null;
+    if (commitButton && selected && !deciding) {
+      deciding = true;
+      commitButton.disabled = true;
+      void actions.retryCommit(selected)
+        .catch((error: unknown) => actions.notify(error instanceof Error ? error.message : "Git commit retry failed.", true))
+        .finally(() => { deciding = false; void refreshDetail(); void monitor.refresh(); });
+      return;
+    }
     const interactionButton = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-interaction-action]") : null;
     const interactionCard = interactionButton?.closest<HTMLElement>("[data-interaction-id]");
     const interactionAction = interactionButton?.dataset.interactionAction;

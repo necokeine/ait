@@ -190,6 +190,7 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     );
     case!(&["run", "get", "--run-id", "run_id"] => GetRun { run_id: "run_id".into() });
     case!(&["run", "cancel", "--run-id", "run_id"] => CancelRun { run_id: "run_id".into() });
+    case!(&["run", "retry-commit", "--run-id", "run_id"] => RetryRunCommit { run_id: "run_id".into() });
     case!(&["cron", "list"] => ListCrons);
     case!(
         &["cron", "create", "--id", "id", "--name", "name", "--project-id", "project_id",

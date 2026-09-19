@@ -256,12 +256,6 @@ pub(in crate::control) fn encode_change(
             run_project(&id, projects)?,
             serde_json::to_value(v),
         ),
-        TypedChange::WorkspaceRunJournal(id, v) => (
-            Kind::WorkspaceRunJournal,
-            id.clone(),
-            run_project(&id, projects)?,
-            serde_json::to_value(v),
-        ),
         TypedChange::Settings(values, revision) => (
             Kind::Settings,
             "settings".into(),

@@ -4,14 +4,14 @@ use serde_json::json;
 #[test]
 fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
     let value = json!({
-        "protocol_major": 1,
+        "protocol_major": PROTOCOL_MAJOR,
         "protocol_minor": 4,
         "sequence": 1,
         "lease": null,
         "future_envelope_hint": "optional",
         "payload": {
             "type": "hello",
-            "protocol_major": 1,
+            "protocol_major": PROTOCOL_MAJOR,
             "protocol_minor": 4,
             "minimum_protocol_minor": 0,
             "capabilities": [
@@ -19,7 +19,7 @@ fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
                 "commit-ack-v1",
                 "lease-v1",
                 "tool-grants-v1",
-                "tool-interactions-v1",
+                "native-codex-v1", "tool-interactions-v1",
                 "future-optional-v1"
             ],
             "required_capabilities": [
@@ -27,7 +27,7 @@ fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
                 "commit-ack-v1",
                 "lease-v1",
                 "tool-grants-v1",
-                "tool-interactions-v1"
+                "native-codex-v1", "tool-interactions-v1"
             ],
             "max_frame_bytes": 2_097_152,
             "pid": 42,
@@ -52,14 +52,14 @@ fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
 #[test]
 fn worker_accepts_older_daemon_minor_and_ignores_optional_fields() {
     let value = json!({
-        "protocol_major": 1,
+        "protocol_major": PROTOCOL_MAJOR,
         "protocol_minor": 0,
         "sequence": 1,
         "lease": null,
         "future_envelope_hint": "optional",
         "payload": {
             "type": "hello_ack",
-            "protocol_major": 1,
+            "protocol_major": PROTOCOL_MAJOR,
             "protocol_minor": 0,
             "max_frame_bytes": 262_144,
             "capabilities": [
@@ -67,7 +67,7 @@ fn worker_accepts_older_daemon_minor_and_ignores_optional_fields() {
                 "commit-ack-v1",
                 "lease-v1",
                 "tool-grants-v1",
-                "tool-interactions-v1"
+                "native-codex-v1", "tool-interactions-v1"
             ],
             "future_ack_hint": true
         }
@@ -90,7 +90,7 @@ fn worker_accepts_older_daemon_minor_and_ignores_optional_fields() {
 #[test]
 fn unknown_message_kind_and_required_capability_remain_fatal() {
     let unknown = json!({
-        "protocol_major": 1,
+        "protocol_major": PROTOCOL_MAJOR,
         "protocol_minor": 0,
         "sequence": 1,
         "lease": null,

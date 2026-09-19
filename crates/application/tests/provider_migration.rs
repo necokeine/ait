@@ -16,9 +16,10 @@ use std::sync::Arc;
 #[tokio::test]
 async fn unused_retired_builtins_do_not_prevent_reopening_a_workspace() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::new(
+    let service = support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
+        Arc::new(fixtures::workspace_agents::CapturingNativeHandler::default()),
     );
     let _directory = setup(&service, config("high")).await;
     ok(&service, send("one")).await;
@@ -71,9 +72,10 @@ async fn retired_provider_references_and_custom_connections_are_never_silently_r
     for kind in RETIRED_BUILTINS {
         for reference in ["agent", "run", "credential", "custom", "url"] {
             let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-            let service = LocalControlService::new(
+            let service = support::native::native_service(
                 std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
                 store.clone(),
+                Arc::new(fixtures::workspace_agents::CapturingNativeHandler::default()),
             );
             let _directory = setup(&service, config("high")).await;
             ok(&service, send("one")).await;
@@ -138,9 +140,10 @@ fn retired_provider(kind: &str) -> serde_json::Value {
 #[tokio::test]
 async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::new(
+    let service = support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
+        Arc::new(fixtures::workspace_agents::CapturingNativeHandler::default()),
     );
     let _directory = setup(&service, config("high")).await;
     ok(&service, send("one")).await;

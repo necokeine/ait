@@ -257,7 +257,7 @@ async fn codex_native_tools_create_and_verify_python_hello_world() {
     );
     let report = json!({
         "result": "passed", "codex_version": String::from_utf8_lossy(&version.stdout).trim(),
-        "tool_set": ait_tools::codex::CODEX_TOOL_SET_REVISION,
+        "tool_set": "native-app-server",
         "provider": "codex", "thread_resumed": true,
         "stdout": "Hello, world!\n", "source": source,
         "create": first, "refactor_and_verify": second,

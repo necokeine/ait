@@ -60,3 +60,14 @@ OpenAI/DeepSeek/Gemini/MiniMax 使用 HostTools，按精确 provider+model 目�
 新建和重置 settings 为 `workspace_write`；上限为 `read-only` 时需显式选择 Readonly 才能开始 Run。
 收紧上限后，重启恢复也会在调用 provider 或发布
 checkpoint 结果前重新检查，保留原 Run 权限快照。
+
+## Codex 自动 Git 提交
+
+`codex.auto_commit` 默认 false。与上面的权限设置使用同一完整 settings 文档；通过 jq 加入
+`{"codex.auto_commit":true}` 后使用当前 revision 保存，也可在 Desktop 设置的 Runtime 分组开启。
+选项对下一次 Run 生效，不改变已开始的 Run。新建和导入的 Codex 任务采用同一规则。
+
+成功的原生结果发布后，Ait 独立创建 Git commit；起始脏目录、Git 基线改变或无文件变化时跳过。
+失败和取消的模型执行不提交，文件修改保留。查看 `ait run get` 返回的 `git_commit`。
+Git 失败时 Run 仍为 completed，可使用 `ait run retry-commit --run-id "$RUN_ID"` 或 Desktop 的
+Retry Git commit 按钮。该操作复用已准备的 commit，不调用 Codex，也不修改 Message。

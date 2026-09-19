@@ -13,7 +13,7 @@
 | [WF-02](02-send-message.md) | 发送输入并查看 Agent 最终结果 | `wf02_send_message_and_inspect_agent_reply` |
 | [WF-03](03-branch-and-rebind.md) | 从历史节点开分支、命名、切换 Agent | `wf03_branch_rename_and_rebind_session` |
 | [WF-04](04-run-status-and-cancel.md) | 查看运行状态、取消活动 Run 并继续 | `wf04_observe_injected_provider_failure_and_continue`；活动取消另见 application 测试 |
-| [WF-05](05-cron.md) | 保存、启停并触发一个定时 occurrence | `wf05_cron_occurrence_is_idempotent_and_independent` |
+| [WF-05](05-cron.md) | 保存、启停并触发一个定时 occurrence | `wf05_codex_cron_is_rejected_without_legacy_fallback` |
 | [WF-06](06-events-and-restart.md) | 按游标续读事件并在重启后找回状态 | `wf06_replay_events_and_reopen_workspace` |
 | [WF-07](07-export-import.md) | 导出 Project 并导入另一个本地工作空间 | `wf07_export_and_import_project_archive` |
 | [WF-08](08-settings.md) | 修改设置、处理并发覆盖、恢复默认值 | `wf08_save_reset_and_recover_settings` |
@@ -126,8 +126,8 @@ HTTP 映射见 [实体操作 API](../docs/decisions/NEC-166/entity-operation-htt
 | `create_session` 仍要求 `agent_id` | Project 默认 Agent 当前是建议值；省略 Agent 的体验需单独设计和测试 |
 | 活动 Session 再次输入返回 `SESSION_BUSY` | ADR 要求进入现有 Run 队列；实现后需更新 WF-04 的当前行为断言并增加队列消费测试 |
 | `event list` 单次最多默认回放 256 条，没有 CLI `--limit` 或持续订阅 | 用最后一个 `id` 续读；后续覆盖多页完整性、持续事件和错误帧的退出码 |
-| Cron 配置和手动 occurrence 可用，daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
-| 启用真实 Codex 和 AI 标题生成需要外部执行环境 | 手工流程使用 `builtin-codex`；WF-01～09 自动化通过 `WorkspaceAgent` port 注入 fake，WF-10 提供明确 opt-in 的真实执行测试 |
+| API Cron 配置和手动 occurrence 可用；Codex Cron 明确拒绝；daemon 没有持续到点调度循环 | 后续验证实际时钟触发、并发策略、misfire 和重启补偿；本目录不声称已支持 |
+| 启用真实 Codex 和 AI 标题生成需要外部执行环境 | 手工流程使用 `builtin-codex`；WF-01～09 自动化通过 `CodexThreadWriter` port 注入有状态原生 Thread fixture，WF-10 提供明确 opt-in 的真实执行测试 |
 | API 工具首版为文件/搜索和有限命令；没有任意 shell 或自动 Git 提交 | WF-13 离线验证宿主工具循环，WF-11 显式启用真实 DeepSeek；修改保留为待审阅 Git diff |
 
 修改流程时同步修改表中的测试，注明哪些行为是已实现契约、哪些是待校正差距。

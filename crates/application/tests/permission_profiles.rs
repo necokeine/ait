@@ -5,18 +5,12 @@ mod fixtures;
 mod support;
 
 use crate::fixtures::control_fixtures::{
-    config, git_head, git_index_tree, ok, save_permission_settings, send, setup, view,
-    wait_for_signal,
+    config, ok, save_permission_settings, send, setup, view, wait_for_signal,
 };
 use crate::fixtures::pausing_store::PausingStore;
 use crate::fixtures::provider_fixtures::Gateway;
-use crate::fixtures::workspace_agents::CapturingWorkspaceAgent;
+use crate::fixtures::workspace_agents::CapturingNativeHandler;
 use crate::support::ControlStoreTestExt;
-use ait_agent_adapters::codex::CodexWorkspaceAgent;
-use ait_agent_adapters::{
-    AdapterError, AgentAdapter, AgentCapabilities, AgentEvent, AgentRunRequest, AgentRunStatus,
-    AgentStream,
-};
 use ait_application::{LocalControlService, PermissionPolicyLimits};
 use ait_contracts::{
     AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
@@ -28,7 +22,6 @@ use ait_domain::{
 };
 use ait_ports::{ControlStore, WorkspaceApprovalRequest};
 use ait_storage_sqlite::SqliteControlStore;
-use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,46 +33,6 @@ const API_PROVIDERS: [AgentMode; 4] = [
     AgentMode::Gemini,
     AgentMode::MiniMax,
 ];
-
-#[derive(Debug)]
-struct ReadOnlyViolatingAdapter;
-
-#[async_trait]
-impl AgentAdapter for ReadOnlyViolatingAdapter {
-    fn driver(&self) -> &'static str {
-        "read_only_violation_test"
-    }
-
-    fn capabilities(&self) -> AgentCapabilities {
-        AgentCapabilities {
-            streaming: true,
-            thread_resume: false,
-            approvals: false,
-            command_execution: true,
-            file_changes: true,
-            usage: false,
-        }
-    }
-
-    async fn run(&self, request: AgentRunRequest) -> Result<AgentStream, AdapterError> {
-        std::fs::write(request.cwd.join("unauthorized.txt"), "must not escape\n").unwrap();
-        Ok(Box::pin(futures_util::stream::iter([
-            Ok(AgentEvent::ItemCompleted {
-                item: serde_json::json!({
-                    "type": "agentMessage",
-                    "id": "final",
-                    "phase": "final_answer",
-                    "text": "Wrote a file."
-                }),
-            }),
-            Ok(AgentEvent::Completed {
-                turn_id: "turn-read-only".into(),
-                status: AgentRunStatus::Completed,
-                error: None,
-            }),
-        ])))
-    }
-}
 
 fn api_provider(kind: AgentMode) -> AgentProvider {
     let id = match kind {
@@ -561,8 +514,8 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
         ("full_access", SandboxAccess::FullAccess),
     ] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-        let native = Arc::new(CapturingWorkspaceAgent::default());
-        let service = LocalControlService::with_workspace_agent(
+        let native = Arc::new(CapturingNativeHandler::default());
+        let service = crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store,
             native.clone(),
@@ -613,8 +566,8 @@ async fn codex_permission_settings_are_snapshotted_into_each_run_and_native_invo
 async fn fresh_and_reset_settings_allow_workspace_write_while_explicit_read_only_survives_restart()
 {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let native = Arc::new(CapturingWorkspaceAgent::default());
-    let service = LocalControlService::with_workspace_agent(
+    let native = Arc::new(CapturingNativeHandler::default());
+    let service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         native.clone(),
@@ -630,7 +583,7 @@ async fn fresh_and_reset_settings_allow_workspace_write_while_explicit_read_only
     save_permission_settings(&service, "read_only", "on_request").await;
     drop(service);
 
-    let restarted = LocalControlService::with_workspace_agent(
+    let restarted = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         native.clone(),
@@ -664,50 +617,10 @@ async fn fresh_and_reset_settings_allow_workspace_write_while_explicit_read_only
 }
 
 #[tokio::test]
-async fn read_only_protocol_write_attempt_fails_run_without_project_or_message_side_effects() {
-    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let workspace_agent = Arc::new(CodexWorkspaceAgent::new(Arc::new(ReadOnlyViolatingAdapter)));
-    let service = LocalControlService::with_workspace_agent(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-        store,
-        workspace_agent,
-    );
-    let directory = setup(&service, config("high")).await;
-    save_permission_settings(&service, "read_only", "on_request").await;
-    let baseline = git_head(directory.path());
-    let baseline_index = git_index_tree(directory.path());
-    let CommandResult::Run(run) = ok(&service, send("one")).await else {
-        panic!("expected Run")
-    };
-
-    assert_eq!(run.permission_profile.sandbox, SandboxAccess::ReadOnly);
-    assert_eq!(run.status, "failed");
-    assert_eq!(run.error.unwrap().code, ErrorCode::ProjectGitDirty);
-    assert_eq!(git_head(directory.path()), baseline);
-    assert_eq!(git_index_tree(directory.path()), baseline_index);
-    assert!(!directory.path().join("unauthorized.txt").exists());
-    let snapshot = view(&service).await;
-    assert!(
-        snapshot
-            .messages
-            .iter()
-            .all(|message| message.role != "assistant")
-    );
-    assert_eq!(
-        snapshot
-            .messages
-            .iter()
-            .filter(|message| message.role == "user")
-            .count(),
-        1
-    );
-}
-
-#[tokio::test]
 async fn unsupported_or_administrator_conflicting_policies_fail_before_messages_or_agents() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let native = Arc::new(CapturingWorkspaceAgent::default());
-    let service = LocalControlService::with_workspace_agent(
+    let native = Arc::new(CapturingNativeHandler::default());
+    let service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         native.clone(),
@@ -809,8 +722,8 @@ async fn invalid_permission_profiles_never_echo_input_in_errors() {
 async fn corrupt_permission_settings_fail_closed_without_echoing_values() {
     for key in ["permissions.sandbox", "permissions.approval"] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-        let native = Arc::new(CapturingWorkspaceAgent::default());
-        let service = LocalControlService::with_workspace_agent(
+        let native = Arc::new(CapturingNativeHandler::default());
+        let service = crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             native.clone(),

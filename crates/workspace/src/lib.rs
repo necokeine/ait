@@ -1,5 +1,8 @@
 //! Project workspace capabilities consumed by the application layer.
 
+mod commit;
+pub use commit::{RunCommitBaseline, RunCommitPlan};
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -50,6 +53,47 @@ pub trait WorkspaceLease: Send + Sync {
 /// No method grants permission, moves a Session, publishes a Run, or writes storage.
 #[async_trait::async_trait]
 pub trait ProjectWorkspace: Send + Sync {
+    /// Capture a clean baseline for optional Ait auto-commit.
+    /// # Errors
+    /// Dirty or unavailable repositories disable auto-commit, without blocking the Run.
+    async fn capture_run_commit(&self, path: &Path) -> Result<RunCommitBaseline, DomainError> {
+        let baseline = self.clean_baseline(path).await?;
+        Ok(RunCommitBaseline {
+            head: baseline.commit,
+            index_tree: baseline.index_tree,
+            branch: self.symbolic_head(path).await?,
+        })
+    }
+
+    /// Prepare an exact commit object without moving HEAD or changing the user's index.
+    /// `None` means the Run produced no committable changes.
+    /// # Errors
+    /// Rejects changed HEAD/index and unavailable Git. The caller persists the plan before publication.
+    async fn prepare_run_commit(
+        &self,
+        _path: &Path,
+        _baseline: &RunCommitBaseline,
+        _run_id: &str,
+    ) -> Result<Option<RunCommitPlan>, DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::InvalidConfiguration,
+            "auto-commit unavailable",
+        ))
+    }
+
+    /// Publish the exact prepared object once; retries reconcile the same commit identity.
+    /// # Errors
+    /// Rejects competing HEAD/index changes. Never reruns model work or overwrites working files.
+    async fn publish_run_commit(
+        &self,
+        _path: &Path,
+        _plan: &RunCommitPlan,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::invariant(
+            ait_domain::ErrorCode::InvalidConfiguration,
+            "auto-commit unavailable",
+        ))
+    }
     /// Prepare and verify an exact canonical Git root; nested roots are allowed.
     ///
     /// If supplied, `expected_root` must still be the canonical target before mutation.

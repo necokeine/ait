@@ -167,6 +167,13 @@ pub(in crate::control) fn trigger_cron(
         .ok_or_else(|| error(ErrorCode::InvalidCron, "enabled cron not found", false))?;
     let agent = require_agent(state, &cron.agent_id)?.clone();
     let provider = validate_config(state, &agent.config)?.clone();
+    if provider.kind == ait_contracts::AgentMode::Codex {
+        return Err(error(
+            ErrorCode::CodexThreadCapabilityUnsupported,
+            "Codex Cron execution requires native Thread admission and is not supported yet",
+            false,
+        ));
+    }
     let permission_profile =
         effective_permission_profile(state.settings(), &provider, permission_limits)?;
     if provider.kind == AgentMode::Codex && workspace_baseline.is_none() {
@@ -206,6 +213,7 @@ pub(in crate::control) fn trigger_cron(
             .insert(run_id.clone(), reference.clone());
     }
     state.runs_mut().push(RunRecord {
+        auto_commit: None,
         compatibility_repair: false,
         codex_input: None,
         lifecycle: RunLifecycle::queued(),

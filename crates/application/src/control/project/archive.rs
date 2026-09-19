@@ -29,6 +29,16 @@ pub(in crate::control) fn export_project(
         .find(|project| project.id == project_id)
         .cloned()
         .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
+    if state.sessions().iter().any(|session| {
+        session.project_id == project_id
+            && matches!(session.source, ait_domain::SessionSource::CodexThread(_))
+    }) {
+        return Err(error(
+            ErrorCode::CodexThreadCapabilityUnsupported,
+            "native Codex history is stored by Codex; portable Ait archive import/export is not supported for bound Threads",
+            false,
+        ));
+    }
     let messages = state
         .messages()
         .iter()
@@ -230,6 +240,7 @@ pub(in crate::control) fn validate_import_conflicts(
 }
 
 pub(in crate::control) fn validate_project_export(archive: &ProjectExport) -> Result<(), ApiError> {
+    validate_portable_archive(archive)?;
     if archive.format_version != PROJECT_EXPORT_VERSION
         || archive.source_revision == 0
         || archive.project.id.trim().is_empty()
@@ -392,6 +403,21 @@ fn validate_archive_catalog(archive: &ProjectExport) -> Result<(), ApiError> {
                 "anonymous Agent cannot be shared between Sessions",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_portable_archive(archive: &ProjectExport) -> Result<(), ApiError> {
+    if archive
+        .sessions
+        .iter()
+        .any(|session| matches!(session.source, ait_domain::SessionSource::CodexThread(_)))
+    {
+        return Err(error(
+            ErrorCode::CodexThreadCapabilityUnsupported,
+            "portable archives cannot relocate native Thread bindings",
+            false,
+        ));
     }
     Ok(())
 }

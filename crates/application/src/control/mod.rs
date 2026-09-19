@@ -4,7 +4,7 @@ use crate::control::runs::finalization::RunControl;
 use ait_contracts::{Command, Response};
 use ait_ports::{
     AgentProviderGateway, CodexHistorySource, CodexThreadWriter, ControlStore,
-    HostProviderModelCatalog, SessionTitleGenerator, WorkspaceAgent, WorkspaceApprovalDecision,
+    HostProviderModelCatalog, SessionTitleGenerator, WorkspaceApprovalDecision,
 };
 use ait_workspace::{ProjectDirectoryCreator, ProjectWorkspace};
 use std::collections::HashMap;
@@ -53,7 +53,6 @@ pub struct LocalControlService {
     draining: Arc<AtomicBool>,
     admission: Arc<tokio::sync::RwLock<()>>,
     host_provider_catalog: Option<Arc<dyn HostProviderModelCatalog>>,
-    workspace_agent: Option<Arc<dyn WorkspaceAgent>>,
     session_title_generator: Option<Arc<dyn SessionTitleGenerator>>,
     codex_history_source: Option<Arc<dyn CodexHistorySource>>,
     codex_thread_writer: Option<Arc<dyn CodexThreadWriter>>,
@@ -91,39 +90,6 @@ impl LocalControlService {
             draining: Arc::new(AtomicBool::new(false)),
             admission: Arc::new(tokio::sync::RwLock::new(())),
             host_provider_catalog: None,
-            workspace_agent: None,
-            session_title_generator: None,
-            codex_history_source: None,
-            codex_thread_writer: None,
-        }
-    }
-
-    /// Creates a service that can execute real workspace-scoped coding Agents.
-    #[must_use]
-    pub fn with_workspace_agent(
-        project_workspace: Arc<dyn ProjectWorkspace>,
-        store: Arc<dyn ControlStore>,
-        workspace_agent: Arc<dyn WorkspaceAgent>,
-    ) -> Self {
-        Self {
-            store,
-            project_directory_creator: None,
-            session_leases: Arc::new(Mutex::new(HashMap::new())),
-            project_workspace,
-            cancellations: Arc::new(Mutex::new(HashMap::new())),
-            run_controls: Arc::new(Mutex::new(HashMap::new())),
-            approval_waiters: Arc::new(Mutex::new(HashMap::new())),
-            tool_approval_timeout: std::time::Duration::from_mins(2),
-            permission_limits: PermissionPolicyLimits::default(),
-            tool_approval_waiters: Arc::new(Mutex::new(HashMap::new())),
-            tool_interaction_waiters: Arc::new(Mutex::new(HashMap::new())),
-            provider_gateway: None,
-            api_tools: None,
-            run_dispatcher: None,
-            draining: Arc::new(AtomicBool::new(false)),
-            admission: Arc::new(tokio::sync::RwLock::new(())),
-            host_provider_catalog: None,
-            workspace_agent: Some(workspace_agent),
             session_title_generator: None,
             codex_history_source: None,
             codex_thread_writer: None,
