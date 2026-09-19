@@ -28,6 +28,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/session/set-config` | `SetSessionConfig` |
 | `POST` | `/v1/session/create` | `CreateSession` |
 | `POST` | `/v1/session/rename` | `RenameSession` |
+| `POST` | `/v1/session/set-archived` | `SetSessionArchived` |
 | `POST` | `/v1/session/set-title` | `SetSessionTitle` |
 | `POST` | `/v1/session/generate-title` | `LocalControlService::generate_session_title` |
 | `POST` | `/v1/session/send-message` | `SendMessage` |

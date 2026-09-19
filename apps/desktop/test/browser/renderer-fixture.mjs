@@ -5,20 +5,21 @@ export function installRendererFixture() {
   const projects = ["a", "b"].map((id) => ({ id, name: `Project ${id.toUpperCase()}`, workdir: `/fixture/${id}`, description: "", baseCommit: "a".repeat(40), rootMessageId: `root-${id}`, defaultAgentId: "agent" }));
   const session = (projectId, id, title, activeRunId = null) => ({
     id, projectId, workdir: `/fixture/${projectId}/${id}`, name: "", title, description: "",
-    titleGenerationStarted: true, currentMessageId: `message-${projectId}`, agentId: "agent", version: 1,
+    titleGenerationStarted: true, status: "active", currentMessageId: `message-${projectId}`, agentId: "agent", version: 1,
     active: activeRunId !== null, activeRunId, updatedAt: 1,
   });
   const run = (id, sessionId, status = "running") => ({ id, sessionId, baseMessageId: "root", lastMessageId: null,
     status, permissionProfile: { sandbox: "workspace_write", approval: "on_request" }, nativeApprovals: [],
   });
   const f = window.fixture = {
-    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false,
+    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], sessionReadReturns: [], updateFailure: false, sessionFailure: false, sessionFailures: new Set(),
     crons: [], cronCreates: [], cronRuns: [],
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
     runs: [run("run-b", "session-b")], sent: [], forks: [], forkAttempts: [], forkFailure: false, projectReads: [],
     createdMessages: [],
     catalogFailure: false, catalogDelay: false, viewFailure: false,
-    emit: () => {}, releaseCatalog: () => {},
+    delayedSessionReadProject: null, sessionReadPending: false,
+    emit: () => {}, releaseCatalog: () => {}, releaseSessionRead: () => {},
     async catalogRead() {
       if (f.catalogDelay) await new Promise((resolve) => { f.releaseCatalog = resolve; });
       if (f.catalogFailure) throw new Error("Project catalog unavailable");
@@ -26,7 +27,7 @@ export function installRendererFixture() {
     },
     view(projectId) {
       return { protocolVersion: 1, revision: 1, projectId,
-        sessions: structuredClone(f.sessions.filter((s) => s.projectId === projectId)),
+        sessions: structuredClone(f.sessions.filter((s) => s.projectId === projectId && s.status === "active")),
         messages: [
           { id: `root-${projectId}`, projectId, parentMessageId: null, role: "system", kind: "standard", parts: [{ type: "text", text: "System" }], createdAt: 1 },
           { id: `message-${projectId}`, projectId, parentMessageId: `root-${projectId}`, role: "user", kind: "standard", parts: [{ type: "text", text: `Message ${projectId}` }], createdAt: 2 },
@@ -53,10 +54,23 @@ export function installRendererFixture() {
       if (f.viewFailure) throw new Error("Project view unavailable");
       return f.view(projectId);
     },
-    projectSessions: async (projectId) => {
+    projectSessions: async (projectId, status = "active") => {
       f.sessionReads.push(projectId);
-      if (f.sessionFailure) throw new Error("Sessions unavailable");
-      return structuredClone(f.sessions.filter((s) => s.projectId === projectId));
+      if (f.sessionFailure || f.sessionFailures.has(projectId)) throw new Error("Sessions unavailable");
+      const snapshot = structuredClone(f.sessions.filter((s) => s.projectId === projectId && s.status === status));
+      if (f.delayedSessionReadProject === projectId) {
+        f.delayedSessionReadProject = null;
+        f.sessionReadPending = true;
+        await new Promise((resolve) => {
+          f.releaseSessionRead = () => {
+            f.sessionReadPending = false;
+            f.releaseSessionRead = () => {};
+            resolve();
+          };
+        });
+      }
+      f.sessionReadReturns.push(projectId);
+      return snapshot;
     },
     crons: async () => structuredClone(f.crons),
     createCron: async (input) => {
@@ -92,6 +106,11 @@ export function installRendererFixture() {
     renameSession: async ({ projectId, sessionId, name }) => {
       const target = f.sessions.find((s) => s.projectId === projectId && s.id === sessionId);
       target.name = name; target.title = name;
+      return f.view(projectId);
+    },
+    setSessionArchived: async ({ projectId, sessionId, archived }) => {
+      const target = f.sessions.find((s) => s.projectId === projectId && s.id === sessionId);
+      target.status = archived ? "archived" : "active";
       return f.view(projectId);
     },
     activeRuns: async () => ({ unavailableProjects: [], runs: f.runs.filter((r) => ["queued", "running"].includes(r.status)).map((r) => {

@@ -25,15 +25,17 @@ test("places Projects above the bottom navigation group", async () => {
   assert.match(footerHtml, /<nav class="primary-nav" aria-label="Workspace">[\s\S]*id="settings-trigger"[\s\S]*<\/nav>/);
 });
 
-test("offers Session rename from a right-click action menu", async () => {
+test("offers Session rename and archive from a right-click action menu", async () => {
   const [html, renderer] = await Promise.all([
     readFile(new URL("../src/index.html", import.meta.url), "utf8"),
     readFile(new URL("../src/renderer.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(html, /id="session-context-menu"[\s\S]*id="session-rename-action"/);
+  assert.match(html, /id="session-context-menu"[\s\S]*id="session-rename-action"[\s\S]*id="session-archive-action"/);
   assert.match(html, /id="rename-session-dialog"[\s\S]*id="rename-session-name"/);
   assert.match(renderer, /addEventListener\("contextmenu"/);
   assert.match(renderer, /window\.ait\.renameSession/);
+  assert.match(renderer, /window\.ait\.setSessionArchived/);
+  assert.match(renderer, /Archived sessions/);
 });
 
 test("uses the titlebar toggle as the persistent Session tree state", async () => {

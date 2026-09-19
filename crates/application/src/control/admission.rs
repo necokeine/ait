@@ -115,7 +115,8 @@ fn command_session(command: &Command) -> Option<&str> {
     match command {
         Command::SendMessage { session_id, .. }
         | Command::SetSessionAgent { session_id, .. }
-        | Command::SetSessionConfig { session_id, .. } => Some(session_id),
+        | Command::SetSessionConfig { session_id, .. }
+        | Command::SetSessionArchived { session_id, .. } => Some(session_id),
         Command::ForkSession { id, .. }
         | Command::DeriveSession { id, .. }
         | Command::CreateSession { id, .. } => Some(id),
@@ -161,6 +162,15 @@ pub(in crate::control) fn check_session_admission(
     if let Some(id) = command_session(command)
         && let Some(session) = state.sessions().iter().find(|s| s.id == id)
     {
+        if session.status == ait_domain::SessionStatus::Archived
+            && matches!(command, Command::SendMessage { .. })
+        {
+            return Err(error(
+                ErrorCode::InvalidSession,
+                "archived sessions cannot accept new input",
+                false,
+            ));
+        }
         ensure_idle(session)?;
     }
     Ok(())

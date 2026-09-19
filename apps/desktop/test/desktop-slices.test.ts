@@ -8,6 +8,7 @@ import {
   projectReadPaths,
   refreshVisibleSlices,
   resolveInitialProjectId,
+  sessionsWithStatus,
 } from "../src/desktop-slices.js";
 import type { AgentCatalog, DesktopProject, ProjectCatalog, ProjectView } from "../src/types.js";
 
@@ -46,6 +47,7 @@ function projectView(projectId: string): ProjectView {
       title: projectId,
       description: "",
       titleGenerationStarted: false,
+      status: "active",
       currentMessageId: `message-${projectId}`,
       agentId: "agent",
       version: 1,
@@ -61,6 +63,14 @@ test("startup chooses a remembered Project only while it remains in the catalog"
   assert.equal(resolveInitialProjectId([project("only")], undefined), "only");
   assert.equal(resolveInitialProjectId(projectCatalog.projects, "project-b"), "project-b");
   assert.equal(resolveInitialProjectId(projectCatalog.projects, "deleted"), "project-a");
+});
+
+test("ordinary views include active Sessions and archive views include archived Sessions", () => {
+  const active = projectView("project-a").sessions[0]!;
+  const archived = { ...active, id: "archived", status: "archived" as const };
+
+  assert.deepEqual(sessionsWithStatus([archived, active], "active"), [active]);
+  assert.deepEqual(sessionsWithStatus([archived, active], "archived"), [archived]);
 });
 
 test("renderer composition keeps the global Project catalog but only one Project data slice", () => {

@@ -15,7 +15,7 @@ use crate::control::project::git::GitBaseline;
 use crate::control::project::worktrees::{session_worktree_path, validate_session_path_component};
 use crate::control::settings::resolve_project_agent_id;
 use ait_contracts::{ApiError, CommandResult};
-use ait_domain::ErrorCode;
+use ait_domain::{ErrorCode, SessionStatus};
 use ait_ports::PendingEvent;
 
 pub(in crate::control) mod messages;
@@ -223,6 +223,7 @@ pub(in crate::control) fn create_session(
         title: None,
         description: String::new(),
         title_generation_started: false,
+        status: SessionStatus::Active,
         reference: ait_domain::SessionReference::new(
             ait_domain::MessageId::parse(&head).map_err(|_| {
                 error(
@@ -250,6 +251,7 @@ pub(in crate::control) fn derive_reuses_source(
     at_message_id: &str,
 ) -> bool {
     source.project_id == project_id
+        && source.status == SessionStatus::Active
         && source.active_run_id().is_none()
         && source.current_message_id() == at_message_id
         && source.agent_id() == agent_id
@@ -286,6 +288,44 @@ pub(in crate::control) fn rename_session(
             Some(session_id.to_owned()),
             &session,
         )],
+    ))
+}
+
+pub(in crate::control) fn set_session_archived(
+    state: &mut impl HasSessions,
+    session_id: &str,
+    archived: bool,
+) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    let session = state
+        .sessions_mut()
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
+    if archived && session.active_run_id().is_some() {
+        return Err(error(
+            ErrorCode::SessionBusy,
+            "session already has an active run",
+            false,
+        ));
+    }
+    let status = if archived {
+        SessionStatus::Archived
+    } else {
+        SessionStatus::Active
+    };
+    if session.status == status {
+        return Ok((CommandResult::Session(session.view()), Vec::new()));
+    }
+    session.status = status;
+    let session = session.clone();
+    let event = if archived {
+        "session.archived"
+    } else {
+        "session.restored"
+    };
+    Ok((
+        CommandResult::Session(session.view()),
+        vec![pending(event, Some(session_id.to_owned()), &session)],
     ))
 }
 

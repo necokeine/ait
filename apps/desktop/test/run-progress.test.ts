@@ -135,7 +135,7 @@ test("renders failure and cancellation as terminal states rather than connection
 test("a cancellation event refreshes an active view into its cancelled terminal card", () => {
   const session = {
     id: "session-a", projectId: "project-a", name: "", title: "Session", description: "",
-    titleGenerationStarted: false, currentMessageId: "message-a", agentId: "agent-a", version: 1,
+    titleGenerationStarted: false, status: "active", currentMessageId: "message-a", agentId: "agent-a", version: 1,
     active: true, activeRunId: "run-a", updatedAt: 0,
   };
   const active: Pick<DesktopState, "sessions" | "runs"> = {

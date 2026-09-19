@@ -131,6 +131,106 @@ test("renaming an offscreen Session preserves the visible conversation", async (
   assert.equal(await page.locator("#session-title").textContent(), "Session A");
 });
 
+test("archives a Session from its context menu and restores it from Settings", async (t) => {
+  const page = await openFixture(t);
+  await page.locator('[data-project-toggle="a"]').click();
+  const sessionA = sessions(page, "a").locator('[data-session-id="session-a"]');
+
+  await sessionA.click({ button: "right" });
+  await page.locator("#session-archive-action").click();
+  await page.waitForFunction(() => !document.querySelector('[data-session-id="session-a"]'));
+  assert.equal(await page.evaluate(() => window.fixture.sessions.find((item) => item.id === "session-a").status), "archived");
+
+  await page.locator("#settings-trigger").click();
+  await page.locator('#settings-nav [data-category="archived_sessions"]').click();
+  const group = page.locator('[data-archived-project="a"]');
+  await group.locator('[data-restore-session="session-a"]').waitFor();
+  assert.match(await group.textContent(), /Project A/);
+  assert.match(await group.textContent(), /Session A/);
+
+  await group.locator('[data-restore-session="session-a"]').click();
+  await page.waitForFunction(() => !document.querySelector('[data-restore-session="session-a"]'));
+  assert.equal(await page.evaluate(() => window.fixture.sessions.find((item) => item.id === "session-a").status), "active");
+  assert.equal(await sessions(page, "a").locator('[data-session-id="session-a"]').count(), 1);
+});
+
+test("keeps available Project archives restorable when another Project is unavailable", async (t) => {
+  const page = await openFixture(t, () => {
+    window.fixture.sessions.find((item) => item.id === "session-a").status = "archived";
+    window.fixture.sessionFailures.add("b");
+  });
+
+  await page.locator("#settings-trigger").click();
+  await page.locator('#settings-nav [data-category="archived_sessions"]').click();
+  const available = page.locator('[data-archived-project="a"]');
+  const unavailable = page.locator('[data-archived-project="b"]');
+  await available.locator('[data-restore-session="session-a"]').waitFor();
+  await unavailable.locator('[role="alert"]').waitFor();
+
+  await available.locator('[data-restore-session="session-a"]').click();
+  await page.waitForFunction(() => window.fixture.sessions.find((item) => item.id === "session-a").status === "active");
+  assert.equal(await page.locator('[data-restore-session="session-a"]').count(), 0);
+
+  await page.evaluate(() => window.fixture.sessionFailures.delete("b"));
+  await unavailable.getByRole("button", { name: "Retry" }).click();
+  await unavailable.waitFor({ state: "detached" });
+});
+
+test("ignores an archived Session snapshot captured before Restore completes", async (t) => {
+  const page = await openFixture(t, () => {
+    window.fixture.sessions.find((item) => item.id === "session-a").status = "archived";
+  });
+
+  await page.locator("#settings-trigger").click();
+  await page.locator('#settings-nav [data-category="archived_sessions"]').click();
+  const restore = page.locator('[data-restore-session="session-a"]');
+  await restore.waitFor();
+  await page.locator("#settings-cancel").click();
+
+  const completedReads = await page.evaluate(() => {
+    window.fixture.delayedSessionReadProject = "a";
+    return window.fixture.sessionReadReturns.filter((projectId) => projectId === "a").length;
+  });
+  await page.locator("#settings-trigger").click();
+  await page.waitForFunction(() => window.fixture.sessionReadPending);
+  await restore.click();
+  await page.waitForFunction(() => window.fixture.sessions.find((item) => item.id === "session-a").status === "active");
+  assert.equal(await restore.count(), 0);
+
+  await page.evaluate(() => window.fixture.releaseSessionRead());
+  await page.waitForFunction((before) => window.fixture.sessionReadReturns.filter((projectId) => projectId === "a").length > before, completedReads);
+  assert.equal(await restore.count(), 0);
+  assert.equal(await page.locator("#settings-state").textContent(), "0 archived Sessions.");
+  assert.equal(await page.evaluate(() => window.fixture.sessions.find((item) => item.id === "session-a").status), "active");
+});
+
+test("refreshes and reselects the visible Session after an external archive event", async (t) => {
+  const page = await openFixture(t, () => {
+    const current = window.fixture.sessions.find((item) => item.id === "session-a");
+    window.fixture.sessions.push({ ...current, id: "session-a-older", title: "Older Session A", updatedAt: 0 });
+  });
+  await page.locator('[data-project-toggle="a"]').click();
+  const reads = await page.evaluate(() => window.fixture.projectReads.length);
+
+  await page.evaluate(() => {
+    const fixture = window.fixture;
+    const current = fixture.sessions.find((item) => item.id === "session-a");
+    current.status = "archived";
+    fixture.emit([{ type: "event", event: {
+      api_version: 1,
+      cursor: 11,
+      kind: "session.archived",
+      entity_id: current.id,
+      body: { id: current.id, project_id: current.projectId, status: current.status },
+      created_at: 11,
+    } }]);
+  });
+
+  await page.waitForFunction((before) => window.fixture.projectReads.length > before, reads);
+  await page.waitForFunction(() => document.querySelector("#session-title").textContent === "Older Session A");
+  assert.equal(await sessions(page, "a").locator('[data-session-id="session-a"]').count(), 0);
+});
+
 test("failed Project navigation preserves the visible Session and its send target", async (t) => {
   const page = await openFixture(t);
   await page.evaluate(() => { window.fixture.viewFailure = true; });

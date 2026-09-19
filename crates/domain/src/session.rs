@@ -27,10 +27,11 @@ impl SessionId {
 }
 
 /// Lifecycle of a named Session reference.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     /// May accept input and follow a Run.
+    #[default]
     Active,
     /// Retained for history but unavailable for new work.
     Archived,
@@ -199,6 +200,7 @@ pub struct Session {
     /// Agent used by the next interactive Run; mutable only while idle.
     pub agent_id: AgentId,
     /// Session availability state.
+    #[serde(default)]
     pub status: SessionStatus,
     /// Compare-and-swap version.
     pub version: u64,
