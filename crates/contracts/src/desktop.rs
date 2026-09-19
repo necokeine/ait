@@ -381,7 +381,7 @@ pub fn settings_schema() -> SettingsSchema {
     definitions.extend(environment_settings());
     definitions.extend(interface_settings());
     SettingsSchema {
-        revision: 4,
+        revision: 5,
         definitions,
     }
 }
@@ -418,7 +418,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
         ),
         setting(
             "agents.max_steps",
-            SettingCategory::Agents,
+            SettingCategory::Runtime,
             "Maximum steps",
             "Default persisted Agent/tool step limit per Run.",
             SettingKind::Number {
@@ -430,7 +430,7 @@ fn execution_settings() -> Vec<SettingDefinition> {
         ),
         setting(
             "agents.parallel_tools",
-            SettingCategory::Agents,
+            SettingCategory::Runtime,
             "Parallel tools",
             "Maximum tool calls that may execute concurrently.",
             SettingKind::Number { min: 1, max: 32 },
@@ -524,15 +524,6 @@ fn environment_settings() -> Vec<SettingDefinition> {
             SettingKind::Path,
             json!(""),
             false,
-        ),
-        setting(
-            "network.proxy",
-            SettingCategory::Network,
-            "HTTP proxy",
-            "Optional proxy URL. Credentials should be stored as a credential reference.",
-            SettingKind::Text,
-            json!(""),
-            true,
         ),
         setting(
             "logging.level",

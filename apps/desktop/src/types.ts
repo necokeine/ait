@@ -276,15 +276,14 @@ export interface DesktopState {
 }
 
 export type SettingCategory =
-  | "models"
-  | "archived_sessions"
   | "agents"
   | "runtime"
   | "permissions"
   | "projects"
   | "network"
   | "logging"
-  | "interface";
+  | "interface"
+  | "archived_sessions";
 
 export type SettingKind =
   | { type: "text" }

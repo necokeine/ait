@@ -1,5 +1,5 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
-import { createAgentsPage } from "./agents-page.js";
+import { createAgentsPage, type AgentRole } from "./agents-page.js";
 import { renderRunCommit } from "./run-commit.js";
 import { createRunsPage } from "./runs-page.js";
 import { createCronsPage } from "./crons-page.js";
@@ -66,6 +66,7 @@ let permissionSaving = false;
 const composerReasoning = $<HTMLSelectElement>("#composer-reasoning");
 const sendButton = $<HTMLButtonElement>("#send-button");
 const settingsDialog = $("#settings-dialog");
+const providerDialog = $("#provider-dialog");
 const commandDialog = $("#command-dialog");
 const projectDialog = $("#project-dialog");
 const projectSettingsDialog = $("#project-settings-dialog");
@@ -109,15 +110,14 @@ const pendingSessions = new Set<string>();
 let settings: SettingsResponse | undefined;
 let settingsDraft: Record<string, unknown> = {};
 let selectingSettingPath = false;
-let settingsCategory: SettingCategory = "models";
-let archivedSessions: DesktopSession[] = [];
-let archivedSessionsLoading = false;
-let archivedSessionsError: string | undefined;
-let archivedSessionsGeneration = 0;
+let settingsCategory: SettingCategory = "runtime";
 let activePage: "sessions" | "agents" | "runs" | "crons" = "sessions";
 let pageGeneration = 0;
-let initialProviderId: string | undefined;
 let disposeProviderSettings: (() => void) | undefined;
+let archivedSessions: Map<string, DesktopSession[]> | undefined;
+let archivedSessionErrors = new Map<string, string>();
+let archivedSessionsLoading = false;
+let archivedSessionsGeneration = 0;
 let toastTimer: number | undefined;
 let streamConnected = true;
 let renderedSessionId: string | undefined;
@@ -138,6 +138,7 @@ const agentsPage = createAgentsPage($("#agents-page"), {
   update: (updated) => { replaceAgentCatalog(updated); renderAll(); },
   notify: showToast,
   configureProvider: openProviderSettings,
+  setRole: saveAgentRole,
 });
 const runsPage = createRunsPage($("#runs-page"), {
   read: () => window.ait.activeRuns(),
@@ -382,6 +383,7 @@ function bindInteractions(): void {
   $("#settings-cancel").addEventListener("click", closeSettings);
   $("#settings-save").addEventListener("click", () => void saveSettings());
   $("#settings-reset").addEventListener("click", () => void resetSettings());
+  $("#provider-dialog-close").addEventListener("click", closeProviderSettings);
   $("#clear-branch").addEventListener("click", clearBranchSource);
   $("#command-trigger").addEventListener("click", openCommandPalette);
   commandDialog.addEventListener("click", (event) => {
@@ -398,6 +400,9 @@ function bindInteractions(): void {
   });
   settingsDialog.addEventListener("click", (event) => {
     if (event.target === settingsDialog) closeSettings();
+  });
+  providerDialog.addEventListener("click", (event) => {
+    if (event.target === providerDialog) closeProviderSettings();
   });
   $<HTMLInputElement>("#command-input").addEventListener("input", renderCommandResults);
   messageInput.addEventListener("input", updateComposerState);
@@ -447,7 +452,10 @@ function renderAll(): void {
   renderConversation();
   renderTree();
   updateComposerState();
-  agentsPage.render(view);
+  agentsPage.render(view, {
+    defaultAgentId: String(settings?.values["agents.default_agent"] ?? ""),
+    smallAgentId: String(settings?.values["agents.small_agent"] ?? ""),
+  });
   cronsPage.render({
     projects: view.projects,
     agents: view.agents,
@@ -1515,6 +1523,7 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
     closeProjectContextMenu();
     codexImport.close();
     closeSettings();
+    closeProviderSettings();
     closeCommandPalette();
     closeProjectDialog();
     closeSessionContextMenu();
@@ -1765,42 +1774,50 @@ function agentOptions(): string {
 
 function openSettings(): void {
   if (!settings) return;
-  initialProviderId = undefined;
+  closeProviderSettings();
   composerConfigPanel.hidePopover();
+  archivedSessionsGeneration += 1;
+  archivedSessions = undefined;
+  archivedSessionErrors = new Map();
+  archivedSessionsLoading = false;
   settingsDraft = structuredClone(settings.values);
   settingsDialog.classList.remove("is-hidden");
   renderSettings();
-  if (settingsCategory === "archived_sessions") void loadArchivedSessions();
 }
 
 function openProviderSettings(id: string): void {
-  if (!settings) return;
-  initialProviderId = id;
-  settingsCategory = "models";
-  settingsDraft = structuredClone(settings.values);
-  settingsDialog.classList.remove("is-hidden");
-  renderSettings();
+  if (!view) return;
+  closeSettings();
+  disposeProviderSettings?.();
+  $("#provider-dialog-body").replaceChildren();
+  providerDialog.classList.remove("is-hidden");
+  disposeProviderSettings = renderProviderSettings($("#provider-dialog-body"), view, (updated) => {
+    replaceAgentCatalog(updated);
+    renderAll();
+    closeProviderSettings();
+  }, showToast, id);
 }
 
 function closeSettings(): void {
   archivedSessionsGeneration += 1;
   archivedSessionsLoading = false;
   settingsDialog.classList.add("is-hidden");
+}
+
+function closeProviderSettings(): void {
+  providerDialog.classList.add("is-hidden");
   disposeProviderSettings?.();
   disposeProviderSettings = undefined;
-  initialProviderId = undefined;
 }
 
 function renderSettings(): void {
   if (!settings) return;
-  disposeProviderSettings?.();
-  disposeProviderSettings = undefined;
-  const categories = [...new Set<SettingCategory>(["models", "archived_sessions", ...settings.schema.definitions.map((definition) => definition.category)])];
-  const categoryLabel = (category: SettingCategory): string => {
-    if (category === "models") return "Providers";
-    if (category === "archived_sessions") return "Archived sessions";
-    return category;
-  };
+  const configuredCategories = settings.schema.definitions
+    .map((definition) => definition.category)
+    .filter((category) => category !== "agents" && category !== "network");
+  const categories = [...new Set<SettingCategory>([...configuredCategories, "archived_sessions"])];
+  if (!categories.includes(settingsCategory)) settingsCategory = categories[0] ?? "archived_sessions";
+  const categoryLabel = (category: SettingCategory): string => category === "archived_sessions" ? "Archived sessions" : category;
   $("#settings-nav").innerHTML = categories.map((category) =>
     `<button type="button" data-category="${category}" class="${category === settingsCategory ? "is-active" : ""}">${categoryLabel(category)}</button>`,
   ).join("");
@@ -1808,7 +1825,6 @@ function renderSettings(): void {
     button.addEventListener("click", () => {
       settingsCategory = button.dataset.category as SettingCategory;
       renderSettings();
-      if (settingsCategory === "archived_sessions") void loadArchivedSessions();
     });
   });
   if (settingsCategory === "archived_sessions") {
@@ -1819,7 +1835,7 @@ function renderSettings(): void {
   $("#settings-fields").innerHTML = definitions.length ? `<header class="settings-section-header"><h3>${categoryLabel(settingsCategory)} preferences</h3></header>${definitions.map(renderSetting).join("")}` : "";
   $("#settings-save").classList.toggle("is-hidden", definitions.length === 0);
   $("#settings-reset").classList.toggle("is-hidden", definitions.length === 0);
-  $("#settings-cancel").textContent = settingsCategory === "models" ? "Close" : "Cancel";
+  $("#settings-cancel").textContent = "Cancel";
   $("#settings-fields").querySelectorAll<HTMLInputElement | HTMLSelectElement>("input[data-setting-id], select[data-setting-id]").forEach((control) => {
     control.addEventListener("change", () => readSettingControl(control));
     control.addEventListener("input", () => readSettingControl(control));
@@ -1828,17 +1844,7 @@ function renderSettings(): void {
     control.disabled = selectingSettingPath;
     control.addEventListener("click", () => void chooseSettingPath(control));
   });
-  if (view && settingsCategory === "models") {
-    disposeProviderSettings = renderProviderSettings($("#settings-fields"), view, (updated, refreshSettings) => {
-      replaceAgentCatalog(updated);
-      renderAll();
-      if (refreshSettings && !settingsDialog.classList.contains("is-hidden")) renderSettings();
-    }, showToast, initialProviderId);
-    initialProviderId = undefined;
-  }
-  $("#settings-state").textContent = settingsCategory === "models"
-    ? "Connections are saved with your selected models."
-    : `Schema ${settings.schema.revision} · state ${settings.revision}`;
+  $("#settings-state").textContent = `Schema ${settings.schema.revision} · state ${settings.revision}`;
 }
 
 function renderArchivedSessions(): void {
@@ -1846,59 +1852,69 @@ function renderArchivedSessions(): void {
   $("#settings-save").classList.add("is-hidden");
   $("#settings-reset").classList.add("is-hidden");
   $("#settings-cancel").textContent = "Close";
-  if (archivedSessionsLoading) {
-    fields.innerHTML = '<div class="archived-sessions-empty">Loading archived Sessions…</div>';
+  if (!archivedSessions) {
+    fields.innerHTML = '<header class="settings-section-header"><h3>Archived Sessions</h3><p>Loading archived Sessions from every Project…</p></header>';
     $("#settings-state").textContent = "Reading Session archives.";
+    if (!archivedSessionsLoading) void loadArchivedSessions();
     return;
   }
-  if (archivedSessionsError) {
-    fields.innerHTML = `<div class="archived-sessions-empty" role="alert">${escapeHtml(archivedSessionsError)} <button class="secondary-button" type="button" data-archived-retry>Retry</button></div>`;
-    fields.querySelector<HTMLButtonElement>("[data-archived-retry]")
-      ?.addEventListener("click", () => void loadArchivedSessions());
-    $("#settings-state").textContent = "Archived Sessions unavailable.";
+  const projects = view?.projects ?? [];
+  if (projects.length === 0) {
+    fields.innerHTML = '<header class="settings-section-header"><h3>Archived Sessions</h3><p>No Projects are configured.</p></header>';
+    $("#settings-state").textContent = "0 archived Sessions";
     return;
   }
-  const groups = (view?.projects ?? []).map((project) => ({
-    project,
-    sessions: archivedSessions
-      .filter((session) => session.projectId === project.id)
-      .toSorted((left, right) => right.updatedAt - left.updatedAt),
-  })).filter((group) => group.sessions.length > 0);
-  fields.innerHTML = groups.length === 0
-    ? '<div class="archived-sessions-empty">No archived Sessions.</div>'
-    : `<header class="settings-section-header"><h3>Archived sessions</h3><p>Restore a Session to return it to its Project.</p></header>${groups.map(({ project, sessions }) => `<section class="archived-session-group" data-archived-project="${escapeAttribute(project.id)}">
-      <h4>${escapeHtml(project.name)}</h4>
-      ${sessions.map((session) => `<div class="archived-session-row">
-        <span><strong>${escapeHtml(session.title)}</strong><small>${relativeTime(session.updatedAt)}</small></span>
-        <button class="secondary-button" type="button" data-restore-session="${escapeAttribute(session.id)}" data-restore-project="${escapeAttribute(project.id)}">Restore</button>
-      </div>`).join("")}
-    </section>`).join("")}`;
+  const groups = projects.map((project) => {
+    const failure = archivedSessionErrors.get(project.id);
+    const sessions = archivedSessions?.get(project.id) ?? [];
+    const rows = failure
+      ? `<p class="archived-error" role="alert">${escapeHtml(failure)} <button class="secondary-button" type="button" data-archived-retry>Retry</button></p>`
+      : sessions.length
+        ? sessions.toSorted((left, right) => right.updatedAt - left.updatedAt).map((session) => `<div class="archived-session-row">
+          <span><strong>${escapeHtml(session.title)}</strong><small>${relativeTime(session.updatedAt)}</small></span>
+          <button class="secondary-button" type="button" data-restore-session="${escapeAttribute(session.id)}" data-restore-project="${escapeAttribute(project.id)}">Restore</button>
+        </div>`).join("")
+        : '<p class="archived-empty">No archived Sessions.</p>';
+    return `<section class="archived-project" data-archived-project="${escapeAttribute(project.id)}"><header><h4>${escapeHtml(project.name)}</h4><small>${sessions.length} archived</small></header>${rows}</section>`;
+  }).join("");
+  fields.innerHTML = `<header class="settings-section-header"><h3>Archived Sessions</h3><p>Restore a Session to return it to its Project.</p></header><div class="archived-project-list">${groups}</div>`;
+  fields.querySelectorAll<HTMLButtonElement>("[data-archived-retry]").forEach((button) => {
+    button.addEventListener("click", () => void loadArchivedSessions());
+  });
   fields.querySelectorAll<HTMLButtonElement>("[data-restore-session]").forEach((button) => {
     button.addEventListener("click", () => void restoreSession(button));
   });
-  $("#settings-state").textContent = `${archivedSessions.length} archived Session${archivedSessions.length === 1 ? "" : "s"}.`;
+  const count = [...archivedSessions.values()].reduce((total, sessions) => total + sessions.length, 0);
+  $("#settings-state").textContent = archivedSessionsLoading
+    ? "Refreshing archived Sessions…"
+    : `${count} archived Session${count === 1 ? "" : "s"}`;
 }
 
 async function loadArchivedSessions(): Promise<void> {
+  const projects = view?.projects ?? [];
   const generation = ++archivedSessionsGeneration;
   archivedSessionsLoading = true;
-  archivedSessionsError = undefined;
   if (settingsCategory === "archived_sessions") renderSettings();
-  try {
-    const groups = await Promise.all((view?.projects ?? []).map((project) =>
-      window.ait.projectSessions(project.id, "archived")));
-    if (generation !== archivedSessionsGeneration) return;
-    archivedSessions = groups.flat();
-  } catch (error) {
-    if (generation !== archivedSessionsGeneration) return;
-    archivedSessionsError = errorMessage(error);
-  } finally {
-    if (generation === archivedSessionsGeneration) {
-      archivedSessionsLoading = false;
-      if (settingsCategory === "archived_sessions" && !settingsDialog.classList.contains("is-hidden")) {
-        renderSettings();
-      }
+  const results = await Promise.all(projects.map(async (project): Promise<{
+    projectId: string;
+    sessions: DesktopSession[];
+    error?: string;
+  }> => {
+    try {
+      const sessions = await window.ait.projectSessions(project.id, "archived");
+      return { projectId: project.id, sessions };
+    } catch (error) {
+      return { projectId: project.id, sessions: [], error: errorMessage(error) };
     }
+  }));
+  if (generation !== archivedSessionsGeneration) return;
+  archivedSessions = new Map(results.map((result) => [result.projectId, result.sessions] as const));
+  archivedSessionErrors = new Map(results.flatMap((result) => result.error
+    ? [[result.projectId, result.error] as const]
+    : []));
+  archivedSessionsLoading = false;
+  if (settingsCategory === "archived_sessions" && !settingsDialog.classList.contains("is-hidden")) {
+    renderSettings();
   }
 }
 
@@ -1910,7 +1926,10 @@ async function restoreSession(button: HTMLButtonElement): Promise<void> {
   button.disabled = true;
   try {
     const updated = await window.ait.setSessionArchived({ projectId, sessionId, archived: false });
-    archivedSessions = archivedSessions.filter((session) => session.id !== sessionId);
+    archivedSessions?.set(
+      projectId,
+      (archivedSessions.get(projectId) ?? []).filter((session) => session.id !== sessionId),
+    );
     sidebar.replace(projectId, updated.sessions);
     if (selectedProjectId === projectId) {
       if (!projectViews.commitMutation(mutation, updated) || !acceptLoadedProjectView()) return;
@@ -1997,6 +2016,7 @@ async function saveSettings(): Promise<void> {
     settings = await window.ait.saveSettings(settings.revision, settingsDraft);
     settingsDraft = structuredClone(settings.values);
     applyPreferences();
+    renderAll();
     renderSettings();
     showToast("Settings saved by the Ait core.");
   } catch (error) {
@@ -2014,11 +2034,20 @@ async function resetSettings(): Promise<void> {
     settings = await window.ait.resetSettings();
     settingsDraft = structuredClone(settings.values);
     applyPreferences();
+    renderAll();
     renderSettings();
     showToast("Core defaults restored.");
   } catch (error) {
     showToast(errorMessage(error), true);
   }
+}
+
+async function saveAgentRole(role: AgentRole, agentId: string): Promise<void> {
+  if (!settings) throw new Error("Settings are not available.");
+  const settingId = role === "default" ? "agents.default_agent" : "agents.small_agent";
+  settings = await window.ait.saveSettings(settings.revision, { ...settings.values, [settingId]: agentId });
+  settingsDraft = structuredClone(settings.values);
+  renderAll();
 }
 
 async function changePermission(): Promise<void> {
