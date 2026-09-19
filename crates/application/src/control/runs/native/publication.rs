@@ -137,29 +137,39 @@ pub(in crate::control) fn attribute_inputs(
             .expect("matched native input")
             .state = InputState::Published;
         run.set_last_message_id(last);
-        run.set_status(match turn.status.as_str() {
-            "completed" => LifecycleStatus::Completed,
-            "interrupted" if run.status() == LifecycleStatus::Cancelling => {
-                LifecycleStatus::Cancelled
-            }
-            "interrupted" => LifecycleStatus::Interrupted,
-            _ => LifecycleStatus::Failed,
-        });
-        run.set_phase(Some(LifecyclePhase::Terminal));
-        run.set_error(if turn.status == "completed" {
-            None
-        } else {
-            Some(error(
-                if turn.status == "interrupted" {
-                    ErrorCode::RunCancelled
-                } else {
-                    ErrorCode::ProviderFailed
-                },
-                "native Turn did not complete successfully",
-                false,
-            ))
-        });
-        expire_pending_native_approvals(run, NativeApprovalStatus::Expired);
+        // History still publishes after a local ceiling, but cannot erase that Run outcome.
+        if run.status() != LifecycleStatus::LimitExceeded {
+            run.set_status(match turn.status.as_str() {
+                "completed" | "interrupted" if run.status() == LifecycleStatus::Cancelling => {
+                    LifecycleStatus::Cancelled
+                }
+                "completed" => LifecycleStatus::Completed,
+                "interrupted" => LifecycleStatus::Interrupted,
+                _ => LifecycleStatus::Failed,
+            });
+            run.set_phase(Some(LifecyclePhase::Terminal));
+            run.set_error(if turn.status == "completed" {
+                None
+            } else {
+                Some(error(
+                    if turn.status == "interrupted" {
+                        ErrorCode::RunCancelled
+                    } else {
+                        ErrorCode::ProviderFailed
+                    },
+                    "native Turn did not complete successfully",
+                    false,
+                ))
+            });
+        }
+        expire_pending_native_approvals(
+            run,
+            if run.status() == LifecycleStatus::Cancelled {
+                NativeApprovalStatus::Cancelled
+            } else {
+                NativeApprovalStatus::Expired
+            },
+        );
     }
     Ok(())
 }
@@ -248,7 +258,9 @@ impl LocalControlService {
                     ) {
                         run.codex_input.as_mut().expect("native Run").state = InputState::Rejected;
                     }
-                    run.set_status(if failure.code == ErrorCode::RunCancelled {
+                    run.set_status(if failure.code == ErrorCode::RunLimitExceeded {
+                        LifecycleStatus::LimitExceeded
+                    } else if failure.code == ErrorCode::RunCancelled {
                         LifecycleStatus::Cancelled
                     } else if run
                         .codex_input
@@ -263,7 +275,56 @@ impl LocalControlService {
                     run.set_error(Some(failure));
                 }
             }
-            expire_pending_native_approvals(&mut run, NativeApprovalStatus::Expired);
+            if run
+                .codex_input
+                .as_ref()
+                .is_some_and(|input| input.created_thread && input.state == InputState::Rejected)
+            {
+                // No first input was accepted, so this Thread may have no rollout.
+                // Keep immutable native roots, but release its otherwise unusable binding.
+                let root = state
+                    .projects
+                    .iter()
+                    .find(|project| project.id == run.project_id)
+                    .ok_or_else(conflict)?
+                    .root_message_id
+                    .clone();
+                let session = &mut state.sessions[session_index];
+                session
+                    .reference
+                    .reconcile(
+                        session.reference.head(),
+                        session.version(),
+                        ait_domain::MessageId::parse(&root).map_err(|_| conflict())?,
+                    )
+                    .map_err(project_error)?;
+                session.source = SessionSource::Managed;
+            }
+            if run.status() == LifecycleStatus::Completed
+                && run
+                    .auto_commit
+                    .as_ref()
+                    .is_some_and(super::super::git_commit::AutoCommit::pending)
+            {
+                run.set_status(LifecycleStatus::Settling);
+                run.set_phase(Some(LifecyclePhase::Settling));
+                state.sessions[session_index]
+                    .reference
+                    .acquire(ait_domain::RunId::new(&run.id))
+                    .map_err(project_error)?;
+            } else if run.status() != LifecycleStatus::Completed
+                && let Some(commit) = run.auto_commit.as_mut()
+                && commit.pending()
+            {
+                commit.view.status = ait_contracts::RunCommitStatus::Skipped;
+                commit.view.reason = Some("Codex execution did not complete successfully".into());
+            }
+            let approval_status = if run.status() == LifecycleStatus::Cancelled {
+                NativeApprovalStatus::Cancelled
+            } else {
+                NativeApprovalStatus::Expired
+            };
+            expire_pending_native_approvals(&mut run, approval_status);
             state.runs[index] = run.clone();
             match self
                 .persist_records(

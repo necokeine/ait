@@ -7,7 +7,6 @@ use crate::control::conversation::{MessageRecord, SessionRecord};
 use crate::control::persistence::define_record_context;
 use crate::control::project::ProjectRecord;
 use crate::control::runs::RunRecord;
-use crate::control::runs::journal::WorkspaceRunJournal;
 
 define_record_context!(RunsContext {
     runs: Vec<RunRecord>,
@@ -18,7 +17,6 @@ define_record_context!(RunContext {
     sessions: Vec<SessionRecord>,
     messages: Vec<MessageRecord>,
     runs: Vec<RunRecord>,
-    workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
     run_credentials: HashMap<String, String>,
     settings: SettingsDocument,
     settings_revision: u64,
@@ -27,7 +25,6 @@ define_record_context!(RunContext {
     "sessions" => Session,
     "messages" => Message,
     "runs" => Run,
-    "workspace_run_journals" => WorkspaceRunJournal,
     "run_credentials" => RunCredential,
     "settings" => Settings
 ]);
@@ -36,12 +33,10 @@ define_record_context!(RunControlContext {
     projects: Vec<ProjectRecord>,
     sessions: Vec<SessionRecord>,
     runs: Vec<RunRecord>,
-    workspace_run_journals: HashMap<String, WorkspaceRunJournal>,
 } [
     "projects" => Project,
     "sessions" => Session,
     "runs" => Run,
-    "workspace_run_journals" => WorkspaceRunJournal
 ]);
 
 define_record_context!(ApiRunContext {

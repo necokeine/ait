@@ -38,6 +38,7 @@ HTTP 传输层不再公开带 `type` 判别字段的统一 command 入口。每�
 | `POST` | `/v1/session/submit-derive` | `DeriveSession`（异步 submit） |
 | `POST` | `/v1/run/get` | `GetRun` |
 | `POST` | `/v1/run/cancel` | `CancelRun` |
+| `POST` | `/v1/run/retry-commit` | `RetryRunCommit` |
 | `POST` | `/v1/run/approval/resolve` | `ResolveNativeApproval` |
 | `POST` | `/v1/run/tool-approval/resolve` | API HostTools 单次审批；`run_id`、`approval_id`、`action=approve/deny/cancel`，不接受 scope 或调用方提供的权限 |
 | `POST` | `/v1/run/tool-interaction/resolve` | API Agent 提问/计划审阅响应；`run_id`、`interaction_id`、`action=submit/approve/deny/cancel`，submit 携带按问题 id 映射的 `response` |

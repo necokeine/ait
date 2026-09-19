@@ -22,11 +22,12 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 /// Shared production dispatcher; entries exist only while owned children run.
+#[derive(Clone)]
 pub struct WorkerSupervisor {
     binary: PathBuf,
     pub(crate) codex_binary: PathBuf,
     pub(crate) limits: Limits,
-    active: Mutex<HashMap<String, CancellationToken>>,
+    active: Arc<Mutex<HashMap<String, CancellationToken>>>,
     draining: CancellationToken,
     observer: Option<Arc<dyn WorkerObserver>>,
 }
@@ -63,7 +64,7 @@ impl WorkerSupervisor {
             binary,
             codex_binary: PathBuf::from("codex"),
             limits: Limits::default(),
-            active: Mutex::new(HashMap::new()),
+            active: Arc::new(Mutex::new(HashMap::new())),
             draining: CancellationToken::new(),
             observer: None,
         }
@@ -122,7 +123,7 @@ impl WorkerSupervisor {
         cancel: CancellationToken,
     ) -> Result<(), ProtocolError> {
         bootstrap.limits.validate()?;
-        let run_id = bootstrap.lease.run_id.clone();
+        let run_id = bootstrap.lease.scope_id.clone();
         {
             let mut active = self.active.lock().map_err(|_| ProtocolError::Io)?;
             if self.draining.is_cancelled() {
@@ -141,7 +142,8 @@ impl WorkerSupervisor {
             run_id,
         };
         let mut child =
-            ait_sandbox::spawn_worker(&self.binary).map_err(|_| ProtocolError::WorkerExited)?;
+            ait_sandbox::spawn_worker(&self.binary, ait_contracts::worker::PROTOCOL_MAJOR)
+                .map_err(|_| ProtocolError::WorkerExited)?;
         let result = async {
             let pid = child.id().ok_or(ProtocolError::WorkerExited)?;
             let mut reader = Reader::new(
@@ -342,7 +344,7 @@ impl RunDispatcher for WorkerSupervisor {
             }
             let bootstrap = Bootstrap {
                 lease: Lease {
-                    run_id: lease.run_id.as_str().into(),
+                    scope_id: lease.run_id.as_str().into(),
                     worker_instance_id: lease.instance_id,
                     lease_epoch: lease.epoch,
                 },
@@ -404,7 +406,7 @@ impl Handler for StoreServer {
     fn disconnected(&self) {
         self.store
             .interrupt_tool_approvals(&ait_ports::WorkerLease {
-                run_id: ait_domain::RunId::new(&self.lease.run_id),
+                run_id: ait_domain::RunId::new(&self.lease.scope_id),
                 instance_id: self.lease.worker_instance_id.clone(),
                 epoch: self.lease.lease_epoch,
             });
@@ -420,7 +422,7 @@ impl Handler for StoreServer {
     async fn finished(&self) -> Result<(), ProtocolError> {
         let run = self
             .store
-            .load_run(&ait_domain::RunId::new(&self.lease.run_id))
+            .load_run(&ait_domain::RunId::new(&self.lease.scope_id))
             .await
             .map_err(|_| ProtocolError::InvalidTransition)?;
         if run.status.is_terminal() || run.status == ait_domain::RunStatus::WaitingApproval {
@@ -463,9 +465,6 @@ fn request_method(request: &ait_contracts::worker::StoreRequest) -> &'static str
         },
         StoreRequest::AppendToolResult { .. } => "tool_result",
         StoreRequest::Complete { .. } => "terminal",
-        StoreRequest::WorkspaceCheckpoint { .. } => "workspace_checkpoint",
-        StoreRequest::WorkspaceIntegration => "workspace_integration",
-        StoreRequest::WorkspaceFinished { .. } => "workspace_finished",
         _ => "other",
     }
 }

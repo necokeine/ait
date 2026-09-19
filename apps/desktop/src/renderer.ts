@@ -1,5 +1,6 @@
 import { renderProviderSettings, providerChoices } from "./agent-settings.js";
 import { createAgentsPage } from "./agents-page.js";
+import { renderRunCommit } from "./run-commit.js";
 import { createRunsPage } from "./runs-page.js";
 import { createCronsPage } from "./crons-page.js";
 import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
@@ -131,6 +132,7 @@ const runsPage = createRunsPage($("#runs-page"), {
   read: () => window.ait.activeRuns(),
   project: (id) => window.ait.project(id),
   resolve: (input) => window.ait.resolveToolApproval(input),
+  retryCommit: (input) => window.ait.retryRunCommit(input),
   resolveInteraction: (input) => window.ait.resolveToolInteraction(input),
   agents: () => view?.agents ?? [],
   openSession: async (projectId, sessionId) => {
@@ -641,7 +643,18 @@ function renderConversation(): void {
     ? view.runs.find((run) => run.id === session.activeRunId)
     : undefined;
   const approvals = renderPendingApprovals(activeRun);
-  replaceConversationContent(conversation, renderConversationMessages(messages, view.agents, inspectedNodeId ?? undefined) + approvals + live + terminal, sameSession);
+  const commitRun = view.runs.findLast((run) => run.sessionId === session.id);
+  const commit = commitRun ? renderRunCommit(commitRun, !session.activeRunId) : "";
+  replaceConversationContent(conversation, renderConversationMessages(messages, view.agents, inspectedNodeId ?? undefined) + approvals + live + terminal + commit, sameSession);
+  conversation.querySelector<HTMLButtonElement>("[data-retry-commit]")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    if (!commitRun) return;
+    button.disabled = true;
+    try {
+      await window.ait.retryRunCommit({ projectId: session.projectId, runId: commitRun.id });
+      scheduleViewRefresh();
+    } catch (error) { button.disabled = false; showToast(error instanceof Error ? error.message : "Git commit retry failed.", true); }
+  });
   conversation.querySelectorAll<HTMLElement>(".message").forEach((item) => {
     item.addEventListener("click", (event) => {
       if ((event.target as Element).closest("button, a, summary") || window.getSelection()?.toString()) return;

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::control) struct RunRecord {
+    pub auto_commit: Option<super::git_commit::AutoCommit>,
     pub compatibility_repair: bool,
     pub codex_input: Option<super::native::CodexPendingInput>,
     /// Canonical host runtime state for API Providers; absent for native harness Runs.
@@ -241,6 +242,7 @@ impl RunRecord {
     }
     fn projection(&self, include_execution: bool) -> RunView {
         RunView {
+            git_commit: self.auto_commit.as_ref().map(|commit| commit.view.clone()),
             id: self.id.clone(),
             project_id: self.project_id.clone(),
             base_message_id: self.base_message_id.clone(),
@@ -286,6 +288,8 @@ impl RunRecord {
 }
 #[derive(Serialize, Deserialize)]
 struct PersistedRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_commit: Option<super::git_commit::AutoCommit>,
     #[serde(flatten)]
     view: RunView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -297,6 +301,7 @@ impl Serialize for RunRecord {
         self.validate_execution()
             .map_err(serde::ser::Error::custom)?;
         PersistedRun {
+            auto_commit: self.auto_commit.clone(),
             view: self.record(),
             codex_input: self.codex_input.clone(),
         }
@@ -305,7 +310,11 @@ impl Serialize for RunRecord {
 }
 impl<'de> Deserialize<'de> for RunRecord {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let PersistedRun { view, codex_input } = PersistedRun::deserialize(deserializer)?;
+        let PersistedRun {
+            view,
+            codex_input,
+            auto_commit,
+        } = PersistedRun::deserialize(deserializer)?;
         let status: LifecycleStatus =
             serde_json::from_value(serde_json::Value::String(view.status))
                 .map_err(|_| serde::de::Error::custom("unknown Run status"))?;
@@ -335,6 +344,7 @@ impl<'de> Deserialize<'de> for RunRecord {
             },
         };
         let mut state = Self {
+            auto_commit,
             lifecycle,
             compatibility_repair: false,
             codex_input,

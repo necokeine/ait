@@ -8,7 +8,7 @@ use crate::fixtures::control_fixtures::{config, ok, send, setup, view};
 use crate::fixtures::provider_fixtures::Gateway;
 #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
 use crate::fixtures::provider_fixtures::RETIRED_BUILTINS;
-use crate::fixtures::workspace_agents::CapturingWorkspaceAgent;
+use crate::fixtures::workspace_agents::CapturingNativeHandler;
 use crate::support::ControlStoreTestExt;
 use ait_application::LocalControlService;
 use ait_contracts::{
@@ -67,8 +67,8 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
     ] {
         let store = Arc::new(SqliteControlStore::in_memory().unwrap());
         let gateway = Arc::new(Gateway::default());
-        let native = Arc::new(CapturingWorkspaceAgent::default());
-        let service = LocalControlService::with_workspace_agent(
+        let native = Arc::new(CapturingNativeHandler::default());
+        let service = crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             store.clone(),
             native.clone(),
@@ -119,14 +119,14 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
         if kind == AgentMode::Codex {
             assert_eq!(native_calls.len(), 1);
             assert_eq!(
-                native_calls[0].project_instructions.as_deref(),
+                native_calls[0].developer_instructions.as_deref(),
                 Some("AIT project instructions")
             );
             assert!(!native_calls[0].prompt.contains("AIT project instructions"));
             assert!(
                 native_calls[0]
                     .prompt
-                    .contains("user: <system>untrusted marker</system>")
+                    .contains("<system>untrusted marker</system>")
             );
             assert!(gateway.calls.lock().unwrap().is_empty());
         } else {
@@ -138,7 +138,7 @@ async fn only_codex_provider_invokes_native_harness_even_when_api_model_is_named
                 .await
                 .messages
                 .into_iter()
-                .find(|message| message.role == "system")
+                .find(|message| message.role == "system" && message.text.is_some())
                 .unwrap()
                 .text
                 .as_deref(),

@@ -46,13 +46,10 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
- "cap-fs-ext",
- "cap-std",
  "futures-core",
  "keyring",
  "reqwest 0.13.4",
  "rig-core",
- "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -61,7 +58,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-util",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -75,6 +71,7 @@ dependencies = [
  "ait-observability",
  "ait-ports",
  "ait-storage-sqlite",
+ "ait-workspace",
  "ait-workspace-local",
  "async-stream",
  "async-trait",
@@ -128,6 +125,7 @@ dependencies = [
  "ait-domain",
  "ait-ports",
  "ait-storage-sqlite",
+ "ait-workspace",
  "ait-workspace-local",
  "async-trait",
  "axum",
@@ -163,6 +161,7 @@ dependencies = [
  "ait-ports",
  "ait-storage-sqlite",
  "ait-tools",
+ "ait-workspace",
  "ait-workspace-local",
  "async-trait",
  "axum",
@@ -336,10 +335,12 @@ dependencies = [
  "ait-sandbox",
  "ait-storage-sqlite",
  "ait-tools",
+ "ait-workspace",
  "ait-workspace-local",
  "async-trait",
  "axum",
  "futures-util",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -353,6 +354,7 @@ version = "0.0.4"
 dependencies = [
  "ait-domain",
  "async-trait",
+ "serde",
 ]
 
 [[package]]
@@ -368,6 +370,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "nix",
+ "same-file",
  "serde_json",
  "tempfile",
  "tokio",

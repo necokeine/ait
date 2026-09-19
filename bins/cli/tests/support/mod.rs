@@ -1,5 +1,8 @@
 //! Real CLI processes talking to an isolated production HTTP router and `SQLite` store.
 
+#[path = "../../../../crates/application/tests/support/native.rs"]
+mod native;
+use native::{NativeHandler, NativeReply};
 use std::{
     path::PathBuf,
     process::{Output, Stdio},
@@ -7,11 +10,8 @@ use std::{
     time::Duration,
 };
 
-use ait_application::LocalControlService;
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{
-    AgentProviderGateway, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-};
+use ait_ports::{AgentProviderGateway, CodexThreadInvocation};
 use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -33,20 +33,17 @@ pub struct Workspace {
 struct FixtureCodex;
 
 #[async_trait]
-impl WorkspaceAgent for FixtureCodex {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        if request.commit_subject == "simulate provider failure" {
+impl NativeHandler for FixtureCodex {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
+        if request.prompt == "simulate provider failure" {
             return Err(DomainError::transient(
                 ErrorCode::ProviderFailed,
                 "fixture provider failure",
             ));
         }
-        Ok(WorkspaceAgentResponse {
-            assistant_text: format!("Completed: {}", request.commit_subject),
-            commit_id: None,
+        Ok(NativeReply {
+            assistant_text: format!("Completed: {}", request.prompt),
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -74,7 +71,7 @@ impl Workspace {
         let store = SqliteControlStore::open(self.directory.path().join("ait.sqlite3")).unwrap();
         let documents = self.directory.path().join("Documents");
         std::fs::create_dir_all(&documents).unwrap();
-        let mut service = LocalControlService::with_workspace_agent(
+        let mut service = native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(store),
             Arc::new(FixtureCodex),

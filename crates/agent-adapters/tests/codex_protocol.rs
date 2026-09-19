@@ -305,7 +305,7 @@ async fn reads_all_turn_pages_with_full_items_in_provider_order() {
 
         let read = read_json(&mut lines).await;
         assert_eq!(read["method"], "thread/read");
-        assert_eq!(read["params"]["includeTurns"], true);
+        assert_eq!(read["params"]["includeTurns"], false);
         write_json(
             &mut server_write,
             json!({"id": 1, "result": {"thread": thread("thread-1")}}),
@@ -418,8 +418,7 @@ async fn assert_codex_jsonl_lifecycle_and_usage(ephemeral: bool) {
         assert_eq!(thread["params"]["sandbox"], "workspace-write");
         assert_eq!(
             thread["params"]["developerInstructions"],
-            ait_tools::codex::CodexToolSet
-                .developer_instructions(Some("Use Python 3 for examples.")),
+            "Use Python 3 for examples.",
         );
         assert!(
             !thread["params"]["developerInstructions"]
@@ -538,7 +537,7 @@ async fn assert_codex_jsonl_lifecycle_and_usage(ephemeral: bool) {
 struct AcceptOnce;
 
 #[tokio::test]
-async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
+async fn resume_preserves_native_context_and_applies_permissions_without_api_tools() {
     let (client_io, server_io) = tokio::io::duplex(32 * 1024);
     let (client_read, client_write) = split(client_io);
     let (server_read, mut server_write) = split(server_io);
@@ -551,15 +550,10 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
         assert_eq!(thread["method"], "thread/resume");
         assert_eq!(thread["params"]["threadId"], "existing-thread");
         assert_eq!(thread["params"]["model"], "test-model");
-        assert_eq!(thread["params"]["cwd"], "/workspace");
+        assert!(thread["params"].get("cwd").is_none());
         assert_eq!(thread["params"]["sandbox"], "read-only");
         assert_eq!(thread["params"]["approvalPolicy"], "never");
-        assert!(
-            thread["params"]["developerInstructions"]
-                .as_str()
-                .unwrap()
-                .ends_with("Use Python 3 for examples.")
-        );
+        assert!(thread["params"].get("developerInstructions").is_none());
         for key in ["baseInstructions", "tools", "dynamicTools", "ephemeral"] {
             assert!(thread["params"].get(key).is_none());
         }
@@ -573,7 +567,7 @@ async fn resume_reapplies_instructions_and_permissions_without_api_tools() {
             turn["params"]["sandboxPolicy"],
             json!({"type":"readOnly","networkAccess":false})
         );
-        assert_eq!(turn["params"]["cwd"], "/workspace");
+        assert!(turn["params"].get("cwd").is_none());
         assert_eq!(turn["params"]["approvalPolicy"], "never");
         assert_eq!(
             turn["params"]["input"][0]["text"],

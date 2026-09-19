@@ -444,6 +444,15 @@ fn execution_settings() -> Vec<SettingDefinition> {
             true,
         ),
         setting(
+            "codex.auto_commit",
+            SettingCategory::Runtime,
+            "Auto-commit Codex changes",
+            "Create a Git commit after a successful Codex Run when its starting workspace was clean. Applies to all Codex tasks.",
+            SettingKind::Boolean,
+            json!(false),
+            false,
+        ),
+        setting(
             "runtime.recovery",
             SettingCategory::Runtime,
             "Recovery policy",

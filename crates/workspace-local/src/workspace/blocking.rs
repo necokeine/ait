@@ -364,6 +364,71 @@ pub(super) struct GitCommand<'a> {
     command: Command,
 }
 impl GitCommand<'_> {
+    pub(super) fn env(&mut self, key: &str, value: impl AsRef<OsStr>) -> &mut Self {
+        self.command.env(key, value);
+        self
+    }
+    /// Holds Git's ref locks while validating a prepared transaction, then commits it.
+    pub(super) fn prepared_transaction(
+        &mut self,
+        commands: &str,
+        verify: impl FnOnce() -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        use std::io::Write as _;
+        let failure = || {
+            DomainError::invariant(
+                ErrorCode::ProjectGitHeadUnavailable,
+                "Git ref transaction requires reconciliation",
+            )
+        };
+        let mut stdout = tempfile::tempfile().map_err(|_| failure())?;
+        let stderr = tempfile::tempfile().map_err(|_| failure())?;
+        self.command
+            .stdin(Stdio::piped())
+            .stdout(stdout.try_clone().map_err(|_| failure())?)
+            .stderr(stderr.try_clone().map_err(|_| failure())?);
+        self.context.check()?;
+        let mut child = ChildGuard(self.command.spawn().map_err(|_| failure())?);
+        let mut input = child.0.stdin.take().ok_or_else(failure)?;
+        input
+            .write_all(commands.as_bytes())
+            .map_err(|_| failure())?;
+        loop {
+            self.context.check()?;
+            if stdout.metadata().map_err(|_| failure())?.len() > OUTPUT_LIMIT
+                || stderr.metadata().map_err(|_| failure())?.len() > OUTPUT_LIMIT
+            {
+                return Err(failure());
+            }
+            stdout.rewind().map_err(|_| failure())?;
+            let mut output = String::new();
+            (&mut stdout)
+                .take(OUTPUT_LIMIT + 1)
+                .read_to_string(&mut output)
+                .map_err(|_| failure())?;
+            if output.lines().any(|line| line == "prepare: ok") {
+                break;
+            }
+            if child.0.try_wait().map_err(|_| failure())?.is_some() {
+                return Err(failure());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        verify()?;
+        input.write_all(b"commit\n").map_err(|_| failure())?;
+        drop(input);
+        loop {
+            self.context.check()?;
+            if let Some(status) = child.0.try_wait().map_err(|_| failure())? {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(failure())
+                };
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     pub(super) fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
         self.command.arg(arg);
         self

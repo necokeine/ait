@@ -10,6 +10,7 @@ contract-tests = []
 [dependencies]
 ait-domain = { path = "../domain" }
 async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

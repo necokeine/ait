@@ -7,7 +7,9 @@ use ait_domain::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod git_commit;
 pub mod sensitive;
+pub use git_commit::{RunCommitStatus, RunGitCommit};
 
 /// Current command/event wire contract version.
 pub const API_VERSION: u16 = 1;
@@ -21,6 +23,11 @@ pub use ait_domain::{AgentConfiguration, AgentProvider, ProviderKind as AgentMod
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Retry only a failed Git finalization, without replaying model work.
+    RetryRunCommit {
+        /// Completed Run identity.
+        run_id: String,
+    },
     /// Selects the `RegisterProject` variant.
     RegisterProject {
         /// Id value.
@@ -695,6 +702,9 @@ pub struct ToolInteractionView {
 /// submission routes and queries can expose an intermediate state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunView {
+    /// Optional Ait Git finalization outcome, independent of model execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<RunGitCommit>,
     /// Canonical host runtime state for API Providers; absent for native harness Runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<Box<ApiRunExecution>>,

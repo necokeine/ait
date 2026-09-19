@@ -22,7 +22,7 @@
 ./test_with_codex.sh
 ```
 
-根目录的 [`test_with_codex.sh`](../test_with_codex.sh) 会先构建 `ait-cli` 和 `ait-daemon`，
+根目录的 [`test_with_codex.sh`](../test_with_codex.sh) 会先构建 `ait-cli`、`ait-daemon` 和 `ait-worker`，
 再显式运行当前 WF-10 测试并显示输出；构建或测试失败时返回非零退出码。
 也可以从其他目录通过脚本路径调用，它会自动切换到所在仓库。
 
@@ -116,7 +116,7 @@ export SESSION_WORKDIR="$(jq -r '.result.value.workdir' "$WF_ROOT/session.json")
 # 新建设置默认 workspace_write；为兼容已保存的 Readonly，发送前显式设置工作区写入权限
 ait config get > "$WF_ROOT/settings.json"
 REVISION="$(jq -r '.result.value.revision' "$WF_ROOT/settings.json")"
-jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request"}' \
+jq '.result.value.values + {"permissions.sandbox":"workspace_write","permissions.approval":"on_request","codex.auto_commit":true}' \
   "$WF_ROOT/settings.json" > "$WF_ROOT/settings-values.json"
 ait config set --expected-revision "$REVISION" --input "$WF_ROOT/settings-values.json"
 ait session send --session-id hello-world --text \
@@ -138,18 +138,17 @@ git -C "$WF_ROOT/example-project" status --porcelain=v1
 
 `send_message` 当前同步等待执行结果。`ok=true` 表示命令成功返回，还必须检查 Run 的
 `status=completed` 和 `error=null`。真实生成后的提交由 AIT 宿主执行，遵循
-[Codex 执行与 Git 提交 ADR](../docs/decisions/NEC-174/adr-001-codex-session-execution.md)。
+[统一原生执行 ADR](../docs/decisions/adr-017-unified-native-codex-worker.md)。
 AIT 通过 [Codex app-server](https://developers.openai.com/codex/app-server) 的 stdio 协议执行，
 使用 Run 准入时固定的权限快照。本流程显式设置 `workspace_write` / `on_request`；默认值是
-`read_only` / `on_request`，并且始终受 daemon 管理员上限限制。
+`workspace_write` / `on_request`，并且始终受 daemon 管理员上限限制。自动提交默认关闭，本流程显式启用。
 
 ## 验收
 
 - 初始实体列表为空；daemon 数据库和日志位于示例项目之外。
 - Project 的 `base_commit` 等于手动创建的空提交；注册不移动 Git HEAD。
 - Codex 的 Run 完成，包含非空 assistant 输出；Session 指向最终 Message 且 `active_run_id=null`。
-- user Message 的 `git_commit` 等于初始提交；assistant Message 的
-  `data.codex.commit_id` 等于 Session worktree 的新 HEAD。
+- Message 不记录 Git 提交；Run.git_commit.status 为 committed，commit_id 等于 Session worktree 的新 HEAD。
 - Session worktree 的历史恰好两个提交；第二个以初始提交为父，subject 以 `ait: ` 开头，包含
   `Cargo.toml`、`Cargo.lock`、`src/main.rs`、`.gitignore`，没有提交 `target` 构建产物。
 - Project 主检出的 HEAD 仍等于初始提交且工作树干净；Session 的提交不会推进 Project 或其他

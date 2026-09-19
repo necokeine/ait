@@ -13,6 +13,7 @@ use super::{
     migrate_legacy_blob, params, read_filter, replay_locked, revision, sql_error, table,
 };
 
+mod cutover;
 mod migration;
 mod project;
 use project::{finish_project, open_project, prepare_project};
@@ -39,6 +40,8 @@ pub struct SplitSqliteControlStore {
 struct ProjectTarget {
     id: String,
     workdir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reset_root: Option<String>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -101,6 +104,7 @@ impl SplitSqliteControlStore {
             .map_err(sql_error)?;
         migration::initialize(&mut connection, &path)?;
         recover(&mut connection)?;
+        cutover::initialize(&mut connection)?;
         drop(connection);
         Ok(store)
     }
@@ -322,7 +326,7 @@ fn location(
 }
 
 fn target(connection: &Connection, id: &str) -> Result<Option<ProjectTarget>, ControlStoreError> {
-    connection
+    let mut target = connection
         .query_row(
             "SELECT json_extract(body_json, '$.workdir') FROM projects WHERE id=?1",
             [id],
@@ -330,11 +334,16 @@ fn target(connection: &Connection, id: &str) -> Result<Option<ProjectTarget>, Co
                 Ok(ProjectTarget {
                     id: id.into(),
                     workdir: row.get(0)?,
+                    reset_root: None,
                 })
             },
         )
         .optional()
-        .map_err(sql_error)
+        .map_err(sql_error)?;
+    if let Some(target) = &mut target {
+        target.reset_root = cutover::reset_root(connection, target)?;
+    }
+    Ok(target)
 }
 
 fn owner(connection: &Connection) -> Result<String, ControlStoreError> {
@@ -448,6 +457,7 @@ fn build_commit(
                 ProjectTarget {
                     id: record.id.clone(),
                     workdir,
+                    reset_root: None,
                 },
             );
             batches.entry(record.id.clone()).or_default();

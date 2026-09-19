@@ -1,5 +1,7 @@
 # ADR-013：Session 固定 linked worktree 与工作目录
 
+> 执行路径与 Git 收尾以 [ADR-017](adr-017-unified-native-codex-worker.md) 为准；旧的 Ait-managed Codex 执行路径已被统一原生 Thread 路径取代。
+
 - 状态：Accepted
 - 日期：2026-09-12
 - 依赖：ADR-001 v4、NEC-209、NEC-212

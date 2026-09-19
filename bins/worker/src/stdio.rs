@@ -97,7 +97,7 @@ fn compose_agent_tools(
     store: Arc<RemoteStore>,
 ) -> Result<ComposedAgentTools, ProtocolError> {
     match bootstrap.executor.clone() {
-        Executor::Workspace { .. } => Err(ProtocolError::InvalidFrame),
+        Executor::Codex { .. } => Err(ProtocolError::InvalidFrame),
         Executor::Api {
             provider,
             endpoint,
@@ -215,11 +215,11 @@ pub async fn serve() -> Result<(), ProtocolError> {
     .map_err(|_| ProtocolError::HandshakeTimeout)??;
     let secret = match &bootstrap.executor {
         Executor::Api { credential, .. } => Some(credential.0.clone()),
-        Executor::Scripted { .. } | Executor::Workspace { .. } => None,
+        Executor::Scripted { .. } | Executor::Codex { .. } => None,
     };
     let pipe = Connection::start(reader, writer, bootstrap.lease.clone(), secret);
-    if matches!(bootstrap.executor, Executor::Workspace { .. }) {
-        return crate::workspace::execute(bootstrap, pipe).await;
+    if matches!(bootstrap.executor, Executor::Codex { .. }) {
+        return crate::codex::execute(bootstrap, pipe).await;
     }
     execute(bootstrap, pipe).await
 }
@@ -242,7 +242,7 @@ async fn execute(bootstrap: Bootstrap, mut pipe: Connection) -> Result<(), Proto
         let store = Arc::new(store);
         let (tools, agent) = compose_agent_tools(&bootstrap, primary_tools, store.clone())?;
         let worker = crate::RunWorker::new(store.clone(), agent, tools.clone(), store);
-        let id = RunId::new(&bootstrap.lease.run_id);
+        let id = RunId::new(&bootstrap.lease.scope_id);
         let run_cancel = cancellation.clone();
         let mut drive = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
             worker.execute(&id, run_cancel).await

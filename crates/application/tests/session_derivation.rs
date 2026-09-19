@@ -1,6 +1,7 @@
 //! Atomic Session derivation admission regressions.
 #![allow(clippy::pedantic)]
 
+use crate::support::native::{NativeHandler, NativeReply};
 mod support;
 
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProjectView, RunView, default_settings};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::CodexThreadInvocation;
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use tempfile::TempDir;
@@ -19,14 +20,11 @@ use support::workspace;
 struct ImmediateAgent;
 
 #[async_trait]
-impl WorkspaceAgent for ImmediateAgent {
-    async fn invoke(
-        &self,
-        _request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        Ok(WorkspaceAgentResponse {
+impl NativeHandler for ImmediateAgent {
+    async fn invoke(&self, _request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
+        Ok(NativeReply {
             assistant_text: "fixture response".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -39,16 +37,13 @@ struct BlockingAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for BlockingAgent {
-    async fn invoke(
-        &self,
-        _request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
+impl NativeHandler for BlockingAgent {
+    async fn invoke(&self, _request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
         self.started.add_permits(1);
         self.release.acquire().await.unwrap().forget();
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "fixture response".into(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -62,7 +57,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new(agent: Arc<dyn WorkspaceAgent>) -> Self {
+    async fn new(agent: Arc<dyn NativeHandler>) -> Self {
         let fixture = Self::empty(agent).await;
         execute(
             &fixture.service,
@@ -77,11 +72,11 @@ impl Fixture {
         fixture
     }
 
-    async fn empty(agent: Arc<dyn WorkspaceAgent>) -> Self {
+    async fn empty(agent: Arc<dyn NativeHandler>) -> Self {
         let temporary = TempDir::new().unwrap();
         let workdir = temporary.path().join("project");
         std::fs::create_dir(&workdir).unwrap();
-        let service = Arc::new(LocalControlService::with_workspace_agent(
+        let service = Arc::new(crate::support::native::native_service(
             std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
             Arc::new(SqliteControlStore::in_memory().unwrap()),
             agent,
@@ -169,12 +164,12 @@ async fn first_input_atomically_forks_from_the_initial_system_message_without_a_
     let user = accepted
         .messages
         .iter()
-        .find(|message| message.id == run.base_message_id)
+        .find(|message| message.text.as_deref() == Some("First input"))
         .unwrap();
     assert_eq!(user.text.as_deref(), Some("First input"));
     assert_eq!(
         user.parent_message_id.as_deref(),
-        Some(fixture.project.root_message_id.as_str())
+        Some(run.base_message_id.as_str())
     );
     let root = accepted
         .messages
@@ -230,12 +225,12 @@ async fn idle_unchanged_source_reuses_current_session() {
         .unwrap();
     assert_eq!(
         user.parent_message_id.as_deref(),
-        Some(fixture.project.root_message_id.as_str())
+        Some(run.base_message_id.as_str())
     );
 }
 
 #[tokio::test]
-async fn busy_source_forks_instead_of_returning_session_busy() {
+async fn busy_native_source_requires_explicit_native_fork() {
     let agent = Arc::new(BlockingAgent {
         started: Semaphore::new(0),
         release: Semaphore::new(0),
@@ -262,29 +257,22 @@ async fn busy_source_forks_instead_of_returning_session_busy() {
         .await
         .unwrap()
         .unwrap();
-    assert!(response.ok, "{:?}", response.error);
-    let CommandResult::Run(run) = response.result.unwrap() else {
-        panic!("expected Run")
-    };
-    assert_eq!(run.session_id.as_deref(), Some("fork"));
-
-    agent.started.acquire().await.unwrap().forget();
-    agent.release.add_permits(1);
-    wait_for_terminal(&fixture.service, &run.id).await;
-    let state = workspace(&fixture.service).await;
-    let user = state
-        .messages
-        .iter()
-        .find(|message| message.text.as_deref() == Some("fork while busy"))
-        .unwrap();
     assert_eq!(
-        user.parent_message_id.as_deref(),
-        Some(fixture.project.root_message_id.as_str())
+        response.error.unwrap().code,
+        ait_domain::ErrorCode::CodexForkBoundaryUnsupported
+    );
+    let state = workspace(&fixture.service).await;
+    assert_eq!(state.sessions.len(), 1);
+    assert!(
+        state
+            .messages
+            .iter()
+            .all(|message| message.text.as_deref() != Some("fork while busy"))
     );
 }
 
 #[tokio::test]
-async fn advanced_head_forks_from_original_source_with_correct_parent() {
+async fn advanced_native_head_rejects_copied_history_fallback() {
     let fixture = Fixture::new(Arc::new(ImmediateAgent)).await;
     execute_run(
         &fixture.service,
@@ -295,33 +283,16 @@ async fn advanced_head_forks_from_original_source_with_correct_parent() {
     )
     .await;
 
-    let run = execute_run(&fixture.service, fixture.derive("branch from original")).await;
-    assert_eq!(run.session_id.as_deref(), Some("fork"));
-    let state = workspace(&fixture.service).await;
-    let user = state
-        .messages
-        .iter()
-        .find(|message| message.text.as_deref() == Some("branch from original"))
-        .unwrap();
+    let before = workspace(&fixture.service).await;
+    let rejected = fixture
+        .service
+        .execute(fixture.derive("branch from original"))
+        .await;
     assert_eq!(
-        user.parent_message_id.as_deref(),
-        Some(fixture.project.root_message_id.as_str())
+        rejected.error.unwrap().code,
+        ait_domain::ErrorCode::CodexForkBoundaryUnsupported
     );
-    let fork = state
-        .sessions
-        .iter()
-        .find(|session| session.id == "fork")
-        .unwrap();
-    assert_eq!(
-        state
-            .messages
-            .iter()
-            .find(|message| message.id == fork.current_message_id)
-            .unwrap()
-            .parent_message_id
-            .as_deref(),
-        Some(user.id.as_str())
-    );
+    assert_eq!(workspace(&fixture.service).await, before);
 }
 
 #[tokio::test]
@@ -354,25 +325,4 @@ async fn non_concurrency_errors_are_not_hidden_by_fork_fallback() {
         Some(ErrorCode::InvalidAgentConfiguration)
     );
     assert_eq!(workspace(&fixture.service).await.sessions.len(), 1);
-}
-
-async fn wait_for_terminal(service: &LocalControlService, run_id: &str) {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let response = service
-                .execute(Command::GetRun {
-                    run_id: run_id.into(),
-                })
-                .await;
-            let CommandResult::Run(run) = response.result.unwrap() else {
-                panic!("expected Run")
-            };
-            if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("Run must finish");
 }

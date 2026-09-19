@@ -166,14 +166,16 @@ impl RunToolFactory for SandboxToolFactory {
 }
 
 /// Spawn a worker in an owned Unix process group or Windows kill-on-close Job.
+/// `binary` is trusted; `protocol_major` selects the private wire version.
 /// Credentials, Run data and Project paths are delivered through stdin only.
 ///
 /// # Errors
 /// Returns an OS spawn error to the caller, which must publish only a stable code.
-pub fn spawn_worker(binary: &Path) -> std::io::Result<Box<dyn ChildWrapper>> {
+pub fn spawn_worker(binary: &Path, protocol_major: u16) -> std::io::Result<Box<dyn ChildWrapper>> {
     let mut command = CommandWrap::with_new(binary, |command| {
         command
-            .args(["--stdio", "--protocol-major", "1"])
+            .args(["--stdio", "--protocol-major"])
+            .arg(protocol_major.to_string())
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

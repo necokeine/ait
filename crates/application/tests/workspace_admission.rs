@@ -1,6 +1,7 @@
 //! Workspace admission regression coverage.
 #![allow(clippy::pedantic)]
 
+use crate::support::native::{NativeHandler, NativeReply};
 mod fixtures;
 mod support;
 
@@ -9,10 +10,9 @@ use crate::fixtures::control_fixtures::{
 };
 use crate::fixtures::pausing_store::PausingStore;
 use crate::fixtures::workspace_agents::BlockingAgent;
-use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult};
 use ait_domain::{DomainError, ErrorCode};
-use ait_ports::{WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse};
+use ait_ports::CodexThreadInvocation;
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use std::path::Path;
@@ -41,15 +41,12 @@ impl CommittingAgent {
 }
 
 #[async_trait]
-impl WorkspaceAgent for CommittingAgent {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        assert_eq!(git_head(&request.cwd), request.baseline_commit);
+impl NativeHandler for CommittingAgent {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
+        let baseline_commit = git_head(&request.cwd);
         self.entered.add_permits(1);
         self.release.acquire().await.unwrap().forget();
-        let file = if request.commit_subject == "first change" {
+        let file = if request.prompt == "first change" {
             "first.txt"
         } else {
             "second.txt"
@@ -75,7 +72,7 @@ impl WorkspaceAgent for CommittingAgent {
                     "user.email=test-agent@example.invalid",
                     "commit",
                     "-m",
-                    &request.commit_subject,
+                    &request.prompt,
                 ])
                 .status()
                 .unwrap()
@@ -85,10 +82,10 @@ impl WorkspaceAgent for CommittingAgent {
         self.commits
             .lock()
             .unwrap()
-            .push((request.baseline_commit, commit.clone(), file.into()));
-        Ok(WorkspaceAgentResponse {
+            .push((baseline_commit, commit.clone(), file.into()));
+        Ok(NativeReply {
             assistant_text: format!("created {file}"),
-            commit_id: Some(commit),
+
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -99,7 +96,7 @@ impl WorkspaceAgent for CommittingAgent {
 async fn active_session_rejects_competitors_and_same_project_writers_are_serialized() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -209,7 +206,7 @@ async fn active_session_rejects_competitors_and_same_project_writers_are_seriali
 async fn codex_writers_for_unrelated_projects_enter_concurrently() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -274,12 +271,12 @@ async fn codex_writers_for_unrelated_projects_enter_concurrently() {
 async fn a_second_service_cannot_bypass_the_process_wide_workspace_lease() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(BlockingAgent::new());
-    let first_service = Arc::new(LocalControlService::with_workspace_agent(
+    let first_service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         agent.clone(),
     ));
-    let second_service = LocalControlService::with_workspace_agent(
+    let second_service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -326,12 +323,12 @@ async fn canonical_path_aliases_share_the_same_process_wide_lease() {
     std::fs::create_dir(&project).unwrap();
     std::os::unix::fs::symlink(&project, &alias).unwrap();
     let agent = Arc::new(BlockingAgent::new());
-    let first_service = Arc::new(LocalControlService::with_workspace_agent(
+    let first_service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         agent.clone(),
     ));
-    let second_service = LocalControlService::with_workspace_agent(
+    let second_service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         agent.clone(),
@@ -392,7 +389,7 @@ async fn canonical_path_aliases_share_the_same_process_wide_lease() {
 async fn serialized_session_worktrees_keep_independent_baselines_and_commits() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let agent = Arc::new(CommittingAgent::new());
-    let service = Arc::new(LocalControlService::with_workspace_agent(
+    let service = Arc::new(crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         agent.clone(),
@@ -431,22 +428,9 @@ async fn serialized_session_worktrees_keep_independent_baselines_and_commits() {
     assert_eq!(commits[1].0, initial);
     assert_eq!(first_run.status, "completed");
     assert_eq!(second_run.status, "completed");
-    assert_eq!(
-        first_run.workspace_base_commit.as_deref(),
-        Some(initial.as_str())
-    );
-    assert_eq!(
-        first_run.workspace_base_index_tree.as_deref(),
-        Some(initial_tree.as_str())
-    );
-    assert_eq!(
-        second_run.workspace_base_commit.as_deref(),
-        Some(initial.as_str())
-    );
-    assert_eq!(
-        second_run.workspace_base_index_tree.as_deref(),
-        Some(initial_tree.as_str())
-    );
+    assert!(first_run.workspace_base_commit.is_none());
+    assert!(second_run.workspace_base_commit.is_none());
+    let _ = initial_tree;
     assert_ne!(first_run.id, second_run.id);
     for (baseline, commit, file) in &commits {
         assert_ne!(baseline, commit);
@@ -459,18 +443,12 @@ async fn serialized_session_worktrees_keep_independent_baselines_and_commits() {
         assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), file);
     }
     let workspace = view(&service).await;
-    let message_commit = |id: &str| {
+    assert!(
         workspace
             .messages
             .iter()
-            .find(|message| message.id == id)
-            .unwrap()
-            .git_commit
-            .clone()
-            .unwrap()
-    };
-    assert_eq!(message_commit(&first_run.base_message_id), initial);
-    assert_eq!(message_commit(&second_run.base_message_id), initial);
+            .all(|message| message.git_commit.is_none())
+    );
     assert_eq!(git_head(directory.path()), initial);
     let session = |id: &str| {
         workspace
@@ -510,9 +488,10 @@ async fn pessimistic_admission_rejects_a_competing_send_before_the_first_run_is_
         entered: Semaphore::new(0),
         release: Semaphore::new(0),
     });
-    let service = Arc::new(LocalControlService::new(
+    let service = Arc::new(support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
+        Arc::new(fixtures::workspace_agents::CapturingNativeHandler::default()),
     ));
     let _directory = setup(&service, config("high")).await;
     let first = {

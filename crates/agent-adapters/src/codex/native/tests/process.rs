@@ -35,7 +35,8 @@ fn fixture(
     .unwrap();
     let request = CodexThreadInvocation {
         request_id: "correlation".into(),
-        thread_id: "thread".into(),
+        thread_id: Some("thread".into()),
+        developer_instructions: None,
         prompt: "new input only".into(),
         cwd,
         model: "test-model".into(),
@@ -55,7 +56,7 @@ async fn resume_rejects_auto_reviewer_and_changed_cwd_before_any_input() {
     for scenario in ["reviewer", "cwd", "busy"] {
         let (_directory, adapter, request) = fixture(scenario);
         let log = request.cwd.join("requests.jsonl");
-        let result = adapter.resume(request).await;
+        let result = adapter.open(request).await;
         let failure = match result {
             Err(failure) => failure,
             Ok(_) => panic!("must reject incompatible resume"),
@@ -76,13 +77,13 @@ async fn resume_rejects_auto_reviewer_and_changed_cwd_before_any_input() {
 async fn native_completion_rereads_full_items_and_pins_approval_policy() {
     for scenario in ["complete", "cancel"] {
         let (_directory, adapter, request) = fixture(scenario);
-        let mut connection = adapter.resume(request).await.unwrap();
+        let mut connection = adapter.open(request).await.unwrap();
         assert_eq!(
-            connection.resumed().reasoning_effort.as_deref(),
+            connection.prepared().reasoning_effort.as_deref(),
             Some("high")
         );
-        assert_eq!(connection.resumed().model_provider, "openai");
-        assert!(connection.resumed().history.turns.is_empty());
+        assert_eq!(connection.prepared().model_provider, "openai");
+        assert!(connection.prepared().history.turns.is_empty());
         let snapshot = connection.start(Arc::new(Progress)).await.unwrap();
         assert!(snapshot.writer_confirmed);
         assert_eq!(snapshot.turns[0].items.len(), 3);
@@ -103,7 +104,7 @@ async fn explicit_input_rejection_is_distinct_from_disconnection_after_send() {
         ("disconnect", ErrorCode::CodexInputOutcomeUnknown),
     ] {
         let (_directory, adapter, request) = fixture(scenario);
-        let mut connection = adapter.resume(request).await.unwrap();
+        let mut connection = adapter.open(request).await.unwrap();
         let failure = connection.start(Arc::new(Progress)).await.unwrap_err();
         assert_eq!(failure.code, expected);
         connection.close().await;
@@ -115,7 +116,7 @@ async fn cancellation_confirms_interrupted_history_and_reaps_the_writer() {
     let (_directory, adapter, request) = fixture("wait_cancel");
     let token = request.cancellation.clone();
     let log = request.cwd.join("requests.jsonl");
-    let mut connection = adapter.resume(request).await.unwrap();
+    let mut connection = adapter.open(request).await.unwrap();
     let cancel = async {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !std::fs::read_to_string(&log)

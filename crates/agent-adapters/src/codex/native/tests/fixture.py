@@ -17,7 +17,7 @@ def send(value):
 
 def finish():
     global turns
-    status = "interrupted" if scenario in ("cancel", "wait_cancel") else "completed"
+    status = "interrupted" if scenario in ("cancel", "wait_cancel", "budget") else "completed"
     turns = [{"id": "native-turn", "status": status, "error": None,
               "itemsView": "full", "startedAt": 1, "completedAt": None if status == "interrupted" else 2,
               "items": [{"id": "input", "type": "userMessage", "clientId": pending["clientUserMessageId"], "content": pending["input"]},
@@ -34,19 +34,25 @@ for line in sys.stdin:
     identity = request.get("id")
     if method == "initialize":
         send({"id": identity, "result": {}})
-    elif method == "thread/resume":
+    elif method in ("thread/resume", "thread/start"):
         if scenario == "busy":
             send({"id": identity, "error": {"code": -32600, "message": "thread thread already has an active writer"}})
             continue
         params = request["params"]
         assert params["approvalsReviewer"] == "user"
-        assert "cwd" not in params
-        assert "developerInstructions" not in params
+        if method == "thread/resume":
+            assert "cwd" not in params
+            assert "developerInstructions" not in params
+        else:
+            assert params["cwd"] == os.getcwd()
+            assert params["ephemeral"] is False
         send({"id": identity, "result": {
-            "thread": {"id": "thread"}, "model": params["model"], "modelProvider": "openai", "reasoningEffort": "medium",
+            "thread": {"id": "thread", "sessionId": "session", "cwd": os.getcwd(), "source": "appServer",
+                       "preview": "", "historyMode": "paginated", "status": {"type": "idle"}, "createdAt": 1, "updatedAt": 1, "turns": []}, "model": params["model"], "modelProvider": "openai", "reasoningEffort": "medium",
             "cwd": "/wrong" if scenario == "cwd" else os.getcwd(), "sandbox": {"type": "readOnly", "networkAccess": False},
             "approvalPolicy": "on-request", "approvalsReviewer": "auto_review" if scenario == "reviewer" else "user"}})
     elif method == "thread/read":
+        assert request["params"]["includeTurns"] is False
         send({"id": identity, "result": {"thread": {"id": "thread", "sessionId": "session", "cwd": os.getcwd(), "source": "appServer",
             "preview": "", "historyMode": "paginated", "status": {"type": "active" if any(t["status"] == "inProgress" for t in turns) else "idle"}, "createdAt": 1, "updatedAt": 2, "turns": []}}})
     elif method == "thread/turns/list":
@@ -63,9 +69,12 @@ for line in sys.stdin:
             sys.exit(0)
         else:
             send({"id": identity, "result": {"turn": {"id": "native-turn"}}})
-            if scenario == "wait_cancel":
+            if scenario in ("wait_cancel", "budget"):
                 turns = [{"id": "native-turn", "status": "inProgress", "error": None, "itemsView": "full", "startedAt": 1, "completedAt": None,
                           "items": [{"id": "input", "type": "userMessage", "clientId": pending["clientUserMessageId"], "content": pending["input"]}]}]
+                if scenario == "budget":
+                    for index in range(129):
+                        send({"method":"item/started", "params":{"threadId":"thread", "turnId":"native-turn", "item":{"id":str(index),"type":"agentMessage","text":""}}})
             else:
                 finish()
     elif method == "turn/interrupt":

@@ -142,6 +142,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::DeriveSession { .. } => "/v1/session/derive",
         Command::GetRun { .. } => "/v1/run/get",
         Command::CancelRun { .. } => "/v1/run/cancel",
+        Command::RetryRunCommit { .. } => "/v1/run/retry-commit",
         Command::ResolveNativeApproval { .. } => "/v1/run/approval/resolve",
         Command::CreateCron { .. } => "/v1/cron/create",
         Command::SetCronEnabled { .. } => "/v1/cron/set-enabled",

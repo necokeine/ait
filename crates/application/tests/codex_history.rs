@@ -7,27 +7,13 @@ use ait_application::LocalControlService;
 use ait_contracts::{AgentConfiguration, Command, CommandResult};
 use ait_domain::{DomainError, SessionSource};
 use ait_ports::{
-    CodexHistorySource, CodexItemsView, CodexResumedThread, CodexThreadConnection,
+    CodexHistorySource, CodexItemsView, CodexPreparedThread, CodexThreadConnection,
     CodexThreadInvocation, CodexThreadSnapshot, CodexThreadSourceKind, CodexThreadWriter,
-    CodexTurnSnapshot, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-    WorkspaceProgressReporter,
+    CodexTurnSnapshot, WorkspaceProgressReporter,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::json;
-
-#[derive(Debug)]
-struct UnusedWorkspaceAgent;
-
-#[async_trait]
-impl WorkspaceAgent for UnusedWorkspaceAgent {
-    async fn invoke(
-        &self,
-        _request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        panic!("imported NativeCwd Session must not use the managed workspace agent")
-    }
-}
 
 #[derive(Debug)]
 struct NativeCodexFixture {
@@ -55,14 +41,14 @@ impl CodexHistorySource for NativeCodexFixture {
 
 struct FixtureConnection {
     request: CodexThreadInvocation,
-    resumed: CodexResumedThread,
+    resumed: CodexPreparedThread,
     snapshot: Arc<Mutex<CodexThreadSnapshot>>,
     writes: Arc<Mutex<Vec<CodexThreadInvocation>>>,
 }
 
 #[async_trait]
 impl CodexThreadWriter for NativeCodexFixture {
-    async fn resume(
+    async fn open(
         &self,
         request: CodexThreadInvocation,
     ) -> Result<Box<dyn CodexThreadConnection>, DomainError> {
@@ -79,7 +65,7 @@ impl CodexThreadWriter for NativeCodexFixture {
         history.writer_confirmed = true;
         history.status = json!({"type":"idle"});
         Ok(Box::new(FixtureConnection {
-            resumed: CodexResumedThread {
+            resumed: CodexPreparedThread {
                 history,
                 model: request.model.clone(),
                 model_provider: "openai".into(),
@@ -94,7 +80,7 @@ impl CodexThreadWriter for NativeCodexFixture {
 
 #[async_trait]
 impl CodexThreadConnection for FixtureConnection {
-    fn resumed(&self) -> &CodexResumedThread {
+    fn prepared(&self) -> &CodexPreparedThread {
         &self.resumed
     }
     async fn start(
@@ -124,6 +110,12 @@ impl CodexThreadConnection for FixtureConnection {
         });
         snapshot.writer_confirmed = true;
         snapshot.status = json!({"type":"idle"});
+        if snapshot.metadata.get("limited") == Some(&json!(true)) {
+            return Err(DomainError::invariant(
+                ait_domain::ErrorCode::RunLimitExceeded,
+                "output limit exceeded",
+            ));
+        }
         if snapshot.metadata.get("unknown") == Some(&json!(true)) {
             return Err(DomainError::invariant(
                 ait_domain::ErrorCode::CodexInputOutcomeUnknown,
@@ -222,10 +214,9 @@ async fn imported_thread_is_idempotent_and_continues_in_native_cwd() {
         writes: Arc::default(),
     });
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::with_workspace_agent(
+    let service = LocalControlService::new(
         Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
-        Arc::new(UnusedWorkspaceAgent),
     )
     .with_codex_history_source(fixture.clone())
     .with_codex_thread_writer(fixture.clone());
@@ -277,7 +268,7 @@ async fn imported_thread_is_idempotent_and_continues_in_native_cwd() {
     {
         let writes = fixture.writes.lock().unwrap();
         assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].thread_id, "native-thread");
+        assert_eq!(writes[0].thread_id.as_deref(), Some("native-thread"));
         assert_eq!(writes[0].cwd, cwd);
         assert_eq!(writes[0].prompt, "continue here");
     }
@@ -342,10 +333,9 @@ async fn imported_thread_rejects_input_while_provider_reports_external_activity(
         snapshot: Arc::new(Mutex::new(active)),
         writes: Arc::default(),
     });
-    let service = LocalControlService::with_workspace_agent(
+    let service = LocalControlService::new(
         Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
-        Arc::new(UnusedWorkspaceAgent),
     )
     .with_codex_history_source(fixture.clone())
     .with_codex_thread_writer(fixture.clone());
@@ -416,10 +406,9 @@ async fn setup() -> (
         snapshot: Arc::new(Mutex::new(snapshot(cwd.display().to_string()))),
         writes: Arc::default(),
     });
-    let service = LocalControlService::with_workspace_agent(
+    let service = LocalControlService::new(
         Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
-        Arc::new(UnusedWorkspaceAgent),
     )
     .with_codex_history_source(fixture.clone())
     .with_codex_thread_writer(fixture.clone());
@@ -713,10 +702,9 @@ async fn restart_reconciles_durable_unknown_input_without_replaying_it() {
         .metadata
         .insert("unknown".into(), json!(true));
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
-    let service = LocalControlService::with_workspace_agent(
+    let service = LocalControlService::new(
         Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
-        Arc::new(UnusedWorkspaceAgent),
     )
     .with_codex_history_source(fixture.clone())
     .with_codex_thread_writer(fixture.clone());
@@ -762,10 +750,9 @@ async fn restart_reconciles_durable_unknown_input_without_replaying_it() {
         )
         .await
         .unwrap();
-    let restarted = LocalControlService::with_workspace_agent(
+    let restarted = LocalControlService::new(
         Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
-        Arc::new(UnusedWorkspaceAgent),
     )
     .with_codex_history_source(fixture.clone())
     .with_codex_thread_writer(fixture.clone());
@@ -782,4 +769,46 @@ async fn restart_reconciles_durable_unknown_input_without_replaying_it() {
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn later_history_sync_preserves_a_local_resource_limit_outcome() {
+    let (_directory, fixture, service, session) = setup().await;
+    fixture
+        .snapshot
+        .lock()
+        .unwrap()
+        .metadata
+        .insert("limited".into(), json!(true));
+    let CommandResult::Run(run) = ok(
+        &service,
+        Command::SendMessage {
+            session_id: session.id,
+            text: "bounded output".into(),
+        },
+    )
+    .await
+    else {
+        panic!("Run");
+    };
+    assert_eq!(run.status, "limit_exceeded");
+    ok(&service, sync()).await;
+    let CommandResult::Run(reconciled) = ok(&service, Command::GetRun { run_id: run.id }).await
+    else {
+        panic!("Run");
+    };
+    assert_eq!(reconciled.status, "limit_exceeded");
+    assert_eq!(
+        reconciled.error.unwrap().code,
+        ait_domain::ErrorCode::RunLimitExceeded
+    );
+    assert_eq!(
+        messages(&service)
+            .await
+            .iter()
+            .filter(|message| message.text.as_deref() == Some("bounded output"))
+            .count(),
+        1
+    );
+    assert_eq!(fixture.writes.lock().unwrap().len(), 1);
 }

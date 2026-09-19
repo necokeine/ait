@@ -2,16 +2,19 @@
 use crate::{CodexThreadSnapshot, WorkspaceApproval, WorkspaceProgressReporter};
 use ait_domain::{DomainError, RunPermissionProfile};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-/// One writable continuation of an already-persisted native Codex Thread.
+/// One prepared writer for a persistent native Codex Thread.
 #[derive(Clone)]
 pub struct CodexThreadInvocation {
     /// Stable Ait Run identity and native input correlation value.
     pub request_id: String,
-    /// Authoritative native Thread identity passed to `thread/resume`.
-    pub thread_id: String,
+    /// Existing native Thread identity; absent creates a persistent Thread.
+    pub thread_id: Option<String>,
+    /// Developer instructions for a new Thread, never applied during resume.
+    pub developer_instructions: Option<String>,
     /// New user input only; the resumed Thread already owns its history.
     pub prompt: String,
     /// Native working directory retained for cross-client interoperability.
@@ -35,6 +38,7 @@ impl std::fmt::Debug for CodexThreadInvocation {
             .field("request_id", &self.request_id)
             .field("thread_id", &self.thread_id)
             .field("prompt", &self.prompt)
+            .field("developer_instructions", &self.developer_instructions)
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("reasoning_effort", &self.reasoning_effort)
@@ -46,8 +50,8 @@ impl std::fmt::Debug for CodexThreadInvocation {
 }
 
 /// Effective context verified after exclusive resume, before any input is sent.
-#[derive(Clone, Debug)]
-pub struct CodexResumedThread {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CodexPreparedThread {
     /// Full history observed while owning the writer.
     pub history: CodexThreadSnapshot,
     /// Actual model returned by app-server.
@@ -62,7 +66,7 @@ pub struct CodexResumedThread {
 #[async_trait]
 pub trait CodexThreadConnection: Send {
     /// Returns the verified admission snapshot; no new input has been sent.
-    fn resumed(&self) -> &CodexResumedThread;
+    fn prepared(&self) -> &CodexPreparedThread;
     /// Sends the admitted input once and rereads authoritative history, including failed Turns.
     /// The caller must durably mark the input send-unknown before calling this method.
     async fn start(
@@ -80,7 +84,7 @@ pub trait CodexThreadConnection: Send {
 pub trait CodexThreadWriter: Send + Sync {
     /// Acquires exclusive writer ownership and verifies history/configuration without sending input.
     /// Failure must release the process; a successful connection must be closed by its owner.
-    async fn resume(
+    async fn open(
         &self,
         request: CodexThreadInvocation,
     ) -> Result<Box<dyn CodexThreadConnection>, DomainError>;

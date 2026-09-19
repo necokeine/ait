@@ -223,6 +223,7 @@ impl CommandTransaction {
                     .ok_or_else(|| {
                         error(ErrorCode::InvalidCron, "enabled cron not found", false)
                     })?;
+                require_cron_executor(&tx.original, &cron.agent_id)?;
                 crate::control::project::worktrees::prepare_new_session_worktree(
                     workspace,
                     lease,
@@ -727,4 +728,18 @@ fn message_baselines(
                 .map(str::to_owned),
         })
         .collect()
+}
+
+fn require_cron_executor(state: &CronTriggerContext, agent_id: &str) -> Result<(), ApiError> {
+    let agent = crate::control::catalog::require_agent(state, agent_id)?;
+    if crate::control::catalog::validate_config(state, &agent.config)?.kind
+        == ait_contracts::AgentMode::Codex
+    {
+        return Err(error(
+            ErrorCode::CodexThreadCapabilityUnsupported,
+            "Codex Cron requires native Thread admission",
+            false,
+        ));
+    }
+    Ok(())
 }

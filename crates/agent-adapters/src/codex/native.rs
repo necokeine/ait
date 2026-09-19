@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use ait_domain::{DomainError, ErrorCode, SandboxAccess};
 use ait_ports::{
-    CodexResumedThread, CodexThreadConnection, CodexThreadInvocation, CodexThreadSnapshot,
+    CodexPreparedThread, CodexThreadConnection, CodexThreadInvocation, CodexThreadSnapshot,
     CodexThreadWriter, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 use async_trait::async_trait;
@@ -31,8 +31,11 @@ struct NativeConnection {
     lines: Lines<BufReader<ChildStdout>>,
     stdin: ChildStdin,
     invocation: CodexThreadInvocation,
-    resumed: Option<CodexResumedThread>,
+    thread_id: String,
+    resumed: Option<CodexPreparedThread>,
     next_read_id: i64,
+    fresh: bool,
+    limits: Option<super::CodexExecutionLimits>,
 }
 
 impl Drop for NativeConnection {
@@ -53,11 +56,17 @@ impl Drop for NativeConnection {
 
 #[async_trait]
 impl CodexThreadWriter for CodexAppServerAdapter {
-    async fn resume(
+    async fn open(
         &self,
         request: CodexThreadInvocation,
     ) -> Result<Box<dyn CodexThreadConnection>, DomainError> {
-        if !request.cwd.is_absolute() || request.thread_id.trim().is_empty() {
+        if !request.cwd.is_absolute()
+            || request
+                .thread_id
+                .as_ref()
+                .is_some_and(|id| id.trim().is_empty())
+            || (request.thread_id.is_some() && request.developer_instructions.is_some())
+        {
             return Err(domain_error(
                 ErrorCode::InvalidConfiguration,
                 "invalid native Thread admission",
@@ -79,8 +88,11 @@ impl CodexThreadWriter for CodexAppServerAdapter {
             lines: BufReader::new(stdout).lines(),
             stdin,
             resumed: None,
+            thread_id: String::new(),
             next_read_id: 1000,
+            fresh: request.thread_id.is_none(),
             invocation: request,
+            limits: self.config.execution_limits,
         };
         let cancellation = connection.invocation.cancellation.clone();
         let admission = tokio::select! {
@@ -103,17 +115,61 @@ impl NativeConnection {
             .await
             .map_err(pre_send_error)?;
         let request = &self.invocation;
-        // NativeCwd is observed and checked, never overwritten during resume.
-        write_message(&mut self.stdin, &json!({"id": 1, "method":"thread/resume", "params":{
-            "threadId":request.thread_id, "model":request.model,
+        let mut params = json!({
+            "model":request.model,
             "sandbox": sandbox(request.permission_profile.sandbox).as_wire_value(),
             "approvalPolicy": approval(&self.invocation).as_wire_value(), "approvalsReviewer":"user",
-        }})).await.map_err(pre_send_error)?;
+        });
+        let method = if let Some(id) = &request.thread_id {
+            // Preserve native cwd and developer instructions on continuation.
+            params["threadId"] = json!(id);
+            "thread/resume"
+        } else {
+            params["cwd"] = json!(request.cwd);
+            params["ephemeral"] = json!(false);
+            if let Some(instructions) = &request.developer_instructions {
+                params["developerInstructions"] = json!(instructions);
+            }
+            "thread/start"
+        };
+        write_message(
+            &mut self.stdin,
+            &json!({"id": 1, "method": method, "params": params}),
+        )
+        .await
+        .map_err(pre_send_error)?;
         let (result, _) = wait_for_response(&mut self.lines, 1)
             .await
             .map_err(pre_send_error)?;
         let (model, model_provider, reasoning_effort) = validate_resume(&result, request)?;
-        let history = self.read().await?;
+        result
+            .pointer("/thread/id")
+            .and_then(Value::as_str)
+            .expect("validated native Thread identity")
+            .clone_into(&mut self.thread_id);
+        let history = if self.fresh {
+            let mut history: CodexThreadSnapshot = serde_json::from_value(result["thread"].clone())
+                .map_err(|_| {
+                    domain_error(
+                        ErrorCode::CodexHistorySchemaUnsupported,
+                        "invalid thread/start metadata",
+                        false,
+                    )
+                })?;
+            if !history.turns.is_empty()
+                || history.status.get("type").and_then(Value::as_str) != Some("idle")
+            {
+                return Err(domain_error(
+                    ErrorCode::CodexThreadNotSynced,
+                    "new Thread is not empty and idle",
+                    false,
+                ));
+            }
+            history.writer_confirmed = true;
+            history
+        } else {
+            self.read().await?
+        };
         if !history.writer_confirmed {
             return Err(domain_error(
                 ErrorCode::CodexThreadActiveElsewhere,
@@ -121,7 +177,7 @@ impl NativeConnection {
                 false,
             ));
         }
-        self.resumed = Some(CodexResumedThread {
+        self.resumed = Some(CodexPreparedThread {
             history,
             model,
             model_provider,
@@ -134,12 +190,12 @@ impl NativeConnection {
         let request = &self.invocation;
         AgentRunRequest {
             request_id: request.request_id.clone(),
-            model: Some(self.resumed().model.clone()),
-            reasoning_effort: self.resumed().reasoning_effort.clone(),
+            model: Some(self.prepared().model.clone()),
+            reasoning_effort: self.prepared().reasoning_effort.clone(),
             project_instructions: None,
             prompt: request.prompt.clone(),
             cwd: request.cwd.clone(),
-            resume_thread_id: Some(request.thread_id.clone()),
+            resume_thread_id: Some(self.thread_id.clone()),
             ephemeral: false,
             sandbox: sandbox(request.permission_profile.sandbox),
             approval_policy: approval(request),
@@ -174,7 +230,7 @@ impl NativeConnection {
                     write_message(
                         &mut self.stdin,
                         &json!({"id":900, "method":"turn/interrupt", "params":{
-                            "threadId":self.invocation.thread_id, "turnId":turn.id,
+                            "threadId":self.thread_id, "turnId":turn.id,
                         }}),
                     )
                     .await
@@ -206,7 +262,7 @@ impl NativeConnection {
 
 #[async_trait]
 impl CodexThreadConnection for NativeConnection {
-    fn resumed(&self) -> &CodexResumedThread {
+    fn prepared(&self) -> &CodexPreparedThread {
         self.resumed
             .as_ref()
             .expect("connection is exposed only after verified resume")
@@ -223,27 +279,35 @@ impl CodexThreadConnection for NativeConnection {
                 false,
             ));
         }
+        self.fresh = false;
         let request = self.request();
         let cancellation = request.cancellation.clone();
         let approvals = Arc::new(WorkspaceApprovalBridge {
             run_id: self.invocation.request_id.clone(),
             sandbox: self.invocation.permission_profile.sandbox,
-            isolated_cwd: self.invocation.cwd.clone(),
-            project_cwd: self.invocation.cwd.clone(),
+            cwd: self.invocation.cwd.clone(),
             approvals: self.invocation.approvals.clone(),
         });
         let (sender, mut receiver) = mpsc::channel(128);
         let protocol = async {
             let result = tokio::select! {
                 biased;
-                result = drive_turn_protocol(&mut self.lines, &mut self.stdin, request, self.invocation.thread_id.clone(), approvals, &sender) => result,
+                result = drive_turn_protocol(&mut self.lines, &mut self.stdin, request, self.thread_id.clone(), approvals, &sender) => result,
                 () = cancellation.cancelled() => Err(crate::AdapterError::cancelled()),
             };
             drop(sender);
             result
         };
+        let limits = self.limits;
+        let mut exceeded = false;
+        let mut meter = super::budget::Meter::default();
         let progress = async {
             while let Some(Ok(event)) = receiver.recv().await {
+                if meter.exceeded(&event, limits) {
+                    exceeded = true;
+                    cancellation.cancel();
+                    continue;
+                }
                 match event {
                     AgentEvent::MessageDelta { item_id, delta } => {
                         progress
@@ -274,6 +338,21 @@ impl CodexThreadConnection for NativeConnection {
             }
         };
         let (result, ()) = tokio::join!(protocol, progress);
+        if exceeded {
+            // Interrupt/reconcile before reaping. Never convert the interrupted model
+            // result into a successful Run or trigger Git finalization.
+            let _ = self.final_history().await;
+            return Err(domain_error(
+                ErrorCode::RunLimitExceeded,
+                "native execution resource limit exceeded",
+                false,
+            ));
+        }
+        if result.as_ref().is_err_and(|failure| failure.code.is_some()) {
+            return Err(pre_send_error(
+                result.expect_err("checked rejected turn/start"),
+            ));
+        }
         // A terminal notification is never itself a full history snapshot.
         let history = self.final_history().await.map_err(|failure| {
             domain_error(ErrorCode::CodexInputOutcomeUnknown, failure.message, false)
@@ -296,10 +375,13 @@ impl CodexThreadConnection for NativeConnection {
     }
 
     async fn read(&mut self) -> Result<CodexThreadSnapshot, DomainError> {
+        if self.fresh {
+            return Ok(self.prepared().history.clone());
+        }
         let mut history = read_thread_history(
             &mut self.lines,
             &mut self.stdin,
-            &self.invocation.thread_id,
+            &self.thread_id,
             &mut self.next_read_id,
         )
         .await
@@ -340,7 +422,12 @@ fn validate_resume(
         SandboxAccess::WorkspaceWrite => "workspaceWrite",
         SandboxAccess::FullAccess => "dangerFullAccess",
     };
-    if result.pointer("/thread/id").and_then(Value::as_str) != Some(&request.thread_id)
+    let thread_id = result.pointer("/thread/id").and_then(Value::as_str);
+    if thread_id.is_none_or(str::is_empty)
+        || request
+            .thread_id
+            .as_deref()
+            .is_some_and(|expected| thread_id != Some(expected))
         || required("model") != Some(&request.model)
         || required("cwd").map(Path::new) != Some(request.cwd.as_path())
         || required("approvalPolicy") != Some(approval(request).as_wire_value())

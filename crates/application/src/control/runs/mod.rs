@@ -4,7 +4,7 @@ use crate::control::approvals::expire_pending_native_approvals;
 use crate::control::conversation::release_session;
 use crate::control::errors::error;
 use crate::control::events::pending;
-use crate::control::persistence::{HasRuns, HasSessions, HasWorkspaceRunJournals};
+use crate::control::persistence::{HasRuns, HasSessions};
 use ait_contracts::{ApiError, Command, CommandResult};
 use ait_domain::{ErrorCode, NativeApprovalStatus};
 use ait_domain::{LifecyclePhase, LifecycleStatus};
@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 
 pub(in crate::control) mod api_run;
 pub(in crate::control) mod finalization;
-pub(in crate::control) mod journal;
+pub(in crate::control) mod git_commit;
 pub(in crate::control) mod native;
 pub(in crate::control) mod progress;
 pub(in crate::control) mod recovery;
@@ -25,7 +25,7 @@ pub(in crate::control) fn is_terminal_run_status(status: ait_domain::LifecycleSt
 }
 
 pub(in crate::control) fn cancel_run(
-    state: &mut (impl HasRuns + HasSessions + HasWorkspaceRunJournals),
+    state: &mut (impl HasRuns + HasSessions),
     run_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
     let index = state
@@ -40,14 +40,19 @@ pub(in crate::control) fn cancel_run(
             false,
         ));
     }
-    if state.runs()[index].phase() == Some(LifecyclePhase::Integrating) {
+    let mut run = state.runs()[index].clone();
+    if run.phase() == Some(LifecyclePhase::Settling)
+        && run
+            .auto_commit
+            .as_ref()
+            .is_some_and(git_commit::AutoCommit::pending)
+    {
         return Err(error(
             ErrorCode::RunAlreadyTerminal,
-            "workspace integration has started; cancellation cannot replace its durable result",
+            "Codex execution finished; Git finalization is in progress",
             false,
         ));
     }
-    let mut run = state.runs()[index].clone();
     if run.execution().is_some() || run.codex_input.is_some() {
         run.set_status(LifecycleStatus::Cancelling);
         crate::control::tool_approvals::expire(&mut run, ait_domain::ToolApprovalState::Cancelled);
@@ -58,9 +63,6 @@ pub(in crate::control) fn cancel_run(
         ));
     }
     run.lease_epoch = run.lease_epoch.saturating_add(1);
-    if let Some(journal) = state.workspace_run_journals_mut().get_mut(&run.id) {
-        journal.lease_epoch = run.lease_epoch;
-    }
     run.set_status(LifecycleStatus::Cancelled);
     run.set_phase(Some(LifecyclePhase::Terminal));
     run.set_error(Some(error(
@@ -82,7 +84,7 @@ pub(in crate::control) fn cancel_run(
 
 impl LocalControlService {
     /// Stop new Run admission, then persist cancellation before signalling workers.
-    /// Integrating Git results retain their existing finalization authority.
+    /// Published native results retain their independent Git finalization authority.
     /// # Errors
     /// Returns a store failure if shutdown intent cannot be recorded.
     pub async fn begin_shutdown(&self) -> Result<(), ApiError> {

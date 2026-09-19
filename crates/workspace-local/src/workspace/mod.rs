@@ -1,5 +1,6 @@
 //! Control-plane Git/filesystem operations. Authorization remains in application.
 pub(crate) mod blocking;
+mod commit;
 mod git;
 mod worktrees;
 
@@ -92,6 +93,50 @@ impl WorkspaceLease for LocalLease {
 
 #[async_trait::async_trait]
 impl ProjectWorkspace for LocalProjectWorkspace {
+    async fn capture_run_commit(
+        &self,
+        path: &Path,
+    ) -> Result<ait_workspace::RunCommitBaseline, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
+        let path = path.to_owned();
+        operation
+            .run(move |ctx| {
+                let branch = ctx.git_symbolic_head(&path)?;
+                let baseline = ctx.clean_git_baseline(&path)?;
+                let captured = ait_workspace::RunCommitBaseline {
+                    head: baseline.commit,
+                    index_tree: baseline.index_tree,
+                    branch,
+                };
+                ctx.verify_commit_baseline(&path, &captured)?;
+                Ok(captured)
+            })
+            .await
+    }
+
+    async fn prepare_run_commit(
+        &self,
+        path: &Path,
+        baseline: &ait_workspace::RunCommitBaseline,
+        run_id: &str,
+    ) -> Result<Option<ait_workspace::RunCommitPlan>, DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
+        let (path, baseline, run_id) = (path.to_owned(), baseline.clone(), run_id.to_owned());
+        operation
+            .run(move |ctx| ctx.prepare_commit(&path, &baseline, &run_id))
+            .await
+    }
+    async fn publish_run_commit(
+        &self,
+        path: &Path,
+        plan: &ait_workspace::RunCommitPlan,
+    ) -> Result<(), DomainError> {
+        let operation = Operation::new(&self.options, ErrorCode::ProjectGitHeadUnavailable);
+        let (path, plan) = (path.to_owned(), plan.clone());
+        operation
+            .run(move |ctx| ctx.publish_commit(&path, &plan))
+            .await
+    }
     async fn prepare_git_root(
         &self,
         path: &Path,

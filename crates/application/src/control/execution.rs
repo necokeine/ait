@@ -46,12 +46,18 @@ impl LocalControlService {
         let workspace_lease = self.acquire_workspace_write(&command).await?;
         let control = Arc::new(RunControl::new());
         let native = self
-            .admit_native_command(&command, &control, workspace_lease.as_ref())
+            .admit_native_command(
+                &command,
+                &control,
+                workspace_lease.as_ref(),
+                derive_source_locked,
+            )
             .await?;
-        let (outcome, connection) = if let Some(native) = native {
+        let (outcome, connection, native_lease) = if let Some(native) = native {
             (
                 CommandOutcome::for_new_run(native.run),
                 Some(native.connection),
+                native.execution_lease,
             )
         } else {
             (
@@ -61,6 +67,7 @@ impl LocalControlService {
                     derive_source_locked,
                 )
                 .await?,
+                None,
                 None,
             )
         };
@@ -83,6 +90,7 @@ impl LocalControlService {
                     let _owned = (
                         session_admission,
                         workspace_lease,
+                        native_lease,
                         invocation,
                         control_guard,
                     );
@@ -109,6 +117,7 @@ impl LocalControlService {
         command: Command,
     ) -> Result<CommandResult, ApiError> {
         match &command {
+            Command::RetryRunCommit { run_id } => return self.retry_run_commit(run_id).await,
             Command::ListCodexThreads { provider_id } => {
                 return self.list_codex_threads(provider_id).await;
             }
@@ -162,12 +171,18 @@ impl LocalControlService {
         // Agent invocation. Only the command that created the Run can request it.
         let control = Arc::new(RunControl::new());
         let native = self
-            .admit_native_command(&command, &control, workspace_lease.as_ref())
+            .admit_native_command(
+                &command,
+                &control,
+                workspace_lease.as_ref(),
+                derive_source_locked,
+            )
             .await?;
-        let (outcome, connection) = if let Some(native) = native {
+        let (outcome, connection, native_lease) = if let Some(native) = native {
             (
                 CommandOutcome::for_new_run(native.run),
                 Some(native.connection),
+                native.execution_lease,
             )
         } else {
             (
@@ -177,6 +192,7 @@ impl LocalControlService {
                     derive_source_locked,
                 )
                 .await?,
+                None,
                 None,
             )
         };
@@ -202,6 +218,7 @@ impl LocalControlService {
                     let _owned = (
                         session_admission,
                         workspace_lease,
+                        native_lease,
                         invocation,
                         control_guard,
                     );

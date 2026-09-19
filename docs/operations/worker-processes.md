@@ -1,14 +1,15 @@
 # 受监督的 Run worker（NEC-248）
 
-生产 daemon 为每个 Run 启动 `ait-worker --stdio --protocol-major 1`。
-交互式 Send/Fork/Derive 和启动恢复使用同一个 `WorkerSupervisor`：API Provider 经
-`RunDispatcher` 注入，Codex 经该对象实现的 `WorkspaceAgent` 注入。HTTP/SSE、设置、
+生产 daemon 使用私有协议 2.0 启动 `ait-worker --stdio --protocol-major 2`。
+API Provider 经 `RunDispatcher` 注入；所有 Codex 请求通过同一个 `WorkerSupervisor` 的
+原生 Thread writer、history、model catalog 和 title ports 进入 worker。HTTP/SSE、设置、
 审批、SQLite 和 outbox 留在 daemon；worker 的正常依赖图不包含 storage-sqlite。
-模型目录发现、Session 标题生成仍是 daemon 的辅助操作，不属于 Run 执行。
-遵循 ADR-013：有 Session 的 bootstrap cwd 来自经过校验的 `<Project>/.ait/<session-id>`，
-API 工具与 Codex 结算都在该固定 worktree 中执行；NEC-304 起每个新 Cron occurrence 也先
-创建独立 Session，因此使用对应 Session worktree。仅旧版已持久化的无 Session Run 使用
-Project 主工作区。不同 Session 的文件/HEAD 不互相推进，Project 主检出保持成员所有。
+模型发现、历史查询和标题是独立辅助 scope，不创建伪 Run；daemon 不直接启动 app-server。
+
+遵循 [ADR-017](../decisions/adr-017-unified-native-codex-worker.md)：新 Codex Session 使用固定
+`<Project>/.ait/<session-id>` worktree；导入 Thread 保持原生 cwd。每 Run 临时 worktree、
+变更回集、失败回滚及路径改写已经删除。Codex 的失败或取消不会回滚文件修改。
+API Provider 的工具循环与 Cron Session 语义保留；Codex Cron 与原生 fork/steer 当前明确拒绝。
 
 ## 构建与启动
 
@@ -30,33 +31,35 @@ shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使
 
 ## 提交与恢复
 
-- v1 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
+- v2 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
   `ait-ipc::mapping` 显式转换。每个 frame 是 u32 big-endian 长度和 UTF-8 JSON。
 - `hello` 声明 minor 区间、支持/required capabilities、进程 PID 和 frame 上限；
   `hello_ack` 显式选择共同 minor、capability 交集和较小 frame 上限。每个 envelope 携带
   major/minor，协商后版本漂移会被拒绝；同 major 未知 optional field/capability 被忽略，
   未知 required capability 和消息 kind 继续失败。握手后每个 frame 还携带
-  `Run ID + worker_instance_id + lease_epoch`；每方向 sequence 严格递增。
+  `scope_id + worker_instance_id + lease_epoch`；每方向 sequence 严格递增。
   RPC request ID 严格递增，ACK 必须同时匹配 request ID 和 operation ID。
 - daemon 的 `ControlRunStore::commit_worker` 在同一 SQLite CAS 中提交 Message、工具状态、
   Run、Session 和 receipt。相同 operation ID/内容返回原 receipt；换内容、旧 lease、
   错误 Run 或非法转换被拒绝。工具 intent ACK 在执行前；已知 outcome ACK 在 ToolResult 前；
   terminal ACK 在 worker 的完成报告前。
-- Codex 的 result checkpoint 与 integration claim 在既有 `WorkspaceRunJournal` 中原子
-  保存 worker fence 和 operation receipt。RPC 重试缓存只负责同连接合并；跨进程恢复
-  依赖 SQLite journal。native approval 使用既有稳定审批 ID 和持久决定；progress 仍是
-  有界展示投影，不是新的领域状态机。
+- Codex Worker 创建或恢复持久 Thread 并持有 writer。daemon 先持久化输入 intent，再发送
+  `Start`；发送前将状态置为 send-unknown。完成后通过 `thread/read` 元信息与
+  `thread/turns/list(itemsView:full)` 取得权威历史，关闭 writer 后原子发布 Message 与 Run。
+  clientUserMessageId 是归因字段，不是重放保证。历史结果采用有序 16 KiB 分块，总量不超过
+  64 MiB；writer ownership proof 与展示字段分开传递。
 - API worker 异常退出最多重新 claim 三个 epoch，始终使用原 Run ID 和原
   `RunCoordinator`。已确认 Message/ToolResult 不再生成；结果未知的工具走原 reconcile
   策略，禁止猜测成功或盲目重放副作用。终态已提交而 ACK 丢失时，以 SQLite 为准。
-- Codex 在 checkpoint 之后丢失 worker，立即走 NEC-212 的 recovery claim 和 Git
-  settlement，不再次调用 Codex。HEAD、index、Run ref 或 rollback material 不满足
-  恢复条件时保留材料并中断，释放 Session；不要手工重发相同任务来掩盖不确定结果。
-  checkpoint 之前的孤立提交不能凭空转换成已确认答复。
+- Codex 恢复只读取和对账原 Thread。queued 且未发送的输入明确终结；发送结果未知的输入
+  不会重发。`codex.auto_commit` 默认关闭，在准入时冻结；启用后仅对成功 Run 独立收尾。
+  精确 commit plan 在更新 Git ref 前持久化，崩溃或 ACK 丢失后复用原 commit ID。
+  Git 失败保留模型的 completed 状态，CLI `ait run retry-commit --run-id …` 和桌面按钮
+  只重试 Git。起始脏目录或变化的 Git 基线跳过自动提交，无变化也跳过；Message 不携带提交结果。
 
 连续文本 delta 在 worker 中按同一 item 合并（4 KiB 或下一事件观察到 40 ms 间隔时 flush，
 完整事件前强制 flush），避免每个字符的 IPC 往返。进度回放仍使用 daemon durable cursor 和既有 SSE 接口。慢 UI 消费者不会成为 worker
-的提交 ACK 接收者；丢失的临时 delta 由 checkpoint/最终 Message 校正。
+的提交 ACK 接收者；丢失的临时 delta 由权威历史/最终 Message 校正。
 
 ## 限制与权限
 
@@ -81,7 +84,7 @@ API shell 能力。审批只授权原 snapshot 已允许的动作，不能提高
 金额上限通过 daemon 的可选 `--max-run-cost-micros` 启用（百万分之一账单币种单位）。
 worker 在任何新 Provider 调用前要求可核验的定价/费用契约；当前 API 与 Codex 不提供
 该契约，因此启用金额上限会拒绝这些调用，确保不以猜测价格放行。已确认的工具结果和
-Codex checkpoint/Git 恢复仍可结算。该选项同时停用自动 AI Session 标题生成，避免辅助
+已发布 Codex 历史的 Git 恢复仍可结算。该选项同时停用自动 AI Session 标题生成，避免辅助
 调用绕过费用保护；手工命名仍可用。未启用时保留原 `RunBudget.cost_budget`/usage 行为，
 不承诺金额上限；后续需要价格契约才能在指定金额内继续使用这些 Provider。token 上限
 基于 Provider 上报，已发出的请求可能超出剩余额度。
@@ -90,8 +93,8 @@ Codex checkpoint/Git 恢复仍可结算。该选项同时停用自动 AI Session
 
 普通取消先持久化，再通过私有管道传播。heartbeat timeout、控制 EOF、非零退出、协议
 污染与硬 deadline 都关闭管道并回收子进程；daemon 的 durable state 决定失败/恢复/终态。
-SIGINT/SIGTERM 停止新交互准入、记录取消并 drain，已经取得 integration gate 的 Git
-结算仍由原规则裁决。中途退出的 daemon 下次启动会扫描并恢复原 Run。
+SIGINT/SIGTERM 停止新交互准入、记录取消并 drain。已经发布的模型结果与精确 Git plan
+在下次启动时独立对账，不重放输入。
 
 Unix 使用独立 process group；daemon 在 leader 正常退出后仍清理组内后代，worker
 发现父管道 EOF 也清理自身组。Windows 使用 process-wrap 的 kill-on-close Job Object。
@@ -131,17 +134,18 @@ npm test
 - `bins/worker/tests/process_providers.rs`：真实 worker + 拆分 SQLite + 离线 OpenAI/DeepSeek/Gemini/MiniMax HTTP；
   ToolUse → ToolResult → final，18 个 API ACK kill 边界、durable receipt 重放/冲突/旧 fence，
   各类敏感 ToolUse 对全局/Project DB/WAL、事件、checkpoint、export 的回归。
-- `bins/worker/tests/process_codex.rs`：9 个 native checkpoint/integration/finished kill 边界，
-  一次 Provider 调用、唯一 Git commit/Message、原 Run ID 和 Session 释放。
+- `bins/worker/tests/process_codex.rs`：真实 Worker 的新建/续聊、发送前关闭、完整历史读取与进程回收。
+- `crates/application/tests/native_execution.rs` 与 workspace-local commit tests：固定 cwd、
+  新输入、Git-only 重试、精确 commit 身份、HEAD/index/分支竞态和自己的锁恢复。
 - `bins/worker/tests/completes_run.rs`、`credential_process.rs`、`crates/ipc` 单元测试：真实
   stdio/父管道 EOF、双向跨 minor、错误版本/能力、超限/畸形/序列回退/污染/非零退出/超时、后代回收、
   慢消费者和 argv/env/stderr 脱敏。
 - `bins/daemon/tests/codex_http.rs`：生产 HTTP → dispatcher → worker → fake Codex，4000 个
-  delta 的 cursor replay、启动恢复期间可用的 readiness 和唯一执行。
+  delta 的 cursor replay、启动恢复期间可用的 readiness 和未发送输入不重放。
   macOS 还覆盖精简 GUI PATH 下，登录 shell 提供的含空格安装路径、PATH 解释器、
   daemon 模型发现和完整 worker Run。
-  既有 runtime、host tools、审批及 NEC-212 的故障/取消/Git settlement 测试继续执行。
+  runtime、host tools 与原生审批的回归继续执行；旧 NEC-212 每 Run worktree 结算已移除。
 
 ## API 工具审批
 
-私有协议 minor 3 要求 `tool-grants-v1` 与 `tool-interactions-v1`。Approval、提问与计划审阅 RPC 等待期间心跳/控制面继续服务；决定、单次 grant 消费及交互答案由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，交互按原 ToolExecution ID 恢复，Running 工具的未知结果不重放。等待期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md)、[NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md) 和 [NEC-313 ADR](../decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。
+私有协议 2.0 要求 `tool-grants-v1`、`tool-interactions-v1` 与 `native-codex-v1`。Approval、提问与计划审阅 RPC 等待期间心跳/控制面继续服务；决定、单次 grant 消费及交互答案由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，交互按原 ToolExecution ID 恢复，Running 工具的未知结果不重放。等待期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md)、[NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md) 和 [NEC-313 ADR](../decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。

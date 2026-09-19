@@ -1,8 +1,8 @@
 //! Composition boundary for executing one supervised AIT Run.
 
+mod codex;
 mod privacy;
 pub mod stdio;
-mod workspace;
 
 use std::sync::Arc;
 

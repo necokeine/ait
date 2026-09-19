@@ -254,6 +254,20 @@ pub(in crate::control) async fn prepare_new_session_worktree(
     require_agent(state, agent_id)?;
     let project = require_project_view(state, project_id)?;
     validate_session_message(state, project_id, message_id)?;
+    if state
+        .messages()
+        .iter()
+        .find(|message| message.id == message_id)
+        .and_then(|message| message.data.as_ref())
+        .and_then(|data| data.pointer("/native_message/metadata/codex"))
+        .is_some()
+    {
+        return Err(error(
+            ErrorCode::CodexForkBoundaryUnsupported,
+            "native Thread branching is not supported yet",
+            false,
+        ));
+    }
     let baseline = message_workspace_commit(state, project, message_id)?;
     ensure_session_worktree(workspace, lease.clone(), project, id, &baseline, created).await
 }

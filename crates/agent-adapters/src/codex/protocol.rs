@@ -8,7 +8,6 @@ use ait_domain::{
     NativeNetworkProtocol, ProviderModel,
 };
 use ait_ports::{CodexItemsView, CodexThreadSnapshot, CodexThreadSourceKind, CodexTurnSnapshot};
-use ait_tools::codex::CodexToolSet;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{
@@ -277,7 +276,7 @@ where
         &json!({
             "method": "thread/read",
             "id": read_id,
-            "params": {"threadId": thread_id, "includeTurns": true}
+            "params": {"threadId": thread_id, "includeTurns": false}
         }),
     )
     .await?;
@@ -363,15 +362,11 @@ where
     initialize_protocol(&mut lines, &mut writer, client).await?;
 
     // Keep the model-specific base prompt and native tools owned by codex-core.
-    // Apply the same Ait/Project developer layer on new and resumed threads.
     let mut thread_params = json!({
         "model": request.model.as_deref(),
-        "cwd": request.cwd,
         "sandbox": request.sandbox.as_wire_value(),
         "approvalPolicy": request.approval_policy.as_wire_value(),
         "approvalsReviewer": "user",
-        "developerInstructions": CodexToolSet
-            .developer_instructions(request.project_instructions.as_deref()),
     });
     let thread_method;
     if let Some(thread_id) = &request.resume_thread_id {
@@ -379,6 +374,10 @@ where
         thread_params["threadId"] = json!(thread_id);
     } else {
         thread_method = "thread/start";
+        thread_params["cwd"] = json!(request.cwd);
+        if let Some(instructions) = &request.project_instructions {
+            thread_params["developerInstructions"] = json!(instructions);
+        }
         thread_params["ephemeral"] = json!(request.ephemeral);
     }
     write_message(
@@ -440,7 +439,6 @@ where
         "threadId": thread_id,
         "input": [{"type": "text", "text": request.prompt}],
         "clientUserMessageId": request.request_id,
-        "cwd": request.cwd,
         "approvalPolicy": request.approval_policy.as_wire_value(),
         "approvalsReviewer": "user",
         // Explicitly replace native defaults, including user-configured write

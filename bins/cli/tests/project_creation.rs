@@ -324,10 +324,11 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     let session_workdir = PathBuf::from(session["workdir"].as_str().unwrap());
     assert_eq!(session_workdir, directory.join(".ait/hello-world"));
 
-    // Permissions are snapshotted at Run admission. Defaults prohibit code writes.
+    // Permissions and optional Git finalization are frozen at Run admission.
     let settings = workflow.cli("settings", &["config", "get"], 20).await;
     let mut values = settings["values"].clone();
     values["permissions.sandbox"] = json!("workspace_write");
+    values["codex.auto_commit"] = json!(true);
     let settings_path = workflow.root.join("settings-values.json");
     fs::write(&settings_path, values.to_string()).unwrap();
     workflow
@@ -366,16 +367,30 @@ async fn wf10_create_project_with_real_codex_and_commit() {
     assert_eq!(entity(&snapshot, "runs", &run["id"]), &run);
     let assistant = entity(&snapshot, "messages", &run["last_message_id"]);
     assert_eq!(assistant["role"], "assistant");
-    assert!(!assistant["text"].as_str().unwrap().trim().is_empty());
-    let user = entity(&snapshot, "messages", &run["base_message_id"]);
-    assert_eq!(user["git_commit"], initial_commit);
+    assert!(
+        assistant["data"]["native_message"]["sub_messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["payload"]["text"]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty()))
+    );
+    let user = snapshot["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["text"] == PROMPT)
+        .unwrap();
+    assert!(user["git_commit"].is_null());
     let final_session = entity(&snapshot, "sessions", &session["id"]);
     assert_eq!(final_session["current_message_id"], assistant["id"]);
     assert!(final_session["active_run_id"].is_null());
 
     let (head, output) =
         verify_program_and_commit(&session_workdir, &directory, &initial_commit).await;
-    assert_eq!(assistant["data"]["codex"]["commit_id"], head);
+    assert_eq!(run["git_commit"]["status"], "committed");
+    assert_eq!(run["git_commit"]["commit_id"], head);
     let report = json!({
         "workflow": "WF-10", "result": "passed", "model": model,
         "project_id": project["id"], "run_id": run["id"], "run_status": run["status"],

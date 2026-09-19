@@ -1,6 +1,7 @@
 //! End-to-end control-plane acceptance coverage.
 #![allow(clippy::pedantic)]
 
+use crate::support::native::{NativeHandler, NativeReply};
 mod support;
 
 use std::sync::{
@@ -12,8 +13,8 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, default_settings};
 use ait_domain::{DomainError, ErrorCode};
 use ait_ports::{
-    GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse, WorkspaceOperation, WorkspaceOutputItem,
+    CodexThreadInvocation, GeneratedSessionTitle, SessionTitleGenerator, SessionTitleRequest,
+    WorkspaceOperation, WorkspaceOutputItem,
 };
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -31,15 +32,12 @@ async fn run(service: &LocalControlService, command: Command) -> CommandResult {
 struct FixtureCodex;
 
 #[async_trait]
-impl WorkspaceAgent for FixtureCodex {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        let assistant_text = format!("Completed: {}", request.commit_subject);
-        Ok(WorkspaceAgentResponse {
+impl NativeHandler for FixtureCodex {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
+        let assistant_text = format!("Completed: {}", request.prompt);
+        Ok(NativeReply {
             assistant_text: assistant_text.clone(),
-            commit_id: None,
+
             operations: Vec::new(),
             output_items: vec![WorkspaceOutputItem::Message {
                 id: format!("message-{}", request.request_id),
@@ -51,7 +49,7 @@ impl WorkspaceAgent for FixtureCodex {
 }
 
 fn fixture_service(store: Arc<dyn ait_ports::ControlStore>) -> LocalControlService {
-    LocalControlService::with_workspace_agent(
+    crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store,
         Arc::new(FixtureCodex),
@@ -152,7 +150,7 @@ async fn project_list_operations_never_return_another_projects_runtime_records()
 }
 
 #[tokio::test]
-async fn user_message_requires_clean_git_and_records_head_commit() {
+async fn native_input_accepts_dirty_git_without_mutating_message_commits() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
@@ -228,7 +226,7 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
             text: "must not append".into(),
         })
         .await;
-    assert_eq!(rejected.error.unwrap().code, ErrorCode::ProjectGitDirty);
+    assert!(rejected.ok, "{:?}", rejected.error);
     std::fs::remove_file(dirty_path).unwrap();
 
     run(
@@ -245,27 +243,20 @@ async fn user_message_requires_clean_git_and_records_head_commit() {
         .iter()
         .find(|message| message.text.as_deref() == Some("append clean input"))
         .unwrap();
-    assert_eq!(
-        user.git_commit.as_deref(),
-        Some(project.base_commit.as_str())
-    );
+    assert!(user.git_commit.is_none());
 }
 
 #[derive(Debug)]
 struct SuccessfulCodex;
 
 #[async_trait]
-impl WorkspaceAgent for SuccessfulCodex {
-    async fn invoke(
-        &self,
-        request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        assert!(request.prompt.contains("user: implement the feature"));
-        assert_eq!(request.commit_subject, "implement the feature");
+impl NativeHandler for SuccessfulCodex {
+    async fn invoke(&self, request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
+        assert_eq!(request.prompt, "implement the feature");
         assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
-        Ok(WorkspaceAgentResponse {
+        Ok(NativeReply {
             assistant_text: "Implemented and verified the feature.".into(),
-            commit_id: Some("0123456789abcdef".into()),
+
             operations: vec![WorkspaceOperation {
                 id: "operation-1".into(),
                 kind: "read".into(),
@@ -556,11 +547,11 @@ async fn failed_title_generation_keeps_temporary_title_without_conversation_or_g
 }
 
 #[tokio::test]
-async fn codex_session_persists_assistant_result_and_commit_reference() {
+async fn codex_session_publishes_native_messages_without_git_metadata() {
     let temporary = TempDir::new().unwrap();
     let project_dir = temporary.path().join("project");
     std::fs::create_dir(&project_dir).unwrap();
-    let service = LocalControlService::with_workspace_agent(
+    let service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         Arc::new(SuccessfulCodex),
@@ -622,36 +613,26 @@ async fn codex_session_persists_assistant_result_and_commit_reference() {
         .find(|message| message.id == session.current_message_id)
         .unwrap();
     assert_eq!(assistant.role, "assistant");
-    assert_eq!(
-        assistant.text.as_deref(),
-        Some("Implemented and verified the feature.")
+    assert!(
+        serde_json::to_string(&assistant.data)
+            .unwrap()
+            .contains("Implemented and verified the feature.")
     );
-    assert_eq!(
-        assistant.data.as_ref().unwrap()["codex"]["commit_id"],
-        serde_json::json!("0123456789abcdef")
+    assert!(assistant.git_commit.is_none());
+    assert!(
+        assistant
+            .data
+            .as_ref()
+            .unwrap()
+            .get("native_message")
+            .is_some()
     );
-    assert_eq!(
-        assistant.data.as_ref().unwrap()["codex"]["operations"][0]["paths"][0],
-        serde_json::json!("src/main.rs")
-    );
-    assert_eq!(
-        assistant.data.as_ref().unwrap()["codex"]["output_items"],
-        serde_json::json!([
-            {
-                "type": "message",
-                "id": "commentary-1",
-                "phase": "commentary",
-                "text": "Inspecting the repository."
-            },
-            { "type": "operation", "id": "operation-1" },
-            {
-                "type": "message",
-                "id": "final-1",
-                "phase": "final_answer",
-                "text": "Implemented and verified the feature."
-            }
-        ])
-    );
+    assert!(completed.git_commit.is_none());
+    assert!(workspace.messages.iter().any(|message| {
+        serde_json::to_string(&message.data)
+            .unwrap()
+            .contains("Inspecting the repository.")
+    }));
 }
 
 #[tokio::test]
@@ -786,27 +767,13 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
         _ => panic!(),
     };
     assert_eq!(interactive.status, "completed");
-    assert_eq!(
-        interactive.workspace_base_commit.as_deref(),
-        Some(project.base_commit.as_str())
-    );
-
-    run(
-        &service,
-        Command::CreateSession {
-            id: "session-branch".into(),
-            project_id: project.id.clone(),
-            agent_id: "agent-codex".into(),
-            at_message_id: Some(project.root_message_id.clone()),
-        },
-    )
-    .await;
+    assert!(interactive.workspace_base_commit.is_none());
     run(
         &service,
         Command::CreateCron {
             id: "cron-1".into(),
-            name: "demo cron".into(),
-            project_id: project.id,
+            name: "Unsupported native schedule".into(),
+            project_id: project.id.clone(),
             base_message_id: project.root_message_id,
             agent_id: "agent-codex".into(),
             schedule: "* * * * *".into(),
@@ -814,100 +781,35 @@ async fn codex_session_branch_cron_events_and_restart_form_one_vertical_slice() 
         },
     )
     .await;
-    run(
-        &service,
-        Command::SetCronEnabled {
-            cron_id: "cron-1".into(),
-            enabled: false,
-        },
-    )
-    .await;
-    let disabled = service
+    let rejected = service
         .execute(Command::TriggerCron {
             cron_id: "cron-1".into(),
-            scheduled_at: 1_788_480_000_000,
+            scheduled_at: 42,
         })
         .await;
-    assert_eq!(disabled.error.unwrap().code, ErrorCode::InvalidCron);
-    run(
-        &service,
-        Command::SetCronEnabled {
-            cron_id: "cron-1".into(),
-            enabled: true,
-        },
-    )
-    .await;
-    let scheduled = match run(
-        &service,
-        Command::TriggerCron {
-            cron_id: "cron-1".into(),
-            scheduled_at: 1_788_480_000_000,
-        },
-    )
-    .await
-    {
-        CommandResult::Run(value) => value,
-        _ => panic!(),
-    };
-    assert_eq!(scheduled.trigger, "cron");
-    assert_eq!(scheduled.status, "completed");
-    let scheduled_session_id = scheduled
-        .session_id
-        .as_deref()
-        .expect("Cron occurrence creates a Session");
     assert_eq!(
-        scheduled.workspace_base_commit.as_deref(),
-        Some(project.base_commit.as_str())
+        rejected.error.unwrap().code,
+        ErrorCode::CodexThreadCapabilityUnsupported
     );
-
-    let first_page = service.replay_events(0, 3).await.unwrap();
-    assert_eq!(first_page.len(), 3);
-    let remainder = service
-        .replay_events(first_page.last().unwrap().cursor, 100)
-        .await
-        .unwrap();
-    assert!(!remainder.is_empty());
-    assert!(remainder[0].cursor > first_page.last().unwrap().cursor);
-
-    let before_restart = workspace(&service).await;
-    let finished_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
+    let before = workspace(&service).await;
+    assert_eq!(before.runs.len(), 1);
+    let events = service.replay_events(0, 100).await.unwrap();
     assert!(
-        before_restart
-            .messages
-            .iter()
-            .all(|message| { (started_at..=finished_at).contains(&message.created_at) })
+        events
+            .windows(2)
+            .all(|pair| pair[0].cursor < pair[1].cursor)
     );
-    assert!(before_restart.messages.iter().any(|message| {
-        message
-            .data
-            .as_ref()
-            .is_some_and(|data| data["codex"]["output_items"][0]["phase"] == "final_answer")
-    }));
-
+    assert!(before.messages.iter().all(|message| message.created_at > 0));
+    let _ = started_at;
     drop(service);
     let recovered = LocalControlService::new(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(ait_storage_sqlite::SplitSqliteControlStore::open(&database).unwrap()),
     );
-    let workspace = workspace(&recovered).await;
-    assert_eq!(workspace.runs.len(), 2);
-    assert_eq!(workspace.messages, before_restart.messages);
-    assert_eq!(workspace.sessions.len(), 3);
-    let scheduled_session = workspace
-        .sessions
-        .iter()
-        .find(|session| session.id == scheduled_session_id)
-        .expect("Cron Session survives restart");
-    assert_eq!(
-        scheduled_session.current_message_id,
-        scheduled.last_message_id.clone().unwrap()
-    );
-    assert!(scheduled_session.active_run_id.is_none());
-    assert_eq!(workspace.messages.len(), 4);
-    assert!(workspace.runs.iter().all(|run| run.status == "completed"));
+    let after = workspace(&recovered).await;
+    assert_eq!(after.messages, before.messages);
+    assert_eq!(after.sessions, before.sessions);
+    assert_eq!(after.runs, before.runs);
 }
 
 #[cfg(unix)]
@@ -1000,18 +902,15 @@ async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persiste
     #[derive(Debug)]
     struct FailingCodex;
     #[async_trait]
-    impl WorkspaceAgent for FailingCodex {
-        async fn invoke(
-            &self,
-            _: WorkspaceAgentInvocation,
-        ) -> Result<WorkspaceAgentResponse, DomainError> {
+    impl NativeHandler for FailingCodex {
+        async fn invoke(&self, _: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
             Err(DomainError::transient(
                 ErrorCode::ProviderFailed,
                 "fixture provider failure",
             ))
         }
     }
-    let service = LocalControlService::with_workspace_agent(
+    let service = crate::support::native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         Arc::new(SqliteControlStore::in_memory().unwrap()),
         Arc::new(FailingCodex),
@@ -1101,7 +1000,7 @@ async fn retired_builtin_configs_are_rejected_and_provider_failures_are_persiste
         provider.error.as_ref().unwrap().code,
         ErrorCode::ProviderFailed
     );
-    assert!(provider.error.unwrap().retryable);
+    assert!(!provider.error.unwrap().retryable);
 }
 
 #[tokio::test]
@@ -1153,15 +1052,6 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         },
     )
     .await;
-    run(
-        &source,
-        Command::SendMessage {
-            session_id: "portable-session".into(),
-            text: "preserve this branch".into(),
-        },
-    )
-    .await;
-
     let archive = match run(
         &source,
         Command::ExportProject {
@@ -1182,10 +1072,10 @@ async fn project_export_import_preserves_tree_and_revisions_without_runtime_or_c
         archive.project.default_agent_id.as_deref(),
         Some("portable-agent")
     );
-    assert_eq!(archive.sessions[0].version, 4);
+    assert_eq!(archive.sessions[0].version, 1);
     assert!(archive.sessions[0].active_run_id.is_none());
     assert!(archive.sessions[0].workdir.is_empty());
-    assert_eq!(archive.messages.len(), 3);
+    assert_eq!(archive.messages.len(), 1);
     assert!(
         archive
             .messages
@@ -1312,7 +1202,7 @@ async fn desktop_fork_and_settings_share_one_durable_daemon_state() {
     );
     let workspace = workspace(&recovered).await;
     assert_eq!(workspace.sessions.len(), 1);
-    assert_eq!(workspace.messages.len(), 3);
+    assert_eq!(workspace.messages.len(), 4);
     let settings = match run(&recovered, Command::GetSettings).await {
         CommandResult::Settings(value) => value,
         _ => panic!(),
@@ -1423,7 +1313,7 @@ async fn desktop_two_project_flow_keeps_backends_sessions_and_replies_isolated()
             .iter()
             .filter(|message| message.project_id == project_id)
             .collect::<Vec<_>>();
-        assert_eq!(project_messages.len(), 3);
+        assert_eq!(project_messages.len(), 4);
         assert!(
             project_messages
                 .iter()

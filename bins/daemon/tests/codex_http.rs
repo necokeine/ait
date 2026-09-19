@@ -18,8 +18,7 @@ use ait_application::LocalControlService;
 use ait_contracts::{Command as ControlCommand, CommandResult};
 use ait_domain::DomainError;
 use ait_ports::{
-    ControlChange, ControlFilter, ControlRecordKind, ControlStore, WorkspaceAgent,
-    WorkspaceAgentInvocation, WorkspaceAgentResponse,
+    CodexThreadInvocation, ControlChange, ControlFilter, ControlRecordKind, ControlStore,
 };
 use ait_storage_sqlite::SplitSqliteControlStore as SqliteControlStore;
 use async_trait::async_trait;
@@ -33,6 +32,10 @@ struct DaemonGuard {
     child: Child,
     log_path: PathBuf,
 }
+
+#[path = "../../../crates/application/tests/support/native.rs"]
+mod native;
+use native::{NativeHandler, NativeReply};
 
 struct SeedAgent;
 
@@ -59,14 +62,10 @@ async fn startup_scan_defers_an_offline_project_without_losing_its_run() {
 }
 
 #[async_trait]
-impl WorkspaceAgent for SeedAgent {
-    async fn invoke(
-        &self,
-        _request: WorkspaceAgentInvocation,
-    ) -> Result<WorkspaceAgentResponse, DomainError> {
-        Ok(WorkspaceAgentResponse {
+impl NativeHandler for SeedAgent {
+    async fn invoke(&self, _request: CodexThreadInvocation) -> Result<NativeReply, DomainError> {
+        Ok(NativeReply {
             assistant_text: "seeded queued result".into(),
-            commit_id: None,
             operations: Vec::new(),
             output_items: Vec::new(),
         })
@@ -162,11 +161,15 @@ async fn assert_codex_http_response(gui_launch: bool) {
         let script = fs::read_to_string(&codex).unwrap();
         fs::write(
             &codex,
-            script.replacen("#!/bin/sh", "#!/usr/bin/env ait-test-runtime", 1),
+            script.replacen(
+                "#!/usr/bin/env python3",
+                "#!/usr/bin/env ait-test-runtime",
+                1,
+            ),
         )
         .unwrap();
         let interpreter = runtime_bin.join("ait-test-runtime");
-        fs::write(&interpreter, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+        fs::write(&interpreter, "#!/bin/sh\nexec /usr/bin/python3 \"$@\"\n").unwrap();
         fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755)).unwrap();
         command
             .env_clear()
@@ -215,7 +218,6 @@ async fn assert_codex_http_response(gui_launch: bool) {
         .unwrap();
     assert_eq!(stalled_stream.status(), reqwest::StatusCode::OK);
 
-    let submitted_at = Instant::now();
     let response = post(
         &client,
         &base_url,
@@ -229,13 +231,12 @@ async fn assert_codex_http_response(gui_launch: bool) {
     assert_ok(&response);
     assert_eq!(response["result"]["kind"], "run");
     assert_eq!(response["result"]["value"]["status"], "queued");
-    if !gui_launch {
-        assert!(submitted_at.elapsed() < Duration::from_millis(500));
-    }
+    // The native writer is prepared before admission. Hold the model turn behind
+    // a barrier to prove submit returns without waiting for model completion.
+    fs::write(codex_log.with_extension("jsonl.release"), "continue").unwrap();
     let run_id = response["result"]["value"]["id"].as_str().unwrap();
 
-    // A cold worker may spend up to three seconds in the private handshake.
-    // HTTP admission above remains sub-500ms; progress includes process startup.
+    // Admission includes the worker handshake; progress begins after the barrier opens.
     let progress_deadline = Instant::now() + Duration::from_secs(5);
     let progress = loop {
         let progress: Value = client
@@ -321,7 +322,14 @@ async fn assert_codex_http_response(gui_launch: bool) {
     assert_ok(&messages);
     let messages = messages["result"]["value"].as_array().unwrap();
     assert!(messages.iter().any(|message| {
-        message["role"] == "assistant" && message["text"] == ASSISTANT_RESPONSE
+        message["role"] == "assistant"
+            && message["data"]["native_message"]["sub_messages"]
+                .as_array()
+                .is_some_and(|items| {
+                    items
+                        .iter()
+                        .any(|item| item["payload"]["text"] == ASSISTANT_RESPONSE)
+                })
     }));
 
     let protocol = fs::read_to_string(codex_log).unwrap();
@@ -333,7 +341,7 @@ async fn assert_codex_http_response(gui_launch: bool) {
 }
 
 #[tokio::test]
-async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_once() {
+async fn daemon_is_ready_and_rejects_unsent_native_recovery_without_replay() {
     const DESKTOP_READINESS_WINDOW: Duration = Duration::from_secs(15);
     let temporary = TempDir::new().unwrap();
     let project = temporary.path().join("project");
@@ -402,7 +410,8 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
                 .find(|run| run["id"] == run_id)
                 .unwrap();
             last_run = run.clone();
-            if run["status"] == "completed" {
+            if run["status"] == "failed" {
+                assert_eq!(run["error"]["code"], "CODEX_INPUT_NOT_ACCEPTED");
                 break runs;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -419,8 +428,8 @@ async fn daemon_is_ready_before_blocked_startup_recovery_and_executes_the_run_on
     });
     assert_ok(&completed);
     daemon.assert_running();
-    let protocol = fs::read_to_string(codex_log).unwrap();
-    assert_eq!(protocol.matches("\"method\":\"turn/start\"").count(), 1);
+    let protocol = fs::read_to_string(codex_log).unwrap_or_default();
+    assert_eq!(protocol.matches("\"method\":\"turn/start\"").count(), 0);
 }
 
 #[tokio::test]
@@ -463,7 +472,7 @@ async fn bind_failure_does_not_claim_or_fence_a_queued_recovery() {
 
 async fn seed_queued_run(database: &Path, project: &Path) -> String {
     let store = Arc::new(SqliteControlStore::open(database).unwrap());
-    let service = LocalControlService::with_workspace_agent(
+    let service = native::native_service(
         std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
         store.clone(),
         Arc::new(SeedAgent),
@@ -520,6 +529,7 @@ async fn seed_queued_run(database: &Path, project: &Path) -> String {
         .unwrap()
         .clone();
     run.value["status"] = Value::String("queued".into());
+    run.value["codex_input"]["state"] = Value::String("queued".into());
     run.value["phase"] = Value::String("queued".into());
     run.value["last_message_id"] = Value::Null;
     run.value["error"] = Value::Null;
@@ -627,116 +637,16 @@ fn codex_daemon_command(home: &Path) -> Command {
     command
 }
 
-#[allow(clippy::too_many_lines)] // Keeps the complete protocol fixture readable in one script.
 fn install_fake_codex(path: &Path, delay: u32) {
+    let log = serde_json::to_string(&path.parent().unwrap().parent().unwrap().join("codex.jsonl"))
+        .unwrap();
+    let prelude = format!(
+        "#!/usr/bin/env python3\nAPPROVAL=False\nLOG={log}\nDELAY={delay}\nGATE=LOG+'.release' if DELAY == 0 else None\nANSWER={ASSISTANT_RESPONSE:?}\n"
+    );
     fs::write(
         path,
-        format!(
-            concat!(
-                r#"#!/bin/sh
-[ "$1" = "app-server" ] || exit 2
-read_line() {{
-  IFS= read -r line || exit 3
-  printf '%s\n' "$line" >> "$(dirname "$0")/../codex.jsonl"
-}}
-read_line
-printf '%s\n' '{{"id":0,"result":{{}}}}'
-read_line
-read_line
-case "$line" in
-  *'"method":"model/list"'*)
-"#,
-                r#"    printf '%s\n' '{{"id":1,"result":{{"data":[{{"model":"gpt-5.6-sol","#,
-                r#""displayName":"Codex Test","supportedReasoningEfforts":[{{"#,
-                r#""reasoningEffort":"high"}}]}}],"nextCursor":null}}}}'
-"#,
-                r#"
-    exit 0 ;;
-  *'"model":"gpt-5.6-sol"'*) ;;
-  *) printf '%s\n' '{{"id":1,"error":{{"code":-32602,"message":"unsupported model"}}}}'; exit 4 ;;
-esac
-printf '%s\n' '{{"id":1,"result":{{"thread":{{"id":"thread-http-test"}}}}}}'
-read_line
-printf '%s\n' '{{"id":2,"result":{{"turn":{{"id":"turn-http-test"}}}}}}'
-sleep {delay}
-"#,
-                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"agentMessage","id":"commentary-http-test","#,
-                r#""phase":"commentary","text":""}}}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","#,
-                r#""itemId":"commentary-http-test","delta":"Inspecting the project."}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"agentMessage","id":"commentary-http-test","phase":"commentary","#,
-                r#""text":"Inspecting the project."}}}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"commandExecution","id":"command-http-test","#,
-                r#""status":"inProgress","command":"pwd"}}}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"agentMessage","id":"stress-http-test","phase":"commentary","#,
-                r#""text":""}}}}}}'
-"#,
-                r#"
-i=0
-while [ "$i" -lt 4000 ]; do
-"#,
-                r#"  printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","#,
-                r#""itemId":"stress-http-test","delta":"x"}}}}'
-"#,
-                r#"
-  i=$((i + 1))
-done
-"#,
-                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"agentMessage","id":"stress-http-test","phase":"commentary","#,
-                r#""text":"Stress replay complete."}}}}}}'
-"#,
-                r#"
-sleep 0.6
-"#,
-                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"commandExecution","id":"command-http-test","status":"completed","#,
-                r#""command":"pwd","aggregatedOutput":"project"}}}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"item/started","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"agentMessage","id":"assistant-http-test","phase":"final_answer","#,
-                r#""text":""}}}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"item/agentMessage/delta","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","#,
-                r#""itemId":"assistant-http-test","delta":"Generated through Codex "}}}}'
-"#,
-                r#"
-sleep 0.6
-"#,
-                r#"printf '%s\n' '{{"method":"item/completed","params":{{"#,
-                r#""threadId":"thread-http-test","turnId":"turn-http-test","item":{{"#,
-                r#""type":"agentMessage","id":"assistant-http-test","phase":"final_answer","#,
-                r#""text":"{ASSISTANT_RESPONSE}"}}}}}}'
-"#,
-                r#"printf '%s\n' '{{"method":"turn/completed","params":{{"#,
-                r#""threadId":"thread-http-test","turn":{{"id":"turn-http-test","#,
-                r#""items":[],"status":"completed"}}}}}}'
-"#,
-            ),
-            delay = delay,
-            ASSISTANT_RESPONSE = ASSISTANT_RESPONSE,
-        ),
+        prelude + include_str!("../../../crates/application/tests/support/app_server.py"),
     )
     .unwrap();
-    let mut permissions = fs::metadata(path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }

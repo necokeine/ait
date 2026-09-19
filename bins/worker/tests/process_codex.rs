@@ -1,267 +1,220 @@
-//! Real Codex process failures preserve the existing Git settlement journal.
+//! Native create/resume and history publication traverse the real worker process.
 #![cfg(unix)]
 #![allow(clippy::pedantic)]
-#[path = "../../../crates/application/tests/support.rs"]
-mod support;
-use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult, default_settings};
-use ait_ipc::supervisor::{CommitBoundary, WorkerSupervisor};
-use ait_storage_sqlite::SqliteControlStore;
-use serde_json::json;
-use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
-async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
-    let r = service.execute(command).await;
-    assert!(r.ok, "{:?}", r.error);
-    r.result.unwrap()
+use ait_domain::{ApprovalMode, RunPermissionProfile, SandboxAccess};
+use ait_ports::{
+    CodexThreadInvocation, CodexThreadWriter, DenyWorkspaceApprovals, WorkspaceProgressEvent,
+    WorkspaceProgressReporter,
+};
+use async_trait::async_trait;
+use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc};
+struct Progress;
+#[async_trait]
+impl WorkspaceProgressReporter for Progress {
+    async fn report(&self, _event: WorkspaceProgressEvent) {}
 }
-fn git(root: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+fn fixture(
+    scenario: &str,
+) -> (
+    tempfile::TempDir,
+    ait_ipc::supervisor::WorkerSupervisor,
+    CodexThreadInvocation,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let binary = cwd.join("codex-fixture.py");
+    let source = include_str!("../../../crates/agent-adapters/src/codex/native/tests/fixture.py");
+    let injected = format!(
+        "#!/usr/bin/env python3\nimport sys\nsys.argv.extend([{}, {}])\n{}",
+        serde_json::to_string(scenario).unwrap(),
+        serde_json::to_string(&cwd.join("requests.jsonl")).unwrap(),
+        source
     );
-    String::from_utf8(output.stdout).unwrap().trim().into()
+    std::fs::write(&binary, injected).unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let worker =
+        ait_ipc::supervisor::WorkerSupervisor::new(PathBuf::from(env!("CARGO_BIN_EXE_ait-worker")))
+            .with_codex_binary(binary);
+    let request = CodexThreadInvocation {
+        request_id: "run-input".into(),
+        thread_id: None,
+        developer_instructions: Some("Project instructions".into()),
+        prompt: "new input only".into(),
+        cwd,
+        model: "test-model".into(),
+        reasoning_effort: Some("high".into()),
+        permission_profile: RunPermissionProfile {
+            sandbox: SandboxAccess::ReadOnly,
+            approval: ApprovalMode::OnRequest,
+        },
+        approvals: Arc::new(DenyWorkspaceApprovals),
+        cancellation: tokio_util::sync::CancellationToken::new(),
+    };
+    (directory, worker, request)
 }
-fn install_codex(path: &Path) {
+#[tokio::test]
+async fn prepared_worker_does_not_send_until_admitted_and_publishes_full_native_history() {
+    let (_directory, worker, request) = fixture("complete");
+    let log = request.cwd.join("requests.jsonl");
+    let mut connection = worker.open(request).await.unwrap();
+    assert!(connection.prepared().history.writer_confirmed);
+    assert_eq!(connection.prepared().history.id, "thread");
+    let before = std::fs::read_to_string(&log).unwrap();
+    assert!(before.contains("thread/start"));
+    assert!(!before.contains("turn/start"));
+    assert!(!before.contains("thread/turns/list"));
+    let history = connection.start(Arc::new(Progress)).await.unwrap();
+    assert!(history.writer_confirmed);
+    assert_eq!(history.turns[0].items[0]["clientId"], "run-input");
+    assert_eq!(history.turns[0].items[2]["text"], "authoritative answer");
+    connection.close().await;
+    let log = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("turn/start"))
+            .count(),
+        1
+    );
+    assert!(log.contains("new input only"));
+    assert!(!log.contains("Conversation:"));
+}
+#[tokio::test]
+async fn resume_uses_the_same_worker_protocol_without_developer_or_cwd_overrides() {
+    let (_directory, worker, mut request) = fixture("complete");
+    request.thread_id = Some("thread".into());
+    request.developer_instructions = None;
+    let mut connection = worker.open(request).await.unwrap();
+    assert!(connection.prepared().history.writer_confirmed);
+    assert!(connection.read().await.unwrap().turns.is_empty());
+    connection.start(Arc::new(Progress)).await.unwrap();
+    connection.close().await;
+}
+#[tokio::test]
+async fn closing_a_prepared_worker_never_sends_and_reaps_its_app_server() {
+    let (_directory, worker, request) = fixture("complete");
+    let log = request.cwd.join("requests.jsonl");
+    let mut connection = worker.open(request).await.unwrap();
+    connection.close().await;
+    assert!(
+        !std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("turn/start")
+    );
+    let pid = std::fs::read_to_string(log.with_extension("jsonl.pid")).unwrap();
+    assert!(
+        !std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[tokio::test]
+async fn history_catalog_and_title_all_use_reaped_auxiliary_worker_processes() {
+    use ait_ports::{
+        CodexHistorySource, HostProviderModelCatalog, SessionTitleGenerator, SessionTitleRequest,
+    };
+    let (directory, worker, request) = fixture("complete");
+    let log = directory.path().join("aux.jsonl");
+    let binary = directory.path().join("aux.py");
     std::fs::write(
-        path,
-        concat!(
-            r#"#!/bin/sh
-[ "$1" = "app-server" ] || exit 2
-printf '%s\n' invoked >> "$(dirname "$0")/invocations"
-IFS= read -r line || exit 3
-printf '%s\n' '{"id":0,"result":{}}'
-IFS= read -r line || exit 3
-IFS= read -r line || exit 3
-printf '%s\n' '{"id":1,"result":{"thread":{"id":"thread-fault"}}}'
-IFS= read -r line || exit 3
-printf '%s\n' '{"id":2,"result":{"turn":{"id":"turn-fault"}}}'
-printf '%s\n' 'exactly once' > native-effect.txt
-"#,
-            r#"printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-fault","#,
-            r#""turnId":"turn-fault","item":{"type":"commandExecution","id":"native-command","#,
-            r#""status":"completed","command":"pwd","aggregatedOutput":"project"}}}'
-"#,
-            r#"printf '%s\n' '{"method":"item/completed","params":{"threadId":"thread-fault","#,
-            r#""turnId":"turn-fault","item":{"type":"agentMessage","id":"final","#,
-            r#""phase":"final_answer","text":"Native change saved"}}}'
-"#,
-            r#"printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-fault","#,
-            r#""turn":{"id":"turn-fault","items":[],"status":"completed"}}}'
-"#,
+        &binary,
+        format!(
+            "#!/usr/bin/env python3\nLOG={}\n{}",
+            serde_json::to_string(&log).unwrap(),
+            include_str!("fixtures/codex_aux.py")
         ),
     )
     .unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-#[cfg(unix)]
-struct KillOnce {
-    method: &'static str,
-    boundary: ait_ipc::supervisor::CommitBoundary,
-    fired: std::sync::atomic::AtomicBool,
-}
-#[cfg(unix)]
-impl ait_ipc::supervisor::WorkerObserver for KillOnce {
-    fn checkpoint(
-        &self,
-        pid: u32,
-        method: &str,
-        boundary: ait_ipc::supervisor::CommitBoundary,
-    ) -> Result<(), ait_contracts::worker::ProtocolError> {
-        if method == self.method
-            && boundary == self.boundary
-            && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            assert!(
-                std::process::Command::new("kill")
-                    .args(["-KILL", &pid.to_string()])
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-            return Err(ait_contracts::worker::ProtocolError::UnexpectedEof);
-        }
-        Ok(())
-    }
-}
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_checkpoint_ack_kill_matrix_preserves_message_and_git_commit() {
-    use CommitBoundary::{AfterAck, BeforeAck, BeforeCommit};
-    for method in [
-        "workspace_checkpoint",
-        "workspace_integration",
-        "workspace_finished",
-        "cost_ceiling",
-    ] {
-        for boundary in [BeforeCommit, BeforeAck, AfterAck] {
-            if method == "cost_ceiling" && boundary != BeforeCommit {
-                continue;
-            }
-            let root = tempfile::tempdir().unwrap();
-            let project = root.path().join("project");
-            std::fs::create_dir(&project).unwrap();
-            let binary = root.path().join("codex");
-            install_codex(&binary);
-            let fault = Arc::new(KillOnce {
-                method,
-                boundary,
-                fired: std::sync::atomic::AtomicBool::new(false),
-            });
-            let supervisor = Arc::new(
-                WorkerSupervisor::new(env!("CARGO_BIN_EXE_ait-worker").into())
-                    .with_codex_binary(binary)
-                    .with_cost_ceiling((method == "cost_ceiling").then_some(10_000_000))
-                    .with_observer(fault.clone()),
-            );
-            let store = Arc::new(SqliteControlStore::open(root.path().join("ait.db")).unwrap());
-            let service = LocalControlService::with_workspace_agent(
-                std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-                store,
-                supervisor.clone(),
-            )
-            .with_run_dispatcher(supervisor);
-            let mut settings = default_settings();
-            settings
-                .0
-                .insert("permissions.sandbox".into(), json!("workspace_write"));
-            for command in [
-                Command::SaveSettings {
-                    expected_revision: 1,
-                    values: settings,
-                },
-                Command::RegisterProject {
-                    id: "p".into(),
-                    name: "Project".into(),
-                    workdir: Some(project.display().to_string()),
-                    repo_url: None,
-                },
-                Command::RegisterAgent {
-                    id: "a".into(),
-                    name: "Codex".into(),
-                    config: ait_contracts::AgentConfiguration {
-                        provider_id: "builtin-codex".into(),
-                        model: "gpt-5.6-sol".into(),
-                        reasoning_effort: None,
-                        system_prompt: None,
-                    },
-                },
-                Command::CreateSession {
-                    id: "s".into(),
-                    project_id: "p".into(),
-                    agent_id: "a".into(),
-                    at_message_id: None,
-                },
-            ] {
-                ok(&service, command).await;
-            }
-            let workspace =
-                std::path::PathBuf::from(&support::workspace(&service).await.sessions[0].workdir);
-            let baseline = git(&workspace, &["rev-parse", "HEAD"]);
-            let primary_baseline = git(&project, &["rev-parse", "HEAD"]);
-            let CommandResult::Run(run) = ok(
-                &service,
-                Command::SendMessage {
-                    session_id: "s".into(),
-                    text: "Make the native change".into(),
-                },
-            )
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let worker = worker.with_codex_binary(binary);
+    let provider = ait_domain::AgentProvider {
+        id: "codex".into(),
+        name: "Codex".into(),
+        kind: ait_domain::ProviderKind::Codex,
+        url: None,
+        models: vec![],
+    };
+    assert_eq!(
+        worker
+            .list_threads(&[ait_ports::CodexThreadSourceKind::AppServer])
             .await
-            else {
-                panic!()
-            };
-            assert_eq!(
-                git(&project, &["rev-parse", "HEAD"]),
-                primary_baseline,
-                "worker moved Project HEAD"
-            );
-            assert!(
-                !project.join("native-effect.txt").exists(),
-                "worker wrote into Project main checkout"
-            );
-            if method == "cost_ceiling" {
-                assert_eq!(run.status, "failed");
-                assert!(
-                    !root.path().join("invocations").exists(),
-                    "unpriced native Provider was started"
-                );
-                assert!(!workspace.join("native-effect.txt").exists());
-                let view = support::workspace(&service).await;
-                assert!(view.sessions[0].active_run_id.is_none());
-                assert!(
-                    view.messages
-                        .iter()
-                        .all(|message| message.role != "assistant")
-                );
-                continue;
-            }
-            assert!(
-                fault.fired.load(std::sync::atomic::Ordering::SeqCst),
-                "{method} {boundary:?}: {run:?}"
-            );
-            let view = support::workspace(&service).await;
-            assert!(
-                view.sessions[0].active_run_id.is_none(),
-                "Session stuck: {run:?}"
-            );
-            assert_eq!(
-                std::fs::read_to_string(root.path().join("invocations"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                1,
-                "provider replayed"
-            );
-            assert_eq!(view.runs.len(), 1, "new Run allocated on recovery");
-            let messages = view
-                .messages
-                .iter()
-                .filter(|m| m.role == "assistant")
-                .collect::<Vec<_>>();
-            assert_eq!(
-                git(
-                    &workspace,
-                    &["rev-list", "--all", "--count", &format!("{baseline}..")]
-                ),
-                "1",
-                "duplicate Git commit"
-            );
-            if method == "workspace_checkpoint" && boundary == BeforeCommit {
-                assert_eq!(
-                    run.status, "failed",
-                    "unacknowledged result must not be invented"
-                );
-                assert!(messages.is_empty());
-            } else {
-                assert_eq!(run.status, "completed", "{method} {boundary:?}: {run:?}");
-                assert_eq!(messages.len(), 1);
-                assert_eq!(
-                    std::fs::read_to_string(workspace.join("native-effect.txt")).unwrap(),
-                    "exactly once\n"
-                );
-                assert!(
-                    run.execution.is_none(),
-                    "native operations disguised as AIT ToolUse"
-                );
-                assert!(
-                    !messages[0]
-                        .data
-                        .as_ref()
-                        .unwrap()
-                        .to_string()
-                        .contains("tool_use")
-                );
-            }
-            let reopened = LocalControlService::new(
-                std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-                Arc::new(SqliteControlStore::open(root.path().join("ait.db")).unwrap()),
-            );
-            assert_eq!(support::workspace(&reopened).await, view);
-        }
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        worker.read_thread("aux-thread").await.unwrap().id,
+        "aux-thread"
+    );
+    assert_eq!(
+        worker.discover_models(&provider).await.unwrap()[0].id,
+        "fixture-model"
+    );
+    let title = worker
+        .generate(SessionTitleRequest {
+            request_id: "metadata-only".into(),
+            user_prompt: "Unify execution".into(),
+            config: ait_domain::AgentConfiguration {
+                provider_id: provider.id.clone(),
+                model: "fixture-model".into(),
+                reasoning_effort: None,
+                system_prompt: None,
+            },
+            provider,
+            credential_ref: None,
+            cwd: request.cwd,
+            cancellation: request.cancellation,
+        })
+        .await
+        .unwrap();
+    assert_eq!(title.title, "Review native execution");
+    let events = std::fs::read_to_string(log)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let pids = events
+        .iter()
+        .map(|event| event["pid"].as_u64().unwrap())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(pids.len(), 4);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["request"]["method"] == "turn/start")
+            .count(),
+        1
+    );
+    for pid in pids {
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
     }
+}
+
+#[tokio::test]
+async fn native_item_budget_interrupts_the_turn_and_reports_a_limit() {
+    let (_directory, worker, request) = fixture("budget");
+    let log = request.cwd.join("requests.jsonl");
+    let mut connection = worker.open(request).await.unwrap();
+    let failure = connection.start(Arc::new(Progress)).await.unwrap_err();
+    assert_eq!(failure.code, ait_domain::ErrorCode::RunLimitExceeded);
+    connection.close().await;
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.contains("turn/start"))
+            .count(),
+        1
+    );
+    assert!(calls.contains("turn/interrupt"));
 }

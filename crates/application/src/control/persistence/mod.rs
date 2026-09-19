@@ -4,7 +4,6 @@ use crate::control::conversation::{MessageRecord, SessionRecord};
 use crate::control::cron::CronRecord;
 use crate::control::project::ProjectRecord;
 use crate::control::runs::RunRecord;
-use crate::control::runs::journal::WorkspaceRunJournal;
 use ait_contracts::SettingsDocument;
 use std::collections::HashMap;
 pub(in crate::control) mod access;
@@ -44,9 +43,7 @@ pub(in crate::control) trait HasRuns {
     fn runs(&self) -> &Vec<RunRecord>;
     fn runs_mut(&mut self) -> &mut Vec<RunRecord>;
 }
-pub(in crate::control) trait HasWorkspaceRunJournals {
-    fn workspace_run_journals_mut(&mut self) -> &mut HashMap<String, WorkspaceRunJournal>;
-}
+
 pub(in crate::control) trait HasCrons {
     fn crons(&self) -> &Vec<CronRecord>;
     fn crons_mut(&mut self) -> &mut Vec<CronRecord>;
@@ -137,15 +134,6 @@ macro_rules! field_changes {
             &$after.run_credentials,
             ait_ports::ControlRecordKind::RunCredential,
             $crate::control::persistence::transaction::TypedChange::RunCredential,
-            &mut $changes,
-        );
-    };
-    ($before:ident, $after:ident, $changes:ident, workspace_run_journals) => {
-        $crate::control::persistence::transaction::diff_map(
-            &$before.workspace_run_journals,
-            &$after.workspace_run_journals,
-            ait_ports::ControlRecordKind::WorkspaceRunJournal,
-            $crate::control::persistence::transaction::TypedChange::WorkspaceRunJournal,
             &mut $changes,
         );
     };
@@ -252,13 +240,6 @@ macro_rules! field_access {
             }
             fn settings_revision_mut(&mut self) -> &mut $ty {
                 &mut self.settings_revision
-            }
-        }
-    };
-    ($context:ident, workspace_run_journals, $ty:ty) => {
-        impl $crate::control::persistence::HasWorkspaceRunJournals for $context {
-            fn workspace_run_journals_mut(&mut self) -> &mut $ty {
-                &mut self.workspace_run_journals
             }
         }
     };

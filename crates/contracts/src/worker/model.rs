@@ -912,27 +912,6 @@ pub struct NativeApprovalFileChange {
     pub kind: NativeApprovalFileChangeKind,
 }
 
-/// Worker v1 `WorkspaceAgentResponse` value.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceAgentResponse {
-    /// Final assistant result shown in the Session.
-    pub assistant_text: String,
-    /// Commit created for workspace changes, when the turn changed files.
-    pub commit_id: Option<String>,
-    /// Bounded, display-only records for native harness operations.
-    ///
-    /// These records preserve user-visible audit context without pretending
-    /// that harness-owned tools were executed through Ait's `ToolExecution`
-    /// lifecycle.
-    pub operations: Vec<WorkspaceOperation>,
-    /// Ordered, display-only projection of harness messages and operations.
-    ///
-    /// Message entries retain provider message boundaries and phases. Operation
-    /// entries reference `operations` by their harness-stable identity so the
-    /// audit records stay separate from Ait's host tool lifecycle.
-    pub output_items: Vec<WorkspaceOutputItem>,
-}
-
 /// Worker v1 `WorkspaceOperation` value.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceOperation {

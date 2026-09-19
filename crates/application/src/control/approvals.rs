@@ -3,18 +3,18 @@ use crate::control::LocalControlService;
 use crate::control::errors::{api_domain_error, error, store_error};
 use crate::control::events::{now, pending};
 use crate::control::permissions::{PermissionPolicyLimits, validate_native_permission_profile};
-use crate::control::persistence::{HasProjects, HasRuns, HasSessions, HasWorkspaceRunJournals};
+use crate::control::persistence::{HasProjects, HasRuns, HasSessions};
 use crate::control::runs::NativeApprovalRecord;
 use crate::control::runs::RunRecord;
 use crate::control::runs::{cancel_run, is_terminal_run_status};
 use ait_contracts::{
     ApiError, CommandResult, NativeApprovalAction, NativePermissionProfile, ProtocolRequestId,
 };
-use ait_domain::LifecyclePhase;
 use ait_domain::{
     ApprovalGrantScope, DomainError, ErrorCode, NativeApprovalKind, NativeApprovalStatus,
     NativeApprovalTarget, RunPermissionProfile, SandboxAccess,
 };
+use ait_domain::{LifecyclePhase, LifecycleStatus};
 use ait_ports::{
     ControlStoreError, PendingEvent, WorkspaceApproval, WorkspaceApprovalDecision,
     WorkspaceApprovalRequest,
@@ -117,6 +117,14 @@ impl WorkspaceApproval for LocalControlService {
                     "native approval Run not found",
                 ));
             };
+            let expiry = if matches!(
+                run.status(),
+                LifecycleStatus::Cancelling | LifecycleStatus::Cancelled
+            ) {
+                NativeApprovalStatus::Cancelled
+            } else {
+                NativeApprovalStatus::Expired
+            };
             let Some(approval) = run
                 .native_approvals
                 .iter_mut()
@@ -127,7 +135,7 @@ impl WorkspaceApproval for LocalControlService {
             if approval.status != NativeApprovalStatus::Pending {
                 return Ok(());
             }
-            approval.status = NativeApprovalStatus::Expired;
+            approval.status = expiry;
             approval.decided_at = Some(now());
             if !run
                 .native_approvals
@@ -333,7 +341,7 @@ fn approval_decision(approval: &NativeApprovalRecord) -> Option<WorkspaceApprova
 #[allow(clippy::too_many_lines)]
 pub(in crate::control) async fn resolve_native_approval(
     workspace: &dyn ProjectWorkspace,
-    state: &mut (impl HasProjects + HasRuns + HasSessions + HasWorkspaceRunJournals),
+    state: &mut (impl HasProjects + HasRuns + HasSessions),
     run_id: &str,
     approval_id: &str,
     action: NativeApprovalAction,

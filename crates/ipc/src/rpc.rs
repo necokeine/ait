@@ -343,21 +343,21 @@ impl StoreServer {
         operation_id: &str,
         request: StoreRequest,
     ) -> Result<StoreResponse, ProtocolError> {
-        if lease.run_id != self.lease.run_id {
+        if lease.scope_id != self.lease.scope_id {
             return Err(ProtocolError::WrongRun);
         }
         if lease != &self.lease {
             return Err(ProtocolError::StaleWorkerLease);
         }
         validate_private_input(&request)?;
-        let id = RunId::new(&lease.run_id);
+        let id = RunId::new(&lease.scope_id);
         let rejected = |_| ProtocolError::InvalidTransition;
         let mutation = match request {
-            StoreRequest::WorkspaceProgress { .. }
-            | StoreRequest::WorkspaceCheckpoint { .. }
-            | StoreRequest::WorkspaceIntegration
-            | StoreRequest::WorkspaceApproval { .. }
-            | StoreRequest::WorkspaceFinished { .. } => return Err(ProtocolError::InvalidFrame),
+            StoreRequest::CodexChunk { .. }
+            | StoreRequest::CodexNext
+            | StoreRequest::CodexClosed
+            | StoreRequest::WorkspaceProgress { .. }
+            | StoreRequest::WorkspaceApproval { .. } => return Err(ProtocolError::InvalidFrame),
             StoreRequest::LoadRun => {
                 return Ok(StoreResponse::Run {
                     run: Box::new(self.store.load_run(&id).await.map_err(rejected)?.to_wire()),
@@ -402,7 +402,7 @@ impl StoreServer {
                 return Ok(StoreResponse::Tools { entries, next });
             }
             StoreRequest::Approval { execution } => {
-                if execution.run_id != lease.run_id {
+                if execution.run_id != lease.scope_id {
                     return Err(ProtocolError::WrongRun);
                 }
                 let decision = self
@@ -430,7 +430,7 @@ impl StoreServer {
                 });
             }
             StoreRequest::ConsumeToolGrant { grant } => {
-                if grant.run_id != lease.run_id {
+                if grant.run_id != lease.scope_id {
                     return Err(ProtocolError::WrongRun);
                 }
                 let consumed = self
@@ -450,7 +450,7 @@ impl StoreServer {
                 });
             }
             StoreRequest::ToolInteraction { request } => {
-                if request.run_id != lease.run_id {
+                if request.run_id != lease.scope_id {
                     return Err(ProtocolError::WrongRun);
                 }
                 let output = self
@@ -473,7 +473,7 @@ impl StoreServer {
                 });
             }
             StoreRequest::ToolInteractionRecovery { execution } => {
-                if execution.run_id != lease.run_id {
+                if execution.run_id != lease.scope_id {
                     return Err(ProtocolError::WrongRun);
                 }
                 let recovery = self

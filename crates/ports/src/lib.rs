@@ -8,16 +8,14 @@ mod run;
 mod scheduler;
 
 pub use codex::{
-    CodexResumedThread, CodexThreadConnection, CodexThreadInvocation, CodexThreadWriter,
+    CodexPreparedThread, CodexThreadConnection, CodexThreadInvocation, CodexThreadWriter,
 };
 pub use control::{
     ControlChange, ControlFilter, ControlRead, ControlRecord, ControlRecordKind, ControlStore,
     ControlStoreError, DurableEvent, DurableEventPage, EventBounds, PendingEvent,
     ProgressCheckpoint,
 };
-pub use dispatch::{
-    ApiRunDispatch, RunDispatcher, RunMutation, RunReceipt, WorkerLease, WorkspaceWorkerOperation,
-};
+pub use dispatch::{ApiRunDispatch, RunDispatcher, RunMutation, RunReceipt, WorkerLease};
 pub use provider::{
     AgentProviderGateway, CodexHistorySource, CodexItemsView, CodexThreadSnapshot,
     CodexThreadSourceKind, CodexTurnSnapshot, HostProviderModelCatalog, ProviderMessage,
@@ -27,10 +25,8 @@ pub use run::{
     CompositeRunTool, DenyWorkspaceApprovals, GeneratedSessionTitle, RunAgent, RunApproval,
     RunClock, RunIdGenerator, RunStore, RunStoreError, RunTool, RunToolFactory, RunToolInteraction,
     SessionTitleGenerator, SessionTitleRequest, ToolInvocation, ToolOutcome, ToolRecovery,
-    ToolUsageRecorder, WorkspaceAgent, WorkspaceAgentInvocation, WorkspaceAgentResponse,
-    WorkspaceApproval, WorkspaceApprovalDecision, WorkspaceApprovalRequest,
-    WorkspaceIntegrationCheckpoint, WorkspaceIntegrationGate, WorkspaceOperation,
-    WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter, WorkspaceResultSink,
+    ToolUsageRecorder, WorkspaceApproval, WorkspaceApprovalDecision, WorkspaceApprovalRequest,
+    WorkspaceOperation, WorkspaceOutputItem, WorkspaceProgressEvent, WorkspaceProgressReporter,
 };
 pub use scheduler::{
     ActiveCronRun, ClaimCronFire, CronClaimResult, CronStore, RunStartResult, RunStartTrigger,

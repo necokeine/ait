@@ -141,7 +141,7 @@ async fn registration_facts_are_verified_again_on_cas_conflict_before_persisting
 }
 
 #[tokio::test]
-async fn dirty_fake_baseline_never_persists_message_run_or_session_changes() {
+async fn missing_native_writer_never_persists_message_run_or_session_changes() {
     let workspace = Arc::new(FakeWorkspace::default());
     let store = Arc::new(RecordingStore {
         inner: SqliteControlStore::in_memory().unwrap(),
@@ -185,11 +185,11 @@ async fn dirty_fake_baseline_never_persists_message_run_or_session_changes() {
             text: "hello".into(),
         })
         .await;
-    assert_eq!(response.error.unwrap().code, ErrorCode::ProjectGitDirty);
     assert_eq!(
-        *workspace.trace.lock().unwrap(),
-        ["lease", "worktree", "baseline"]
+        response.error.unwrap().code,
+        ErrorCode::CodexThreadCapabilityUnsupported
     );
+    assert!(!workspace.trace.lock().unwrap().contains(&"baseline"));
     assert_eq!(store.read(&filters).await.unwrap(), before);
 }
 use std::sync::{

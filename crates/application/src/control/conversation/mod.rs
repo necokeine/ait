@@ -294,6 +294,20 @@ pub(in crate::control) fn set_session_agent(
     session_id: &str,
     agent_id: &str,
 ) -> Result<(CommandResult, Vec<PendingEvent>), ApiError> {
+    let requested = require_agent(state, agent_id)?;
+    if let Some(session) = state
+        .sessions()
+        .iter()
+        .find(|session| session.id == session_id)
+        && let ait_domain::SessionSource::CodexThread(source) = &session.source
+        && requested.config.provider_id != source.provider_id
+    {
+        return Err(error(
+            ErrorCode::CodexThreadBindingConflict,
+            "A native Codex task cannot switch providers",
+            false,
+        ));
+    }
     let agent_id = agent_for_session(state, agent_id, session_id)?;
     let session = state
         .sessions_mut()
