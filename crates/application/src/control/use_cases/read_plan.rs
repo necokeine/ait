@@ -931,6 +931,7 @@ impl RecordAccess {
             })
             .map(CommandTransaction::SessionBinding),
             Command::RenameSession { session_id, .. }
+            | Command::SetSessionArchived { session_id, .. }
             | Command::SetSessionTitle { session_id, .. } => ({
                 self.read_records(vec![ControlFilter::id(Kind::Session, session_id)])
                     .await

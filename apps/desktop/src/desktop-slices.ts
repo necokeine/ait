@@ -1,10 +1,18 @@
 import type {
   AgentCatalog,
   DesktopProject,
+  DesktopSession,
   DesktopState,
   ProjectCatalog,
   ProjectView,
 } from "./types.js";
+
+export function sessionsWithStatus(
+  sessions: DesktopSession[],
+  status: DesktopSession["status"],
+): DesktopSession[] {
+  return sessions.filter((session) => session.status === status);
+}
 
 export function emptyProjectView(): ProjectView {
   return {

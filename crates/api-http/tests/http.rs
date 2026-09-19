@@ -113,6 +113,7 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/session/create",
         "/v1/session/set-agent",
         "/v1/session/rename",
+        "/v1/session/set-archived",
         "/v1/session/set-title",
         "/v1/session/generate-title",
         "/v1/session/send-message",

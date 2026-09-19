@@ -254,6 +254,16 @@ pub(crate) enum SessionCommand {
         #[arg(long)]
         name: String,
     },
+    /// Archive a Session so it is hidden from the active Session list.
+    Archive {
+        #[arg(long, value_parser = input::id)]
+        session_id: String,
+    },
+    /// Restore an archived Session to the active Session list.
+    Restore {
+        #[arg(long, value_parser = input::id)]
+        session_id: String,
+    },
     /// Set the Session title.
     SetTitle {
         #[arg(long, value_parser = input::id)]
@@ -790,6 +800,14 @@ impl SessionCommand {
             SessionCommand::Rename { session_id, name } => {
                 Command::RenameSession { session_id, name }
             }
+            SessionCommand::Archive { session_id } => Command::SetSessionArchived {
+                session_id,
+                archived: true,
+            },
+            SessionCommand::Restore { session_id } => Command::SetSessionArchived {
+                session_id,
+                archived: false,
+            },
             SessionCommand::SetTitle { session_id, title } => {
                 Command::SetSessionTitle { session_id, title }
             }

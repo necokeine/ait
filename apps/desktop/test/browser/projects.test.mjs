@@ -131,6 +131,29 @@ test("renaming an offscreen Session preserves the visible conversation", async (
   assert.equal(await page.locator("#session-title").textContent(), "Session A");
 });
 
+test("archives a Session from its context menu and restores it from Settings", async (t) => {
+  const page = await openFixture(t);
+  await page.locator('[data-project-toggle="a"]').click();
+  const sessionA = sessions(page, "a").locator('[data-session-id="session-a"]');
+
+  await sessionA.click({ button: "right" });
+  await page.locator("#session-archive-action").click();
+  await page.waitForFunction(() => !document.querySelector('[data-session-id="session-a"]'));
+  assert.equal(await page.evaluate(() => window.fixture.sessions.find((item) => item.id === "session-a").status), "archived");
+
+  await page.locator("#settings-trigger").click();
+  await page.locator('#settings-nav [data-category="archived_sessions"]').click();
+  const group = page.locator('[data-archived-project="a"]');
+  await group.locator('[data-restore-session="session-a"]').waitFor();
+  assert.match(await group.textContent(), /Project A/);
+  assert.match(await group.textContent(), /Session A/);
+
+  await group.locator('[data-restore-session="session-a"]').click();
+  await page.waitForFunction(() => !document.querySelector('[data-restore-session="session-a"]'));
+  assert.equal(await page.evaluate(() => window.fixture.sessions.find((item) => item.id === "session-a").status), "active");
+  assert.equal(await sessions(page, "a").locator('[data-session-id="session-a"]').count(), 1);
+});
+
 test("failed Project navigation preserves the visible Session and its send target", async (t) => {
   const page = await openFixture(t);
   await page.evaluate(() => { window.fixture.viewFailure = true; });

@@ -14,7 +14,7 @@ use crate::control::persistence::{
 };
 use crate::control::project::git::{GitBaseline, is_git_commit};
 use ait_contracts::ApiError;
-use ait_domain::{ErrorCode, SessionSource};
+use ait_domain::{ErrorCode, SessionSource, SessionStatus};
 use ait_ports::PendingEvent;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -47,6 +47,13 @@ pub(in crate::control) fn send_message(
         .position(|session| session.id == session_id)
         .ok_or_else(|| error(ErrorCode::SessionNotFound, "session not found", false))?;
     let session = state.sessions()[index].clone();
+    if session.status == SessionStatus::Archived {
+        return Err(error(
+            ErrorCode::InvalidSession,
+            "archived sessions cannot accept new input",
+            false,
+        ));
+    }
     if session.active_run_id().is_some() {
         return Err(error(
             ErrorCode::SessionBusy,

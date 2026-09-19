@@ -212,6 +212,10 @@ fn hydrated_unchanged_records_are_not_reencoded_or_rewritten() {
     ))
     .unwrap();
     assert_eq!(loaded.original.sessions[0].workdir, "/project/.ait/s");
+    assert_eq!(
+        loaded.original.sessions[0].status,
+        ait_domain::SessionStatus::Active
+    );
     assert!(loaded.changes(&loaded.original).unwrap().is_empty());
     let mut updated = loaded.original.clone();
     updated.sessions[0].name = "Renamed".into();

@@ -65,6 +65,8 @@ pub struct DesktopSession {
     pub title: String,
     /// AI-generated plain-text summary used by search.
     pub description: String,
+    /// Session availability state.
+    pub status: ait_domain::SessionStatus,
     /// Current immutable Message pointer.
     pub current_message_id: String,
     /// Fixed Agent binding.
@@ -96,6 +98,7 @@ impl From<&Session> for DesktopSession {
                 session.name.clone()
             },
             description: session.description.clone(),
+            status: session.status,
             current_message_id: session.current_message_id.to_string(),
             agent_id: session.agent_id.as_str().to_owned(),
             version: session.version,

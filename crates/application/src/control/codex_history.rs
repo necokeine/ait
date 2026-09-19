@@ -10,7 +10,7 @@ use ait_domain::{
     AgentId, CodexThreadSource, CodexWorkspaceMode, CodexWriterState, DomainError, DomainMetadata,
     ErrorCode, Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId,
     ProviderHistoryCompleteness, ProviderItem, ProviderRelationshipState, ProviderSyncState,
-    SessionId, SessionReference, SessionSource, SubMessage, TimestampMs,
+    SessionId, SessionReference, SessionSource, SessionStatus, SubMessage, TimestampMs,
 };
 use ait_ports::{
     CodexItemsView, CodexThreadSnapshot, CodexThreadSourceKind, CodexTurnSnapshot, ControlFilter,
@@ -504,6 +504,7 @@ pub(in crate::control) fn materialize_thread(
             |session| session.description.clone(),
         ),
         title_generation_started: false,
+        status: existing_session.map_or(SessionStatus::Active, |session| session.status),
     };
     Ok(CodexMaterialization { session, messages })
 }

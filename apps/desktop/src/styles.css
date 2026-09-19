@@ -364,6 +364,15 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .settings-section-header { margin-bottom: 21px; }
 .settings-section-header h3 { margin: 5px 0 6px; font-size: 17px; font-weight: 580; text-transform: capitalize; }
 .settings-section-header p { margin: 0; color: var(--text-muted); font-size: 10.5px; }
+.archived-session-group { margin-bottom: 24px; }
+.archived-session-group h4 { margin: 0; padding: 0 0 9px; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 620; }
+.archived-session-row { min-height: 58px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid var(--line-soft); }
+.archived-session-row > span { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.archived-session-row strong, .archived-session-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.archived-session-row strong { font-size: 11.5px; font-weight: 540; }
+.archived-session-row small { color: var(--text-muted); font-size: 9.5px; }
+.archived-sessions-empty { color: var(--text-muted); font-size: 11px; }
+.archived-sessions-empty .secondary-button { margin-left: 8px; }
 .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 34px; align-items: center; min-height: 74px; border-bottom: 1px solid var(--line-soft); }
 .setting-copy label { display: block; font-size: 11.5px; font-weight: 540; margin-bottom: 5px; }
 .setting-copy p { margin: 0; color: var(--text-muted); font-size: 9.5px; line-height: 1.45; }

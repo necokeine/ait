@@ -69,6 +69,7 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
         .route("/v1/session/list", get(list_sessions))
         .route("/v1/session/set-agent", post(set_session_agent))
         .route("/v1/session/rename", post(rename_session))
+        .route("/v1/session/set-archived", post(set_session_archived))
         .route("/v1/session/set-title", post(set_session_title))
         .route("/v1/session/generate-title", post(generate_session_title))
         .route("/v1/session/send-message", post(send_message))
@@ -308,6 +309,27 @@ async fn rename_session(
         Command::RenameSession {
             session_id: request.session_id,
             name: request.name,
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSessionArchivedRequest {
+    session_id: String,
+    archived: bool,
+}
+
+async fn set_session_archived(
+    State(state): State<ApiState>,
+    Json(request): Json<SetSessionArchivedRequest>,
+) -> Json<Response> {
+    execute_command(
+        state,
+        Command::SetSessionArchived {
+            session_id: request.session_id,
+            archived: request.archived,
         },
     )
     .await
@@ -1051,6 +1073,7 @@ fn correlation_for_command(command: &Command) -> Correlation {
         Command::SetSessionConfig { session_id, .. }
         | Command::SetSessionAgent { session_id, .. }
         | Command::RenameSession { session_id, .. }
+        | Command::SetSessionArchived { session_id, .. }
         | Command::SetSessionTitle { session_id, .. }
         | Command::SendMessage { session_id, .. } => {
             correlation.session_id = Some(session_id.clone());
@@ -1158,6 +1181,7 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::CreateSession { .. } => "create_session",
         Command::SetSessionAgent { .. } => "set_session_agent",
         Command::RenameSession { .. } => "rename_session",
+        Command::SetSessionArchived { .. } => "set_session_archived",
         Command::SetSessionTitle { .. } => "set_session_title",
         Command::SendMessage { .. } => "send_message",
         Command::ForkSession { .. } => "fork_session",

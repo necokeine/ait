@@ -10,7 +10,7 @@ use crate::fixtures::workspace_agents::BlockingAgent;
 use crate::support::ControlStoreTestExt;
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, default_settings};
-use ait_domain::ErrorCode;
+use ait_domain::{ErrorCode, SessionStatus};
 use ait_ports::{ControlChange, ControlFilter, ControlRecord, ControlRecordKind};
 use ait_storage_sqlite::SqliteControlStore;
 use std::sync::Arc;
@@ -147,6 +147,13 @@ async fn cancelling_an_active_call_releases_session_and_retains_confirmed_native
         tokio::spawn(async move { ok(&service, send("one")).await })
     };
     agent.started().await;
+    let rejected_archive = service
+        .execute(Command::SetSessionArchived {
+            session_id: "one".into(),
+            archived: true,
+        })
+        .await;
+    assert_eq!(rejected_archive.error.unwrap().code, ErrorCode::SessionBusy);
     let state = view(&service).await;
     ok(
         &service,
@@ -165,11 +172,88 @@ async fn cancelling_an_active_call_releases_session_and_retains_confirmed_native
     assert_eq!(cancelled.status, "cancelled");
     assert_eq!(view(&service).await.messages.len(), 3);
     assert!(cancelled.git_commit.is_none());
+    let CommandResult::Session(archived) = ok(
+        &service,
+        Command::SetSessionArchived {
+            session_id: "one".into(),
+            archived: true,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(archived.status, SessionStatus::Archived);
+    let rejected_input = service.execute(send("one")).await;
+    assert_eq!(
+        rejected_input.error.unwrap().code,
+        ErrorCode::InvalidSession
+    );
+    let CommandResult::Session(restored) = ok(
+        &service,
+        Command::SetSessionArchived {
+            session_id: "one".into(),
+            archived: false,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(restored.status, SessionStatus::Active);
     agent.release.add_permits(1);
     let CommandResult::Run(next) = ok(&service, send("one")).await else {
         panic!()
     };
     assert_eq!(next.status, "completed");
+}
+
+#[tokio::test]
+async fn session_archive_status_is_persisted_and_restored() {
+    let store = Arc::new(SqliteControlStore::in_memory().unwrap());
+    let service = LocalControlService::new(
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        store.clone(),
+    );
+    let _directory = setup(&service, config("high")).await;
+
+    let CommandResult::Session(archived) = ok(
+        &service,
+        Command::SetSessionArchived {
+            session_id: "one".into(),
+            archived: true,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(archived.status, SessionStatus::Archived);
+
+    let restarted = LocalControlService::new(
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        store,
+    );
+    let archived_after_restart = view(&restarted)
+        .await
+        .sessions
+        .into_iter()
+        .find(|session| session.id == "one")
+        .unwrap();
+    assert_eq!(archived_after_restart.status, SessionStatus::Archived);
+
+    let CommandResult::Session(restored) = ok(
+        &restarted,
+        Command::SetSessionArchived {
+            session_id: "one".into(),
+            archived: false,
+        },
+    )
+    .await
+    else {
+        panic!()
+    };
+    assert_eq!(restored.status, SessionStatus::Active);
 }
 
 #[tokio::test]
