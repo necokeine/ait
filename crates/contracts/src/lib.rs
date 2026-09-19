@@ -150,6 +150,13 @@ pub enum Command {
         /// Name value.
         name: String,
     },
+    /// Selects the `SetSessionArchived` variant.
+    SetSessionArchived {
+        /// Session identifier.
+        session_id: String,
+        /// Whether the Session is archived.
+        archived: bool,
+    },
     /// Selects the `SetSessionTitle` variant.
     SetSessionTitle {
         /// Session identifier.
@@ -404,6 +411,9 @@ pub struct SessionView {
     #[serde(default)]
     /// Title generation started value.
     pub title_generation_started: bool,
+    /// Session availability state.
+    #[serde(default)]
+    pub status: ait_domain::SessionStatus,
     /// Agent identifier.
     pub agent_id: String,
     /// Current message identifier.

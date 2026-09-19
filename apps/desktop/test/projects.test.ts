@@ -40,6 +40,7 @@ const session = (id: string, projectId: string, updatedAt: number): DesktopSessi
   title: id,
   description: "",
   titleGenerationStarted: false,
+  status: "active",
   currentMessageId: `${id}-message`,
   agentId: "codex-local",
   version: 1,

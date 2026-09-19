@@ -1,6 +1,6 @@
 //! Persisted Session and Message records used by conversation use cases.
 use ait_contracts::{MessageView, SessionView};
-use ait_domain::{MessageKind, MessageRole};
+use ait_domain::{MessageKind, MessageRole, SessionStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -24,6 +24,8 @@ pub(in crate::control) struct SessionRecord {
     pub description: String,
     #[serde(default)]
     pub title_generation_started: bool,
+    #[serde(default)]
+    pub status: SessionStatus,
 }
 
 impl SessionRecord {
@@ -53,6 +55,7 @@ impl SessionRecord {
             title: self.title.clone(),
             description: self.description.clone(),
             title_generation_started: self.title_generation_started,
+            status: self.status,
             agent_id: self.agent_id().to_owned(),
             current_message_id: self.current_message_id(),
             active_run_id: self.active_run_id().map(str::to_owned),

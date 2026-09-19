@@ -160,6 +160,14 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         RenameSession { session_id: "session_id".into(), name: "name".into() }
     );
     case!(
+        &["session", "archive", "--session-id", "session_id"] =>
+        SetSessionArchived { session_id: "session_id".into(), archived: true }
+    );
+    case!(
+        &["session", "restore", "--session-id", "session_id"] =>
+        SetSessionArchived { session_id: "session_id".into(), archived: false }
+    );
+    case!(
         &["session", "set-title", "--session-id", "session_id", "--title", "title"] =>
         SetSessionTitle { session_id: "session_id".into(), title: "title".into() }
     );

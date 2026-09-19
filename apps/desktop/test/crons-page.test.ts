@@ -5,7 +5,7 @@ import type { AgentSummary, DesktopCron, DesktopProject, DesktopSession } from "
 
 const session = {
   id: "session", projectId: "project", workdir: "/project/.ait/session", name: "", title: "Session",
-  description: "", titleGenerationStarted: false, currentMessageId: "message-from-session",
+  description: "", titleGenerationStarted: false, status: "active", currentMessageId: "message-from-session",
   agentId: "agent", version: 1, active: false, activeRunId: null, updatedAt: 0,
 } satisfies DesktopSession;
 

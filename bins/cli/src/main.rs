@@ -144,6 +144,7 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::CreateSession { .. } => "/v1/session/create",
         Command::SetSessionAgent { .. } => "/v1/session/set-agent",
         Command::RenameSession { .. } => "/v1/session/rename",
+        Command::SetSessionArchived { .. } => "/v1/session/set-archived",
         Command::SetSessionTitle { .. } => "/v1/session/set-title",
         Command::SendMessage { .. } => "/v1/session/send-message",
         Command::ForkSession { .. } => "/v1/session/fork",

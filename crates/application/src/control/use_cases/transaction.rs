@@ -9,7 +9,7 @@ use crate::control::conversation::title::set_session_title;
 use crate::control::conversation::{
     ConversationContext, ForkSessionInput, MessagesContext, NewSessionContext,
     SessionBindingContext, SessionConfigContext, SessionsContext, create_session, derive_session,
-    fork_session, rename_session, set_session_agent,
+    fork_session, rename_session, set_session_agent, set_session_archived,
 };
 use crate::control::cron::CronRecord;
 use crate::control::cron::{
@@ -480,6 +480,17 @@ impl CommandTransaction {
                 loaded,
                 state,
                 ready!(rename_session(&mut state, &session_id, &name))
+            ),
+            (
+                Self::Sessions(loaded),
+                Command::SetSessionArchived {
+                    session_id,
+                    archived,
+                },
+            ) => reduce!(
+                loaded,
+                state,
+                ready!(set_session_archived(&mut state, &session_id, archived))
             ),
             (Self::Sessions(loaded), Command::SetSessionTitle { session_id, title }) => reduce!(
                 loaded,

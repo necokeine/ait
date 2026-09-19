@@ -19,7 +19,7 @@ import { resolveProjectPath, vscodeFileUrl } from "./project-files.js";
 import { approvalAction, approvalScope } from "./approval-ui.js";
 import { desktopDaemonRuntime, desktopProviderCatalog } from "./desktop-runtime.js";
 import { registerDesktopProject, type ProjectCreationInput } from "./projects.js";
-import { projectReadPaths } from "./desktop-slices.js";
+import { projectReadPaths, sessionsWithStatus } from "./desktop-slices.js";
 import { configureDesktopIdentity } from "./branding.js";
 import { loadActiveRuns } from "./active-runs.js";
 import { defaultWorkdirSetting, desktopSettings, directoryDialogOptions } from "./desktop-settings.js";
@@ -34,7 +34,7 @@ const allowedMethods = new Set([
   "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
   "project.codex-threads", "project.sync-codex-thread",
-  "session.set-agent", "session.rename", "session.set-title",
+  "session.set-agent", "session.rename", "session.set-archived", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
   "run.resolve-approval", "run.resolve-tool-approval", "run.resolve-tool-interaction", "run.active",
   "cron.list", "cron.create", "cron.set-enabled", "cron.trigger",
@@ -66,7 +66,7 @@ interface DaemonData {
   sessions: Array<{
     id: string; project_id: string; name?: string; title?: string | null; description?: string;
     workdir: string; title_generation_started?: boolean; agent_id: string; current_message_id: string;
-    active_run_id: string | null; version: number;
+    active_run_id: string | null; version: number; status?: "active" | "archived";
   }>;
   messages: WorkspaceMessage[];
   runs: Array<{
@@ -209,10 +209,12 @@ export class DaemonClient {
     }
     if (method === "project.sessions") {
       const projectId = boundedId(params.projectId, "Project");
+      const status = params.status ?? "active";
+      if (status !== "active" && status !== "archived") throw new Error("Unsupported Session status.");
       const [path] = projectReadPaths(projectId);
       const sessions = await this.get(path, "sessions") as DaemonData["sessions"];
       for (const session of sessions) assertProject(session, projectId);
-      return sessions.map(projectSession);
+      return sessionsWithStatus(sessions.map(projectSession), status);
     }
     if (method === "project.codex-threads") {
       const projectId = boundedId(params.projectId, "Project");
@@ -308,6 +310,14 @@ export class DaemonClient {
       const projectId = boundedId(params.projectId, "Project");
       const session = await this.post("/v1/session/rename", "session", {
         session_id: params.sessionId, name: params.name,
+      });
+      assertProject(session, projectId);
+      return this.projectView(projectId);
+    }
+    if (method === "session.set-archived") {
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/session/set-archived", "session", {
+        session_id: params.sessionId, archived: params.archived,
       });
       assertProject(session, projectId);
       return this.projectView(projectId);
@@ -720,7 +730,7 @@ export class DaemonClient {
       protocolVersion: 1,
       revision: this.viewRevision,
       projectId,
-      sessions: sessions.map(projectSession),
+      sessions: sessionsWithStatus(sessions.map(projectSession), "active"),
       messages: messages.map((message) => projectMessage(message, messageAgents.get(message.id) ?? null)),
       runs: runs.map((run) => ({
         id: run.id,
@@ -853,6 +863,7 @@ function projectSession(session: DaemonData["sessions"][number]): import("./type
     workdir: session.workdir,
     title: sessionDisplayTitle(session), description: session.description ?? "",
     titleGenerationStarted: session.title_generation_started ?? false,
+    status: session.status ?? "active",
     currentMessageId: session.current_message_id, agentId: session.agent_id,
     version: session.version, active: session.active_run_id !== null,
     activeRunId: session.active_run_id, updatedAt: 0,

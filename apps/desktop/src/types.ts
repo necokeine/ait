@@ -74,6 +74,7 @@ export interface DesktopSession {
   title: string;
   description: string;
   titleGenerationStarted: boolean;
+  status: "active" | "archived";
   currentMessageId: string;
   agentId: string;
   version: number;
@@ -276,6 +277,7 @@ export interface DesktopState {
 
 export type SettingCategory =
   | "models"
+  | "archived_sessions"
   | "agents"
   | "runtime"
   | "permissions"
@@ -320,7 +322,7 @@ export interface AitDesktopApi {
   activeRuns(): Promise<ActiveRunsCatalog>;
   agents(): Promise<AgentCatalog>;
   project(projectId: string): Promise<ProjectView>;
-  projectSessions(projectId: string): Promise<DesktopSession[]>;
+  projectSessions(projectId: string, status?: DesktopSession["status"]): Promise<DesktopSession[]>;
   codexThreads(input: { projectId: string; providerId: string }): Promise<CodexThreadSummary[]>;
   syncCodexThread(input: CodexThreadImport): Promise<{ projectId: string; sessionId: string }>;
   crons(): Promise<DesktopCron[]>;
@@ -371,6 +373,11 @@ export interface AitDesktopApi {
     agentId: string;
   }): Promise<ProjectView>;
   renameSession(input: { projectId: string; sessionId: string; name: string }): Promise<ProjectView>;
+  setSessionArchived(input: {
+    projectId: string;
+    sessionId: string;
+    archived: boolean;
+  }): Promise<ProjectView>;
   setSessionTitle(input: { projectId: string; sessionId: string; title: string }): Promise<ProjectView>;
   generateSessionTitle(input: { projectId: string; sessionId: string; prompt: string }): Promise<ProjectView>;
   sendMessage(input: {

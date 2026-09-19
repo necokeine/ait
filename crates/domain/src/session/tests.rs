@@ -48,6 +48,28 @@ fn session_round_trip_keeps_snake_case_status() {
 }
 
 #[test]
+fn active_is_the_backward_compatible_session_status() {
+    assert_eq!(SessionStatus::default(), SessionStatus::Active);
+
+    let session = Session::new(
+        SessionId::new("session-1"),
+        ProjectId::new("project-1"),
+        PathBuf::from("/project/.ait/session-1"),
+        "main",
+        MessageId::from_u128(1),
+        AgentId::new("agent-1"),
+        TimestampMs(1),
+    );
+    let mut encoded = serde_json::to_value(session).unwrap();
+    encoded.as_object_mut().unwrap().remove("status");
+
+    assert_eq!(
+        serde_json::from_value::<Session>(encoded).unwrap().status,
+        SessionStatus::Active
+    );
+}
+
+#[test]
 fn session_name_may_be_empty_until_a_member_or_title_generator_names_it() {
     let session = Session::new(
         SessionId::new("session-1"),
