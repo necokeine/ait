@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use ait_application::LocalControlService;
 use ait_contracts::{Command, CommandResult, ProjectView, RunView, default_settings};
-use ait_domain::{DomainError, ErrorCode};
+use ait_domain::{DomainError, ErrorCode, SessionStatus};
 use ait_ports::CodexThreadInvocation;
 use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
@@ -226,6 +226,42 @@ async fn idle_unchanged_source_reuses_current_session() {
     assert_eq!(
         user.parent_message_id.as_deref(),
         Some(run.base_message_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn archived_native_source_derives_a_new_active_session_without_reuse() {
+    let fixture = Fixture::new(Arc::new(ImmediateAgent)).await;
+    execute(
+        &fixture.service,
+        Command::SetSessionArchived {
+            session_id: "current".into(),
+            archived: true,
+        },
+    )
+    .await;
+
+    let run = execute_run(&fixture.service, fixture.derive("branch from archive")).await;
+    assert_eq!(run.session_id.as_deref(), Some("fork"));
+
+    let state = workspace(&fixture.service).await;
+    assert_eq!(state.sessions.len(), 2);
+    let archived = state
+        .sessions
+        .iter()
+        .find(|session| session.id == "current")
+        .unwrap();
+    assert_eq!(archived.status, SessionStatus::Archived);
+    assert_eq!(archived.current_message_id, fixture.project.root_message_id);
+    let derived = state
+        .sessions
+        .iter()
+        .find(|session| session.id == "fork")
+        .unwrap();
+    assert_eq!(derived.status, SessionStatus::Active);
+    assert_eq!(
+        derived.current_message_id,
+        run.last_message_id.clone().unwrap()
     );
 }
 

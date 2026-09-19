@@ -111,8 +111,8 @@ let settingsDraft: Record<string, unknown> = {};
 let selectingSettingPath = false;
 let settingsCategory: SettingCategory = "models";
 let archivedSessions: DesktopSession[] = [];
-let archivedSessionsLoading = false;
-let archivedSessionsError: string | undefined;
+const archivedSessionLoadingProjects = new Set<string>();
+const archivedSessionErrors = new Map<string, string>();
 let archivedSessionsGeneration = 0;
 let activePage: "sessions" | "agents" | "runs" | "crons" = "sessions";
 let pageGeneration = 0;
@@ -250,6 +250,11 @@ function acceptLoadedProjectView(): boolean {
   if (projectViews.view.projectId !== (projectId ?? "")) return false;
   selectedProjectId = projectId;
   if (projectId) sidebar.replace(projectId, projectViews.view.sessions);
+  if (selectedSessionId && !projectViews.view.sessions.some((session) => session.id === selectedSessionId)) {
+    selectedSessionId = projectViews.view.sessions
+      .toSorted((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
+    resetTreeView();
+  }
   rememberProject(projectId);
   rebuildState();
   return true;
@@ -761,6 +766,10 @@ function handleRunStreamFrame(updates: RunStreamUpdate[]): void {
       continue;
     }
     if (isApprovalEvent(event.kind)) {
+      refresh = true;
+      continue;
+    }
+    if (event.kind === "session.archived" || event.kind === "session.restored") {
       refresh = true;
       continue;
     }
@@ -1784,7 +1793,7 @@ function openProviderSettings(id: string): void {
 
 function closeSettings(): void {
   archivedSessionsGeneration += 1;
-  archivedSessionsLoading = false;
+  archivedSessionLoadingProjects.clear();
   settingsDialog.classList.add("is-hidden");
   disposeProviderSettings?.();
   disposeProviderSettings = undefined;
@@ -1846,28 +1855,20 @@ function renderArchivedSessions(): void {
   $("#settings-save").classList.add("is-hidden");
   $("#settings-reset").classList.add("is-hidden");
   $("#settings-cancel").textContent = "Close";
-  if (archivedSessionsLoading) {
-    fields.innerHTML = '<div class="archived-sessions-empty">Loading archived Sessions…</div>';
-    $("#settings-state").textContent = "Reading Session archives.";
-    return;
-  }
-  if (archivedSessionsError) {
-    fields.innerHTML = `<div class="archived-sessions-empty" role="alert">${escapeHtml(archivedSessionsError)} <button class="secondary-button" type="button" data-archived-retry>Retry</button></div>`;
-    fields.querySelector<HTMLButtonElement>("[data-archived-retry]")
-      ?.addEventListener("click", () => void loadArchivedSessions());
-    $("#settings-state").textContent = "Archived Sessions unavailable.";
-    return;
-  }
   const groups = (view?.projects ?? []).map((project) => ({
     project,
     sessions: archivedSessions
       .filter((session) => session.projectId === project.id)
       .toSorted((left, right) => right.updatedAt - left.updatedAt),
-  })).filter((group) => group.sessions.length > 0);
+    error: archivedSessionErrors.get(project.id),
+    loading: archivedSessionLoadingProjects.has(project.id),
+  })).filter((group) => group.sessions.length > 0 || group.error || group.loading);
   fields.innerHTML = groups.length === 0
     ? '<div class="archived-sessions-empty">No archived Sessions.</div>'
-    : `<header class="settings-section-header"><h3>Archived sessions</h3><p>Restore a Session to return it to its Project.</p></header>${groups.map(({ project, sessions }) => `<section class="archived-session-group" data-archived-project="${escapeAttribute(project.id)}">
+    : `<header class="settings-section-header"><h3>Archived sessions</h3><p>Restore a Session to return it to its Project.</p></header>${groups.map(({ project, sessions, error, loading }) => `<section class="archived-session-group" data-archived-project="${escapeAttribute(project.id)}">
       <h4>${escapeHtml(project.name)}</h4>
+      ${loading ? '<div class="archived-sessions-empty">Loading archived Sessions…</div>' : ""}
+      ${error ? `<div class="archived-sessions-empty" role="alert">${escapeHtml(error)} <button class="secondary-button" type="button" data-archived-retry="${escapeAttribute(project.id)}">Retry</button></div>` : ""}
       ${sessions.map((session) => `<div class="archived-session-row">
         <span><strong>${escapeHtml(session.title)}</strong><small>${relativeTime(session.updatedAt)}</small></span>
         <button class="secondary-button" type="button" data-restore-session="${escapeAttribute(session.id)}" data-restore-project="${escapeAttribute(project.id)}">Restore</button>
@@ -1876,29 +1877,45 @@ function renderArchivedSessions(): void {
   fields.querySelectorAll<HTMLButtonElement>("[data-restore-session]").forEach((button) => {
     button.addEventListener("click", () => void restoreSession(button));
   });
-  $("#settings-state").textContent = `${archivedSessions.length} archived Session${archivedSessions.length === 1 ? "" : "s"}.`;
+  fields.querySelectorAll<HTMLButtonElement>("[data-archived-retry]").forEach((button) => {
+    button.addEventListener("click", () => void loadArchivedSessions(button.dataset.archivedRetry));
+  });
+  const unavailable = groups.filter((group) => group.error).length;
+  $("#settings-state").textContent = `${archivedSessions.length} archived Session${archivedSessions.length === 1 ? "" : "s"}.${unavailable ? ` ${unavailable} Project${unavailable === 1 ? " is" : "s are"} unavailable.` : ""}`;
 }
 
-async function loadArchivedSessions(): Promise<void> {
-  const generation = ++archivedSessionsGeneration;
-  archivedSessionsLoading = true;
-  archivedSessionsError = undefined;
+async function loadArchivedSessions(projectId?: string): Promise<void> {
+  const generation = archivedSessionsGeneration;
+  const projects = (view?.projects ?? []).filter((project) => !projectId || project.id === projectId);
+  for (const project of projects) {
+    archivedSessionLoadingProjects.add(project.id);
+    archivedSessionErrors.delete(project.id);
+  }
   if (settingsCategory === "archived_sessions") renderSettings();
-  try {
-    const groups = await Promise.all((view?.projects ?? []).map((project) =>
-      window.ait.projectSessions(project.id, "archived")));
-    if (generation !== archivedSessionsGeneration) return;
-    archivedSessions = groups.flat();
-  } catch (error) {
-    if (generation !== archivedSessionsGeneration) return;
-    archivedSessionsError = errorMessage(error);
-  } finally {
-    if (generation === archivedSessionsGeneration) {
-      archivedSessionsLoading = false;
-      if (settingsCategory === "archived_sessions" && !settingsDialog.classList.contains("is-hidden")) {
-        renderSettings();
+  await Promise.all(projects.map(async (project) => {
+    try {
+      const sessions = await window.ait.projectSessions(project.id, "archived");
+      if (generation !== archivedSessionsGeneration) return;
+      archivedSessions = [
+        ...archivedSessions.filter((session) => session.projectId !== project.id),
+        ...sessions,
+      ];
+    } catch (error) {
+      if (generation !== archivedSessionsGeneration) return;
+      archivedSessionErrors.set(project.id, errorMessage(error));
+    } finally {
+      if (generation === archivedSessionsGeneration) {
+        archivedSessionLoadingProjects.delete(project.id);
+        if (settingsCategory === "archived_sessions" && !settingsDialog.classList.contains("is-hidden")) {
+          renderSettings();
+        }
       }
     }
+  }));
+  if (generation === archivedSessionsGeneration
+    && settingsCategory === "archived_sessions"
+    && !settingsDialog.classList.contains("is-hidden")) {
+    renderSettings();
   }
 }
 

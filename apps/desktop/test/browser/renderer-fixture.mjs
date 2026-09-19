@@ -12,7 +12,7 @@ export function installRendererFixture() {
     status, permissionProfile: { sandbox: "workspace_write", approval: "on_request" }, nativeApprovals: [],
   });
   const f = window.fixture = {
-    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false,
+    projects, agents: [agent, { ...agent, id: "alternate", name: "Alternate Agent" }], edits: [], created: [], sessionReads: [], updateFailure: false, sessionFailure: false, sessionFailures: new Set(),
     crons: [], cronCreates: [], cronRuns: [],
     sessions: [session("a", "session-a", "Session A"), session("b", "session-b", "Session B", "run-b")],
     runs: [run("run-b", "session-b")], sent: [], forks: [], forkAttempts: [], forkFailure: false, projectReads: [],
@@ -55,7 +55,7 @@ export function installRendererFixture() {
     },
     projectSessions: async (projectId, status = "active") => {
       f.sessionReads.push(projectId);
-      if (f.sessionFailure) throw new Error("Sessions unavailable");
+      if (f.sessionFailure || f.sessionFailures.has(projectId)) throw new Error("Sessions unavailable");
       return structuredClone(f.sessions.filter((s) => s.projectId === projectId && s.status === status));
     },
     crons: async () => structuredClone(f.crons),
