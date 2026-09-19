@@ -7,6 +7,7 @@
   [未绑定会话误判修复](reports/codex-import-optional-bindings.md)：对齐 Rust 可选字段序列化，补充真实 HTTP 与 Desktop 导入/同步集成回归。
   [空元数据卡片修复](reports/codex-empty-text-metadata.md)：隐藏导入文本的空附加信息，保留原消息数据。
   [过程折叠展示](reports/codex-activity-display.md)：过程正文与操作摘要分层展示，连续命令分组，保留详情、状态和展开位置。
+  [Turn 耗时核对](reports/codex-turn-timing.md)：确认原生耗时字段与真实返回，定位 Ait 尚未传递到界面的时间信息。
 
 ## 工程规范
 

@@ -391,7 +391,7 @@ function renderSections(sections: MessageSection[], agents: AgentSummary[], sele
         : `<div class="activity-section">${html}</div>`;
     }).join("");
     return first.kind
-      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>Activity</span>${activityStatuses(group.flatMap((section) => section.parts))}<span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
+      ? `<details class="message-disclosure" data-disclosure-id="${escapeHtml(first.key)}"><summary><span>Activity</span><span class="operation-chevron" aria-hidden="true">⌄</span></summary><div class="message-disclosure-content">${content}</div></details>`
       : content;
   }).join("");
 }

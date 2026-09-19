@@ -45,7 +45,7 @@ for (const theme of ["light", "dark"]) {
     const activity = page.locator("#conversation .message-disclosure");
     assert.equal(await activity.count(), 1);
     assert.equal(await activity.getAttribute("open"), null);
-    assert.equal(await activity.locator(":scope > summary .status-failed").innerText(), "1 failed");
+    assert.equal(await activity.locator(":scope > summary .operation-status").count(), 0);
     assert.equal(await page.locator("[data-codex-final-answer]").isVisible(), true);
     assert.equal(await page.locator('[data-codex-item-id="before"]').isVisible(), false);
     await activity.locator(":scope > summary").focus();
