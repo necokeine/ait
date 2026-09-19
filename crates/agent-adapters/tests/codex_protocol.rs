@@ -27,6 +27,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[path = "codex_protocol/thread_listing.rs"]
+mod thread_listing;
+
 fn request() -> AgentRunRequest {
     AgentRunRequest {
         request_id: "message-1".into(),
@@ -224,6 +227,7 @@ async fn lists_archived_and_non_archived_threads_with_explicit_sources() {
         assert_eq!(active["params"]["archived"], false);
         assert_eq!(active["params"]["sourceKinds"], json!(["cli", "appServer"]));
         assert_eq!(active["params"]["sortDirection"], "asc");
+        assert_eq!(active["params"]["sortKey"], "created_at");
         write_json(
             &mut server_write,
             json!({"id": 1, "result": {"data": [thread("active")], "nextCursor": null}}),

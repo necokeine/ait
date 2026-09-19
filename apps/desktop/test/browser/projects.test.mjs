@@ -53,6 +53,7 @@ test("offscreen Session summaries refresh without loading another conversation, 
 test("editing saves name and default Agent together, and new Sessions use the new default", async (t) => {
   const page = await openFixture(t);
   await page.locator('[data-project-settings-id="a"]').click();
+  await page.locator("#project-settings-action").click();
   assert.equal(await page.locator("#project-settings-name").inputValue(), "Project A");
   await page.locator("#project-settings-name").fill("  Renamed Project  ");
   await page.locator("#project-backend").selectOption("alternate");
@@ -74,10 +75,12 @@ test("editing saves name and default Agent together, and new Sessions use the ne
 test("cancel and failed saves retain persisted Project data, with drafts available for retry", async (t) => {
   const page = await openFixture(t);
   await page.locator('[data-project-settings-id="b"]').click();
+  await page.locator("#project-settings-action").click();
   await page.locator("#project-settings-name").fill("Cancelled");
   await page.locator("#project-settings-cancel").click();
   assert.deepEqual(await page.evaluate(() => window.fixture.edits), []);
   await page.locator('[data-project-settings-id="b"]').click();
+  await page.locator("#project-settings-action").click();
   assert.equal(await page.locator("#project-settings-name").inputValue(), "Project B");
   await page.locator("#project-settings-name").fill("   ");
   await page.locator("#project-backend-save").click();
@@ -97,6 +100,7 @@ test("cancel and failed saves retain persisted Project data, with drafts availab
 test("Project names can be edited without an available Agent", async (t) => {
   const page = await openFixture(t, () => { window.fixture.agents = []; });
   await page.locator('[data-project-settings-id="a"]').click();
+  await page.locator("#project-settings-action").click();
   assert.equal(await page.locator("#project-backend").isEnabled(), true);
   assert.equal(await page.locator("#project-backend").inputValue(), "agent");
   await page.locator("#project-settings-name").fill("Name only");
@@ -106,6 +110,7 @@ test("Project names can be edited without an available Agent", async (t) => {
   assert.equal(await page.evaluate(() => window.fixture.projects[0].defaultAgentId), "agent");
 
   await page.locator('[data-project-settings-id="a"]').click();
+  await page.locator("#project-settings-action").click();
   await page.locator("#project-backend").selectOption("");
   await page.locator("#project-backend-save").click();
   await page.waitForFunction(() => window.fixture.edits.length === 2);

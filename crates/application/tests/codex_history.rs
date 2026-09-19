@@ -15,6 +15,9 @@ use ait_storage_sqlite::SqliteControlStore;
 use async_trait::async_trait;
 use serde_json::json;
 
+#[path = "codex_history/project_listing.rs"]
+mod project_listing;
+
 #[derive(Debug)]
 struct NativeCodexFixture {
     snapshot: Arc<Mutex<CodexThreadSnapshot>>,
@@ -227,6 +230,7 @@ async fn imported_thread_is_idempotent_and_continues_in_native_cwd() {
         &service,
         Command::ListCodexThreads {
             provider_id: "builtin-codex".into(),
+            project_id: None,
         },
     )
     .await

@@ -378,6 +378,21 @@ kbd { margin-left: auto; font-family: inherit; font-size: 10px; color: var(--tex
 .project-window { width: min(500px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(250px, auto) 58px; }
 .project-settings-window { width: min(430px, calc(100vw - 50px)); display: grid; grid-template-rows: 67px minmax(150px, auto) 58px; }
 .project-window .settings-footer, .project-settings-window .settings-footer { justify-content: flex-end; }
+.codex-import-window { width: min(740px, calc(100vw - 40px)); max-height: calc(100vh - 110px); display: flex; flex-direction: column; }
+.codex-import-window .settings-header, .codex-import-window .settings-footer { flex-shrink: 0; }
+.codex-import-options { padding: 0 24px 12px; }
+.codex-import-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 14px 0; }
+.codex-import-toolbar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.codex-import-toolbar label { display: flex; align-items: center; gap: 8px; }
+.codex-thread-list { overflow-y: auto; min-height: 100px; padding: 0 24px; border-block: 1px solid var(--line); }
+.codex-thread-row { display: flex; align-items: flex-start; gap: 12px; padding: 15px 0; border-bottom: 1px solid var(--line); font-size: 12px; cursor: pointer; }
+.codex-thread-row:last-child { border-bottom: 0; }
+.codex-thread-row input { flex: 0 0 auto; margin-top: 3px; }
+.codex-thread-details { display: grid; gap: 5px; min-width: 0; }
+.codex-thread-details strong, .codex-thread-preview, .codex-thread-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-thread-meta, .codex-thread-preview, .codex-thread-path, #codex-import-status { color: var(--text-soft); font-size: 11px; }
+.codex-thread-error { color: var(--danger); overflow-wrap: anywhere; }
+.codex-import-window .settings-footer { justify-content: space-between; gap: 12px; }
 .field-label { margin: 13px 0 6px; color: var(--text-soft); font-size: 10px; font-weight: 600; }
 .field-help { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 .action-form input, .action-form select { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 7px; background: var(--control-bg); color: var(--text); padding: 0 9px; font-size: 10.5px; }

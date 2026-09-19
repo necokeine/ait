@@ -707,6 +707,7 @@ async fn list_agent_providers(State(state): State<ApiState>) -> Json<Response> {
 #[serde(deny_unknown_fields)]
 struct CodexThreadQuery {
     provider_id: String,
+    project_id: Option<String>,
 }
 
 async fn list_codex_threads(
@@ -717,6 +718,7 @@ async fn list_codex_threads(
         state,
         Command::ListCodexThreads {
             provider_id: query.provider_id,
+            project_id: query.project_id,
         },
     )
     .await

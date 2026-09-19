@@ -3,6 +3,7 @@ import { createAgentsPage } from "./agents-page.js";
 import { renderRunCommit } from "./run-commit.js";
 import { createRunsPage } from "./runs-page.js";
 import { createCronsPage } from "./crons-page.js";
+import { createCodexImportDialog } from "./codex-import.js";
 import { bindCodeBlockActions, renderConversationMessages, renderMessageTime, renderRunProgress, renderRunTerminal, replaceConversationContent } from "./message-renderer.js";
 import { applyProgressEvent, isTerminalRunEvent, terminalRunForSession } from "./run-progress.js";
 import { BoundedRunStreamBacklog } from "./run-event-delivery.js";
@@ -68,6 +69,8 @@ const settingsDialog = $("#settings-dialog");
 const commandDialog = $("#command-dialog");
 const projectDialog = $("#project-dialog");
 const projectSettingsDialog = $("#project-settings-dialog");
+const projectContextMenu = $<HTMLElement>("#project-context-menu");
+let projectContextId: string | undefined;
 const renameSessionDialog = $("#rename-session-dialog");
 const sessionContextMenu = $<HTMLElement>("#session-context-menu");
 const messageContextMenu = $<HTMLElement>("#message-context-menu");
@@ -120,6 +123,10 @@ const projectViews = new ProjectViewLoader<ProjectView>((projectId) => projectId
   ? window.ait.project(projectId)
   : Promise.resolve(emptyProjectView()));
 const sidebar = new ProjectSidebar();
+const codexImport = createCodexImportDialog($<HTMLElement>("#codex-import-dialog"), window.ait, (projectId) => {
+  void refreshSidebarProject(projectId);
+  if (selectedProjectId === projectId && projectViews.projectId === projectId) scheduleViewRefresh();
+});
 let projectSettingsSaving = false;
 const pendingTitles = new PendingSessionTitles();
 const pendingStream = new BoundedRunStreamBacklog();
@@ -401,8 +408,26 @@ function bindInteractions(): void {
   });
   treeScroll.addEventListener("keydown", handleTreeKeyboard);
   document.addEventListener("pointerdown", (event) => {
+    if (!projectContextMenu.contains(event.target as Node)) closeProjectContextMenu();
     if (!sessionContextMenu.contains(event.target as Node)) closeSessionContextMenu();
     if (!messageContextMenu.contains(event.target as Node)) closeMessageContextMenu();
+  });
+  $("#project-settings-action").addEventListener("click", () => {
+    const id = projectContextId;
+    closeProjectContextMenu();
+    openProjectSettingsDialog(id);
+  });
+  $("#project-codex-action").addEventListener("click", () => {
+    const project = view?.projects.find((candidate) => candidate.id === projectContextId);
+    closeProjectContextMenu();
+    if (project && view) codexImport.open({ project, agents: view.agents, providers: view.providers });
+  });
+  projectContextMenu.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const items = [...projectContextMenu.querySelectorAll<HTMLButtonElement>("button")];
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
   });
   document.addEventListener("keydown", handleGlobalKeyboard);
 }
@@ -533,7 +558,7 @@ function renderProjects(): void {
           <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.workdir)}</small></span>
         </button>
         <div class="project-actions">
-          <button class="project-action" type="button" data-project-settings-id="${escapeAttribute(project.id)}" aria-label="Configure ${escapeAttribute(project.name)}">•••</button>
+          <button class="project-action" type="button" data-project-settings-id="${escapeAttribute(project.id)}" aria-haspopup="menu" aria-label="Actions for ${escapeAttribute(project.name)}">•••</button>
           <button class="project-action" type="button" data-new-session-project-id="${escapeAttribute(project.id)}" aria-label="Create Session in ${escapeAttribute(project.name)}"${creatingSessionProjectId === project.id ? ' disabled aria-busy="true"' : ""}>${creatingSessionProjectId === project.id ? "…" : "＋"}</button>
         </div>
       </div>
@@ -569,7 +594,16 @@ function renderProjects(): void {
     button.addEventListener("click", () => void createSession(button.dataset.newSessionProjectId));
   });
   projectList.querySelectorAll<HTMLElement>("[data-project-settings-id]").forEach((button) => {
-    button.addEventListener("click", () => openProjectSettingsDialog(button.dataset.projectSettingsId));
+    button.addEventListener("click", () => {
+      closeSessionContextMenu();
+      closeMessageContextMenu();
+      projectContextId = button.dataset.projectSettingsId;
+      projectContextMenu.classList.remove("is-hidden");
+      const rect = button.getBoundingClientRect();
+      projectContextMenu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - projectContextMenu.offsetWidth - 8))}px`;
+      projectContextMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - projectContextMenu.offsetHeight - 8))}px`;
+      projectContextMenu.querySelector<HTMLButtonElement>("button")?.focus();
+    });
   });
 }
 
@@ -1444,6 +1478,8 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
     openCommandPalette();
   }
   if (event.key === "Escape") {
+    closeProjectContextMenu();
+    codexImport.close();
     closeSettings();
     closeCommandPalette();
     closeProjectDialog();
@@ -1452,6 +1488,15 @@ function handleGlobalKeyboard(event: KeyboardEvent): void {
     closeRenameSessionDialog();
     closeProjectSettingsDialog();
   }
+}
+
+function closeProjectContextMenu(): void {
+  if (projectContextMenu.contains(document.activeElement)) {
+    [...projectList.querySelectorAll<HTMLElement>("[data-project-settings-id]")]
+      .find((button) => button.dataset.projectSettingsId === projectContextId)?.focus();
+  }
+  projectContextMenu.classList.add("is-hidden");
+  projectContextId = undefined;
 }
 
 function openProjectDialog(): void {

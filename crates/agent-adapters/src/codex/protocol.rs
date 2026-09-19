@@ -189,7 +189,7 @@ where
         AdapterError::protocol(format!("invalid Codex source kind request: {error}"))
     })?;
     let mut threads = Vec::new();
-    let mut thread_ids = HashSet::new();
+    let mut thread_indices = HashMap::new();
     let mut request_id = 1_i64;
     for archived in [false, true] {
         let mut cursor: Option<String> = None;
@@ -199,7 +199,7 @@ where
                 "archived": archived,
                 "limit": 100,
                 "sortDirection": "asc",
-                "sortKey": "updated_at",
+                "sortKey": "created_at",
                 "sourceKinds": source_kinds,
             });
             if let Some(value) = &cursor {
@@ -216,14 +216,23 @@ where
                 AdapterError::protocol(format!("invalid Codex thread/list response: {error}"))
             })?;
             for mut thread in page.data {
-                if !thread_ids.insert(thread.id.clone()) {
+                if thread.id.trim().is_empty() {
                     return Err(AdapterError::protocol(
-                        "Codex thread/list returned a duplicate Thread id",
+                        "Codex thread/list returned an empty Thread id",
                     ));
                 }
                 thread.archived = archived;
                 thread.turns.clear();
-                threads.push(thread);
+                // Listing is not a snapshot: page overlap and archive moves can repeat IDs.
+                // Keep the latest observation, even when updatedAt is equal or moves backwards.
+                let index = *thread_indices
+                    .entry(thread.id.clone())
+                    .or_insert(threads.len());
+                if index == threads.len() {
+                    threads.push(thread);
+                } else {
+                    threads[index] = thread;
+                }
             }
             let Some(next) = page.next_cursor.filter(|value| !value.trim().is_empty()) else {
                 break;

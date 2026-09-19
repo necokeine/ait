@@ -92,6 +92,9 @@ pub enum Command {
     ListCodexThreads {
         /// Codex Provider catalog identity.
         provider_id: String,
+        /// Optional Project scope; unbound Threads must have one unambiguous owner.
+        #[serde(default)]
+        project_id: Option<String>,
     },
     /// Imports or reconciles one native Codex Thread into an Ait Session.
     SyncCodexThread {

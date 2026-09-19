@@ -98,8 +98,16 @@ async fn send(
             Command::ListSessions { project_id }
             | Command::ListMessages { project_id }
             | Command::ListRuns { project_id } => request.query(&[("project_id", project_id)]),
-            Command::ListCodexThreads { provider_id } => {
-                request.query(&[("provider_id", provider_id)])
+            Command::ListCodexThreads {
+                provider_id,
+                project_id,
+            } => {
+                let request = request.query(&[("provider_id", provider_id)]);
+                if let Some(id) = project_id {
+                    request.query(&[("project_id", id)])
+                } else {
+                    request
+                }
             }
             _ => request,
         };

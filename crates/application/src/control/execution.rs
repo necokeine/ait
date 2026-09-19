@@ -118,8 +118,13 @@ impl LocalControlService {
     ) -> Result<CommandResult, ApiError> {
         match &command {
             Command::RetryRunCommit { run_id } => return self.retry_run_commit(run_id).await,
-            Command::ListCodexThreads { provider_id } => {
-                return self.list_codex_threads(provider_id).await;
+            Command::ListCodexThreads {
+                provider_id,
+                project_id,
+            } => {
+                return self
+                    .list_codex_threads(provider_id, project_id.as_deref())
+                    .await;
             }
             Command::SyncCodexThread {
                 provider_id,

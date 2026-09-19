@@ -44,6 +44,29 @@ Git 失败保持模型 Run completed，并单独显示失败原因。CLI `ait ru
 
 ## 当前能力边界
 
+### 项目菜单中的历史发现与同步（2026-09-19）
+
+Desktop 在 Project 的操作菜单提供 `Pull from Codex…`：用户先查看匹配的原生 Thread，
+再勾选导入或同步。普通项目导航仍只读取 Ait 已持久化的会话，不隐式拉取原生历史。
+
+`ListCodexThreads` 与 `GET /v1/codex/thread/list` 接受可选 `project_id`；CLI 对应
+`ait codex list --provider-id … --project-id …`。不指定时保留完整发现行为。指定时由
+application 使用导入的同一归属规则筛选：已有绑定优先；未绑定 Thread 的 canonical cwd
+必须唯一匹配注册 Project 的根目录或其后代，或精确匹配已有 Session workdir。
+嵌套项目等多重归属、无匹配和无法规范化的目录不出现在该项目列表中。
+
+发现列表按 `created_at` 正序分页以减少更新引起的条目位移，最终展示仍按 `updated_at` 排序。
+遵循 ADR-016 的非快照语义，同页、跨页及归档扫描间的重复 Thread ID 合并为一项，摘要取最后
+一次观察值，不将 `updatedAt` 当作版本号；重复 cursor 和无效身份仍报协议错误。
+
+新导入使用所选 Provider 的启用全局 Agent，默认优先当前 Project 的 Codex Agent；
+已导入会话保留绑定 Agent。执行同步时 application 再次校验归属、Agent 与 writer 状态。
+同步通过现有 worker 历史端口完成，不发送 `turn/start`，不创建 Run 或触发自动 Git 提交。
+成功回执独立于后续视图刷新；批次允许部分成功并逐项重试失败项。关闭弹窗停止尚未发出的
+批次项，已经发出的同步仍可能完成，并只刷新原目标 Project。
+
+### 执行能力
+
 支持新任务、已有原生 Thread 继续执行、历史导入/同步、审批、取消、崩溃对账、模型发现、标题与可选自动提交。
 
 原生 Thread fork/steer 尚未实现。任意历史节点的派生、繁忙 Session 的自动分支、Codex Cron 以及已绑定原生 Thread 的便携 Ait archive 导入/导出返回明确能力错误。允许从 Project 根创建独立新任务；允许在可复用当前 Session 时继续。绑定原生 Thread 后不能切换 Provider。不存在旧执行路径回退。

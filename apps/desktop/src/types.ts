@@ -321,6 +321,8 @@ export interface AitDesktopApi {
   agents(): Promise<AgentCatalog>;
   project(projectId: string): Promise<ProjectView>;
   projectSessions(projectId: string): Promise<DesktopSession[]>;
+  codexThreads(input: { projectId: string; providerId: string }): Promise<CodexThreadSummary[]>;
+  syncCodexThread(input: CodexThreadImport): Promise<{ projectId: string; sessionId: string }>;
   crons(): Promise<DesktopCron[]>;
   createCron(input: {
     name: string;
@@ -404,6 +406,26 @@ export interface AitDesktopApi {
     submissionId?: string;
     recover?: boolean;
   }): Promise<ForkSubmission>;
+}
+
+/** Project-scoped native history summary; excludes provider payloads and messages. */
+export interface CodexThreadSummary {
+  threadId: string;
+  title: string;
+  preview: string;
+  cwd: string;
+  updatedAt: number;
+  archived: boolean;
+  sessionId: string | null;
+  agentId: string | null;
+  activeRunId: string | null;
+}
+
+export interface CodexThreadImport {
+  projectId: string;
+  providerId: string;
+  threadId: string;
+  agentId: string;
 }
 
 declare global {

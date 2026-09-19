@@ -1,4 +1,4 @@
-import type { AgentProvider, AgentView, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate, SettingsResponse } from "./types.js";
+import type { AgentProvider, AgentView, CodexThreadSummary, ControlEvent, NativeApproval, RunProgress, RunStreamUpdate, SettingsResponse } from "./types.js";
 import { app, BrowserWindow, dialog, ipcMain, shell, type WebContents } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -33,6 +33,7 @@ const allowedMethods = new Set([
   "provider.save", "provider.refresh-models", "provider.discover-models", "agent.save", "session.set-config",
   "project.sessions", "project.update", "project.list", "project.view", "agent.catalog", "settings.get", "settings.save", "settings.reset",
   "project.choose-directory", "project.open-file", "project.create", "project.set-default-agent",
+  "project.codex-threads", "project.sync-codex-thread",
   "session.set-agent", "session.rename", "session.set-title",
   "session.generate-title", "session.send-message", "session.fork",
   "run.resolve-approval", "run.resolve-tool-approval", "run.resolve-tool-interaction", "run.active",
@@ -212,6 +213,44 @@ export class DaemonClient {
       const sessions = await this.get(path, "sessions") as DaemonData["sessions"];
       for (const session of sessions) assertProject(session, projectId);
       return sessions.map(projectSession);
+    }
+    if (method === "project.codex-threads") {
+      const projectId = boundedId(params.projectId, "Project");
+      const providerId = boundedId(params.providerId, "Provider");
+      const query = new URLSearchParams({ project_id: projectId, provider_id: providerId });
+      const threads = await this.get(`/v1/codex/thread/list?${query}`, "codex_threads") as Array<{
+        thread_id: string; name?: string | null; preview: string; cwd: string; updated_at: number;
+        archived: boolean; session_id?: string | null; project_id?: string | null;
+      }>;
+      // Read current Agent and Run state for the bindings returned by discovery.
+      const [path] = projectReadPaths(projectId);
+      const sessions = await this.get(path, "sessions") as DaemonData["sessions"];
+      for (const session of sessions) assertProject(session, projectId);
+      const bindings = new Map(sessions.map((session) => [session.id, session]));
+      return threads.map((thread): CodexThreadSummary => {
+        // Rust omits absent bindings; both omission and null mean an unbound native Thread.
+        const boundProjectId = thread.project_id ?? null;
+        const sessionId = thread.session_id ?? null;
+        if (boundProjectId !== null && boundProjectId !== projectId) {
+          throw new Error("Codex Thread belongs to another Project.");
+        }
+        const session = sessionId ? bindings.get(sessionId) : undefined;
+        return {
+          threadId: thread.thread_id, title: thread.name?.trim() || thread.preview.trim() || "Untitled Codex session",
+          preview: thread.preview, cwd: thread.cwd, updatedAt: thread.updated_at * 1_000,
+          archived: thread.archived, sessionId,
+          agentId: session?.agent_id ?? null, activeRunId: session?.active_run_id ?? null,
+        };
+      });
+    }
+    if (method === "project.sync-codex-thread") {
+      const projectId = boundedId(params.projectId, "Project");
+      const session = await this.post("/v1/codex/thread/sync", "session", {
+        project_id: projectId, provider_id: boundedId(params.providerId, "Provider"),
+        thread_id: boundedId(params.threadId, "Thread"), agent_id: boundedId(params.agentId, "Agent"),
+      }) as DaemonData["sessions"][number];
+      assertProject(session, projectId);
+      return { projectId, sessionId: session.id };
     }
     if (method === "cron.list") {
       const crons = await this.get("/v1/cron/list", "crons") as DaemonData["crons"];

@@ -1,0 +1,335 @@
+{
+  "scope": {
+    "date": "2026-09-19",
+    "platform": "macOS arm64",
+    "features": "default",
+    "command": "cargo llvm-cov --workspace --html",
+    "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-codex-import-coverage.json",
+    "base_commit": "939d5fd304afa23113f661ed8d9cef177ac88453",
+    "revision": "working tree source content identified by source_tree_sha256",
+    "source_tree_sha256": "05c1811c3b3a076011cde5ffcafd34f923da1340d32b9e641e8c21635ecf8686",
+    "source_hash_paths": "Sorted existing Git tracked/untracked non-ignored files in crates/, bins/, apps/, Cargo.toml, Cargo.lock, test_with_codex.sh; SHA256(path + NUL + decimal byte length + NUL + content)",
+    "source_file_count": 374,
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargo_llvm_cov": "0.8.4",
+    "manual_source_exclusions": [],
+    "doctests_in_coverage": false,
+    "unavailable_platforms": [
+      "Linux",
+      "Windows"
+    ],
+    "reported_file_count": 134,
+    "reported_test_files": []
+  },
+  "reference_baseline": {
+    "artifact": "adr-017-coverage-summary.json",
+    "scope": {
+      "date": "2026-09-19",
+      "platform": "macOS arm64",
+      "features": "default",
+      "command": "cargo llvm-cov --workspace --html",
+      "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-unified-coverage.json",
+      "base_commit": "d5b6a9d91158b4de7f282e455277fc0642cb8ae8",
+      "revision": "working tree source content identified by source_tree_sha256",
+      "source_tree_sha256": "e0f121efe7f6f38336dbd7d3adf2d0aae2e519c1ee19c3afc8625d7b83e503e8",
+      "source_hash_paths": "Sorted existing Git tracked/untracked non-ignored files in crates/, bins/, apps/, Cargo.toml, Cargo.lock, test_with_codex.sh; SHA256(path + NUL + decimal byte length + NUL + content)",
+      "source_file_count": 370,
+      "rustc": "1.98.1 (48a229cea 2026-09-01)",
+      "cargo_llvm_cov": "0.8.4",
+      "manual_source_exclusions": [],
+      "doctests_in_coverage": false,
+      "unavailable_platforms": [
+        "Linux",
+        "Windows"
+      ],
+      "reported_file_count": 134,
+      "reported_test_files": []
+    },
+    "note": "Prior ADR-017 default-feature macOS workspace measurement; not a fresh measurement of 939d5fd. Code and line populations changed. Deltas are reference comparisons only.",
+    "current": {
+      "workspace": {
+        "covered": 21389,
+        "count": 27673,
+        "percent": 77.2919
+      },
+      "agent-adapters": {
+        "covered": 2006,
+        "count": 3342,
+        "percent": 60.0239
+      },
+      "api-http": {
+        "covered": 717,
+        "count": 928,
+        "percent": 77.2629
+      },
+      "application": {
+        "covered": 9529,
+        "count": 11489,
+        "percent": 82.9402
+      },
+      "cli": {
+        "covered": 526,
+        "count": 541,
+        "percent": 97.2274
+      },
+      "contracts": {
+        "covered": 552,
+        "count": 661,
+        "percent": 83.5098
+      },
+      "daemon": {
+        "covered": 53,
+        "count": 116,
+        "percent": 45.6897
+      },
+      "domain": {
+        "covered": 1003,
+        "count": 1250,
+        "percent": 80.24
+      },
+      "ipc": {
+        "covered": 803,
+        "count": 1278,
+        "percent": 62.8326
+      },
+      "observability": {
+        "covered": 91,
+        "count": 99,
+        "percent": 91.9192
+      },
+      "ports": {
+        "covered": 124,
+        "count": 202,
+        "percent": 61.3861
+      },
+      "providers": {
+        "covered": 354,
+        "count": 512,
+        "percent": 69.1406
+      },
+      "runtime": {
+        "covered": 780,
+        "count": 1044,
+        "percent": 74.7126
+      },
+      "sandbox": {
+        "covered": 32,
+        "count": 125,
+        "percent": 25.6
+      },
+      "scheduler": {
+        "covered": 221,
+        "count": 275,
+        "percent": 80.3636
+      },
+      "storage-sqlite": {
+        "covered": 1515,
+        "count": 1677,
+        "percent": 90.3399
+      },
+      "tools": {
+        "covered": 1669,
+        "count": 1951,
+        "percent": 85.5459
+      },
+      "worker": {
+        "covered": 72,
+        "count": 534,
+        "percent": 13.4831
+      },
+      "workspace-local": {
+        "covered": 1212,
+        "count": 1512,
+        "percent": 80.1587
+      },
+      "workspace-port": {
+        "covered": 130,
+        "count": 137,
+        "percent": 94.8905
+      }
+    }
+  },
+  "current": {
+    "workspace": {
+      "covered": 21447,
+      "count": 27720,
+      "percent": 77.3701
+    },
+    "agent-adapters": {
+      "covered": 2006,
+      "count": 3342,
+      "percent": 60.0239
+    },
+    "api-http": {
+      "covered": 717,
+      "count": 929,
+      "percent": 77.1798
+    },
+    "application": {
+      "covered": 9582,
+      "count": 11526,
+      "percent": 83.1338
+    },
+    "cli": {
+      "covered": 531,
+      "count": 550,
+      "percent": 96.5455
+    },
+    "contracts": {
+      "covered": 552,
+      "count": 661,
+      "percent": 83.5098
+    },
+    "daemon": {
+      "covered": 53,
+      "count": 116,
+      "percent": 45.6897
+    },
+    "domain": {
+      "covered": 1003,
+      "count": 1250,
+      "percent": 80.24
+    },
+    "ipc": {
+      "covered": 803,
+      "count": 1278,
+      "percent": 62.8326
+    },
+    "observability": {
+      "covered": 91,
+      "count": 99,
+      "percent": 91.9192
+    },
+    "ports": {
+      "covered": 124,
+      "count": 202,
+      "percent": 61.3861
+    },
+    "providers": {
+      "covered": 354,
+      "count": 512,
+      "percent": 69.1406
+    },
+    "runtime": {
+      "covered": 780,
+      "count": 1044,
+      "percent": 74.7126
+    },
+    "sandbox": {
+      "covered": 32,
+      "count": 125,
+      "percent": 25.6
+    },
+    "scheduler": {
+      "covered": 221,
+      "count": 275,
+      "percent": 80.3636
+    },
+    "storage-sqlite": {
+      "covered": 1515,
+      "count": 1677,
+      "percent": 90.3399
+    },
+    "tools": {
+      "covered": 1669,
+      "count": 1951,
+      "percent": 85.5459
+    },
+    "worker": {
+      "covered": 72,
+      "count": 534,
+      "percent": 13.4831
+    },
+    "workspace-local": {
+      "covered": 1212,
+      "count": 1512,
+      "percent": 80.1587
+    },
+    "workspace-port": {
+      "covered": 130,
+      "count": 137,
+      "percent": 94.8905
+    }
+  },
+  "changed_files": {
+    "bins/cli/src/args.rs": {
+      "covered": 299,
+      "count": 308,
+      "percent": 97.0779
+    },
+    "bins/cli/src/main.rs": {
+      "covered": 171,
+      "count": 179,
+      "percent": 95.5307
+    },
+    "crates/api-http/src/lib.rs": {
+      "covered": 717,
+      "count": 929,
+      "percent": 77.1798
+    },
+    "crates/application/src/control/codex_history.rs": {
+      "covered": 802,
+      "count": 931,
+      "percent": 86.1439
+    },
+    "crates/application/src/control/execution.rs": {
+      "covered": 307,
+      "count": 368,
+      "percent": 83.4239
+    },
+    "crates/contracts/src/lib.rs": {
+      "covered": 28,
+      "count": 28,
+      "percent": 100.0
+    }
+  },
+  "tests": {
+    "workspace": {
+      "passed": 455,
+      "failed": 0,
+      "ignored": 5
+    },
+    "instrumented": {
+      "passed": 454,
+      "failed": 0,
+      "ignored": 5
+    },
+    "desktop": {
+      "passed": 140,
+      "failed": 0
+    },
+    "browser": {
+      "passed": 69,
+      "failed": 0
+    }
+  },
+  "ignored_tests": [
+    "codex_native_tools_create_and_verify_python_hello_world",
+    "deepseek_live_default_catalog",
+    "wf11_real_deepseek_python_hello_world",
+    "wf10_create_project_with_real_codex_and_commit",
+    "permission_change::replay_permission_change_with_external_worker"
+  ],
+  "reference_deltas_percentage_points": {
+    "workspace": 0.0782,
+    "agent-adapters": 0.0,
+    "api-http": -0.0831,
+    "application": 0.1936,
+    "cli": -0.6819,
+    "contracts": 0.0,
+    "daemon": 0.0,
+    "domain": 0.0,
+    "ipc": 0.0,
+    "observability": 0.0,
+    "ports": 0.0,
+    "providers": 0.0,
+    "runtime": 0.0,
+    "sandbox": 0.0,
+    "scheduler": 0.0,
+    "storage-sqlite": 0.0,
+    "tools": 0.0,
+    "worker": 0.0,
+    "workspace-local": 0.0,
+    "workspace-port": 0.0
+  }
+}

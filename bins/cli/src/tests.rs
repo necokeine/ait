@@ -115,7 +115,11 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
     );
     case!(
         &["codex", "list", "--provider-id", "provider_id"] =>
-        ListCodexThreads { provider_id: "provider_id".into() }
+        ListCodexThreads { provider_id: "provider_id".into(), project_id: None }
+    );
+    case!(
+        &["codex", "list", "--provider-id", "provider_id", "--project-id", "project"] =>
+        ListCodexThreads { provider_id: "provider_id".into(), project_id: Some("project".into()) }
     );
     case!(
         &["codex", "sync", "--provider-id", "provider_id", "--thread-id", "thread_id",

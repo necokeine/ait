@@ -68,32 +68,66 @@ impl LocalControlService {
     pub(in crate::control) async fn list_codex_threads(
         &self,
         provider_id: &str,
+        project_id: Option<&str>,
     ) -> Result<CommandResult, ApiError> {
         let catalog = self
             .records()
             .read_records::<CodexImportContext>(vec![
                 ControlFilter::id(ControlRecordKind::Provider, provider_id),
                 ControlFilter::all(ControlRecordKind::Session),
+                ControlFilter::all(ControlRecordKind::Project),
             ])
             .await?;
         validate_codex_provider(&catalog.original, provider_id)?;
+        if project_id.is_some_and(|id| {
+            !catalog
+                .original
+                .projects
+                .iter()
+                .any(|project| project.id == id)
+        }) {
+            return Err(error(ErrorCode::InvalidProject, "Project not found", false));
+        }
+        let bindings = catalog
+            .original
+            .sessions
+            .iter()
+            .filter_map(|session| {
+                if let SessionSource::CodexThread(source) = &session.source
+                    && source.provider_id == provider_id
+                {
+                    Some((
+                        source.thread_id.as_str(),
+                        (session.id.clone(), session.project_id.clone()),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect::<HashMap<_, _>>();
+        let mut owners_by_cwd = HashMap::new();
         let source = self.require_codex_history_source()?;
         let mut threads = source
             .list_threads(ALL_SOURCE_KINDS)
             .await
             .map_err(|failure| history_api_error(ErrorCode::CodexHistoryListFailed, failure))?
             .into_iter()
-            .map(|thread| {
-                let binding = catalog.original.sessions.iter().find_map(|session| {
-                    matches!(
-                        &session.source,
-                        SessionSource::CodexThread(source)
-                            if source.provider_id == provider_id && source.thread_id == thread.id
-                    )
-                    .then(|| (session.id.clone(), Some(session.project_id.clone())))
+            .filter(|thread| {
+                let Some(project_id) = project_id else {
+                    return true;
+                };
+                if let Some((_, bound_project)) = bindings.get(thread.id.as_str()) {
+                    return bound_project == project_id;
+                }
+                let owners = owners_by_cwd.entry(thread.cwd.clone()).or_insert_with(|| {
+                    matching_projects(&catalog.original, Path::new(&thread.cwd))
                 });
-                let (session_id, project_id) = binding
-                    .map(|(session, project)| (Some(session), project))
+                owners.len() == 1 && owners.contains(project_id)
+            })
+            .map(|thread| {
+                let (session_id, project_id) = bindings
+                    .get(thread.id.as_str())
+                    .map(|(session, project)| (Some(session.clone()), Some(project.clone())))
                     .unwrap_or_default();
                 CodexThreadView {
                     provider_id: provider_id.to_owned(),

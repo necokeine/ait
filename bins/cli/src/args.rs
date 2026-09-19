@@ -198,6 +198,9 @@ pub(crate) enum CodexCommand {
     List {
         #[arg(long, value_parser = input::id, default_value = "builtin-codex")]
         provider_id: String,
+        /// Only show Threads belonging to this registered Project.
+        #[arg(long, value_parser = input::id)]
+        project_id: Option<String>,
     },
     /// Import or reconcile one native Thread into an Ait Session.
     Sync {
@@ -638,7 +641,13 @@ impl CliCommand {
 impl From<CodexCommand> for Command {
     fn from(value: CodexCommand) -> Self {
         match value {
-            CodexCommand::List { provider_id } => Command::ListCodexThreads { provider_id },
+            CodexCommand::List {
+                provider_id,
+                project_id,
+            } => Command::ListCodexThreads {
+                provider_id,
+                project_id,
+            },
             CodexCommand::Sync {
                 provider_id,
                 thread_id,
