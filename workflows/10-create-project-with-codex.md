@@ -101,8 +101,7 @@ jq -e --arg initial "$INITIAL_COMMIT" \
   '.ok == true and .result.value.base_commit == $initial' "$WF_ROOT/project.json"
 ```
 
-这里的“导入”是注册已有 Git 目录，使用 `register_project`。
-`ait-cli project import` 专用于导入 AIT Project 归档，不适用于这个空 Git 仓库。
+这里的“导入”是注册已有 Git 目录，使用 `project register`；Project JSON archive 接口已删除。
 注册应保留已有 HEAD，不再增加初始提交；响应包含规范化工作目录和根 Message ID。
 
 ### 5. 通过 ait-cli 调用 Codex，生成 Rust 程序并提交

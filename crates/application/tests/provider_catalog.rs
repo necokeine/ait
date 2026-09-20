@@ -375,7 +375,7 @@ async fn failed_or_invalid_discovery_has_no_partial_configuration() {
 }
 
 #[tokio::test]
-async fn provider_catalog_drives_configuration_and_credentials_never_enter_state_or_archives() {
+async fn provider_catalog_drives_configuration_and_credentials_never_enter_state_or_events() {
     let store = Arc::new(SqliteControlStore::in_memory().unwrap());
     let gateway = Arc::new(Gateway::default());
     let service = LocalControlService::new(
@@ -460,46 +460,11 @@ async fn provider_catalog_drives_configuration_and_credentials_never_enter_state
         ErrorCode::InvalidAgentConfiguration
     );
     assert_eq!(view(&service).await, before_rejection);
-    // Delisting a model blocks new calls but must not block history export/import.
+    // Delisting a model blocks new calls without exposing credentials in durable state.
     let state = store.load().await.unwrap().value.to_string();
     assert!(!state.contains(secret));
     let events = serde_json::to_string(&service.replay_events(0, 100).await.unwrap()).unwrap();
     assert!(!events.contains(secret));
-    let CommandResult::ProjectExport(archive) = ok(
-        &service,
-        Command::ExportProject {
-            project_id: "p".into(),
-        },
-    )
-    .await
-    else {
-        panic!()
-    };
-    let json = serde_json::to_string(&archive).unwrap();
-    assert!(!json.contains("credential"));
-    assert!(!json.contains("secret"));
-    let destination = tempfile::tempdir().unwrap();
-    let imported = LocalControlService::new(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-        Arc::new(SqliteControlStore::in_memory().unwrap()),
-    );
-    ok(
-        &imported,
-        Command::ImportProject {
-            archive,
-            workdir: destination.path().display().to_string(),
-        },
-    )
-    .await;
-    assert!(
-        !view(&imported)
-            .await
-            .providers
-            .iter()
-            .find(|p| p.provider.id == "remote")
-            .unwrap()
-            .has_secret
-    );
 }
 
 #[cfg(not(all(feature = "dev-mock-provider", debug_assertions)))]
@@ -591,13 +556,6 @@ async fn development_mock_is_selectable_and_persists_without_external_executors(
         custom.error.unwrap().code,
         ErrorCode::InvalidAgentConfiguration
     );
-    let archive = service
-        .execute(Command::ExportProject {
-            project_id: "p".into(),
-        })
-        .await;
-    assert_eq!(archive.error.unwrap().code, ErrorCode::InvalidProject);
-
     drop(service);
     drop(store);
     let reopened_store =

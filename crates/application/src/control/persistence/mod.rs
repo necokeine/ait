@@ -22,7 +22,6 @@ pub(in crate::control) trait HasAgents {
 }
 pub(in crate::control) trait HasProviders {
     fn providers(&self) -> &Vec<ProviderRecord>;
-    fn providers_mut(&mut self) -> &mut Vec<ProviderRecord>;
 }
 pub(in crate::control) trait HasProviderCredentials {
     fn provider_credentials(&self) -> &HashMap<String, String>;
@@ -180,9 +179,6 @@ macro_rules! field_access {
         impl $crate::control::persistence::HasProviders for $context {
             fn providers(&self) -> &$ty {
                 &self.providers
-            }
-            fn providers_mut(&mut self) -> &mut $ty {
-                &mut self.providers
             }
         }
     };

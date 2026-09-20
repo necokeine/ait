@@ -90,27 +90,6 @@ pub(crate) enum CliCommand {
         #[command(subcommand)]
         command: EventCommand,
     },
-    /// Export a Project archive to a file (also: project export).
-    Export(ExportArgs),
-    /// Import a Project archive (also: project import).
-    Import(ImportArgs),
-}
-
-#[derive(Args)]
-pub(crate) struct ExportArgs {
-    #[arg(long, value_parser = input::id)]
-    project_id: String,
-    #[arg(long)]
-    output: PathBuf,
-}
-
-#[derive(Args)]
-pub(crate) struct ImportArgs {
-    /// Project archive JSON file, or - for stdin.
-    #[arg(long, value_name = "FILE|-")]
-    input: PathBuf,
-    #[arg(long)]
-    workdir: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -159,10 +138,6 @@ pub(crate) enum ProjectCommand {
         #[arg(long, value_parser = input::id)]
         agent_id: String,
     },
-    /// Export all branches and Session refs to a file.
-    Export(ExportArgs),
-    /// Import an archive into an explicit local workdir.
-    Import(ImportArgs),
 }
 
 #[derive(Subcommand)]
@@ -639,7 +614,6 @@ impl ApprovalCommand {
 
 pub(crate) enum Action {
     Execute(Command),
-    Export { command: Command, output: PathBuf },
     Events { after: u64, namespace: String },
 }
 
@@ -650,7 +624,7 @@ impl CliCommand {
         source: StdinSource,
     ) -> Result<Action, io::Error> {
         let command = match self {
-            Self::Project { command } => return command.into_action(stdin),
+            Self::Project { command } => command.into_command(),
             Self::Agent { command } => command.into_command(stdin, source)?,
             Self::Codex { command } => command.into(),
             Self::Session { command } => command.into_command(stdin)?,
@@ -661,8 +635,6 @@ impl CliCommand {
             Self::Event {
                 command: EventCommand::List { after, namespace },
             } => return Ok(Action::Events { after, namespace }),
-            Self::Export(args) => return Ok(args.into()),
-            Self::Import(args) => args.read(stdin)?,
         };
         Ok(Action::Execute(command))
     }
@@ -693,29 +665,9 @@ impl From<CodexCommand> for Command {
     }
 }
 
-impl From<ExportArgs> for Action {
-    fn from(args: ExportArgs) -> Self {
-        Self::Export {
-            command: Command::ExportProject {
-                project_id: args.project_id,
-            },
-            output: args.output,
-        }
-    }
-}
-
-impl ImportArgs {
-    fn read(self, stdin: &mut dyn Read) -> Result<Command, io::Error> {
-        Ok(Command::ImportProject {
-            archive: input::json(&self.input, stdin)?,
-            workdir: self.workdir.to_string_lossy().into_owned(),
-        })
-    }
-}
-
 impl ProjectCommand {
-    fn into_action(self, stdin: &mut dyn Read) -> Result<Action, io::Error> {
-        let command = match self {
+    fn into_command(self) -> Command {
+        match self {
             ProjectCommand::BindAgent {
                 project_id,
                 source_agent_id,
@@ -754,10 +706,7 @@ impl ProjectCommand {
                 project_id,
                 agent_id,
             },
-            ProjectCommand::Import(args) => args.read(stdin)?,
-            ProjectCommand::Export(args) => return Ok(args.into()),
-        };
-        Ok(Action::Execute(command))
+        }
     }
 }
 

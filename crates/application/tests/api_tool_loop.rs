@@ -815,7 +815,7 @@ async fn public_cancellation_waits_for_one_cancelled_tool_result_and_releases_se
 }
 
 #[tokio::test]
-async fn archive_and_events_omit_tool_payloads_while_queries_retain_them() {
+async fn events_omit_tool_payloads_while_queries_retain_them() {
     let kind = ProviderKind::OpenAI;
     let f = Fixture::new(
         kind,
@@ -843,18 +843,6 @@ async fn archive_and_events_omit_tool_payloads_while_queries_retain_them() {
     let events = f.service.replay_events(0, 1000).await.unwrap();
     assert!(
         !serde_json::to_string(&events)
-            .unwrap()
-            .contains("private-payload-marker")
-    );
-    let archive = ok(
-        &f.service,
-        Command::ExportProject {
-            project_id: "p".into(),
-        },
-    )
-    .await;
-    assert!(
-        !serde_json::to_string(&archive)
             .unwrap()
             .contains("private-payload-marker")
     );
