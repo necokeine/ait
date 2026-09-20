@@ -2,7 +2,8 @@
 
 - [NEC-344：移除 Project JSON archive 接口](decisions/NEC-344/adr-001-remove-project-archive-interfaces.md)（Accepted）：
   删除 CLI、HTTP 与 application/contract 内的 Project archive 导入导出能力；Project 恢复统一使用
-  目录内的 `.ait/project.sqlite3` 与既有目录打开流程。
+  目录内的 `.ait/project.sqlite3` 与既有目录打开流程。[实现与验证报告](reports/nec-344-remove-project-archive-interfaces.md)
+  记录测试与覆盖率。
 
 - [ADR-020：Codex 输出预算与超限诊断](decisions/adr-020-codex-output-limits.md)（Accepted）：
   Codex 原生输出默认上限独立为 8 MiB，超限显示指标、实际值与上限；大输出的实时预览和
