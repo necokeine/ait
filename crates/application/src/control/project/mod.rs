@@ -10,7 +10,6 @@ use ait_domain::ErrorCode;
 use ait_ports::PendingEvent;
 use uuid::Uuid;
 
-pub(in crate::control) mod archive;
 mod execution;
 mod fenced_store;
 pub(in crate::control) mod git;
@@ -167,6 +166,6 @@ pub(in crate::control) fn require_project_view<'a>(
 mod context;
 mod record;
 pub(in crate::control) use context::{
-    ArchiveContext, ProjectAgentContext, ProjectRegistrationContext, ProjectsContext,
+    ProjectAgentContext, ProjectRegistrationContext, ProjectsContext,
 };
 pub(in crate::control) use record::ProjectRecord;

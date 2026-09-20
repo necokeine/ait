@@ -11,11 +11,9 @@ use crate::control::errors::error;
 use crate::control::errors::project_error;
 use crate::control::persistence::HasSettings;
 use crate::control::persistence::{HasAgents, HasMessages, HasProjects, HasProviders, HasSessions};
-use crate::control::project::archive::{validate_import_conflicts, validate_project_export};
-use crate::control::project::git::PreparedProject;
-use crate::control::project::{require_project_view, validate_project_workdir};
+use crate::control::project::require_project_view;
 use crate::control::settings::resolve_project_agent_id;
-use ait_contracts::{ApiError, Command, ProjectExport};
+use ait_contracts::{ApiError, Command};
 use ait_domain::{CodexWorkspaceMode, ErrorCode, SessionSource};
 use ait_workspace::{ProjectWorkspace, WorkspaceLease};
 use std::path::{Path, PathBuf};
@@ -178,58 +176,6 @@ pub(in crate::control) async fn prepare_command_session_worktrees(
         }
         _ => Ok(()),
     }
-}
-
-pub(in crate::control) async fn prepare_import_session_worktrees(
-    workspace: &dyn ProjectWorkspace,
-    lease: Option<Arc<dyn WorkspaceLease>>,
-    state: &(impl HasAgents + HasMessages + HasProjects + HasProviders + HasSessions),
-    archive: &ProjectExport,
-    prepared: &PreparedProject,
-    created: &mut Vec<PathBuf>,
-) -> Result<(), ApiError> {
-    validate_project_export(archive)?;
-    validate_import_conflicts(state, archive)?;
-    validate_project_workdir(state, &prepared.workdir)?;
-    prepared.verify(workspace).await?;
-    let mut project = ProjectRecord::try_from(archive.project.clone())
-        .map_err(crate::control::errors::serialization_error)?;
-    project.workdir.clone_from(&prepared.workdir);
-    project.base_commit.clone_from(&prepared.base_commit);
-    for session in &archive.sessions {
-        ensure_session_worktree(
-            workspace,
-            lease.clone(),
-            &project,
-            &session.id,
-            &project.base_commit,
-            created,
-        )
-        .await?;
-        // A new request may encounter a worktree retained after a failed CAS.
-        // Do not silently reuse its stale HEAD or reset potentially user-owned work.
-        let worktree = session_worktree_path(&project.workdir, &session.id)?;
-        if workspace
-            .git_head(&worktree)
-            .await
-            .map_err(project_error)?
-            .as_deref()
-            != Some(project.base_commit.as_str())
-        {
-            return Err(error(
-                ErrorCode::InvalidSession,
-                format!(
-                    concat!(
-                        "retained Session worktree at {} does not match the import HEAD; ",
-                        "inspect it before retrying"
-                    ),
-                    worktree.display()
-                ),
-                false,
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,0 +1,27 @@
+{
+  "revision": "2ad8c3e111c23c6b66eb72ae8b9626a7228e6fd2",
+  "command": "cargo llvm-cov --workspace --html",
+  "toolchain": {
+    "rustc": "1.98.1",
+    "cargo_llvm_cov": "0.8.4",
+    "platform": "macOS arm64"
+  },
+  "tests": {
+    "discovered": 488,
+    "passed": 483,
+    "failed": 0,
+    "ignored": 5
+  },
+  "line_coverage": {
+    "workspace": { "covered": 23156, "count": 29843, "percent": 77.59273531481419 },
+    "ait-cli": { "covered": 528, "count": 546, "percent": 96.7032967032967 },
+    "ait-api-http": { "covered": 713, "count": 976, "percent": 73.05327868852459 },
+    "ait-application": { "covered": 9365, "count": 11453, "percent": 81.76896882912774 },
+    "ait-contracts": { "covered": 488, "count": 589, "percent": 82.85229202037351 }
+  },
+  "notes": [
+    "Default features were measured without additional source exclusions.",
+    "Five credentialed or externally configured tests remained ignored.",
+    "No clean baseline rerun was performed for a causal coverage delta."
+  ]
+}

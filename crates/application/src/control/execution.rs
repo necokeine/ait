@@ -183,7 +183,6 @@ impl LocalControlService {
         if matches!(
             command,
             Command::GetRun { .. }
-                | Command::ExportProject { .. }
                 | Command::GetSettings
                 | Command::ListProjects
                 | Command::ListAgents
@@ -300,7 +299,6 @@ impl LocalControlService {
     ) -> Result<CommandOutcome, ApiError> {
         let mut created_workdir = None;
         let mut created_session_worktrees = Vec::new();
-        let importing_project = matches!(&command, Command::ImportProject { .. });
         self.commit_command_inner(
             command,
             workspace_lease,
@@ -333,10 +331,8 @@ impl LocalControlService {
                     "{} Session worktree retained at {retained}; inspect it before retrying.",
                     failure.message
                 );
-                // Import can be prepared again after inspection; never reset
-                // or overwrite a retained worktree automatically.
-                failure.retryable &=
-                    importing_project && failure.code == ErrorCode::RunQueueConflict;
+                // Never reset or overwrite a retained worktree automatically.
+                failure.retryable = false;
             }
             failure
         })
@@ -361,7 +357,6 @@ impl LocalControlService {
             Command::RegisterProject { workdir, .. } => {
                 Some(workdir.as_mut().expect("allocated workdir"))
             }
-            Command::ImportProject { workdir, .. } => Some(workdir),
             _ => None,
         };
         let canonical_workdir = if let Some(workdir) = project_workdir {
@@ -392,7 +387,6 @@ impl LocalControlService {
                 self.project_workspace.as_ref(),
                 workspace_lease.clone(),
                 &command,
-                prepared_project.as_ref(),
                 created_session_worktrees,
             )
             .await?;

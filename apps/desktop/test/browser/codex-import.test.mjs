@@ -171,6 +171,8 @@ test("Project menu and import dialog are keyboard accessible and restore focus",
   const trigger = page.locator('[data-project-settings-id="a"]');
   await trigger.focus();
   await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#project-open-action").evaluate((el) => el === document.activeElement), true);
+  await page.keyboard.press("ArrowDown");
   assert.equal(await page.locator("#project-codex-action").evaluate((el) => el === document.activeElement), true);
   await page.keyboard.press("ArrowDown");
   assert.equal(await page.locator("#project-settings-action").evaluate((el) => el === document.activeElement), true);

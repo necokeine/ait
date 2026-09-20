@@ -72,8 +72,8 @@ MiniMax 使用官方 OpenAI-compatible Chat Completions API；用
 GitHub Release 会为 Linux x86_64 与 Apple Silicon 构建名为 **Ait** 的桌面产物；
 版本准备、打标签、产物校验和故障恢复见 [发布操作指南](docs/operations/releasing.md)。
 
-Project 的无凭证 JSON 归档使用 `ait-cli project export` / `ait-cli project import`；结构化指标位于
-`GET /v1/metric/list`。备份恢复、数据保留、附件清理与性能基准见
+结构化指标位于 `GET /v1/metric/list`。Project 恢复使用项目目录中的
+`.ait/project.sqlite3`，不再提供 JSON archive 导入导出接口。备份恢复、数据保留、附件清理与性能基准见
 `docs/operations/reliability-security-observability.md`。
 
 ## Workspace

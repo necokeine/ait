@@ -3,8 +3,7 @@
 use super::access::RecordAccess;
 use super::codec::decode_records;
 use crate::control::catalog::{ProviderContext, builtin_providers};
-use crate::control::conversation::SessionsContext;
-use crate::control::project::ArchiveContext;
+use crate::control::conversation::{ConversationContext, SessionsContext};
 use crate::control::runs::ApiRunContext;
 use crate::control::settings::SettingsContext;
 use crate::control::use_cases::transaction::CommandTransaction;
@@ -251,7 +250,7 @@ fn settings_codec_hydrates_agent_roles_and_removes_retired_values() {
 
 #[test]
 fn hydrated_unchanged_records_are_not_reencoded_or_rewritten() {
-    let loaded = decode_records::<ArchiveContext>(&read(
+    let loaded = decode_records::<ConversationContext>(&read(
         1,
         vec![project(ROOT), session(ROOT), message(ROOT, None)],
     ))
@@ -335,7 +334,7 @@ async fn session_reference_revision_is_checked_before_decoding() {
     let CommandTransaction::Conversation(loaded) = loaded else {
         panic!("typed context")
     };
-    assert_eq!(loaded.revision, 2);
+    assert_eq!(loaded.version.catalog_revision, 2);
     assert_eq!(loaded.original.sessions[0].current_message_id(), NEXT);
     let reads = store.reads.lock().unwrap();
     assert!(reads[2].contains(&ControlFilter::id(Kind::Message, ROOT)));
@@ -382,45 +381,6 @@ async fn new_session_replans_changed_root_and_reads_only_ancestors() {
             ..
         } | ControlFilter::MessageAncestors { .. }
     )));
-}
-
-#[tokio::test]
-async fn export_retries_revision_and_keeps_the_complete_message_family() {
-    let first = vec![project(ROOT), session(ROOT), message(ROOT, None)];
-    let mut complete = first.clone();
-    complete.push(message(NEXT, Some(ROOT)));
-    let mut final_records = complete.clone();
-    final_records.push(agent());
-    let store = Probe::new(vec![
-        read(1, first),
-        read(2, vec![]),
-        read(2, complete),
-        read(2, vec![agent()]),
-        read(2, final_records),
-    ]);
-    let command = Command::ExportProject {
-        project_id: "p".into(),
-    };
-    let result = store
-        .access()
-        .read_command_records(&command)
-        .await
-        .unwrap()
-        .read(command)
-        .unwrap();
-    let CommandResult::ProjectExport(archive) = result else {
-        panic!("export")
-    };
-    assert_eq!(archive.source_revision, 2);
-    assert_eq!(archive.messages.len(), 2);
-    assert!(
-        store
-            .reads
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|filters| filters.contains(&ControlFilter::project(Kind::Message, "p")))
-    );
 }
 
 #[tokio::test]
@@ -628,7 +588,7 @@ async fn storage_rejects_message_rewrite_and_rolls_back_pointer_and_event_togeth
         .read(&[ControlFilter::id(Kind::Session, "s")])
         .await
         .unwrap();
-    assert_eq!(after.revision, loaded.revision);
+    assert_eq!(after.revision, loaded.version.catalog_revision);
     assert_ne!(after.records[0].value["name"], "must roll back");
     assert!(store.replay(0, 10).await.unwrap().is_empty());
 }

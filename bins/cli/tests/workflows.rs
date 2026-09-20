@@ -459,139 +459,6 @@ async fn wf06_replay_events_and_reopen_workspace() {
     workspace.stop().await;
 }
 
-// WF-07: Export a branch forest, import to a fresh workspace, and reject conflicts.
-#[tokio::test]
-#[allow(clippy::too_many_lines)] // One complete acceptance scenario with explicit CLI arguments.
-async fn wf07_export_and_import_project_archive() {
-    let mut source = Workspace::new().await;
-    let project = source.project("project").await;
-    source.agent("portable").await;
-    source
-        .call(&[
-            "project",
-            "set-default-agent",
-            "--project-id",
-            "project",
-            "--agent-id",
-            "portable",
-        ])
-        .await;
-    source.session("main", "project", "portable").await;
-    source
-        .call(&[
-            "session",
-            "create",
-            "--id",
-            "branch",
-            "--project-id",
-            "project",
-            "--agent-id",
-            "portable",
-            "--at-message-id",
-            project["root_message_id"].as_str().unwrap(),
-        ])
-        .await;
-    let output = source
-        .cli(&[
-            "project",
-            "export",
-            "--project-id",
-            "project",
-            "--output",
-            "archive with spaces.json",
-        ])
-        .await;
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert!(output.stdout.is_empty() && output.stderr.is_empty());
-    let path = source.path("archive with spaces.json");
-    let archive: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(archive["format_version"], 3);
-    assert_eq!(archive["sessions"].as_array().unwrap().len(), 2);
-    assert!(
-        archive["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|session| session["active_run_id"].is_null())
-    );
-    assert!(archive.get("runs").is_none() && archive.get("crons").is_none());
-    let before = source.view().await;
-    assert!(entity(&before, "sessions", &json!("main"))["active_run_id"].is_null());
-    let contents = std::fs::read(&path).unwrap();
-    failure(
-        &source
-            .cli(&[
-                "project",
-                "export",
-                "--project-id",
-                "missing",
-                "--output",
-                "archive with spaces.json",
-            ])
-            .await,
-        "INVALID_PROJECT",
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), contents);
-
-    let mut target = Workspace::new().await;
-    let imported_dir = target.path("imported project");
-    std::fs::create_dir(&imported_dir).unwrap();
-    let arguments = [
-        "project",
-        "import",
-        "--input",
-        path.to_str().unwrap(),
-        "--workdir",
-        imported_dir.to_str().unwrap(),
-    ];
-    let imported = success(&target.cli(&arguments).await);
-    assert_eq!(
-        imported["workdir"],
-        imported_dir.canonicalize().unwrap().to_str().unwrap()
-    );
-    assert_eq!(imported["default_agent_id"], "portable");
-    let restored = target.view().await;
-    assert_eq!(restored["messages"], archive["messages"]);
-    let mut expected_sessions = archive["sessions"].clone();
-    for session in expected_sessions.as_array_mut().unwrap() {
-        assert_eq!(session["workdir"], "");
-        let worktree = imported_dir
-            .canonicalize()
-            .unwrap()
-            .join(".ait")
-            .join(session["id"].as_str().unwrap());
-        assert!(worktree.join(".git").is_file());
-        session["workdir"] = json!(worktree.to_str().unwrap());
-    }
-    assert_eq!(restored["sessions"], expected_sessions);
-    assert_eq!(restored["agents"], archive["agents"]);
-    assert_eq!(restored["runs"], json!([]));
-    assert_eq!(restored["crons"], json!([]));
-    failure(&target.cli(&arguments).await, "INVALID_PROJECT");
-    assert_eq!(target.view().await, restored);
-
-    let mut invalid = archive;
-    invalid["format_version"] = json!(999);
-    std::fs::write(target.path("invalid.json"), invalid.to_string()).unwrap();
-    failure(
-        &target
-            .cli(&[
-                "project",
-                "import",
-                "--input",
-                "invalid.json",
-                "--workdir",
-                imported_dir.to_str().unwrap(),
-            ])
-            .await,
-        "INVALID_PROJECT",
-    );
-    assert_eq!(target.view().await, restored);
-    assert_eq!(source.view().await, before);
-    target.stop().await;
-    source.stop().await;
-}
-
 // WF-08: Replace settings using the observed revision; stale/invalid writes do not win.
 #[tokio::test]
 async fn wf08_save_reset_and_recover_settings() {
@@ -661,14 +528,16 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
     assert_eq!(help.status.code(), Some(0));
     let help_text = String::from_utf8(help.stdout).unwrap();
     for command in [
-        "project", "agent", "session", "message", "run", "cron", "config", "event", "export",
-        "import", "--host", "--port",
+        "project", "agent", "session", "message", "run", "cron", "config", "event", "--host",
+        "--port",
     ] {
         assert!(
             help_text.contains(command),
             "missing {command}: {help_text}"
         );
     }
+    assert!(!help_text.contains("  export"));
+    assert!(!help_text.contains("  import"));
     assert!(!help_text.contains("agent-provider"));
     assert!(!help_text.contains("--endpoint"));
     let help = workspace.cli(&["agent", "provider", "--help"]).await;
@@ -694,6 +563,9 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         vec!["message", "list"],
         vec!["event", "list", "--after", "invalid"],
         vec!["project", "export"],
+        vec!["project", "import"],
+        vec!["export"],
+        vec!["import"],
         vec!["command"],
         vec!["events"],
         vec!["agent-provider", "list"],
@@ -707,36 +579,18 @@ async fn wf09_cli_diagnostics_do_not_mutate_workspace() {
         assert!(output.stdout.is_empty() && !output.stderr.is_empty());
     }
     std::fs::write(workspace.path("malformed.json"), "{").unwrap();
-    for arguments in [
-        vec![
+    let output = workspace
+        .cli(&[
             "config",
             "set",
             "--expected-revision",
             "1",
             "--input",
             "malformed.json",
-        ],
-        vec![
-            "project",
-            "import",
-            "--input",
-            "missing.json",
-            "--workdir",
-            ".",
-        ],
-        vec![
-            "project",
-            "import",
-            "--input",
-            "malformed.json",
-            "--workdir",
-            ".",
-        ],
-    ] {
-        let output = workspace.cli(&arguments).await;
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(output.stdout.is_empty() && !output.stderr.is_empty());
-    }
+        ])
+        .await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty() && !output.stderr.is_empty());
     workspace
         .reject(&["run", "get", "--run-id", "missing"], "INVALID_RUN")
         .await;

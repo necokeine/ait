@@ -905,7 +905,7 @@ async fn receipts_survive_sqlite_commit_and_reject_stale_or_changed_replays() {
 }
 
 #[tokio::test]
-async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
+async fn sensitive_tool_inputs_never_reach_durable_surfaces() {
     let cases = vec![
         (
             "private_key",
@@ -961,13 +961,6 @@ async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
         assert!(!f.workdir.join("leak.txt").exists(), "{shape}");
         let view = support::workspace(&f.service).await;
         assert!(view.sessions[0].active_run_id.is_none(), "{shape}");
-        let archive = ok(
-            &f.service,
-            Command::ExportProject {
-                project_id: "p".into(),
-            },
-        )
-        .await;
         let events = f.service.replay_events(0, 1000).await.unwrap();
         let checkpoints = f.service.progress_checkpoints("p").await.unwrap();
         let protocol_diagnostic =
@@ -975,7 +968,6 @@ async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
         let mut artifacts = vec![
             format!("{run:?}").into_bytes(),
             format!("{view:?}").into_bytes(),
-            serde_json::to_vec(&archive).unwrap(),
             serde_json::to_vec(&events).unwrap(),
             serde_json::to_vec(&checkpoints).unwrap(),
             protocol_diagnostic.into_bytes(),
@@ -996,7 +988,7 @@ async fn sensitive_tool_inputs_never_reach_durable_or_exported_surfaces() {
                     .windows(secret.len())
                     .any(|window| window == secret.as_bytes()),
                 concat!(
-                    "{}: a durable, exported, checkpoint, event, stderr/protocol ",
+                    "{}: a durable view, checkpoint, event, stderr/protocol ",
                     "diagnostic surface contained the raw secret",
                 ),
                 shape,
@@ -1092,20 +1084,12 @@ async fn malformed_and_oversized_tool_inputs_leave_no_process_or_persistence_tra
             }),
             "{shape}: assistant Message persisted"
         );
-        let archive = ok(
-            &f.service,
-            Command::ExportProject {
-                project_id: "p".into(),
-            },
-        )
-        .await;
         let events = f.service.replay_events(0, 1000).await.unwrap();
         let checkpoints = f.service.progress_checkpoints("p").await.unwrap();
         let stderr = std::fs::read(&stderr_path).unwrap_or_default();
         let mut artifacts = vec![
             format!("{run:?}").into_bytes(),
             format!("{view:?}").into_bytes(),
-            serde_json::to_vec(&archive).unwrap(),
             serde_json::to_vec(&events).unwrap(),
             serde_json::to_vec(&checkpoints).unwrap(),
             stderr,
@@ -1126,7 +1110,7 @@ async fn malformed_and_oversized_tool_inputs_leave_no_process_or_persistence_tra
                     .windows(secret.len())
                     .any(|window| window == secret.as_bytes()),
                 concat!(
-                    "{}: raw private input reached a durable, exported, event, checkpoint, ",
+                    "{}: raw private input reached a durable view, event, checkpoint, ",
                     "stderr, or protocol diagnostic surface",
                 ),
                 shape,

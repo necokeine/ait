@@ -4,6 +4,7 @@
 - 日期：2026-09-11
 - 关联：NEC-241
 - 依赖：ADR-001 v4、NEC-152、NEC-166、ADR-009、NEC-208、NEC-234
+- 修订：NEC-344 删除 Project JSON archive 命令及其快捷入口。
 
 ## 背景
 
@@ -39,8 +40,6 @@ CLI 只做参数校验、输入读取、DTO 构造和现有 HTTP 调用。所有
 | `CreateCron` | `cron create --id --name --project-id --base-message-id --agent-id --schedule --timezone` |
 | `SetCronEnabled` | `cron enable/disable --cron-id` |
 | `TriggerCron` | `cron trigger --cron-id --scheduled-at` |
-| `ExportProject` | `project export --project-id --output` |
-| `ImportProject` | `project import --input --workdir` |
 | `GetSettings` | `config get` |
 | `SaveSettings` | `config set --expected-revision --input` |
 | `ResetSettings` | `config reset` |
@@ -53,8 +52,8 @@ CLI 只做参数校验、输入读取、DTO 构造和现有 HTTP 调用。所有
 | `ListCrons` | `cron list` |
 
 durable SSE 使用 `event list --after <u64 cursor>`。经 NEC-257 修订，删除顶层 `events`，
-Provider 操作移到 `agent provider`，不保留旧命令别名。`export`、`import` 快捷入口继续公开，
-分别复用实体入口的映射与输出逻辑，不接收 Command JSON。
+Provider 操作移到 `agent provider`，不保留旧命令别名。经 NEC-344 修订，删除 Project JSON
+archive 的实体命令与顶层快捷入口。
 
 ### 输入边界
 
@@ -69,7 +68,7 @@ Provider 操作移到 `agent provider`，不保留旧命令别名。`export`、`
   文件/stdin 必须是 UTF-8，完整保留换行、反斜杠和中文，不 trim 消息。
 - `agent provider save/discover-models --input <file|->` 只接受模型数组（id/name/reasoning_efforts）。
   `config set --input` 只接受完整 values 文档，revision 必须通过单独的 typed flag 传入。
-  `project import --input` 只接受 Project archive。不能用这些入口输入 tagged transport Command。
+  不能用这些入口输入 tagged transport Command。
 - Provider secret 仅用 `--secret-stdin`，不提供 secret 值参数或环境变量入口。要求 stdin 重定向，
   拒绝会回显的终端输入；去掉一个末尾 LF/CRLF，拒绝空值。省略时沿用现有保存语义。
   模型数组不能同时占用同一个 stdin，模型文件可与 secret stdin 一起使用。
@@ -77,13 +76,13 @@ Provider 操作移到 `agent provider`，不保留旧命令别名。`export`、`
 - 读取/解析错误不打印输入内容；JSON 错误只给行列。携带 secret 的请求若传输、HTTP 或响应解码失败，只输出通用诊断，
   不显示可能引用远端字段值的底层错误。HTTP 请求不记录 body，ProviderSecret 的
   Debug 已有脱敏。CLI 额外对响应中的已知 secret 做字符串级脱敏并重新序列化，保护上游意外回显，
-  同时保持合法 JSON。凭据仍由现有 gateway 保存，不进入 Agent、SQLite 状态、事件或归档。
+  同时保持合法 JSON。凭据仍由现有 gateway 保存，不进入 Agent、SQLite 状态或事件。
 
 ### 行为与权限
 
 保留 JSON 成功/业务错误信封：成功退出 0；业务拒绝退出 2；clap 参数错误退出 2；本地输入、
-文件和传输错误退出 1。Export 成功只写文件；失败不覆盖目标文件。SSE 保持文本输出，默认有限回放
-256 条，不新增持续订阅。经 NEC-257 修订，连接使用全局 `--host` / `--port`，
+文件和传输错误退出 1。SSE 保持文本输出，默认有限回放 256 条，不新增持续订阅。
+经 NEC-257 修订，连接使用全局 `--host` / `--port`，
 默认 `127.0.0.1:7314`，协议固定 HTTP；删除 `--endpoint`，不保留兼容别名。
 
 Send/Fork/Derive 复用原同步 HTTP 路由；操作成功返回 Run 不代表 Run completed。
