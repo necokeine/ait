@@ -4,14 +4,16 @@
 use std::sync::{Arc, Mutex};
 
 use ait_application::LocalControlService;
-use ait_contracts::{AgentConfiguration, Command, CommandResult};
+use ait_contracts::{
+    AgentConfiguration, AgentMode, AgentProvider, Command, CommandResult, ProviderModel,
+};
 use ait_domain::{DomainError, SessionSource};
 use ait_ports::{
     CodexHistorySource, CodexItemsView, CodexPreparedThread, CodexThreadConnection,
     CodexThreadInvocation, CodexThreadSnapshot, CodexThreadSourceKind, CodexThreadWriter,
     CodexTurnSnapshot, WorkspaceProgressReporter,
 };
-use ait_storage_sqlite::SqliteControlStore;
+use ait_storage_sqlite::{PortableSqliteControlStore, SqliteControlStore};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -189,10 +191,18 @@ async fn ok(service: &LocalControlService, command: Command) -> CommandResult {
 }
 
 async fn register_binding(service: &LocalControlService, cwd: &std::path::Path) {
+    register_binding_for(service, cwd, "project").await;
+}
+
+async fn register_binding_for(
+    service: &LocalControlService,
+    cwd: &std::path::Path,
+    project_id: &str,
+) {
     ok(
         service,
         Command::RegisterProject {
-            id: "project".into(),
+            id: project_id.into(),
             name: "Project".into(),
             workdir: Some(cwd.display().to_string()),
             repo_url: None,
@@ -429,6 +439,262 @@ async fn import_preserves_native_session_agent_and_adds_its_missing_provider_mod
 }
 
 #[tokio::test]
+async fn portable_import_adds_a_missing_model_before_committing_project_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let cwd = project.canonicalize().unwrap();
+    let mut native = snapshot(cwd.display().to_string());
+    let thread_id = format!("portable-model-{}", uuid::Uuid::new_v4());
+    native.id.clone_from(&thread_id);
+    native.session_id = format!("{thread_id}-session");
+    native
+        .metadata
+        .insert("model".into(), json!("gpt-native-portable"));
+    native
+        .metadata
+        .insert("reasoningEffort".into(), json!("high"));
+    let fixture = Arc::new(NativeCodexFixture {
+        snapshot: Arc::new(Mutex::new(native)),
+        writes: Arc::default(),
+    });
+    let store = Arc::new(
+        PortableSqliteControlStore::open(directory.path().join("catalog.sqlite3")).unwrap(),
+    );
+    let service = LocalControlService::new(
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        store,
+    )
+    .with_codex_history_source(fixture);
+    register_binding_for(&service, &cwd, "portable-model-project").await;
+
+    let CommandResult::Session(session) = ok(
+        &service,
+        sync_thread("portable-model-project", "agent", &thread_id),
+    )
+    .await
+    else {
+        panic!("Session")
+    };
+    assert_ne!(session.agent_id, "agent");
+    let CommandResult::AgentProviders(providers) = ok(&service, Command::ListAgentProviders).await
+    else {
+        panic!("Agent Providers")
+    };
+    assert!(
+        providers
+            .iter()
+            .find(|provider| provider.provider.id == "builtin-codex")
+            .unwrap()
+            .provider
+            .models
+            .iter()
+            .any(|model| {
+                model.id == "gpt-native-portable" && model.reasoning_efforts == ["high"]
+            })
+    );
+}
+
+#[tokio::test]
+async fn portable_effort_update_survives_a_failed_import_and_retry_without_duplicate_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let cwd = project.canonicalize().unwrap();
+    let mut native = snapshot(cwd.display().to_string());
+    let thread_id = format!("portable-effort-{}", uuid::Uuid::new_v4());
+    native.id.clone_from(&thread_id);
+    native.session_id = format!("{thread_id}-session");
+    let turns = native.turns.clone();
+    native.turns[0].items[0]["id"] = json!("");
+    native.metadata.insert("model".into(), json!("gpt-5.6-sol"));
+    native
+        .metadata
+        .insert("reasoningEffort".into(), json!("high"));
+    let fixture = Arc::new(NativeCodexFixture {
+        snapshot: Arc::new(Mutex::new(native)),
+        writes: Arc::default(),
+    });
+    let service = LocalControlService::new(
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        Arc::new(
+            PortableSqliteControlStore::open(directory.path().join("catalog.sqlite3")).unwrap(),
+        ),
+    )
+    .with_codex_history_source(fixture.clone());
+    ok(
+        &service,
+        Command::SaveAgentProvider {
+            provider: AgentProvider {
+                id: "builtin-codex".into(),
+                name: "Codex".into(),
+                kind: AgentMode::Codex,
+                url: None,
+                models: vec![ProviderModel {
+                    id: "gpt-5.6-sol".into(),
+                    name: "gpt-5.6-sol".into(),
+                    reasoning_efforts: vec!["medium".into()],
+                }],
+            },
+            secret: None,
+        },
+    )
+    .await;
+    register_binding_for(&service, &cwd, "portable-effort-project").await;
+    let before = service.replay_events(0, 1_000).await.unwrap();
+    let cursor = before.last().map_or(0, |event| event.cursor);
+
+    let failed = service
+        .execute(sync_thread("portable-effort-project", "agent", &thread_id))
+        .await;
+    assert!(!failed.ok);
+    let CommandResult::AgentProviders(providers) = ok(&service, Command::ListAgentProviders).await
+    else {
+        panic!("Agent Providers")
+    };
+    assert!(
+        providers
+            .iter()
+            .find(|provider| provider.provider.id == "builtin-codex")
+            .unwrap()
+            .provider
+            .models
+            .iter()
+            .any(|model| {
+                model.id == "gpt-5.6-sol" && model.reasoning_efforts == ["medium", "high"]
+            })
+    );
+    let after_failure = service.replay_events(cursor, 1_000).await.unwrap();
+    assert_eq!(
+        after_failure
+            .iter()
+            .filter(|event| event.kind == "agent_provider.updated")
+            .count(),
+        1
+    );
+    assert!(
+        after_failure
+            .iter()
+            .all(|event| event.kind != "codex.history.synced")
+    );
+
+    fixture.snapshot.lock().unwrap().turns = turns;
+    let CommandResult::Session(_) = ok(
+        &service,
+        sync_thread("portable-effort-project", "agent", &thread_id),
+    )
+    .await
+    else {
+        panic!("Session")
+    };
+    let after_retry = service.replay_events(cursor, 1_000).await.unwrap();
+    assert_eq!(
+        after_retry
+            .iter()
+            .filter(|event| event.kind == "agent_provider.updated")
+            .count(),
+        1
+    );
+    assert_eq!(
+        after_retry
+            .iter()
+            .filter(|event| event.kind == "codex.history.synced")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn portable_repeat_sync_reloads_the_session_owned_agent_for_any_valid_fallback() {
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let cwd = project.canonicalize().unwrap();
+    let mut native = snapshot(cwd.display().to_string());
+    let thread_id = format!("portable-repeat-{}", uuid::Uuid::new_v4());
+    native.id.clone_from(&thread_id);
+    native.session_id = format!("{thread_id}-session");
+    native.metadata.insert("model".into(), json!("gpt-5.6-sol"));
+    native
+        .metadata
+        .insert("reasoningEffort".into(), json!("high"));
+    let fixture = Arc::new(NativeCodexFixture {
+        snapshot: Arc::new(Mutex::new(native)),
+        writes: Arc::default(),
+    });
+    let service = LocalControlService::new(
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        Arc::new(
+            PortableSqliteControlStore::open(directory.path().join("catalog.sqlite3")).unwrap(),
+        ),
+    )
+    .with_codex_history_source(fixture);
+    register_binding_for(&service, &cwd, "portable-repeat-project").await;
+    ok(
+        &service,
+        Command::RegisterAgent {
+            id: "other-agent".into(),
+            name: "Other Codex".into(),
+            config: AgentConfiguration {
+                provider_id: "builtin-codex".into(),
+                model: "gpt-5.6-sol".into(),
+                reasoning_effort: Some("medium".into()),
+                system_prompt: None,
+            },
+        },
+    )
+    .await;
+
+    let CommandResult::Session(first) = ok(
+        &service,
+        sync_thread("portable-repeat-project", "agent", &thread_id),
+    )
+    .await
+    else {
+        panic!("Session")
+    };
+    let CommandResult::Session(repeated) = ok(
+        &service,
+        sync_thread("portable-repeat-project", "agent", &thread_id),
+    )
+    .await
+    else {
+        panic!("Session")
+    };
+    let CommandResult::Session(other_fallback) = ok(
+        &service,
+        Command::SyncCodexThread {
+            provider_id: "builtin-codex".into(),
+            thread_id,
+            project_id: "portable-repeat-project".into(),
+            agent_id: "other-agent".into(),
+        },
+    )
+    .await
+    else {
+        panic!("Session")
+    };
+    assert_ne!(first.agent_id, "agent");
+    assert_eq!(repeated.agent_id, first.agent_id);
+    assert_eq!(other_fallback.agent_id, first.agent_id);
+    let CommandResult::Agents(agents) = ok(&service, Command::ListAgents).await else {
+        panic!("Agents")
+    };
+    let imported = agents
+        .iter()
+        .find(|agent| agent.id == first.agent_id)
+        .unwrap();
+    assert_eq!(imported.revision, 1);
+    assert_eq!(
+        agents
+            .iter()
+            .filter(|agent| agent.owner_session_id.as_deref() == Some(first.id.as_str()))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn imported_thread_rejects_input_while_provider_reports_external_activity() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
@@ -491,11 +757,19 @@ async fn imported_thread_rejects_input_while_provider_reports_external_activity(
 }
 
 fn sync() -> Command {
+    sync_for("project", "agent")
+}
+
+fn sync_for(project_id: &str, agent_id: &str) -> Command {
+    sync_thread(project_id, agent_id, "native-thread")
+}
+
+fn sync_thread(project_id: &str, agent_id: &str, thread_id: &str) -> Command {
     Command::SyncCodexThread {
         provider_id: "builtin-codex".into(),
-        thread_id: "native-thread".into(),
-        project_id: "project".into(),
-        agent_id: "agent".into(),
+        thread_id: thread_id.into(),
+        project_id: project_id.into(),
+        agent_id: agent_id.into(),
     }
 }
 

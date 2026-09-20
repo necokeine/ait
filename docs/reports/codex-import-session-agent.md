@@ -3,16 +3,16 @@
 ## 结果
 
 Codex Thread 同步现在会保留原生 model/reasoning 配置。配置与回退命名 Agent 不同时，Session
-绑定稳定的自有 Agent；对应模型或推理等级缺失时，Codex Provider catalog 会在同一事务中补录。
-重复同步复用 Session、Agent 和模型记录。
+绑定稳定的自有 Agent；对应模型或推理等级缺失时，先在全局 Codex Provider catalog 幂等补录，
+再重读并提交 Project 历史。重复同步复用 Session、Agent 和模型记录。
 
 ## 验证
 
-- `cargo test -p ait-application --test codex_history`：15 passed；覆盖原生 Agent 配置、Provider
-  模型补录、重复同步、同一 Agent revision 更新，以及 Codex 历史同步与恢复回归。
+- `cargo test -p ait-application --test codex_history`：18 passed；新增生产 Portable 存储覆盖缺失
+  模型/effort、失败重试与事件一致性，以及相同/另一有效 fallback 下重复同步私有 Agent。
 - `cargo build --workspace`：通过。
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过。
-- `cargo test --workspace --no-fail-fast -- --test-threads=1`：484 passed、0 failed、5 ignored。
+- `cargo test --workspace --no-fail-fast -- --test-threads=1`：487 passed、0 failed、5 ignored。
 - `cargo fmt --all --check`：通过。
 
 默认并发的 workspace 与首次 coverage 各一次在既有
@@ -24,13 +24,13 @@ ready 之前，本次变更路径尚未执行，因此未扩大 NEC-345 范围�
 
 在合入 base `5ef106bd04956c245b1c11597aea3c65c08c4970` 的工作树执行
 `cargo llvm-cov --workspace --html -- --test-threads=1`，default features、无手工源码排除，coverage
-测试为 483 passed、0 failed、5 ignored（llvm-cov 不计 doctest）。结果：
+测试为 486 passed、0 failed、5 ignored（llvm-cov 不计 doctest）。结果：
 
-- workspace line coverage：77.6761%，23,351 / 30,062；
-- `ait-application` line coverage：81.9054%，9,560 / 11,672；
-- `control/codex_history.rs`：86.7188%，999 / 1,152；
-- 相对最近同口径基线 `codex-output-limits-coverage.json`，workspace -0.2503 pp，application
-  -0.2707 pp；同期 NEC-344 删除 archive 源码及测试，使源码总体变化，该比较仅作参考。
+- workspace line coverage：77.7405%，23,417 / 30,122；
+- `ait-application` line coverage：81.9809%，9,618 / 11,732；
+- `control/codex_history.rs`：87.0462%，1,055 / 1,212；
+- 相对最近同口径基线 `codex-output-limits-coverage.json`，workspace -0.1859 pp，application
+  -0.1952 pp；同期 NEC-344 删除 archive 源码及测试，使源码总体变化，该比较仅作参考。
 
 [coverage 摘要](codex-import-session-agent-coverage.json)记录 source fingerprint、命令、测试数量、
 ignored live tests 与并发 flaky 诊断。HTML 已在本机 `target/llvm-cov/html/index.html` 生成；可共享的

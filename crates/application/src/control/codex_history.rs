@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use crate::control::{
     LocalControlService,
-    catalog::{AgentRecord, validate_provider},
+    catalog::{AgentRecord, ProviderContext, validate_provider},
     conversation::{CodexImportContext, MessageRecord, SessionRecord},
     errors::{error, project_error, store_error},
     events::pending,
@@ -170,16 +170,11 @@ impl LocalControlService {
         for _ in 0..4 {
             let loaded = self
                 .records()
-                .read_records::<CodexImportContext>(vec![
-                    ControlFilter::all(ControlRecordKind::Project),
-                    ControlFilter::agents_for_provider(provider_id),
-                    ControlFilter::id(ControlRecordKind::Agent, agent_id),
-                    ControlFilter::id(ControlRecordKind::Provider, provider_id),
-                    ControlFilter::all(ControlRecordKind::Session),
-                    ControlFilter::project(ControlRecordKind::Session, project_id),
-                    ControlFilter::project(ControlRecordKind::Message, project_id),
-                    ControlFilter::project(ControlRecordKind::Run, project_id),
-                ])
+                .read_records::<CodexImportContext>(codex_import_filters(
+                    provider_id,
+                    project_id,
+                    agent_id,
+                ))
                 .await?;
             let snapshot = self
                 .require_codex_history_source()?
@@ -201,14 +196,19 @@ impl LocalControlService {
             )
             .map_err(project_error)?;
             let mut updated = loaded.original.clone();
-            let agent = reconcile_session_agent(
-                &mut updated,
-                &snapshot,
-                provider_id,
-                agent_id,
-                &session_id,
-                existing_session.as_ref(),
-            )?;
+            let Some(agent) = self
+                .reconcile_import_agent(
+                    &mut updated,
+                    &snapshot,
+                    provider_id,
+                    agent_id,
+                    &session_id,
+                    existing_session.as_ref(),
+                )
+                .await?
+            else {
+                continue;
+            };
             let mut materialization = materialize_thread(
                 &snapshot,
                 CodexImportIdentity {
@@ -265,6 +265,88 @@ impl LocalControlService {
         ))
     }
 
+    async fn ensure_codex_provider_model(
+        &self,
+        provider_id: &str,
+        config: &AgentConfiguration,
+    ) -> Result<bool, ApiError> {
+        for _ in 0..4 {
+            let loaded = self.read_provider_records(provider_id, false).await?;
+            let mut updated: ProviderContext = loaded.original.clone();
+            let provider = updated
+                .providers
+                .iter_mut()
+                .find(|provider| provider.provider.id == provider_id)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "Codex Provider is not registered",
+                        false,
+                    )
+                })?;
+            if provider.provider.kind != AgentMode::Codex {
+                return Err(error(
+                    ErrorCode::InvalidAgentConfiguration,
+                    "history import requires a Codex Provider",
+                    false,
+                ));
+            }
+            if !extend_provider_models(&mut provider.provider.models, config) {
+                return Ok(false);
+            }
+            validate_provider(&provider.provider)?;
+            let event = pending(
+                "agent_provider.updated",
+                Some(provider_id.to_owned()),
+                provider,
+            );
+            match self.persist_records(&loaded, &updated, vec![event]).await {
+                Ok(()) => return Ok(true),
+                Err(ControlStoreError::Conflict) => {}
+                Err(failure) => return Err(store_error(failure)),
+            }
+        }
+        Err(error(
+            ErrorCode::CodexHistoryReconcileConflict,
+            "concurrent Codex Provider model update did not settle",
+            true,
+        ))
+    }
+
+    async fn reconcile_import_agent(
+        &self,
+        state: &mut CodexImportContext,
+        snapshot: &CodexThreadSnapshot,
+        provider_id: &str,
+        requested_agent_id: &str,
+        session_id: &str,
+        existing_session: Option<&SessionRecord>,
+    ) -> Result<Option<SessionAgentReconciliation>, ApiError> {
+        let agent = reconcile_session_agent(
+            state,
+            snapshot,
+            provider_id,
+            requested_agent_id,
+            session_id,
+            existing_session,
+        )?;
+        let config = state
+            .agents
+            .iter()
+            .find(|candidate| candidate.id == agent.id)
+            .expect("reconciled Session Agent")
+            .config
+            .clone();
+        if self
+            .ensure_codex_provider_model(provider_id, &config)
+            .await?
+        {
+            Ok(None)
+        } else {
+            Ok(Some(agent))
+        }
+    }
+
     fn require_codex_history_source(
         &self,
     ) -> Result<&std::sync::Arc<dyn ait_ports::CodexHistorySource>, ApiError> {
@@ -276,6 +358,19 @@ impl LocalControlService {
             )
         })
     }
+}
+
+fn codex_import_filters(provider_id: &str, project_id: &str, agent_id: &str) -> Vec<ControlFilter> {
+    vec![
+        ControlFilter::all(ControlRecordKind::Project),
+        ControlFilter::all(ControlRecordKind::Agent),
+        ControlFilter::id(ControlRecordKind::Agent, agent_id),
+        ControlFilter::id(ControlRecordKind::Provider, provider_id),
+        ControlFilter::all(ControlRecordKind::Session),
+        ControlFilter::project(ControlRecordKind::Session, project_id),
+        ControlFilter::project(ControlRecordKind::Message, project_id),
+        ControlFilter::project(ControlRecordKind::Run, project_id),
+    ]
 }
 
 fn history_api_error(code: ErrorCode, failure: DomainError) -> ApiError {
@@ -426,7 +521,7 @@ fn reconcile_session_agent(
         .cloned()
         .ok_or_else(|| error(ErrorCode::AgentNotFound, "enabled Agent not found", false))?;
     let desired = native_agent_configuration(snapshot, &binding.config);
-    let mut events = ensure_provider_model(state, provider_id, &desired)?;
+    let mut events = Vec::new();
     if binding.config == desired {
         return Ok(SessionAgentReconciliation {
             id: binding.id,
@@ -526,29 +621,9 @@ fn native_string(snapshot: &CodexThreadSnapshot, field: &str) -> Option<String> 
         .map(bounded_provider_string)
 }
 
-fn ensure_provider_model(
-    state: &mut CodexImportContext,
-    provider_id: &str,
-    config: &AgentConfiguration,
-) -> Result<Vec<PendingEvent>, ApiError> {
-    let provider = state
-        .providers
-        .iter_mut()
-        .find(|provider| provider.provider.id == provider_id)
-        .ok_or_else(|| {
-            error(
-                ErrorCode::InvalidAgentConfiguration,
-                "Codex Provider is not registered",
-                false,
-            )
-        })?;
+fn extend_provider_models(models: &mut Vec<ProviderModel>, config: &AgentConfiguration) -> bool {
     let mut changed = false;
-    if let Some(model) = provider
-        .provider
-        .models
-        .iter_mut()
-        .find(|model| model.id == config.model)
-    {
+    if let Some(model) = models.iter_mut().find(|model| model.id == config.model) {
         if let Some(effort) = &config.reasoning_effort
             && !model.reasoning_efforts.contains(effort)
         {
@@ -556,23 +631,14 @@ fn ensure_provider_model(
             changed = true;
         }
     } else {
-        provider.provider.models.push(ProviderModel {
+        models.push(ProviderModel {
             id: config.model.clone(),
             name: config.model.clone(),
             reasoning_efforts: config.reasoning_effort.iter().cloned().collect(),
         });
         changed = true;
     }
-    validate_provider(&provider.provider)?;
-    Ok(if changed {
-        vec![pending(
-            "agent_provider.updated",
-            Some(provider_id.to_owned()),
-            provider,
-        )]
-    } else {
-        Vec::new()
-    })
+    changed
 }
 
 fn validate_codex_provider(state: &CodexImportContext, provider_id: &str) -> Result<(), ApiError> {
