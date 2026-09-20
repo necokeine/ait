@@ -2,6 +2,49 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn native_output_budget_is_independent_and_legacy_bootstraps_retain_their_limit() {
+    let limits = Limits::default();
+    assert_eq!(limits.max_output_bytes, 65_536);
+    assert_eq!(limits.max_codex_output_bytes, Some(8 * 1024 * 1024));
+    assert_eq!(limits.validate(), Ok(()));
+    let mut wire = serde_json::to_value(&limits).unwrap();
+    assert_eq!(
+        serde_json::from_value::<Limits>(wire.clone()).unwrap(),
+        limits
+    );
+    wire.as_object_mut()
+        .unwrap()
+        .remove("max_codex_output_bytes");
+    let legacy: Limits = serde_json::from_value(wire).unwrap();
+    assert_eq!(legacy.max_codex_output_bytes, None);
+    assert_eq!(legacy.validate(), Ok(()));
+    assert!(
+        serde_json::to_value(legacy)
+            .unwrap()
+            .get("max_codex_output_bytes")
+            .is_none()
+    );
+    for size in [0, codex::MAX_OUTPUT_BYTES + 1] {
+        assert_eq!(
+            Limits {
+                max_codex_output_bytes: Some(size),
+                ..limits.clone()
+            }
+            .validate(),
+            Err(ProtocolError::ResourceLimit)
+        );
+    }
+    assert_eq!(
+        Limits {
+            max_codex_output_bytes: Some(1),
+            ..limits
+        }
+        .validate(),
+        Ok(())
+    );
+}
+
+#[test]
 fn daemon_accepts_future_worker_minor_and_ignores_optional_fields() {
     let value = json!({
         "protocol_major": PROTOCOL_MAJOR,

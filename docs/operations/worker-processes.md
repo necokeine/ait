@@ -1,6 +1,6 @@
 # 受监督的 Run worker（NEC-248）
 
-生产 daemon 使用私有协议 2.0 启动 `ait-worker --stdio --protocol-major 2`。
+生产 daemon 使用私有协议 3.0 启动 `ait-worker --stdio --protocol-major 3`。
 API Provider 经 `RunDispatcher` 注入；所有 Codex 请求通过同一个 `WorkerSupervisor` 的
 原生 Thread writer、history、model catalog 和 title ports 进入 worker。HTTP/SSE、设置、
 审批、SQLite 和 outbox 留在 daemon；worker 的正常依赖图不包含 storage-sqlite。
@@ -31,7 +31,7 @@ shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使
 
 ## 提交与恢复
 
-- v2 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
+- v3 DTO 在 `ait-contracts/src/worker` 冻结独立字段；domain 与 SDK 类型只在进程内使用，
   `ait-ipc::mapping` 显式转换。每个 frame 是 u32 big-endian 长度和 UTF-8 JSON。
 - `hello` 声明 minor 区间、支持/required capabilities、进程 PID 和 frame 上限；
   `hello_ack` 显式选择共同 minor、capability 交集和较小 frame 上限。每个 envelope 携带
@@ -72,9 +72,16 @@ shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使
 | Run wall-clock / drain | 300 秒；取消后 2 秒；daemon shutdown 最多等待 5 秒 |
 | worker 数量 | 单 supervisor 最多 16；同 Run 同时只有一个 |
 | 工具并发 / 输出 | 最多 4；64 KiB；API 工具参数最多 16 KiB |
+| Codex 输出 | 每轮累计文本 / 单个 item JSON 各 8 MiB；独立于 API 工具的 64 KiB 输出限制 |
 | API steps / tokens | 固定 RunBudget：128 steps、1,000,000 tokens；跨恢复累计 |
 | Codex items / tokens | 同一 native turn 最多 128 个不同 item；上报 usage 超过 1,000,000 即取消 |
 | receipt / context pages | 每 Run 最多 8192 个 API mutation receipt；每条读取一项，累计最多 8192 项 |
+
+按 [ADR-020](../decisions/adr-020-codex-output-limits.md)，超限错误保留具体指标、实际值和上限，
+包括 item 数量、单项 JSON 字节数、累计文本字节数与单次模型调用 token。worker 的
+`max_codex_output_bytes` 可选字段默认 8 MiB；缺失时沿用 `max_output_bytes`。
+实时文本 delta 拆成最多 4 KiB 的 UTF-8 片段，大 Message 的实时预览限制为 64 KiB；
+权威历史仍完整分块传输。升级时需同时使用同一构建的 daemon 和 worker。
 
 权限在准入时冻结，启动时重查管理员 `--max-sandbox`。`ait-sandbox` 使用 NEC-247 的
 capability-relative、拒绝 symlink 的文件工具，阻止绝对路径逃逸和 `..` 遍历。受控
@@ -148,4 +155,5 @@ npm test
 
 ## API 工具审批
 
-私有协议 2.0 要求 `tool-grants-v1`、`tool-interactions-v1` 与 `native-codex-v1`。Approval、提问与计划审阅 RPC 等待期间心跳/控制面继续服务；决定、单次 grant 消费及交互答案由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，交互按原 ToolExecution ID 恢复，Running 工具的未知结果不重放。等待期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md)、[NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md) 和 [NEC-313 ADR](../decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。
+私有协议 3.0 要求 `tool-grants-v1`、`tool-interactions-v1`、`native-codex-v1` 与
+`project-owner-v1`。Approval、提问与计划审阅 RPC 等待期间心跳/控制面继续服务；决定、单次 grant 消费及交互答案由 daemon application 事务完成。未消费授权在 worker lease 变化时过期，交互按原 ToolExecution ID 恢复，Running 工具的未知结果不重放。等待期限计入总墙钟预算，见 [审批手册](api-tool-approvals.md)、[NEC-290 ADR](../decisions/NEC-290/adr-001-api-tool-approval-grants.md) 和 [NEC-313 ADR](../decisions/NEC-313/adr-001-aligned-api-agent-tools.md)。

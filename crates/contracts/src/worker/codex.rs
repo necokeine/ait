@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub const CHUNK_BYTES: usize = 16_384;
 /// Aggregate result bound, enforced before allocating peer-controlled history.
 pub const MAX_RESULT_BYTES: usize = 64 * 1024 * 1024;
+/// Ceiling for streamed text per native turn and for each serialized native item.
+pub const MAX_OUTPUT_BYTES: u32 = 8 * 1024 * 1024;
 
 /// Work assigned to the sole owner of a Codex app-server process.
 #[derive(Clone, Debug, Serialize, Deserialize)]

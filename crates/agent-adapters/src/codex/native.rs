@@ -299,12 +299,12 @@ impl CodexThreadConnection for NativeConnection {
             result
         };
         let limits = self.limits;
-        let mut exceeded = false;
+        let mut limit_failure = None;
         let mut meter = super::budget::Meter::default();
         let progress = async {
             while let Some(Ok(event)) = receiver.recv().await {
-                if meter.exceeded(&event, limits) {
-                    exceeded = true;
+                if let Err(failure) = meter.check(&event, limits) {
+                    limit_failure = Some(failure);
                     cancellation.cancel();
                     continue;
                 }
@@ -338,15 +338,11 @@ impl CodexThreadConnection for NativeConnection {
             }
         };
         let (result, ()) = tokio::join!(protocol, progress);
-        if exceeded {
+        if let Some(failure) = limit_failure {
             // Interrupt/reconcile before reaping. Never convert the interrupted model
             // result into a successful Run or trigger Git finalization.
             let _ = self.final_history().await;
-            return Err(domain_error(
-                ErrorCode::RunLimitExceeded,
-                "native execution resource limit exceeded",
-                false,
-            ));
+            return Err(failure.into());
         }
         if result.as_ref().is_err_and(|failure| failure.code.is_some()) {
             return Err(pre_send_error(

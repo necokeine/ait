@@ -83,7 +83,7 @@ impl Ports {
 
 impl Ports {
     async fn send_progress(&self, event: WorkspaceProgressEvent) {
-        if let Ok(mut value) = serde_json::to_value(event.to_wire()) {
+        if let Ok(mut value) = serde_json::to_value(bounded_progress(event).to_wire()) {
             crate::privacy::redact_display(&mut value);
             if let Ok(event) = serde_json::from_value(value) {
                 let _ = self
@@ -95,6 +95,20 @@ impl Ports {
         }
     }
 }
+
+// A native item can exceed an IPC frame. Only its live preview is shortened;
+// the authoritative result still travels through the history chunk protocol.
+fn bounded_progress(mut event: WorkspaceProgressEvent) -> WorkspaceProgressEvent {
+    if let WorkspaceProgressEvent::MessageStarted { text, .. }
+    | WorkspaceProgressEvent::MessageCompleted { text, .. } = &mut event
+        && text.len() > 65_536
+    {
+        text.truncate(text.floor_char_boundary(65_536));
+        text.push_str("\n[preview truncated]");
+    }
+    event
+}
+
 #[async_trait]
 impl WorkspaceProgressReporter for Ports {
     async fn report(&self, event: WorkspaceProgressEvent) {
@@ -107,12 +121,20 @@ impl WorkspaceProgressReporter for Ports {
             {
                 buffer.flush(self).await;
             }
-            let (_, text) = buffer.pending.get_or_insert_with(|| (id, String::new()));
-            text.push_str(&delta);
-            if text.len() >= 4096
-                || buffer.last_flush.elapsed() >= std::time::Duration::from_millis(40)
-            {
-                buffer.flush(self).await;
+            let mut remaining = delta.as_str();
+            while !remaining.is_empty() {
+                let (_, text) = buffer
+                    .pending
+                    .get_or_insert_with(|| (id.clone(), String::new()));
+                let end = remaining.floor_char_boundary(4096 - text.len());
+                text.push_str(&remaining[..end]);
+                remaining = &remaining[end..];
+                if !remaining.is_empty()
+                    || text.len() >= 4096
+                    || buffer.last_flush.elapsed() >= std::time::Duration::from_millis(40)
+                {
+                    buffer.flush(self).await;
+                }
             }
         } else {
             buffer.flush(self).await;
@@ -208,7 +230,11 @@ async fn run(
             execution_limits: Some(ait_agent_adapters::codex::CodexExecutionLimits {
                 max_steps: bootstrap.limits.max_steps,
                 max_tokens: bootstrap.limits.max_tokens,
-                max_output_bytes: bootstrap.limits.max_output_bytes as usize,
+                max_output_bytes: bootstrap
+                    .limits
+                    .max_codex_output_bytes
+                    .unwrap_or(bootstrap.limits.max_output_bytes)
+                    as usize,
             }),
             ..Default::default()
         })

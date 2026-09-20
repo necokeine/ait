@@ -9,6 +9,8 @@ with open(log + ".pid", "w") as output:
     output.write(str(os.getpid()))
 turns = []
 pending = None
+large_text = ("a好\n" * 240_000) if scenario == "large_output" else "authoritative answer"
+budget_scenarios = ("budget", "item_budget", "text_budget", "token_budget")
 
 
 def send(value):
@@ -17,12 +19,12 @@ def send(value):
 
 def finish():
     global turns
-    status = "interrupted" if scenario in ("cancel", "wait_cancel", "budget") else "completed"
+    status = "interrupted" if scenario in ("cancel", "wait_cancel") + budget_scenarios else "completed"
     turns = [{"id": "native-turn", "status": status, "error": None,
               "itemsView": "full", "startedAt": 1, "completedAt": None if status == "interrupted" else 2,
               "items": [{"id": "input", "type": "userMessage", "clientId": pending["clientUserMessageId"], "content": pending["input"]},
                         {"id": "command", "type": "commandExecution", "command": "pwd", "status": "completed", "aggregatedOutput": os.getcwd()},
-                        {"id": "answer", "type": "agentMessage", "text": "authoritative answer"}]}]
+                        {"id": "answer", "type": "agentMessage", "text": large_text}]}]
     send({"method": "turn/completed", "params": {"threadId": "thread", "turn": {"id": "native-turn", "status": status, "items": [], "itemsView": "notLoaded"}}})
 
 
@@ -69,13 +71,23 @@ for line in sys.stdin:
             sys.exit(0)
         else:
             send({"id": identity, "result": {"turn": {"id": "native-turn"}}})
-            if scenario in ("wait_cancel", "budget"):
+            if scenario == "wait_cancel" or scenario in budget_scenarios:
                 turns = [{"id": "native-turn", "status": "inProgress", "error": None, "itemsView": "full", "startedAt": 1, "completedAt": None,
                           "items": [{"id": "input", "type": "userMessage", "clientId": pending["clientUserMessageId"], "content": pending["input"]}]}]
                 if scenario == "budget":
                     for index in range(129):
                         send({"method":"item/started", "params":{"threadId":"thread", "turnId":"native-turn", "item":{"id":str(index),"type":"agentMessage","text":""}}})
+                elif scenario == "item_budget":
+                    send({"method":"item/completed", "params":{"threadId":"thread", "turnId":"native-turn", "item":{"id":"large","type":"commandExecution","aggregatedOutput":"x" * (8 * 1024 * 1024)}}})
+                elif scenario == "text_budget":
+                    send({"method":"item/agentMessage/delta", "params":{"threadId":"thread", "turnId":"native-turn", "itemId":"answer","delta":"x" * (8 * 1024 * 1024 + 1)}})
+                elif scenario == "token_budget":
+                    send({"method":"thread/tokenUsage/updated", "params":{"threadId":"thread", "tokenUsage":{"last":{"inputTokens":999_999,"outputTokens":2,"totalTokens":1_000_001}}}})
             else:
+                if scenario == "large_output":
+                    send({"method":"item/started", "params":{"threadId":"thread", "turnId":"native-turn", "item":{"id":"answer","type":"agentMessage","text":""}}})
+                    send({"method":"item/agentMessage/delta", "params":{"threadId":"thread", "turnId":"native-turn", "itemId":"answer","delta":large_text}})
+                    send({"method":"item/completed", "params":{"threadId":"thread", "turnId":"native-turn", "item":{"id":"answer","type":"agentMessage","text":large_text}}})
                 finish()
     elif method == "turn/interrupt":
         send({"id": identity, "result": {}})

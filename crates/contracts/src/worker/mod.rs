@@ -235,8 +235,11 @@ impl HelloAck {
 pub struct Limits {
     /// Max frame bytes value.
     pub max_frame_bytes: u32,
-    /// Max output bytes value.
+    /// Maximum API tool output size, also used by legacy Codex bootstraps.
     pub max_output_bytes: u32,
+    /// Native Codex output ceiling; omission retains `max_output_bytes` for older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_codex_output_bytes: Option<u32>,
     /// Max tool concurrency value.
     pub max_tool_concurrency: u16,
     /// Max steps value.
@@ -259,6 +262,7 @@ impl Default for Limits {
         Self {
             max_frame_bytes: MAX_FRAME_BYTES,
             max_output_bytes: 65_536,
+            max_codex_output_bytes: Some(codex::MAX_OUTPUT_BYTES),
             max_tool_concurrency: 4,
             max_steps: 128,
             max_tokens: 1_000_000,
@@ -280,6 +284,9 @@ impl Limits {
             || self.max_frame_bytes > ceiling.max_frame_bytes
             || self.max_output_bytes == 0
             || self.max_output_bytes > ceiling.max_output_bytes
+            || self
+                .max_codex_output_bytes
+                .is_some_and(|bytes| bytes == 0 || bytes > codex::MAX_OUTPUT_BYTES)
             || self.max_tool_concurrency == 0
             || self.max_tool_concurrency > ceiling.max_tool_concurrency
             || self.max_steps == 0

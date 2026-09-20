@@ -133,6 +133,14 @@ test("renders failure and cancellation as terminal states rather than connection
   assert.ok(!cancelled.includes("message-avatar"));
 });
 
+test("renders the native output limit with its actual value and ceiling", () => {
+  const message = "Codex streamed text output (bytes) limit exceeded: observed 8388609, limit 8388608";
+  const html = renderRunTerminal("limit_exceeded", message, "CodexAstra");
+  assert.ok(html.includes("Run limit reached"));
+  assert.ok(html.includes(message));
+  assert.ok(html.includes("CodexAstra"));
+});
+
 test("a cancellation event refreshes an active view into its cancelled terminal card", () => {
   const session = {
     id: "session-a", projectId: "project-a", name: "", title: "Session", description: "",

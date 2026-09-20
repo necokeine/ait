@@ -208,6 +208,14 @@ async fn native_item_budget_interrupts_the_turn_and_reports_a_limit() {
     let mut connection = worker.open(request).await.unwrap();
     let failure = connection.start(Arc::new(Progress)).await.unwrap_err();
     assert_eq!(failure.code, ait_domain::ErrorCode::RunLimitExceeded);
+    assert_eq!(
+        failure.message,
+        "Codex native item count limit exceeded: observed 129, limit 128"
+    );
+    assert_eq!(
+        serde_json::to_value(failure.details).unwrap(),
+        serde_json::json!({"metric":"native_items", "actual":129, "limit":128})
+    );
     connection.close().await;
     let calls = std::fs::read_to_string(log).unwrap();
     assert_eq!(
@@ -218,4 +226,108 @@ async fn native_item_budget_interrupts_the_turn_and_reports_a_limit() {
         1
     );
     assert!(calls.contains("turn/interrupt"));
+}
+
+#[tokio::test]
+async fn native_output_and_token_failures_keep_their_measurements_across_worker_ipc() {
+    for (scenario, metric, actual, limit) in [
+        ("item_budget", "item_bytes", 8_388_608 + 62, 8_388_608),
+        ("text_budget", "text_bytes", 8_388_609, 8_388_608),
+        ("token_budget", "tokens", 1_000_001, 1_000_000),
+    ] {
+        let (_directory, worker, request) = fixture(scenario);
+        let log = request.cwd.join("requests.jsonl");
+        let mut connection = worker.open(request).await.unwrap();
+        let failure = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            connection.start(Arc::new(Progress)),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            failure.code,
+            ait_domain::ErrorCode::RunLimitExceeded,
+            "{scenario}: {failure:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(failure.details).unwrap(),
+            serde_json::json!({"metric":metric, "actual":actual, "limit":limit}),
+            "{scenario}"
+        );
+        assert!(
+            failure
+                .message
+                .contains(&format!("observed {actual}, limit {limit}"))
+        );
+        assert!(!failure.retryable);
+        connection.close().await;
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("turn/interrupt")
+        );
+        let pid = std::fs::read_to_string(log.with_extension("jsonl.pid")).unwrap();
+        assert!(
+            !std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+}
+
+#[derive(Default)]
+struct RecordedProgress(std::sync::Mutex<Vec<WorkspaceProgressEvent>>);
+
+#[async_trait]
+impl WorkspaceProgressReporter for RecordedProgress {
+    async fn report(&self, event: WorkspaceProgressEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+#[tokio::test]
+async fn large_native_analysis_streams_in_bounded_frames_and_preserves_full_history() {
+    let (_directory, worker, request) = fixture("large_output");
+    let log = request.cwd.join("requests.jsonl");
+    let progress = Arc::new(RecordedProgress::default());
+    let mut connection = worker.open(request).await.unwrap();
+    let history = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        connection.start(progress.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(history.turns[0].status, "completed");
+    let expected = "a好\n".repeat(240_000);
+    assert_eq!(history.turns[0].items[2]["text"], expected);
+    connection.close().await;
+    let events = progress.0.lock().unwrap();
+    let mut streamed = String::new();
+    let mut completed = false;
+    for event in events.iter() {
+        match event {
+            WorkspaceProgressEvent::TextDelta { delta, .. } => {
+                assert!(delta.len() <= 4096);
+                streamed.push_str(delta);
+            }
+            WorkspaceProgressEvent::MessageCompleted { text, .. } => {
+                assert!(text.len() < 66_000);
+                assert!(text.ends_with("[preview truncated]"));
+                completed = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(completed);
+    assert_eq!(streamed, expected);
+    assert!(
+        !std::fs::read_to_string(log)
+            .unwrap()
+            .contains("turn/interrupt")
+    );
 }

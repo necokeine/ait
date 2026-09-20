@@ -11,6 +11,69 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
+async fn stream_budget_error_keeps_measurements_and_never_accepts_buffered_completion() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let binary = cwd.join("codex.py");
+    fs::write(
+        &binary,
+        include_str!("../src/codex/native/tests/fixture.py"),
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexAppServerAdapter::new(CodexAppServerConfig {
+        codex_binary: binary,
+        extra_args: vec![
+            "large_output".into(),
+            cwd.join("requests.jsonl").into_os_string(),
+        ],
+        execution_limits: Some(ait_agent_adapters::codex::CodexExecutionLimits {
+            max_steps: 128,
+            max_tokens: 1_000_000,
+            max_output_bytes: 64,
+        }),
+        ..CodexAppServerConfig::default()
+    })
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut stream = adapter
+        .run(AgentRunRequest {
+            request_id: "limited-stream".into(),
+            model: Some("test-model".into()),
+            reasoning_effort: Some("high".into()),
+            project_instructions: None,
+            prompt: "Analyze".into(),
+            cwd,
+            resume_thread_id: None,
+            ephemeral: false,
+            sandbox: SandboxMode::ReadOnly,
+            approval_policy: ApprovalPolicy::Never,
+            output_schema: None,
+            approval_handler: None,
+            cancellation: cancellation.clone(),
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut limited = false;
+        while let Some(event) = stream.next().await {
+            match event {
+                Err(failure) if failure.kind == AdapterErrorKind::Protocol => {
+                    assert_eq!(failure.message,
+                        "Codex streamed text output (bytes) limit exceeded: observed 1200000, limit 64");
+                    assert!(!failure.retryable);
+                    limited = true;
+                }
+                Ok(_) => assert!(!limited, "buffered success cannot replace the limit"),
+                Err(failure) => assert_eq!(failure.kind, AdapterErrorKind::Cancelled),
+            }
+        }
+        assert!(limited);
+    }).await.unwrap();
+    assert!(cancellation.is_cancelled());
+}
+
+#[tokio::test]
 async fn cancellation_during_handshake_reaps_the_owned_child() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();

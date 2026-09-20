@@ -1,0 +1,361 @@
+{
+  "scope": {
+    "date": "2026-09-20",
+    "platform": "macOS arm64",
+    "features": "default",
+    "command": "CARGO_BUILD_JOBS=2 cargo llvm-cov --workspace --html --no-fail-fast -- --test-threads=1",
+    "supplementary_command": "CARGO_BUILD_JOBS=2 cargo llvm-cov -p ait-workspace-local --lib --no-clean --html -- --test-threads=1",
+    "html_refresh_command": "cargo llvm-cov report --html",
+    "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-codex-output-coverage.json",
+    "base_commit": "d17cef718643c106eaa96510779e8ce26c2338c2",
+    "source_tree_sha256": "8cd397ebdd2175c004e54f9f8790c436e5727d6da2890a82cf5dba66ccd00380",
+    "source_file_count": 407,
+    "revision": "working tree at base_commit, identified by source_tree_sha256",
+    "source_hash_paths": "Sorted Git tracked/untracked non-ignored existing files in crates/, bins/, apps/, Cargo.toml, Cargo.lock, test_with_codex.sh; SHA256(path + NUL + decimal byte length + NUL + content)",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo_llvm_cov": "cargo-llvm-cov 0.8.4",
+    "manual_source_exclusions": [],
+    "doctests_in_coverage": false,
+    "unavailable_platforms": [
+      "Linux",
+      "Windows"
+    ],
+    "reported_file_count": 148
+  },
+  "current": {
+    "workspace": {
+      "count": 30575,
+      "covered": 23826,
+      "percent": 77.92641046606705
+    },
+    "agent-adapters": {
+      "covered": 2081,
+      "count": 3404,
+      "percent": 61.134
+    },
+    "api-http": {
+      "covered": 752,
+      "count": 1016,
+      "percent": 74.0157
+    },
+    "application": {
+      "covered": 9894,
+      "count": 12040,
+      "percent": 82.1761
+    },
+    "cli": {
+      "covered": 561,
+      "count": 580,
+      "percent": 96.7241
+    },
+    "contracts": {
+      "covered": 551,
+      "count": 660,
+      "percent": 83.4848
+    },
+    "daemon": {
+      "covered": 100,
+      "count": 120,
+      "percent": 83.3333
+    },
+    "domain": {
+      "covered": 1003,
+      "count": 1250,
+      "percent": 80.24
+    },
+    "ipc": {
+      "covered": 840,
+      "count": 1315,
+      "percent": 63.8783
+    },
+    "observability": {
+      "covered": 91,
+      "count": 99,
+      "percent": 91.9192
+    },
+    "ports": {
+      "covered": 175,
+      "count": 272,
+      "percent": 64.3382
+    },
+    "providers": {
+      "covered": 354,
+      "count": 512,
+      "percent": 69.1406
+    },
+    "runtime": {
+      "covered": 780,
+      "count": 1044,
+      "percent": 74.7126
+    },
+    "sandbox": {
+      "covered": 32,
+      "count": 125,
+      "percent": 25.6
+    },
+    "scheduler": {
+      "covered": 221,
+      "count": 275,
+      "percent": 80.3636
+    },
+    "storage-sqlite": {
+      "covered": 3302,
+      "count": 3714,
+      "percent": 88.9068
+    },
+    "tools": {
+      "covered": 1669,
+      "count": 1951,
+      "percent": 85.5459
+    },
+    "worker": {
+      "covered": 72,
+      "count": 549,
+      "percent": 13.1148
+    },
+    "workspace-local": {
+      "covered": 1218,
+      "count": 1512,
+      "percent": 80.5556
+    },
+    "workspace-port": {
+      "covered": 130,
+      "count": 137,
+      "percent": 94.8905
+    }
+  },
+  "changed_files": {
+    "bins/worker/src/codex.rs": {
+      "count": 239,
+      "covered": 0,
+      "percent": 0.0
+    },
+    "crates/agent-adapters/src/codex.rs": {
+      "count": 898,
+      "covered": 151,
+      "percent": 16.815144766146993
+    },
+    "crates/agent-adapters/src/codex/budget.rs": {
+      "count": 85,
+      "covered": 85,
+      "percent": 100.0
+    },
+    "crates/agent-adapters/src/codex/native.rs": {
+      "count": 276,
+      "covered": 189,
+      "percent": 68.47826086956522
+    },
+    "crates/contracts/src/worker/mod.rs": {
+      "count": 141,
+      "covered": 135,
+      "percent": 95.74468085106383
+    }
+  },
+  "tests": {
+    "workspace": {
+      "passed": 489,
+      "failed": 0,
+      "ignored": 5,
+      "ignored_tests": [
+        [
+          "codex_native_tools_create_and_verify_python_hello_world",
+          "requires logged-in Codex and Python 3; performs two real model turns"
+        ],
+        [
+          "deepseek_live_default_catalog",
+          "requires DEEPSEEK_API_KEY and DEEPSEEK_MODEL; makes one paid API request"
+        ],
+        [
+          "wf11_real_deepseek_python_hello_world",
+          "uses API credits, credentials, and Python; run ./test_with_deepseek.sh"
+        ],
+        [
+          "wf10_create_project_with_real_codex_and_commit",
+          "requires real Codex credentials/model access and a built ait-daemon; see WF-10"
+        ],
+        [
+          "permission_change::replay_permission_change_with_external_worker",
+          "requires AIT_TEST_WORKER_EXECUTABLE pointing to a separately built worker"
+        ]
+      ]
+    },
+    "coverage": {
+      "passed": 487,
+      "failed": 1,
+      "ignored": 5,
+      "ignored_tests": [
+        [
+          "codex_native_tools_create_and_verify_python_hello_world",
+          "requires logged-in Codex and Python 3; performs two real model turns"
+        ],
+        [
+          "deepseek_live_default_catalog",
+          "requires DEEPSEEK_API_KEY and DEEPSEEK_MODEL; makes one paid API request"
+        ],
+        [
+          "wf11_real_deepseek_python_hello_world",
+          "uses API credits, credentials, and Python; run ./test_with_deepseek.sh"
+        ],
+        [
+          "wf10_create_project_with_real_codex_and_commit",
+          "requires real Codex credentials/model access and a built ait-daemon; see WF-10"
+        ],
+        [
+          "permission_change::replay_permission_change_with_external_worker",
+          "requires AIT_TEST_WORKER_EXECUTABLE pointing to a separately built worker"
+        ]
+      ]
+    },
+    "coverage_retry": {
+      "passed": 30,
+      "failed": 0,
+      "ignored": 0,
+      "ignored_tests": []
+    },
+    "desktop": {
+      "command": "npm test",
+      "passed": 147,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "reference_baseline": {
+    "artifact": "adr-018-coverage-summary.json",
+    "base_commit": "94e1c89c7450f365d3906a524b4798e8f9206b74",
+    "current": {
+      "workspace": {
+        "covered": 23736,
+        "count": 30501,
+        "percent": 77.8204
+      },
+      "agent-adapters": {
+        "covered": 2016,
+        "count": 3349,
+        "percent": 60.1971
+      },
+      "api-http": {
+        "covered": 749,
+        "count": 1016,
+        "percent": 73.7205
+      },
+      "application": {
+        "covered": 9894,
+        "count": 12040,
+        "percent": 82.1761
+      },
+      "cli": {
+        "covered": 561,
+        "count": 580,
+        "percent": 96.7241
+      },
+      "contracts": {
+        "covered": 545,
+        "count": 655,
+        "percent": 83.2061
+      },
+      "daemon": {
+        "covered": 100,
+        "count": 120,
+        "percent": 83.3333
+      },
+      "domain": {
+        "covered": 1003,
+        "count": 1250,
+        "percent": 80.24
+      },
+      "ipc": {
+        "covered": 833,
+        "count": 1315,
+        "percent": 63.346
+      },
+      "observability": {
+        "covered": 91,
+        "count": 99,
+        "percent": 91.9192
+      },
+      "ports": {
+        "covered": 175,
+        "count": 272,
+        "percent": 64.3382
+      },
+      "providers": {
+        "covered": 354,
+        "count": 512,
+        "percent": 69.1406
+      },
+      "runtime": {
+        "covered": 780,
+        "count": 1044,
+        "percent": 74.7126
+      },
+      "sandbox": {
+        "covered": 32,
+        "count": 125,
+        "percent": 25.6
+      },
+      "scheduler": {
+        "covered": 221,
+        "count": 275,
+        "percent": 80.3636
+      },
+      "storage-sqlite": {
+        "covered": 3300,
+        "count": 3714,
+        "percent": 88.853
+      },
+      "tools": {
+        "covered": 1668,
+        "count": 1951,
+        "percent": 85.4946
+      },
+      "worker": {
+        "covered": 72,
+        "count": 535,
+        "percent": 13.4579
+      },
+      "workspace-local": {
+        "covered": 1212,
+        "count": 1512,
+        "percent": 80.1587
+      },
+      "workspace-port": {
+        "covered": 130,
+        "count": 137,
+        "percent": 94.8905
+      },
+      "storage-sqlite/portable": {
+        "covered": 1783,
+        "count": 2036,
+        "percent": 87.5737
+      }
+    },
+    "comparison": "Historical macOS/default-features workspace measurement with supplemental coverage run; not a fresh clean-HEAD baseline."
+  },
+  "reference_deltas_percentage_points": {
+    "workspace": 0.106,
+    "agent-adapters": 0.9369,
+    "api-http": 0.2952,
+    "application": 0.0,
+    "cli": 0.0,
+    "contracts": 0.2787,
+    "daemon": 0.0,
+    "domain": 0.0,
+    "ipc": 0.5323,
+    "observability": 0.0,
+    "ports": 0.0,
+    "providers": 0.0,
+    "runtime": 0.0,
+    "sandbox": 0.0,
+    "scheduler": 0.0,
+    "storage-sqlite": 0.0538,
+    "tools": 0.0513,
+    "worker": -0.3431,
+    "workspace-local": 0.3969,
+    "workspace-port": 0.0
+  },
+  "limitations": [
+    "Real worker child instrumentation is constrained by existing environment filtering and forced process-group cleanup; passing process tests are not coverage percentages.",
+    "Paid/live-provider and explicitly ignored tests were not run.",
+    "Desktop measurement is test execution, not JavaScript line coverage."
+  ]
+}

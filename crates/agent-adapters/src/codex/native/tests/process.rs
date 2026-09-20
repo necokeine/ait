@@ -15,6 +15,34 @@ impl WorkspaceProgressReporter for Progress {
     async fn report(&self, _event: WorkspaceProgressEvent) {}
 }
 
+#[tokio::test]
+async fn native_limit_error_survives_interrupt_and_authoritative_history_read() {
+    let (_directory, mut adapter, request) = fixture("budget");
+    adapter.config.execution_limits = Some(super::super::super::CodexExecutionLimits {
+        max_steps: 128,
+        max_tokens: 1_000_000,
+        max_output_bytes: 8 * 1024 * 1024,
+    });
+    let log = request.cwd.join("requests.jsonl");
+    let mut connection = adapter.open(request).await.unwrap();
+    let failure = connection.start(Arc::new(Progress)).await.unwrap_err();
+    assert_eq!(failure.code, ErrorCode::RunLimitExceeded);
+    assert_eq!(
+        failure.message,
+        "Codex native item count limit exceeded: observed 129, limit 128"
+    );
+    assert_eq!(
+        serde_json::to_value(failure.details).unwrap(),
+        serde_json::json!({
+            "metric":"native_items", "actual":129, "limit":128,
+        })
+    );
+    connection.close().await;
+    let requests = std::fs::read_to_string(log).unwrap();
+    assert!(requests.contains("turn/interrupt"));
+    assert!(requests.contains("thread/turns/list"));
+}
+
 fn fixture(
     scenario: &str,
 ) -> (

@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [ADR-020：Codex 输出预算与超限诊断](decisions/adr-020-codex-output-limits.md)（Accepted）：
+  Codex 原生输出默认上限独立为 8 MiB，超限显示指标、实际值与上限；大输出的实时预览和
+  完整历史采用不同传输边界。[实现与验证报告](reports/codex-output-limits.md)记录回归与覆盖率。
+
 - [ADR-019：桌面启动失败时删除旧本地数据库](decisions/adr-019-desktop-startup-database-reset.md)（Accepted）：旧 catalog 阻断启动时提供确认删除与空库重启入口，不备份、不迁移、不递归删除项目数据库。
   [实现与验证报告](reports/desktop-startup-database-reset.md)记录删除范围和恢复流程验证。
 

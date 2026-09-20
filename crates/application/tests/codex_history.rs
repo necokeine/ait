@@ -114,10 +114,17 @@ impl CodexThreadConnection for FixtureConnection {
         snapshot.writer_confirmed = true;
         snapshot.status = json!({"type":"idle"});
         if snapshot.metadata.get("limited") == Some(&json!(true)) {
-            return Err(DomainError::invariant(
+            let mut failure = DomainError::invariant(
                 ait_domain::ErrorCode::RunLimitExceeded,
-                "output limit exceeded",
-            ));
+                "Codex streamed text output (bytes) limit exceeded: observed 8388609, limit 8388608",
+            );
+            failure.details = Some(
+                serde_json::from_value(json!({
+                    "metric":"text_bytes", "actual":8_388_609, "limit":8_388_608,
+                }))
+                .unwrap(),
+            );
+            return Err(failure);
         }
         if snapshot.metadata.get("unknown") == Some(&json!(true)) {
             return Err(DomainError::invariant(
@@ -796,12 +803,15 @@ async fn later_history_sync_preserves_a_local_resource_limit_outcome() {
         panic!("Run");
     };
     assert_eq!(run.status, "limit_exceeded");
+    let error = run.error.clone().unwrap();
+    assert!(error.message.contains("observed 8388609, limit 8388608"));
     ok(&service, sync()).await;
     let CommandResult::Run(reconciled) = ok(&service, Command::GetRun { run_id: run.id }).await
     else {
         panic!("Run");
     };
     assert_eq!(reconciled.status, "limit_exceeded");
+    assert_eq!(reconciled.error, Some(error));
     assert_eq!(
         reconciled.error.unwrap().code,
         ait_domain::ErrorCode::RunLimitExceeded

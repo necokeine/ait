@@ -1395,14 +1395,11 @@ impl AgentAdapter for CodexAppServerAdapter {
         let token = output_cancellation;
         let mut meter = budget::Meter::default();
         Ok(Box::pin(ReceiverStream::new(receiver).map(move |event| {
-            if event
-                .as_ref()
-                .is_ok_and(|event| meter.exceeded(event, limits))
+            if let Ok(event) = &event
+                && let Err(failure) = meter.check(event, limits)
             {
                 token.cancel();
-                Err(AdapterError::protocol(
-                    "native execution resource limit exceeded",
-                ))
+                Err(AdapterError::protocol(failure.to_string()))
             } else {
                 event
             }
