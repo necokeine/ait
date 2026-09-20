@@ -335,6 +335,100 @@ async fn imported_thread_is_idempotent_and_continues_in_native_cwd() {
 }
 
 #[tokio::test]
+async fn import_preserves_native_session_agent_and_adds_its_missing_provider_model() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path().canonicalize().unwrap();
+    let mut native = snapshot(cwd.display().to_string());
+    native
+        .metadata
+        .insert("model".into(), json!("gpt-native-history"));
+    native
+        .metadata
+        .insert("reasoningEffort".into(), json!("high"));
+    let fixture = Arc::new(NativeCodexFixture {
+        snapshot: Arc::new(Mutex::new(native)),
+        writes: Arc::default(),
+    });
+    let service = LocalControlService::new(
+        Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
+        Arc::new(SqliteControlStore::in_memory().unwrap()),
+    )
+    .with_codex_history_source(fixture.clone());
+    register_binding(&service, &cwd).await;
+
+    let CommandResult::Session(first) = ok(&service, sync()).await else {
+        panic!("Session")
+    };
+    let CommandResult::Session(second) = ok(&service, sync()).await else {
+        panic!("Session")
+    };
+    assert_eq!(second.agent_id, first.agent_id);
+    assert_ne!(first.agent_id, "agent");
+    {
+        let mut changed = fixture.snapshot.lock().unwrap();
+        changed
+            .metadata
+            .insert("model".into(), json!("gpt-native-next"));
+        changed
+            .metadata
+            .insert("reasoningEffort".into(), json!(null));
+    }
+    let CommandResult::Session(updated) = ok(&service, sync()).await else {
+        panic!("Session")
+    };
+    assert_eq!(updated.agent_id, first.agent_id);
+    assert!(updated.version > second.version);
+
+    let CommandResult::Agents(agents) = ok(&service, Command::ListAgents).await else {
+        panic!("Agents")
+    };
+    let imported = agents
+        .iter()
+        .find(|agent| agent.id == first.agent_id)
+        .unwrap();
+    assert_eq!(
+        imported.owner_session_id.as_deref(),
+        Some(first.id.as_str())
+    );
+    assert_eq!(imported.revision, 2);
+    assert_eq!(imported.config.model, "gpt-native-next");
+    assert_eq!(imported.config.reasoning_effort, None);
+    assert_eq!(
+        agents
+            .iter()
+            .filter(|agent| agent.owner_session_id.as_deref() == Some(first.id.as_str()))
+            .count(),
+        1
+    );
+
+    let CommandResult::AgentProviders(providers) = ok(&service, Command::ListAgentProviders).await
+    else {
+        panic!("Agent Providers")
+    };
+    let model = providers
+        .iter()
+        .find(|provider| provider.provider.id == "builtin-codex")
+        .unwrap()
+        .provider
+        .models
+        .iter()
+        .find(|model| model.id == "gpt-native-history")
+        .unwrap();
+    assert_eq!(model.name, "gpt-native-history");
+    assert_eq!(model.reasoning_efforts, ["high"]);
+    assert!(
+        providers
+            .iter()
+            .find(|provider| provider.provider.id == "builtin-codex")
+            .unwrap()
+            .provider
+            .models
+            .iter()
+            .any(|model| model.id == "gpt-native-next" && model.reasoning_efforts.is_empty())
+    );
+}
+
+#[tokio::test]
 async fn imported_thread_rejects_input_while_provider_reports_external_activity() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();

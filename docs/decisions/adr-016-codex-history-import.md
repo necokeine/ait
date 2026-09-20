@@ -8,7 +8,8 @@
 - 协议复核：2026-09-19；构建指纹、已验证行为和验证范围见“协议依据”
 - 修订：NEC-150 ADR-001 v4、NEC-151 ADR-003、NEC-162 ADR-004、NEC-174 ADR-001、
   NEC-204 ADR-001、NEC-205 ADR-001、NEC-208 ADR-001、NEC-209 ADR-001、NEC-226 ADR-001、
-  NEC-235 ADR-001、ADR-009、ADR-013；以下均为 Codex Session 专用修订
+  NEC-235 ADR-001、ADR-009、ADR-013；以下均为 Codex Session 专用修订；导入时的 Session
+  Agent 配置种子与 Provider 模型补录经 NEC-345 修订
 
 ## 背景
 
@@ -137,7 +138,8 @@ CodexWorkspaceMode =
 - Ait Session ID、Codex `thread.id` 和 Codex `thread.sessionId` 是三个不同身份，不得相互推导。
 - Codex Session 仍绑定一个 Ait Codex Agent；该 Agent 必须引用同一 `provider_id`。Agent 提供 Ait
   host policy。每次 Run 的配置以成功 resume 的实际返回值及明确的 turn 覆盖值为准，不能把
-  list/read 中可空的 model、reasoning effort metadata 当成实际执行配置。
+  list/read 中可空的 model、reasoning effort metadata 当成已经验证的实际执行配置。NEC-345
+  允许同步时用非空 metadata 初始化或更新 Session 自有 Agent；继续执行时仍须以 resume 返回值核验。
 - `thread.name`、`preview`、`model`、`reasoningEffort`、`gitInfo`、`section`、`sectionEnteredAt`、
   `source`、创建/更新时间等作为原生 metadata 投影。该基线没有 `thread.isPinned`；`source` 可以
   是字符串或 `custom` / `subAgent` 结构，不能按 `sourceKinds` 的过滤枚举解码。

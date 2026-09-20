@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [NEC-345：Codex Thread 导入时保留 Session Agent 配置](decisions/NEC-345/adr-001-codex-import-session-agent.md)（Accepted）：
+  同步原生 Thread 时用其 model/reasoning metadata 建立 Session 自有 Agent，并在同一事务中补录
+  Codex Provider 缺失的模型与推理等级。[实现与验证报告](reports/codex-import-session-agent.md)记录回归与覆盖率。
+
 - [ADR-020：Codex 输出预算与超限诊断](decisions/adr-020-codex-output-limits.md)（Accepted）：
   Codex 原生输出默认上限独立为 8 MiB，超限显示指标、实际值与上限；大输出的实时预览和
   完整历史采用不同传输边界。[实现与验证报告](reports/codex-output-limits.md)记录回归与覆盖率。
