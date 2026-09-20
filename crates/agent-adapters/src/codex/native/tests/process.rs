@@ -7,7 +7,7 @@ use ait_ports::{
     WorkspaceProgressReporter,
 };
 use async_trait::async_trait;
-use std::{os::unix::fs::PermissionsExt, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 struct Progress;
 #[async_trait]
@@ -52,9 +52,11 @@ fn fixture(
 ) {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
-    let binary = cwd.join("app-server-fixture.py");
-    std::fs::write(&binary, include_str!("fixture.py")).unwrap();
-    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Linux rejects exec while any writer still holds the file, so keep this fixture immutable.
+    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/codex/native/tests/fixture.py")
+        .canonicalize()
+        .unwrap();
     let adapter = CodexAppServerAdapter::new(CodexAppServerConfig {
         codex_binary: binary,
         extra_args: vec![scenario.into(), cwd.join("requests.jsonl").into_os_string()],

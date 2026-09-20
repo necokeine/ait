@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [NEC-345：Codex Thread 导入时保留 Session Agent 配置](decisions/NEC-345/adr-001-codex-import-session-agent.md)（Accepted）：
+  同步原生 Thread 时用其 model/reasoning metadata 建立 Session 自有 Agent，并以可恢复的 catalog →
+  Project 两阶段流程补录 Codex Provider 缺失的模型与推理等级。[实现与验证报告](reports/codex-import-session-agent.md)记录回归与覆盖率。
+
 - [NEC-344：移除 Project JSON archive 接口](decisions/NEC-344/adr-001-remove-project-archive-interfaces.md)（Accepted）：
   删除 CLI、HTTP 与 application/contract 内的 Project archive 导入导出能力；Project 恢复统一使用
   目录内的 `.ait/project.sqlite3` 与既有目录打开流程。[实现与验证报告](reports/nec-344-remove-project-archive-interfaces.md)

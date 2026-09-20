@@ -1,7 +1,7 @@
 //! Cleanup of a child that stalls before completing the protocol handshake.
 #![cfg(unix)]
 
-use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
 use ait_agent_adapters::{
     AdapterErrorKind, AgentAdapter, AgentRunRequest, ApprovalPolicy, SandboxMode,
@@ -14,13 +14,11 @@ use tokio_util::sync::CancellationToken;
 async fn stream_budget_error_keeps_measurements_and_never_accepts_buffered_completion() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path().canonicalize().unwrap();
-    let binary = cwd.join("codex.py");
-    fs::write(
-        &binary,
-        include_str!("../src/codex/native/tests/fixture.py"),
-    )
-    .unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    // Linux rejects exec while any writer still holds the file, so keep this fixture immutable.
+    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/codex/native/tests/fixture.py")
+        .canonicalize()
+        .unwrap();
     let adapter = CodexAppServerAdapter::new(CodexAppServerConfig {
         codex_binary: binary,
         extra_args: vec![

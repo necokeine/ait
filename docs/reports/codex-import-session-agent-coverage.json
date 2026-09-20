@@ -1,0 +1,82 @@
+{
+  "scope": {
+    "date": "2026-09-20",
+    "platform": "macOS arm64",
+    "features": "default",
+    "command": "cargo llvm-cov --workspace --html -- --test-threads=1",
+    "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-nec345-review-coverage.json",
+    "base_commit": "5ef106bd04956c245b1c11597aea3c65c08c4970",
+    "revision": "910adfb536238b43cef012004799b51f3ce60e3e source tree, identified by source_tree_sha256",
+    "source_tree_sha256": "fb38e3458c25a48b87b4c39c327d27d4dae740196ded5adef6f7ac90f50e3d52",
+    "source_hash_paths": "Sorted Git tracked/untracked non-ignored existing files in crates/, bins/, apps/, Cargo.toml, Cargo.lock, test_with_codex.sh; SHA256(path + NUL + decimal byte length + NUL + content)",
+    "source_file_count": 405,
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo_llvm_cov": "cargo-llvm-cov 0.8.4",
+    "manual_source_exclusions": [],
+    "doctests_in_coverage": false,
+    "unavailable_platforms": ["Linux", "Windows"],
+    "reported_file_count": 146
+  },
+  "reference_baseline": {
+    "artifact": "codex-output-limits-coverage.json",
+    "note": "Most recent default-feature macOS workspace measurement. Source populations differ, so deltas are reference comparisons only.",
+    "workspace": {
+      "covered": 23826,
+      "count": 30575,
+      "percent": 77.92641046606705
+    },
+    "application": {
+      "covered": 9894,
+      "count": 12040,
+      "percent": 82.1761
+    }
+  },
+  "current": {
+    "workspace": {
+      "covered": 23417,
+      "count": 30122,
+      "percent": 77.74052187769736,
+      "reference_delta_percentage_points": -0.1858885883696928
+    },
+    "application": {
+      "covered": 9618,
+      "count": 11732,
+      "percent": 81.98090692124104,
+      "reference_delta_percentage_points": -0.19519307875896175
+    },
+    "codex_history": {
+      "path": "crates/application/src/control/codex_history.rs",
+      "covered": 1055,
+      "count": 1212,
+      "percent": 87.04620462046205
+    }
+  },
+  "tests": {
+    "workspace_serial": {
+      "command": "cargo test --workspace --no-fail-fast -- --test-threads=1",
+      "passed": 487,
+      "failed": 0,
+      "ignored": 5
+    },
+    "coverage_serial": {
+      "passed": 486,
+      "failed": 0,
+      "ignored": 5
+    },
+    "ignored_tests": [
+      "codex_native_tools_create_and_verify_python_hello_world",
+      "deepseek_live_default_catalog",
+      "wf11_real_deepseek_python_hello_world",
+      "wf10_create_project_with_real_codex_and_commit",
+      "permission_change::replay_permission_change_with_external_worker"
+    ],
+    "parallel_diagnostic": {
+      "symptom": "daemon_http_generates_an_assistant_response_through_codex exceeded the existing readiness window during two parallel workspace matrices",
+      "isolated_test": "1 passed, 0 failed",
+      "codex_http_target": "5 passed, 0 failed",
+      "serial_workspace": "487 passed, 0 failed, 5 ignored",
+      "serial_coverage": "486 passed, 0 failed, 5 ignored",
+      "disposition": "Existing concurrency-sensitive readiness flake; no unrelated production or test timeout change in NEC-345."
+    }
+  }
+}

@@ -5,7 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ait_contracts::{AgentMode, ApiError, CodexThreadView, CommandResult};
+use ait_contracts::{
+    AgentConfiguration, AgentMode, ApiError, CodexThreadView, CommandResult, ProviderModel,
+};
 use ait_domain::{
     AgentId, CodexThreadSource, CodexWorkspaceMode, CodexWriterState, DomainError, DomainMetadata,
     ErrorCode, Message, MessageId, MessageKind, MessageOrigin, MessageRole, ProjectId,
@@ -14,7 +16,7 @@ use ait_domain::{
 };
 use ait_ports::{
     CodexItemsView, CodexThreadSnapshot, CodexThreadSourceKind, CodexTurnSnapshot, ControlFilter,
-    ControlRecordKind, ControlStoreError,
+    ControlRecordKind, ControlStoreError, PendingEvent,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -22,6 +24,7 @@ use uuid::Uuid;
 
 use crate::control::{
     LocalControlService,
+    catalog::{AgentRecord, ProviderContext, validate_provider},
     conversation::{CodexImportContext, MessageRecord, SessionRecord},
     errors::{error, project_error, store_error},
     events::pending,
@@ -167,15 +170,11 @@ impl LocalControlService {
         for _ in 0..4 {
             let loaded = self
                 .records()
-                .read_records::<CodexImportContext>(vec![
-                    ControlFilter::all(ControlRecordKind::Project),
-                    ControlFilter::id(ControlRecordKind::Agent, agent_id),
-                    ControlFilter::id(ControlRecordKind::Provider, provider_id),
-                    ControlFilter::all(ControlRecordKind::Session),
-                    ControlFilter::project(ControlRecordKind::Session, project_id),
-                    ControlFilter::project(ControlRecordKind::Message, project_id),
-                    ControlFilter::project(ControlRecordKind::Run, project_id),
-                ])
+                .read_records::<CodexImportContext>(codex_import_filters(
+                    provider_id,
+                    project_id,
+                    agent_id,
+                ))
                 .await?;
             let snapshot = self
                 .require_codex_history_source()?
@@ -189,44 +188,66 @@ impl LocalControlService {
                 project_id,
                 agent_id,
             )?;
+            let (existing_session, session_id) = imported_session_identity(
+                &loaded.original.sessions,
+                provider_id,
+                &snapshot.id,
+                project_id,
+            )
+            .map_err(project_error)?;
+            let mut updated = loaded.original.clone();
+            let Some(agent) = self
+                .reconcile_import_agent(
+                    &mut updated,
+                    &snapshot,
+                    provider_id,
+                    agent_id,
+                    &session_id,
+                    existing_session.as_ref(),
+                )
+                .await?
+            else {
+                continue;
+            };
             let mut materialization = materialize_thread(
                 &snapshot,
                 CodexImportIdentity {
                     provider_id,
                     project_id,
-                    agent_id,
+                    agent_id: &agent.id,
                 },
                 &loaded.original.sessions,
                 &loaded.original.messages,
             )
             .map_err(project_error)?;
-            let session_view = materialization.session.view();
-            let mut updated = loaded.original.clone();
+            if existing_session.is_some() && agent.configuration_changed {
+                materialization
+                    .session
+                    .reference
+                    .configure(AgentId::new(&agent.id))
+                    .map_err(project_error)?;
+            }
             crate::control::runs::native::attribute_inputs(
                 &snapshot,
                 &mut materialization.messages,
                 &mut updated.runs,
             )?;
             updated.messages.extend(materialization.messages);
-            if let Some(index) = updated
+            upsert_session(&mut updated.sessions, materialization.session);
+            let session_view = updated
                 .sessions
                 .iter()
-                .position(|session| session.id == materialization.session.id)
-            {
-                updated.sessions[index] = materialization.session;
-            } else {
-                updated.sessions.push(materialization.session);
-            }
-            let mut events = vec![pending(
-                "codex.history.synced",
-                Some(session_view.id.clone()),
-                &json!({
-                    "provider_id": provider_id,
-                    "thread_id": thread_id,
-                    "project_id": project_id,
-                    "session_id": session_view.id,
-                }),
-            )];
+                .find(|session| session.id == session_id)
+                .expect("materialized Codex Session")
+                .view();
+            let mut events = agent.events;
+            events.push(codex_history_synced_event(
+                provider_id,
+                thread_id,
+                project_id,
+                &session_view.id,
+                &session_view.agent_id,
+            ));
             events.extend(crate::control::runs::native::run_updates(
                 &loaded.original.runs,
                 &updated.runs,
@@ -244,6 +265,88 @@ impl LocalControlService {
         ))
     }
 
+    async fn ensure_codex_provider_model(
+        &self,
+        provider_id: &str,
+        config: &AgentConfiguration,
+    ) -> Result<bool, ApiError> {
+        for _ in 0..4 {
+            let loaded = self.read_provider_records(provider_id, false).await?;
+            let mut updated: ProviderContext = loaded.original.clone();
+            let provider = updated
+                .providers
+                .iter_mut()
+                .find(|provider| provider.provider.id == provider_id)
+                .ok_or_else(|| {
+                    error(
+                        ErrorCode::InvalidAgentConfiguration,
+                        "Codex Provider is not registered",
+                        false,
+                    )
+                })?;
+            if provider.provider.kind != AgentMode::Codex {
+                return Err(error(
+                    ErrorCode::InvalidAgentConfiguration,
+                    "history import requires a Codex Provider",
+                    false,
+                ));
+            }
+            if !extend_provider_models(&mut provider.provider.models, config) {
+                return Ok(false);
+            }
+            validate_provider(&provider.provider)?;
+            let event = pending(
+                "agent_provider.updated",
+                Some(provider_id.to_owned()),
+                provider,
+            );
+            match self.persist_records(&loaded, &updated, vec![event]).await {
+                Ok(()) => return Ok(true),
+                Err(ControlStoreError::Conflict) => {}
+                Err(failure) => return Err(store_error(failure)),
+            }
+        }
+        Err(error(
+            ErrorCode::CodexHistoryReconcileConflict,
+            "concurrent Codex Provider model update did not settle",
+            true,
+        ))
+    }
+
+    async fn reconcile_import_agent(
+        &self,
+        state: &mut CodexImportContext,
+        snapshot: &CodexThreadSnapshot,
+        provider_id: &str,
+        requested_agent_id: &str,
+        session_id: &str,
+        existing_session: Option<&SessionRecord>,
+    ) -> Result<Option<SessionAgentReconciliation>, ApiError> {
+        let agent = reconcile_session_agent(
+            state,
+            snapshot,
+            provider_id,
+            requested_agent_id,
+            session_id,
+            existing_session,
+        )?;
+        let config = state
+            .agents
+            .iter()
+            .find(|candidate| candidate.id == agent.id)
+            .expect("reconciled Session Agent")
+            .config
+            .clone();
+        if self
+            .ensure_codex_provider_model(provider_id, &config)
+            .await?
+        {
+            Ok(None)
+        } else {
+            Ok(Some(agent))
+        }
+    }
+
     fn require_codex_history_source(
         &self,
     ) -> Result<&std::sync::Arc<dyn ait_ports::CodexHistorySource>, ApiError> {
@@ -255,6 +358,19 @@ impl LocalControlService {
             )
         })
     }
+}
+
+fn codex_import_filters(provider_id: &str, project_id: &str, agent_id: &str) -> Vec<ControlFilter> {
+    vec![
+        ControlFilter::all(ControlRecordKind::Project),
+        ControlFilter::all(ControlRecordKind::Agent),
+        ControlFilter::id(ControlRecordKind::Agent, agent_id),
+        ControlFilter::id(ControlRecordKind::Provider, provider_id),
+        ControlFilter::all(ControlRecordKind::Session),
+        ControlFilter::project(ControlRecordKind::Session, project_id),
+        ControlFilter::project(ControlRecordKind::Message, project_id),
+        ControlFilter::project(ControlRecordKind::Run, project_id),
+    ]
 }
 
 fn history_api_error(code: ErrorCode, failure: DomainError) -> ApiError {
@@ -269,6 +385,26 @@ fn history_api_error(code: ErrorCode, failure: DomainError) -> ApiError {
         return project_error(failure);
     }
     error(code, failure.message, failure.retryable)
+}
+
+fn codex_history_synced_event(
+    provider_id: &str,
+    thread_id: &str,
+    project_id: &str,
+    session_id: &str,
+    agent_id: &str,
+) -> PendingEvent {
+    pending(
+        "codex.history.synced",
+        Some(session_id.to_owned()),
+        &json!({
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "project_id": project_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+        }),
+    )
 }
 
 fn validate_import_binding(
@@ -298,7 +434,13 @@ fn validate_import_binding(
                 if source.provider_id == provider_id && source.thread_id == snapshot.id
         )
     }) {
-        if existing.project_id != project_id || existing.agent_id() != agent_id {
+        let existing_agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.id == existing.agent_id() && agent.enabled);
+        if existing.project_id != project_id
+            || existing_agent.is_none_or(|agent| agent.config.provider_id != provider_id)
+        {
             return Err(error(
                 ErrorCode::CodexThreadBindingConflict,
                 "Codex Thread is already bound to another Project or Agent",
@@ -330,6 +472,173 @@ fn validate_import_binding(
         ));
     }
     Ok(())
+}
+
+fn imported_session_identity(
+    sessions: &[SessionRecord],
+    provider_id: &str,
+    thread_id: &str,
+    project_id: &str,
+) -> Result<(Option<SessionRecord>, String), DomainError> {
+    let session = bound_session(sessions, provider_id, thread_id, project_id)?.cloned();
+    let id = session.as_ref().map_or_else(
+        || stable_uuid(&["session", provider_id, thread_id]).to_string(),
+        |session| session.id.clone(),
+    );
+    Ok((session, id))
+}
+
+fn upsert_session(sessions: &mut Vec<SessionRecord>, session: SessionRecord) {
+    if let Some(index) = sessions
+        .iter()
+        .position(|candidate| candidate.id == session.id)
+    {
+        sessions[index] = session;
+    } else {
+        sessions.push(session);
+    }
+}
+
+struct SessionAgentReconciliation {
+    id: String,
+    configuration_changed: bool,
+    events: Vec<PendingEvent>,
+}
+
+fn reconcile_session_agent(
+    state: &mut CodexImportContext,
+    snapshot: &CodexThreadSnapshot,
+    provider_id: &str,
+    requested_agent_id: &str,
+    session_id: &str,
+    existing_session: Option<&SessionRecord>,
+) -> Result<SessionAgentReconciliation, ApiError> {
+    let binding_id = existing_session.map_or(requested_agent_id, SessionRecord::agent_id);
+    let binding = state
+        .agents
+        .iter()
+        .find(|agent| agent.id == binding_id && agent.enabled)
+        .cloned()
+        .ok_or_else(|| error(ErrorCode::AgentNotFound, "enabled Agent not found", false))?;
+    let desired = native_agent_configuration(snapshot, &binding.config);
+    let mut events = Vec::new();
+    if binding.config == desired {
+        return Ok(SessionAgentReconciliation {
+            id: binding.id,
+            configuration_changed: false,
+            events,
+        });
+    }
+
+    if binding.owner_session_id.as_deref() == Some(session_id) {
+        let agent = state
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == binding.id)
+            .expect("loaded Session Agent");
+        agent.config = desired;
+        agent.revision = agent.revision.saturating_add(1);
+        let agent = agent.clone();
+        events.push(pending("agent.updated", Some(agent.id.clone()), &agent));
+        return Ok(SessionAgentReconciliation {
+            id: agent.id,
+            configuration_changed: true,
+            events,
+        });
+    }
+
+    let owned_id = stable_uuid(&["session-agent", provider_id, &snapshot.id]).to_string();
+    let agent = if let Some(agent) = state.agents.iter_mut().find(|agent| agent.id == owned_id) {
+        if agent.owner_session_id.as_deref() != Some(session_id)
+            || agent.config.provider_id != provider_id
+        {
+            return Err(error(
+                ErrorCode::CodexThreadBindingConflict,
+                "Codex Session Agent identity conflicts with another owner",
+                false,
+            ));
+        }
+        if agent.config != desired {
+            agent.config = desired;
+            agent.revision = agent.revision.saturating_add(1);
+        }
+        agent.clone()
+    } else {
+        let agent = AgentRecord {
+            id: owned_id,
+            name: String::new(),
+            config: desired,
+            owner_session_id: Some(session_id.to_owned()),
+            revision: 1,
+            enabled: true,
+        };
+        state.agents.push(agent.clone());
+        agent
+    };
+    events.push(pending("agent.updated", Some(agent.id.clone()), &agent));
+    Ok(SessionAgentReconciliation {
+        configuration_changed: binding.id != agent.id || binding.config != agent.config,
+        id: agent.id,
+        events,
+    })
+}
+
+fn native_agent_configuration(
+    snapshot: &CodexThreadSnapshot,
+    fallback: &AgentConfiguration,
+) -> AgentConfiguration {
+    let native_model = native_string(snapshot, "model");
+    let model = native_model
+        .clone()
+        .unwrap_or_else(|| fallback.model.clone());
+    let reasoning_effort = match snapshot.metadata.get("reasoningEffort") {
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Some(bounded_provider_string(value.trim()))
+        }
+        None if native_model
+            .as_deref()
+            .is_none_or(|value| value == fallback.model) =>
+        {
+            fallback.reasoning_effort.clone()
+        }
+        Some(_) | None => None,
+    };
+    AgentConfiguration {
+        provider_id: fallback.provider_id.clone(),
+        model,
+        reasoning_effort,
+        system_prompt: fallback.system_prompt.clone(),
+    }
+}
+
+fn native_string(snapshot: &CodexThreadSnapshot, field: &str) -> Option<String> {
+    snapshot
+        .metadata
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(bounded_provider_string)
+}
+
+fn extend_provider_models(models: &mut Vec<ProviderModel>, config: &AgentConfiguration) -> bool {
+    let mut changed = false;
+    if let Some(model) = models.iter_mut().find(|model| model.id == config.model) {
+        if let Some(effort) = &config.reasoning_effort
+            && !model.reasoning_efforts.contains(effort)
+        {
+            model.reasoning_efforts.push(effort.clone());
+            changed = true;
+        }
+    } else {
+        models.push(ProviderModel {
+            id: config.model.clone(),
+            name: config.model.clone(),
+            reasoning_efforts: config.reasoning_effort.iter().cloned().collect(),
+        });
+        changed = true;
+    }
+    changed
 }
 
 fn validate_codex_provider(state: &CodexImportContext, provider_id: &str) -> Result<(), ApiError> {

@@ -115,7 +115,7 @@ pub enum Command {
         thread_id: String,
         /// Explicit target Ait Project identity.
         project_id: String,
-        /// Enabled Codex Agent bound to the imported Session.
+        /// Enabled Codex Agent supplying fallback policy for a new imported Session.
         agent_id: String,
     },
     /// Selects the `UpdateAgent` variant.
