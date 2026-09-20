@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, io::Cursor};
 
 use ait_contracts::{
-    AgentConfiguration, AgentMode, AgentProvider, Command, NativeApprovalAction, ProjectExport,
-    ProjectView, ProviderModel, ProviderSecret, default_settings,
+    AgentConfiguration, AgentMode, AgentProvider, Command, NativeApprovalAction, ProviderModel,
+    ProviderSecret, default_settings,
 };
 use ait_domain::ApprovalGrantScope;
 use clap::{CommandFactory, Parser};
@@ -25,28 +25,6 @@ fn action(args: &[&str], stdin: &str) -> Action {
 #[test]
 fn every_contract_variant_has_an_explicit_cli_mapping() {
     let directory = tempfile::tempdir().unwrap();
-    let archive = ProjectExport {
-        format_version: 3,
-        source_revision: 1,
-        project: ProjectView {
-            owner: None,
-            execution_blocked: None,
-            id: "p".into(),
-            name: "Project".into(),
-            workdir: "/old".into(),
-            root_message_id: "root".into(),
-            repo_url: None,
-            base_commit: String::new(),
-            default_agent_id: None,
-            revision: 1,
-        },
-        agents: vec![],
-        providers: vec![],
-        sessions: vec![],
-        messages: vec![],
-    };
-    let archive_path = directory.path().join("archive with spaces.json");
-    std::fs::write(&archive_path, serde_json::to_vec(&archive).unwrap()).unwrap();
     let settings = default_settings();
     let settings_path = directory.path().join("settings.json");
     std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
@@ -259,16 +237,6 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         }
     );
     case!(
-        &["project", "export", "--project-id", "p", "--output", "archive with spaces.json"] =>
-        ExportProject { project_id: "p".into() }
-    );
-    case!(
-        &["project", "import", "--input", archive_path.to_str().unwrap(), "--workdir",
-          "path with spaces"] => ImportProject {
-            archive: archive, workdir: "path with spaces".into(),
-        }
-    );
-    case!(
         &["config", "set", "--expected-revision", "42", "--input",
           settings_path.to_str().unwrap()] => SaveSettings {
             expected_revision: 42, values: settings,
@@ -302,10 +270,6 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         covered.insert(variant.to_owned());
         let actual = match action(&args, "fixture-secret\n") {
             Action::Execute(command) => command,
-            Action::Export { command, output } => {
-                assert_eq!(output.to_str().unwrap(), "archive with spaces.json");
-                command
-            }
             Action::Events { .. } => panic!("unexpected SSE action"),
         };
         assert_eq!(actual, expected, "mapping for {variant}");
@@ -333,6 +297,48 @@ fn every_contract_variant_has_an_explicit_cli_mapping() {
         })
         .unwrap();
     assert_eq!(covered, variants);
+}
+
+#[test]
+fn project_archive_commands_are_not_exposed() {
+    for args in [
+        vec![
+            "ait",
+            "export",
+            "--project-id",
+            "p",
+            "--output",
+            "archive.json",
+        ],
+        vec![
+            "ait",
+            "import",
+            "--input",
+            "archive.json",
+            "--workdir",
+            "project",
+        ],
+        vec![
+            "ait",
+            "project",
+            "export",
+            "--project-id",
+            "p",
+            "--output",
+            "archive.json",
+        ],
+        vec![
+            "ait",
+            "project",
+            "import",
+            "--input",
+            "archive.json",
+            "--workdir",
+            "project",
+        ],
+    ] {
+        assert!(Arguments::try_parse_from(args).is_err());
+    }
 }
 
 #[test]

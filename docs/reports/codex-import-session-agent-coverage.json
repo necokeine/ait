@@ -4,18 +4,18 @@
     "platform": "macOS arm64",
     "features": "default",
     "command": "cargo llvm-cov --workspace --html -- --test-threads=1",
-    "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-nec345-coverage-final2.json",
-    "base_commit": "33b318ccb5109842a0c882337937bb9fc24bd82b",
-    "revision": "working tree at base_commit, identified by source_tree_sha256",
-    "source_tree_sha256": "e60b1ffd79fc0ede59d3e97344bdc32ff505dfac345f012912a6c823bf590ec7",
+    "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-nec345-postmerge-coverage.json",
+    "base_commit": "5ef106bd04956c245b1c11597aea3c65c08c4970",
+    "revision": "merge working tree at base_commit, identified by source_tree_sha256",
+    "source_tree_sha256": "f3e0e9ab1e91ab1814e683e9d64f9e63d9d24aa04a20c85c7f488d2b074a193d",
     "source_hash_paths": "Sorted Git tracked/untracked non-ignored existing files in crates/, bins/, apps/, Cargo.toml, Cargo.lock, test_with_codex.sh; SHA256(path + NUL + decimal byte length + NUL + content)",
-    "source_file_count": 407,
+    "source_file_count": 405,
     "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "cargo_llvm_cov": "cargo-llvm-cov 0.8.4",
     "manual_source_exclusions": [],
     "doctests_in_coverage": false,
     "unavailable_platforms": ["Linux", "Windows"],
-    "reported_file_count": 148
+    "reported_file_count": 146
   },
   "reference_baseline": {
     "artifact": "codex-output-limits-coverage.json",
@@ -33,16 +33,16 @@
   },
   "current": {
     "workspace": {
-      "covered": 24015,
-      "count": 30794,
-      "percent": 77.98597129310905,
-      "reference_delta_percentage_points": 0.059560827041991615
+      "covered": 23351,
+      "count": 30062,
+      "percent": 77.6761359856297,
+      "reference_delta_percentage_points": -0.2502744804373549
     },
     "application": {
-      "covered": 10089,
-      "count": 12259,
-      "percent": 82.29871930826332,
-      "reference_delta_percentage_points": 0.12261930826331024
+      "covered": 9560,
+      "count": 11672,
+      "percent": 81.90541466758053,
+      "reference_delta_percentage_points": -0.27068533241947534
     },
     "codex_history": {
       "path": "crates/application/src/control/codex_history.rs",
@@ -54,12 +54,12 @@
   "tests": {
     "workspace_serial": {
       "command": "cargo test --workspace --no-fail-fast -- --test-threads=1",
-      "passed": 490,
+      "passed": 484,
       "failed": 0,
       "ignored": 5
     },
     "coverage_serial": {
-      "passed": 489,
+      "passed": 483,
       "failed": 0,
       "ignored": 5
     },
@@ -74,8 +74,8 @@
       "symptom": "daemon_http_generates_an_assistant_response_through_codex exceeded the existing readiness window during two parallel workspace matrices",
       "isolated_test": "1 passed, 0 failed",
       "codex_http_target": "5 passed, 0 failed",
-      "serial_workspace": "490 passed, 0 failed, 5 ignored",
-      "serial_coverage": "489 passed, 0 failed, 5 ignored",
+      "serial_workspace": "484 passed, 0 failed, 5 ignored",
+      "serial_coverage": "483 passed, 0 failed, 5 ignored",
       "disposition": "Existing concurrency-sensitive readiness flake; no unrelated production or test timeout change in NEC-345."
     }
   }

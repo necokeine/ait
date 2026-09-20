@@ -10,7 +10,7 @@ use crate::control::persistence::codec::{
     agent_provider_id, decode_records, record_value, required_string,
 };
 use crate::control::persistence::transaction::{RecordContext, RecordTransaction};
-use crate::control::project::{ArchiveContext, ProjectsContext};
+use crate::control::project::ProjectsContext;
 use crate::control::runs::{ApiRunContext, RunContext, RunControlContext, RunsContext};
 use crate::control::settings::DEFAULT_AGENT_SETTING_ID;
 use crate::control::use_cases::transaction::CommandTransaction;
@@ -18,7 +18,6 @@ use ait_contracts::{ApiError, Command};
 use ait_domain::ErrorCode;
 use ait_ports::{ControlFilter, ControlRecordKind, ControlStoreError, PendingEvent};
 use serde_json::Value;
-use std::collections::HashSet;
 
 fn selected_project_agent_id(
     read: &ait_ports::ControlRead,
@@ -698,80 +697,6 @@ impl RecordAccess {
         ))
     }
 
-    async fn read_export_records(
-        &self,
-        project_id: &str,
-    ) -> Result<RecordTransaction<ArchiveContext>, ApiError> {
-        use ControlRecordKind as Kind;
-        for _ in 0..4 {
-            let project_records = self
-                .read_records::<ArchiveContext>(vec![
-                    ControlFilter::id(Kind::Project, project_id),
-                    ControlFilter::project(Kind::Session, project_id),
-                    ControlFilter::project(Kind::Message, project_id),
-                ])
-                .await?;
-            let project = project_records
-                .original
-                .projects
-                .iter()
-                .find(|project| project.id == project_id)
-                .ok_or_else(|| error(ErrorCode::InvalidProject, "project not found", false))?;
-            let mut agent_ids = project_records
-                .original
-                .sessions
-                .iter()
-                .map(|session| session.agent_id().to_owned())
-                .collect::<HashSet<_>>();
-            if let Some(agent_id) = &project.default_agent_id() {
-                agent_ids.insert(agent_id.to_string());
-            }
-            let mut filters = vec![
-                ControlFilter::id(Kind::Project, project_id),
-                ControlFilter::project(Kind::Session, project_id),
-                ControlFilter::project(Kind::Message, project_id),
-            ];
-            filters.extend(
-                agent_ids
-                    .iter()
-                    .map(|agent_id| ControlFilter::id(Kind::Agent, agent_id)),
-            );
-            let agent_records = self.store.read(&filters).await.map_err(store_error)?;
-            if !agent_records
-                .version
-                .compatible_with(&project_records.version)
-            {
-                continue;
-            }
-            let mut provider_ids = HashSet::new();
-            for agent_id in &agent_ids {
-                let agent =
-                    record_value(&agent_records, Kind::Agent, agent_id).ok_or_else(|| {
-                        error(
-                            ErrorCode::InvalidAgentConfiguration,
-                            "export Agent is unavailable",
-                            false,
-                        )
-                    })?;
-                provider_ids.insert(agent_provider_id(agent)?);
-            }
-            filters.extend(
-                provider_ids
-                    .iter()
-                    .map(|provider_id| ControlFilter::id(Kind::Provider, provider_id)),
-            );
-            let read = self.store.read(&filters).await.map_err(store_error)?;
-            if read.version.compatible_with(&project_records.version) {
-                return decode_records(&read);
-            }
-        }
-        Err(error(
-            ErrorCode::RunQueueConflict,
-            "concurrent Project export references did not settle",
-            true,
-        ))
-    }
-
     #[allow(clippy::too_many_lines)]
     pub(in crate::control) async fn read_command_records(
         &self,
@@ -865,9 +790,6 @@ impl RecordAccess {
                 .read_cron_create_records(id, project_id, base_message_id, agent_id)
                 .await
                 .map(CommandTransaction::CronCreate),
-            Command::ExportProject { project_id } => {
-                (self.read_export_records(project_id).await).map(CommandTransaction::Archive)
-            }
             Command::ListMessages { project_id } => ({
                 self.read_records(vec![ControlFilter::project(Kind::Message, project_id)])
                     .await
@@ -987,35 +909,6 @@ impl RecordAccess {
                     .await
             })
             .map(CommandTransaction::Crons),
-            Command::ImportProject { archive, workdir } => ({
-                let mut filters = project_identity_plan(&archive.project.id, Some(workdir));
-                filters.extend(
-                    archive
-                        .agents
-                        .iter()
-                        .map(|agent| ControlFilter::id(Kind::Agent, &agent.id)),
-                );
-                filters.extend(
-                    archive
-                        .providers
-                        .iter()
-                        .map(|provider| ControlFilter::id(Kind::Provider, &provider.id)),
-                );
-                filters.extend(
-                    archive
-                        .messages
-                        .iter()
-                        .map(|message| ControlFilter::id(Kind::Message, &message.id)),
-                );
-                filters.extend(
-                    archive
-                        .sessions
-                        .iter()
-                        .map(|session| ControlFilter::id(Kind::Session, &session.id)),
-                );
-                self.read_records(filters).await
-            })
-            .map(CommandTransaction::Archive),
         }
     }
 }

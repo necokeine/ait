@@ -8,7 +8,7 @@ use crate::fixtures::control_fixtures::{config, ok, send, setup, view};
 use crate::fixtures::provider_fixtures::RETIRED_BUILTINS;
 use crate::support::ControlStoreTestExt;
 use ait_application::LocalControlService;
-use ait_contracts::{Command, CommandResult};
+use ait_contracts::Command;
 use ait_domain::ErrorCode;
 use ait_storage_sqlite::SqliteControlStore;
 use std::sync::Arc;
@@ -174,62 +174,4 @@ async fn legacy_snapshots_keep_agent_bindings_history_and_run_effort() {
     assert_eq!(migrated.runs, before.runs);
     assert_eq!(migrated.agents[0].config.model, "gpt-5.6-sol");
     assert_eq!(migrated.agents[0].config.reasoning_effort, None);
-}
-
-#[tokio::test]
-async fn v2_archive_import_migrates_legacy_agents_without_credentials() {
-    let service = LocalControlService::new(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-        Arc::new(SqliteControlStore::in_memory().unwrap()),
-    );
-    let _directory = setup(&service, config("high")).await;
-    let CommandResult::ProjectExport(archive) = ok(
-        &service,
-        Command::ExportProject {
-            project_id: "p".into(),
-        },
-    )
-    .await
-    else {
-        panic!()
-    };
-    let mut old = serde_json::to_value(archive).unwrap();
-    old["format_version"] = serde_json::json!(2);
-    old.as_object_mut().unwrap().remove("providers");
-    for agent in old["agents"].as_array_mut().unwrap() {
-        agent["model"] = agent["config"]["model"].clone();
-        agent["mode"] = serde_json::json!("codex");
-        agent.as_object_mut().unwrap().remove("config");
-        agent.as_object_mut().unwrap().remove("owner_session_id");
-    }
-    let upgraded: ait_contracts::ProjectExport = serde_json::from_value(old).unwrap();
-    assert_eq!(upgraded.format_version, 3);
-    let destination = tempfile::tempdir().unwrap();
-    let target = LocalControlService::new(
-        std::sync::Arc::new(ait_workspace_local::LocalProjectWorkspace::default()),
-        Arc::new(SqliteControlStore::in_memory().unwrap()),
-    );
-    ok(
-        &target,
-        Command::ImportProject {
-            archive: upgraded,
-            workdir: destination.path().display().to_string(),
-        },
-    )
-    .await;
-    let imported = view(&target).await;
-    assert_eq!(imported.sessions.len(), 2);
-    assert_eq!(imported.agents[0].config.model, "gpt-5.6-sol");
-    assert!(
-        imported.agents[0]
-            .config
-            .provider_id
-            .starts_with("archive-")
-    );
-    assert!(
-        imported
-            .providers
-            .iter()
-            .all(|provider| !provider.has_secret)
-    );
 }

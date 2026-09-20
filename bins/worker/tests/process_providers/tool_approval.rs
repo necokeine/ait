@@ -145,17 +145,9 @@ async fn tool_approval_sensitive_reasons_never_reach_cards_events_results_or_sto
         assert!(matches!(run.status.as_str(), "failed" | "interrupted"));
         assert!(run.tool_approvals.is_empty());
         assert!(!f.workdir.join("effect.txt").exists());
-        let archive = ok(
-            &f.service,
-            Command::ExportProject {
-                project_id: "p".into(),
-            },
-        )
-        .await;
         let mut surfaces = vec![
             serde_json::to_vec(&run).unwrap(),
             format!("{:?}", support::workspace(&f.service).await).into_bytes(),
-            serde_json::to_vec(&archive).unwrap(),
             serde_json::to_vec(&f.service.replay_events(0, 1000).await.unwrap()).unwrap(),
         ];
         for path in [

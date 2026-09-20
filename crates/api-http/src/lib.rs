@@ -13,8 +13,7 @@ use std::{
 use ait_application::LocalControlService;
 use ait_contracts::{
     AgentConfiguration, AgentProvider, ApiError, Command, CommandResult, Event as ControlEvent,
-    NativeApprovalAction, ProjectExport, ProviderSecret, Response, SettingsDocument,
-    ToolInteractionAction,
+    NativeApprovalAction, ProviderSecret, Response, SettingsDocument, ToolInteractionAction,
 };
 use ait_domain::{ApprovalGrantScope, ErrorCode};
 use ait_observability::{Correlation, Level, LogRecord, MetricPoint, Telemetry};
@@ -49,8 +48,6 @@ pub fn router_with_telemetry(service: Arc<LocalControlService>, telemetry: Telem
             "/v1/project/set-default-agent",
             post(set_project_default_agent),
         )
-        .route("/v1/project/export", post(export_project))
-        .route("/v1/project/import", post(import_project))
         .route("/v1/agent/register", post(register_agent))
         .route("/v1/agent/list", get(list_agents))
         .route("/v1/agent/update", post(update_agent))
@@ -254,46 +251,6 @@ async fn set_project_default_agent(
         Command::SetProjectDefaultAgent {
             project_id: request.project_id,
             agent_id: request.agent_id,
-        },
-    )
-    .await
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExportProjectRequest {
-    project_id: String,
-}
-
-async fn export_project(
-    ScopedState(state): ScopedState,
-    Json(request): Json<ExportProjectRequest>,
-) -> Json<Response> {
-    execute_command(
-        state,
-        Command::ExportProject {
-            project_id: request.project_id,
-        },
-    )
-    .await
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ImportProjectRequest {
-    archive: ProjectExport,
-    workdir: String,
-}
-
-async fn import_project(
-    ScopedState(state): ScopedState,
-    Json(request): Json<ImportProjectRequest>,
-) -> Json<Response> {
-    execute_command(
-        state,
-        Command::ImportProject {
-            archive: request.archive,
-            workdir: request.workdir,
         },
     )
     .await
@@ -1184,14 +1141,10 @@ fn correlation_for_command(command: &Command) -> Correlation {
         | Command::UpdateProject { project_id, .. }
         | Command::SetProjectDefaultAgent { project_id, .. }
         | Command::CreateCron { project_id, .. }
-        | Command::ExportProject { project_id }
         | Command::ListMessages { project_id }
         | Command::ListRuns { project_id }
         | Command::ListSessions { project_id } => {
             correlation.project_id = Some(project_id.clone());
-        }
-        Command::ImportProject { archive, .. } => {
-            correlation.project_id = Some(archive.project.id.clone());
         }
         Command::UpdateAgent { .. }
         | Command::SaveAgentProvider { .. }
@@ -1237,11 +1190,6 @@ fn enrich_correlation(correlation: &mut Correlation, response: &Response) {
                     .get_or_insert_with(|| session_id.clone());
             }
             correlation.run_id.get_or_insert_with(|| run.id.clone());
-        }
-        Some(CommandResult::ProjectExport(archive)) => {
-            correlation
-                .project_id
-                .get_or_insert_with(|| archive.project.id.clone());
         }
         Some(
             CommandResult::AgentProvider(_)
@@ -1292,8 +1240,6 @@ const fn operation_name(command: &Command) -> &'static str {
         Command::CreateCron { .. } => "create_cron",
         Command::SetCronEnabled { .. } => "set_cron_enabled",
         Command::TriggerCron { .. } => "trigger_cron",
-        Command::ExportProject { .. } => "export_project",
-        Command::ImportProject { .. } => "import_project",
         Command::GetSettings => "get_settings",
         Command::SaveSettings { .. } => "save_settings",
         Command::ResetSettings => "reset_settings",

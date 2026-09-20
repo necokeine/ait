@@ -15,7 +15,6 @@
 | [WF-04](04-run-status-and-cancel.md) | 查看运行状态、取消活动 Run 并继续 | `wf04_observe_injected_provider_failure_and_continue`；活动取消另见 application 测试 |
 | [WF-05](05-cron.md) | 保存、启停并触发一个定时 occurrence | `wf05_codex_cron_is_rejected_without_legacy_fallback` |
 | [WF-06](06-events-and-restart.md) | 按游标续读事件并在重启后找回状态 | `wf06_replay_events_and_reopen_workspace` |
-| [WF-07](07-export-import.md) | 导出 Project 并导入另一个本地工作空间 | `wf07_export_and_import_project_archive` |
 | [WF-08](08-settings.md) | 修改设置、处理并发覆盖、恢复默认值 | `wf08_save_reset_and_recover_settings` |
 | [WF-09](09-errors-and-scripting.md) | 在脚本中判断命令结果并处理输入错误 | `wf09_cli_diagnostics_do_not_mutate_workspace` |
 | [WF-10](10-create-project-with-codex.md) | 空目录启动 daemon、接入项目、真实 Codex 生成 Rust Hello World 并提交 | `project_creation.rs::wf10_create_project_with_real_codex_and_commit`（手动启用） |
@@ -28,7 +27,7 @@ cargo test -p ait-cli --test workflows
 cargo test -p ait-cli --test workflows wf03_
 ```
 
-WF-01～09 的测试启动实际的 `ait-cli` 子进程，经随机 loopback 端口访问生产 HTTP router、application
+WF-01～06、08～09 的测试启动实际的 `ait-cli` 子进程，经随机 loopback 端口访问生产 HTTP router、application
 service 和独立的临时 SQLite 文件；目录含空格、中文内容和换行也在覆盖范围内。
 每个流程自行准备数据，通过 CLI 的退出码、stdout、文件和后续实体查询核对结果。
 CLI 子进程有 20 秒测试超时，服务显式停止并等待退出，断言失败时也会取消服务。
@@ -87,7 +86,7 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 
 | 实体 | 动作 |
 | --- | --- |
-| `project` | `list`、`register`、`set-default-agent`、`export`、`import` |
+| `project` | `list`、`register`、`set-default-agent` |
 | `agent provider` | `list`、`save`、`discover-models`、`refresh-models` |
 | `agent` | `list`、`create`、`update` |
 | `session` | `list`、`create`、`set-agent`、`set-config`、`rename`、`set-title`、`send`、`fork`、`derive` |
@@ -97,21 +96,20 @@ target/debug/ait-daemon --database '演练目录/ait.sqlite3' --listen 127.0.0.1
 | `config` | `get`、`set`、`reset` |
 | `event` | `list --after <cursor>`（durable SSE 回放） |
 
-事件只通过 `event list` 读取。保留 `export`、`import` 顶层快捷入口，行为分别等同于 `project export`、`project import`。
+事件只通过 `event list` 读取。
 文本使用 `--text`、`--text-file <file|->`、`--text-stdin` 三选一，保留多行中文和反斜杠。
 Provider secret 仅由 `--secret-stdin` 接收，不放 argv、shell history、JSON 模型文件或响应；见 WF-11。
-实体 `--input <file|->` 只用于 Provider 模型数组、完整 settings values 或 Project archive，均不包含命令标签。
+实体 `--input <file|->` 只用于 Provider 模型数组或完整 settings values，均不包含命令标签。
 HTTP 映射见 [实体操作 API](../docs/decisions/NEC-166/entity-operation-http-api.md)。
 
-实体操作和成功的 `project import` 输出一个 JSON 信封：
+实体操作输出一个 JSON 信封：
 
 ```json
 {"api_version":1,"ok":true,"result":{"kind":"session","value":{"id":"示意，实际还有其他字段"}}}
 ```
 
 上例只说明信封结构，不是完整 Session。业务拒绝的 `ok=false`，带有
-`error.code/message/retryable`，不带 `result`。成功的 `export` 只写文件，stdout 为空；
-`event list` 输出 SSE 文本。退出码细节见 WF-09。
+`error.code/message/retryable`，不带 `result`。`event list` 输出 SSE 文本。退出码细节见 WF-09。
 发送后检查 `result.value.status` 和 `result.value.error`，不能用 `ok=true` 代替 Run 完成判断。
 动态 Message/Run ID、Session version、settings revision 和 event cursor 都从返回值读取，不能手填猜测。
 

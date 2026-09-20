@@ -103,7 +103,6 @@ sqlite3 /path/to/project/.ait/project.sqlite3 ".backup 'backups/project-2026-09-
 | 工具超时 | `a_hung_tool_is_cancelled_at_the_persisted_runtime_deadline` |
 | 并发分支 | `concurrent_cas_keeps_the_losing_message_as_a_sibling_branch` |
 | SQLite 备份恢复 | `online_backup_restores_a_consistent_revision_and_outbox` |
-| Project 导入导出 | `project_export_import_preserves_tree_and_revisions_without_runtime_or_credentials` |
 
 运行完整门禁：
 

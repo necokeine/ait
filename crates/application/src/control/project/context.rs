@@ -1,6 +1,6 @@
 //! Typed persistence contexts owned by Project use cases.
-use crate::control::catalog::{AgentRecord, ProviderRecord};
-use crate::control::conversation::{MessageRecord, SessionRecord};
+use crate::control::catalog::AgentRecord;
+use crate::control::conversation::MessageRecord;
 use crate::control::persistence::define_record_context;
 use crate::control::project::ProjectRecord;
 
@@ -17,17 +17,3 @@ define_record_context!(ProjectAgentContext {
     projects: Vec<ProjectRecord>,
     agents: Vec<AgentRecord>,
 } [ "projects" => Project, "agents" => Agent ]);
-
-define_record_context!(ArchiveContext {
-    projects: Vec<ProjectRecord>,
-    agents: Vec<AgentRecord>,
-    providers: Vec<ProviderRecord>,
-    sessions: Vec<SessionRecord>,
-    messages: Vec<MessageRecord>,
-} [
-    "projects" => Project,
-    "agents" => Agent,
-    "providers" => Provider,
-    "sessions" => Session,
-    "messages" => Message
-]);

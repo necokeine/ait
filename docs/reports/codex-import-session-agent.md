@@ -12,7 +12,7 @@ Codex Thread 同步现在会保留原生 model/reasoning 配置。配置与回�
   模型补录、重复同步、同一 Agent revision 更新，以及 Codex 历史同步与恢复回归。
 - `cargo build --workspace`：通过。
 - `cargo clippy --workspace --all-targets -- -D warnings`：通过。
-- `cargo test --workspace --no-fail-fast -- --test-threads=1`：490 passed、0 failed、5 ignored。
+- `cargo test --workspace --no-fail-fast -- --test-threads=1`：484 passed、0 failed、5 ignored。
 - `cargo fmt --all --check`：通过。
 
 默认并发的 workspace 与首次 coverage 各一次在既有
@@ -22,15 +22,15 @@ ready 之前，本次变更路径尚未执行，因此未扩大 NEC-345 范围�
 
 ## Test coverage
 
-在 base `33b318ccb5109842a0c882337937bb9fc24bd82b` 的工作树执行
+在合入 base `5ef106bd04956c245b1c11597aea3c65c08c4970` 的工作树执行
 `cargo llvm-cov --workspace --html -- --test-threads=1`，default features、无手工源码排除，coverage
-测试为 489 passed、0 failed、5 ignored（llvm-cov 不计 doctest）。结果：
+测试为 483 passed、0 failed、5 ignored（llvm-cov 不计 doctest）。结果：
 
-- workspace line coverage：77.9860%，24,015 / 30,794；
-- `ait-application` line coverage：82.2987%，10,089 / 12,259；
+- workspace line coverage：77.6761%，23,351 / 30,062；
+- `ait-application` line coverage：81.9054%，9,560 / 11,672；
 - `control/codex_history.rs`：86.7188%，999 / 1,152；
-- 相对最近同口径基线 `codex-output-limits-coverage.json`，workspace +0.0596 pp，application
-  +0.1226 pp；源码总体变化使该比较仅作参考。
+- 相对最近同口径基线 `codex-output-limits-coverage.json`，workspace -0.2503 pp，application
+  -0.2707 pp；同期 NEC-344 删除 archive 源码及测试，使源码总体变化，该比较仅作参考。
 
 [coverage 摘要](codex-import-session-agent-coverage.json)记录 source fingerprint、命令、测试数量、
 ignored live tests 与并发 flaky 诊断。HTML 已在本机 `target/llvm-cov/html/index.html` 生成；可共享的

@@ -14,9 +14,6 @@ pub use git_commit::{RunCommitStatus, RunGitCommit};
 /// Current command/event wire contract version.
 pub const API_VERSION: u16 = 1;
 
-/// Current portable Project archive format.
-pub const PROJECT_EXPORT_VERSION: u16 = 3;
-
 pub use ait_domain::{AgentConfiguration, AgentProvider, ProviderKind as AgentMode, ProviderModel};
 
 /// Commands accepted by the shared application service.
@@ -268,18 +265,6 @@ pub enum Command {
         cron_id: String,
         /// Scheduled timestamp.
         scheduled_at: i64,
-    },
-    /// Selects the `ExportProject` variant.
-    ExportProject {
-        /// Project identifier.
-        project_id: String,
-    },
-    /// Selects the `ImportProject` variant.
-    ImportProject {
-        /// Archive value.
-        archive: ProjectExport,
-        /// Workdir value.
-        workdir: String,
     },
     /// Selects the `GetSettings` variant.
     GetSettings,
@@ -848,30 +833,6 @@ pub struct WorkerCommitReceipt {
     pub completed: Option<bool>,
 }
 
-/// Portable, credential-free Project and Session archive.
-///
-/// Runtime attempts, active Run bindings, Cron registrations, attachment
-/// bytes, and provider credentials are deliberately outside this format.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "archive::ArchiveInput")]
-pub struct ProjectExport {
-    /// Format version value.
-    pub format_version: u16,
-    /// Source revision value.
-    pub source_revision: u64,
-    /// Project value.
-    pub project: ProjectView,
-    /// Agents value.
-    pub agents: Vec<AgentView>,
-    #[serde(default)]
-    /// Providers value.
-    pub providers: Vec<AgentProvider>,
-    /// Sessions value.
-    pub sessions: Vec<SessionView>,
-    /// Messages value.
-    pub messages: Vec<MessageView>,
-}
-
 /// Successful command payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -896,8 +857,6 @@ pub enum CommandResult {
     Run(RunView),
     /// Selects the `Cron` variant.
     Cron(CronView),
-    /// Selects the `ProjectExport` variant.
-    ProjectExport(ProjectExport),
     /// Selects the `Settings` variant.
     Settings(desktop::SettingsView),
     /// Selects the `Projects` variant.
@@ -1019,5 +978,4 @@ pub struct AgentProviderView {
     pub has_secret: bool,
 }
 
-mod archive;
 pub mod worker;

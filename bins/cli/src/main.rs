@@ -3,13 +3,10 @@
 mod args;
 mod input;
 
-use ait_contracts::{Command, CommandResult, Response};
+use ait_contracts::{Command, Response};
 use args::{Action, Arguments};
 use clap::Parser;
-use std::{
-    fs,
-    io::{self, IsTerminal},
-};
+use std::io::{self, IsTerminal};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,15 +47,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .text()
                 .await?;
             print!("{body}");
-        }
-        Action::Export { command, output } => {
-            let response = send(&client, &endpoint, &command).await?;
-            match &response.result {
-                Some(CommandResult::ProjectExport(archive)) if response.ok => {
-                    fs::write(output, serde_json::to_vec_pretty(archive)?)?;
-                }
-                _ => print_response(&response, &command),
-            }
         }
     }
     Ok(())
@@ -169,8 +157,6 @@ const fn operation_path(command: &Command) -> &'static str {
         Command::CreateCron { .. } => "/v1/cron/create",
         Command::SetCronEnabled { .. } => "/v1/cron/set-enabled",
         Command::TriggerCron { .. } => "/v1/cron/trigger",
-        Command::ExportProject { .. } => "/v1/project/export",
-        Command::ImportProject { .. } => "/v1/project/import",
         Command::GetSettings => "/v1/settings",
         Command::SaveSettings { .. } => "/v1/settings/save",
         Command::ResetSettings => "/v1/settings/reset",

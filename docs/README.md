@@ -4,6 +4,11 @@
   同步原生 Thread 时用其 model/reasoning metadata 建立 Session 自有 Agent，并在同一事务中补录
   Codex Provider 缺失的模型与推理等级。[实现与验证报告](reports/codex-import-session-agent.md)记录回归与覆盖率。
 
+- [NEC-344：移除 Project JSON archive 接口](decisions/NEC-344/adr-001-remove-project-archive-interfaces.md)（Accepted）：
+  删除 CLI、HTTP 与 application/contract 内的 Project archive 导入导出能力；Project 恢复统一使用
+  目录内的 `.ait/project.sqlite3` 与既有目录打开流程。[实现与验证报告](reports/nec-344-remove-project-archive-interfaces.md)
+  记录测试与覆盖率。
+
 - [ADR-020：Codex 输出预算与超限诊断](decisions/adr-020-codex-output-limits.md)（Accepted）：
   Codex 原生输出默认上限独立为 8 MiB，超限显示指标、实际值与上限；大输出的实时预览和
   完整历史采用不同传输边界。[实现与验证报告](reports/codex-output-limits.md)记录回归与覆盖率。

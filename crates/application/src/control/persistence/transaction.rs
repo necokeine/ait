@@ -116,7 +116,6 @@ pub(in crate::control) fn diff_map<T: Clone + PartialEq>(
 
 /// Baseline and provenance belong to the transaction, never to a reducer.
 pub(in crate::control) struct RecordTransaction<C> {
-    pub(in crate::control) revision: u64,
     pub(in crate::control) version: ait_ports::ControlVersion,
     pub(in crate::control) original: C,
     loaded: BTreeSet<(Kind, String)>,
@@ -130,12 +129,6 @@ impl<C: RecordContext> RecordTransaction<C> {
         records: &[ControlRecord],
     ) -> Self {
         Self {
-            revision: version
-                .projects
-                .values()
-                .map(|project| project.revision)
-                .max()
-                .unwrap_or(version.catalog_revision),
             version,
             original,
             loaded: records.iter().map(|r| (r.kind, r.id.clone())).collect(),

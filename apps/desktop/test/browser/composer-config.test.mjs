@@ -41,7 +41,7 @@ function installConfigFixture() {
 }
 
 async function selectConfig(page, label, value) {
-  await page.getByLabel(new RegExp(`^${label}\\b`)).selectOption(value);
+  await page.locator("#composer-config-panel").getByLabel(new RegExp(`^${label}\\b`)).selectOption(value);
   await page.waitForFunction(() => !document.querySelector("#composer-model").disabled);
 }
 

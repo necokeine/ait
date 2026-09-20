@@ -19,13 +19,10 @@ use crate::control::cron::{
 use crate::control::errors::error;
 use crate::control::execution::CommandOutcome;
 use crate::control::project::ProjectRecord;
-use crate::control::project::archive::{
-    export_project, import_project, validate_import_conflicts, validate_project_export,
-};
-use crate::control::project::git::{GitBaseline, PreparedProject, require_user_git_baseline};
+use crate::control::project::git::{GitBaseline, require_user_git_baseline};
 use crate::control::project::{
-    ArchiveContext, ProjectAgentContext, ProjectRegistrationContext, ProjectsContext,
-    register_project, set_project_default_agent, update_project, validate_project_workdir,
+    ProjectAgentContext, ProjectRegistrationContext, ProjectsContext, register_project,
+    set_project_default_agent, update_project, validate_project_workdir,
 };
 use crate::control::runs::{RunControlContext, RunsContext, cancel_run};
 
@@ -44,7 +41,6 @@ pub(in crate::control) enum CommandTransaction {
     SessionBinding(RecordTransaction<SessionBindingContext>),
     Agent(RecordTransaction<AgentContext>),
     Agents(RecordTransaction<AgentsContext>),
-    Archive(RecordTransaction<ArchiveContext>),
     Conversation(RecordTransaction<ConversationContext>),
     CronCreate(RecordTransaction<CronCreateContext>),
     CronTrigger(RecordTransaction<CronTriggerContext>),
@@ -73,7 +69,6 @@ impl CommandTransaction {
             Self::SessionBinding(transaction) => &transaction.version,
             Self::Agent(transaction) => &transaction.version,
             Self::Agents(transaction) => &transaction.version,
-            Self::Archive(transaction) => &transaction.version,
             Self::Conversation(transaction) => &transaction.version,
             Self::CronCreate(transaction) => &transaction.version,
             Self::CronTrigger(transaction) => &transaction.version,
@@ -106,14 +101,6 @@ impl CommandTransaction {
                 // Workspace admission can run before a name-only Project has
                 // allocated its directory. Commit admission rechecks the resolved path.
                 if let Some(workdir) = workdir {
-                    validate_project_workdir(&tx.original, workdir)?;
-                }
-                Ok(())
-            }
-            Self::Archive(tx) => {
-                if let Command::ImportProject { archive, workdir } = command {
-                    validate_project_export(archive)?;
-                    validate_import_conflicts(&tx.original, archive)?;
                     validate_project_workdir(&tx.original, workdir)?;
                 }
                 Ok(())
@@ -167,7 +154,6 @@ impl CommandTransaction {
         workspace: &dyn ProjectWorkspace,
         lease: Option<Arc<dyn WorkspaceLease>>,
         command: &Command,
-        prepared_project: Option<&PreparedProject>,
         created: &mut Vec<std::path::PathBuf>,
     ) -> Result<(), ApiError> {
         match self {
@@ -177,20 +163,6 @@ impl CommandTransaction {
                     lease,
                     &tx.original,
                     command,
-                    created,
-                )
-                .await
-            }
-            Self::Archive(tx) => {
-                let Command::ImportProject { archive, .. } = command else {
-                    unreachable!("import preparation")
-                };
-                crate::control::project::worktrees::prepare_import_session_worktrees(
-                    workspace,
-                    lease,
-                    &tx.original,
-                    archive,
-                    prepared_project.expect("Project prepared before Session worktrees"),
                     created,
                 )
                 .await
@@ -305,10 +277,6 @@ impl CommandTransaction {
                 .find(|run| run.id == run_id)
                 .map(|run| CommandResult::Run(run.view()))
                 .ok_or_else(|| error(ErrorCode::InvalidRun, "run not found", false)),
-            (Self::Archive(loaded), Command::ExportProject { project_id }) => {
-                export_project(&loaded.original, loaded.revision, &project_id)
-                    .map(CommandResult::ProjectExport)
-            }
             (Self::Settings(loaded), Command::GetSettings) => {
                 Ok(CommandResult::Settings(settings_view(&loaded.original)))
             }
@@ -652,21 +620,6 @@ impl CommandTransaction {
                     permission_limits,
                 )
             }),
-            (
-                Self::Archive(loaded),
-                Command::ImportProject {
-                    archive,
-                    workdir: _,
-                },
-            ) => reduce!(
-                loaded,
-                state,
-                ready!(import_project(
-                    &mut state,
-                    archive,
-                    prepared_project.expect("Project prepared before reduction")
-                ))
-            ),
             (
                 Self::Settings(loaded),
                 Command::SaveSettings {

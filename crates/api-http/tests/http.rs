@@ -102,8 +102,6 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         "/v1/project/register",
         "/v1/project/set-default-agent",
         "/v1/project/update",
-        "/v1/project/export",
-        "/v1/project/import",
         "/v1/agent/register",
         "/v1/agent/update",
         "/v1/agent-provider/save",
@@ -171,16 +169,19 @@ async fn every_application_use_case_has_a_distinct_entity_operation_route() {
         assert_ne!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{route}");
     }
 
-    let response = app
-        .oneshot(
-            Request::post("/v1/commands")
-                .header("content-type", "application/json")
-                .body(Body::from("{}"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    for route in ["/v1/commands", "/v1/project/export", "/v1/project/import"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(route)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{route}");
+    }
 }
 
 #[tokio::test]
