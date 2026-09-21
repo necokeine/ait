@@ -248,7 +248,7 @@ pub struct Limits {
     pub max_tokens: u64,
     /// An enabled monetary ceiling requires verifiable cost before a Provider call.
     pub max_cost_micros: Option<u64>,
-    /// Wall clock ms value.
+    /// API and auxiliary Codex deadline in milliseconds; native writers have no fixed deadline.
     pub wall_clock_ms: u64,
     /// Heartbeat ms value.
     pub heartbeat_ms: u64,

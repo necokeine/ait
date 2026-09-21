@@ -69,7 +69,9 @@ shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使
 | 收发队列 / 在途 RPC | 每方向 16；API mutation 串行；Codex 最多 16 个 port 调用 |
 | 单连接写入 | 1 秒 flush deadline；2 秒排队加 flush deadline |
 | 握手 / heartbeat | 3 秒握手；500 ms 心跳，3 秒失联 |
-| Run wall-clock / drain | 300 秒；取消后 2 秒；daemon shutdown 最多等待 5 秒 |
+| Codex 原生 Run wall-clock | 无固定任务时限；仍响应取消、shutdown 和失联检测 |
+| API / Codex 辅助操作 wall-clock | 300 秒；辅助操作包括历史、模型目录与标题 |
+| drain | 取消后 2 秒；daemon shutdown 最多等待 5 秒 |
 | worker 数量 | 单 supervisor 最多 16；同 Run 同时只有一个 |
 | 工具并发 / 输出 | 最多 4；64 KiB；API 工具参数最多 16 KiB |
 | Codex 输出 | 每轮累计文本 / 单个 item JSON 各 8 MiB；独立于 API 工具的 64 KiB 输出限制 |
@@ -82,6 +84,12 @@ shell 启动文件需保持 stdout 安静，以免污染 JSONL。开发版也使
 `max_codex_output_bytes` 可选字段默认 8 MiB；缺失时沿用 `max_output_bytes`。
 实时文本 delta 拆成最多 4 KiB 的 UTF-8 片段，大 Message 的实时预览限制为 64 KiB；
 权威历史仍完整分块传输。升级时需同时使用同一构建的 daemon 和 worker。
+
+按 [ADR-021](../decisions/adr-021-codex-unlimited-runtime.md)，原生 writer 不再应用
+`wall_clock_ms`，长时间构建与模型工作不会仅因超过 5 分钟而中断。其他输出与用量预算、
+手动停止、应用退出、心跳检测以及局部协议超时继续生效；这不提供关闭应用后的后台运行。
+已有中断 Run 不会自动重放。桌面将普通原生中断显示为 `Run interrupted`，仅
+`RUN_RECOVERY_FAILED` 使用工作区恢复标题。
 
 权限在准入时冻结，启动时重查管理员 `--max-sandbox`。`ait-sandbox` 使用 NEC-247 的
 capability-relative、拒绝 symlink 的文件工具，阻止绝对路径逃逸和 `..` 遍历。受控
