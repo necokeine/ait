@@ -1,0 +1,1392 @@
+{
+  "schema_version": 1,
+  "measurement": {
+    "recorded_at_utc": "2026-09-21T16:36:59.817324+00:00",
+    "base_revision": "77ab2f5ffab094cd8ee0f7ef2c6a5690584b6575",
+    "branch": "new",
+    "state": "uncommitted M0 implementation on base revision",
+    "code_fingerprint_sha256": "a19503e46a3fb5f95064e4a8076e57761a85f990a9916ba30d0ffce1db65bc8f",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo_llvm_cov": "cargo-llvm-cov 0.8.4",
+    "coverage_command": "cargo llvm-cov --workspace --html -- --skip command_approval_secrets_never_reach_durable_or_reconnected_views",
+    "export_command": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-server-m0-coverage-summary.json",
+    "features": "workspace default features; no --features or --all-features",
+    "production_file_exclusions": [],
+    "scope_notes": [
+      "Default cargo-llvm-cov report filtering; exported set contains no test source or build script files.",
+      "Doc tests are executed by cargo test --workspace but are not instrumented in this coverage run.",
+      "Platform-specific code excluded by cfg on macOS is outside this measurement."
+    ],
+    "baseline": "No comparable pre-change coverage measurement with the same toolchain and test scope.",
+    "explicit_test_skip": {
+      "name": "command_approval_secrets_never_reach_durable_or_reconnected_views",
+      "reason": "Existing test repeatedly exceeded its 3-second approval wait under instrumentation, including a serial and isolated retry; it passed in the ordinary workspace test run."
+    },
+    "ignored_tests": [
+      "codex_native_tools_create_and_verify_python_hello_world",
+      "deepseek_live_default_catalog",
+      "wf11_real_deepseek_python_hello_world",
+      "wf10_create_project_with_real_codex_and_commit",
+      "permission_change::replay_permission_change_with_external_worker"
+    ],
+    "coverage_test_results": {
+      "passed": 518,
+      "failed": 0,
+      "ignored": 5,
+      "filtered_out": 1,
+      "targets": 66
+    },
+    "ordinary_test_command": "cargo test --workspace",
+    "ordinary_test_results": {
+      "passed": 520,
+      "failed": 0,
+      "ignored": 5,
+      "result_groups": 85,
+      "ordinary_targets": 66,
+      "doc_test_groups": 19
+    }
+  },
+  "workspace": {
+    "branches": {
+      "count": 0,
+      "covered": 0,
+      "notcovered": 0,
+      "percent": 0
+    },
+    "functions": {
+      "count": 3386,
+      "covered": 2476,
+      "percent": 73.1246308328411
+    },
+    "instantiations": {
+      "count": 24218,
+      "covered": 7952,
+      "percent": 32.83508134445454
+    },
+    "lines": {
+      "count": 30803,
+      "covered": 24059,
+      "percent": 78.10602863357465
+    },
+    "mcdc": {
+      "count": 0,
+      "covered": 0,
+      "notcovered": 0,
+      "percent": 0
+    },
+    "regions": {
+      "count": 42103,
+      "covered": 32199,
+      "notcovered": 9904,
+      "percent": 76.47673562453981
+    }
+  },
+  "new_crates": {
+    "server-bin": {
+      "lines": {
+        "count": 242,
+        "covered": 229,
+        "percent": 94.62809917355372
+      },
+      "files": [
+        "bins/server/src/config.rs",
+        "bins/server/src/host.rs",
+        "bins/server/src/instance.rs",
+        "bins/server/src/main.rs"
+      ]
+    },
+    "server-api": {
+      "lines": {
+        "count": 381,
+        "covered": 375,
+        "percent": 98.4251968503937
+      },
+      "files": [
+        "crates/server-api/src/auth.rs",
+        "crates/server-api/src/connection.rs",
+        "crates/server-api/src/lib.rs",
+        "crates/server-api/src/outbound.rs"
+      ]
+    },
+    "server-protocol": {
+      "lines": {
+        "count": 49,
+        "covered": 49,
+        "percent": 100.0
+      },
+      "files": [
+        "crates/server-protocol/src/lib.rs"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "bins/cli/src/args.rs",
+      "lines": {
+        "count": 308,
+        "covered": 301,
+        "percent": 97.72727272727273
+      }
+    },
+    {
+      "path": "bins/cli/src/input.rs",
+      "lines": {
+        "count": 63,
+        "covered": 60,
+        "percent": 95.23809523809523
+      }
+    },
+    {
+      "path": "bins/cli/src/main.rs",
+      "lines": {
+        "count": 175,
+        "covered": 167,
+        "percent": 95.42857142857143
+      }
+    },
+    {
+      "path": "bins/daemon/src/main.rs",
+      "lines": {
+        "count": 120,
+        "covered": 100,
+        "percent": 83.33333333333334
+      }
+    },
+    {
+      "path": "bins/server/src/config.rs",
+      "lines": {
+        "count": 63,
+        "covered": 56,
+        "percent": 88.88888888888889
+      }
+    },
+    {
+      "path": "bins/server/src/host.rs",
+      "lines": {
+        "count": 65,
+        "covered": 63,
+        "percent": 96.92307692307692
+      }
+    },
+    {
+      "path": "bins/server/src/instance.rs",
+      "lines": {
+        "count": 65,
+        "covered": 63,
+        "percent": 96.92307692307692
+      }
+    },
+    {
+      "path": "bins/server/src/main.rs",
+      "lines": {
+        "count": 49,
+        "covered": 47,
+        "percent": 95.91836734693877
+      }
+    },
+    {
+      "path": "bins/worker/src/codex.rs",
+      "lines": {
+        "count": 239,
+        "covered": 0,
+        "percent": 0.0
+      }
+    },
+    {
+      "path": "bins/worker/src/lib.rs",
+      "lines": {
+        "count": 25,
+        "covered": 25,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "bins/worker/src/main.rs",
+      "lines": {
+        "count": 26,
+        "covered": 21,
+        "percent": 80.76923076923077
+      }
+    },
+    {
+      "path": "bins/worker/src/privacy.rs",
+      "lines": {
+        "count": 3,
+        "covered": 3,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "bins/worker/src/stdio.rs",
+      "lines": {
+        "count": 256,
+        "covered": 23,
+        "percent": 8.984375
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/codex.rs",
+      "lines": {
+        "count": 898,
+        "covered": 140,
+        "percent": 15.5902004454343
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/codex/budget.rs",
+      "lines": {
+        "count": 85,
+        "covered": 85,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/codex/native.rs",
+      "lines": {
+        "count": 276,
+        "covered": 179,
+        "percent": 64.85507246376811
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/codex/protocol.rs",
+      "lines": {
+        "count": 1458,
+        "covered": 1142,
+        "percent": 78.32647462277092
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/error.rs",
+      "lines": {
+        "count": 15,
+        "covered": 15,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/llm.rs",
+      "lines": {
+        "count": 290,
+        "covered": 278,
+        "percent": 95.86206896551724
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/llm/deepseek_http.rs",
+      "lines": {
+        "count": 63,
+        "covered": 43,
+        "percent": 68.25396825396825
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/protocol.rs",
+      "lines": {
+        "count": 35,
+        "covered": 12,
+        "percent": 34.285714285714285
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/provider_gateway.rs",
+      "lines": {
+        "count": 118,
+        "covered": 23,
+        "percent": 19.491525423728813
+      }
+    },
+    {
+      "path": "crates/agent-adapters/src/provider_turn.rs",
+      "lines": {
+        "count": 166,
+        "covered": 135,
+        "percent": 81.32530120481928
+      }
+    },
+    {
+      "path": "crates/api-http/src/lib.rs",
+      "lines": {
+        "count": 976,
+        "covered": 713,
+        "percent": 73.05327868852459
+      }
+    },
+    {
+      "path": "crates/application/src/control/admission.rs",
+      "lines": {
+        "count": 227,
+        "covered": 209,
+        "percent": 92.07048458149781
+      }
+    },
+    {
+      "path": "crates/application/src/control/approvals.rs",
+      "lines": {
+        "count": 544,
+        "covered": 387,
+        "percent": 71.13970588235294
+      }
+    },
+    {
+      "path": "crates/application/src/control/catalog/migration.rs",
+      "lines": {
+        "count": 91,
+        "covered": 81,
+        "percent": 89.01098901098901
+      }
+    },
+    {
+      "path": "crates/application/src/control/catalog/mod.rs",
+      "lines": {
+        "count": 262,
+        "covered": 247,
+        "percent": 94.27480916030534
+      }
+    },
+    {
+      "path": "crates/application/src/control/catalog/providers.rs",
+      "lines": {
+        "count": 221,
+        "covered": 177,
+        "percent": 80.09049773755656
+      }
+    },
+    {
+      "path": "crates/application/src/control/catalog/record.rs",
+      "lines": {
+        "count": 19,
+        "covered": 16,
+        "percent": 84.21052631578947
+      }
+    },
+    {
+      "path": "crates/application/src/control/codex_history.rs",
+      "lines": {
+        "count": 1212,
+        "covered": 1055,
+        "percent": 87.04620462046205
+      }
+    },
+    {
+      "path": "crates/application/src/control/conversation/message_record.rs",
+      "lines": {
+        "count": 124,
+        "covered": 114,
+        "percent": 91.93548387096774
+      }
+    },
+    {
+      "path": "crates/application/src/control/conversation/messages.rs",
+      "lines": {
+        "count": 257,
+        "covered": 169,
+        "percent": 65.75875486381322
+      }
+    },
+    {
+      "path": "crates/application/src/control/conversation/mod.rs",
+      "lines": {
+        "count": 355,
+        "covered": 284,
+        "percent": 80.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/conversation/record.rs",
+      "lines": {
+        "count": 48,
+        "covered": 42,
+        "percent": 87.5
+      }
+    },
+    {
+      "path": "crates/application/src/control/conversation/title.rs",
+      "lines": {
+        "count": 280,
+        "covered": 226,
+        "percent": 80.71428571428572
+      }
+    },
+    {
+      "path": "crates/application/src/control/cron.rs",
+      "lines": {
+        "count": 228,
+        "covered": 181,
+        "percent": 79.3859649122807
+      }
+    },
+    {
+      "path": "crates/application/src/control/cron/record.rs",
+      "lines": {
+        "count": 15,
+        "covered": 12,
+        "percent": 80.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/errors.rs",
+      "lines": {
+        "count": 32,
+        "covered": 32,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/events.rs",
+      "lines": {
+        "count": 80,
+        "covered": 80,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/execution.rs",
+      "lines": {
+        "count": 407,
+        "covered": 323,
+        "percent": 79.36117936117935
+      }
+    },
+    {
+      "path": "crates/application/src/control/mod.rs",
+      "lines": {
+        "count": 88,
+        "covered": 88,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/permissions.rs",
+      "lines": {
+        "count": 168,
+        "covered": 120,
+        "percent": 71.42857142857143
+      }
+    },
+    {
+      "path": "crates/application/src/control/persistence/access.rs",
+      "lines": {
+        "count": 45,
+        "covered": 45,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/persistence/codec.rs",
+      "lines": {
+        "count": 247,
+        "covered": 198,
+        "percent": 80.16194331983806
+      }
+    },
+    {
+      "path": "crates/application/src/control/persistence/mod.rs",
+      "lines": {
+        "count": 76,
+        "covered": 76,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/persistence/transaction.rs",
+      "lines": {
+        "count": 102,
+        "covered": 99,
+        "percent": 97.05882352941178
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/execution.rs",
+      "lines": {
+        "count": 28,
+        "covered": 13,
+        "percent": 46.42857142857143
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/fenced_store.rs",
+      "lines": {
+        "count": 88,
+        "covered": 61,
+        "percent": 69.31818181818183
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/git.rs",
+      "lines": {
+        "count": 169,
+        "covered": 121,
+        "percent": 71.59763313609467
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/lifecycle.rs",
+      "lines": {
+        "count": 145,
+        "covered": 50,
+        "percent": 34.48275862068966
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/mod.rs",
+      "lines": {
+        "count": 152,
+        "covered": 144,
+        "percent": 94.73684210526316
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/record.rs",
+      "lines": {
+        "count": 23,
+        "covered": 20,
+        "percent": 86.95652173913044
+      }
+    },
+    {
+      "path": "crates/application/src/control/project/worktrees.rs",
+      "lines": {
+        "count": 304,
+        "covered": 256,
+        "percent": 84.21052631578947
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/api_run.rs",
+      "lines": {
+        "count": 190,
+        "covered": 108,
+        "percent": 56.84210526315789
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/api_run/agent.rs",
+      "lines": {
+        "count": 9,
+        "covered": 2,
+        "percent": 22.22222222222222
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/api_run/store.rs",
+      "lines": {
+        "count": 529,
+        "covered": 475,
+        "percent": 89.79206049149339
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/api_run/terminal.rs",
+      "lines": {
+        "count": 144,
+        "covered": 132,
+        "percent": 91.66666666666666
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/approval_record.rs",
+      "lines": {
+        "count": 38,
+        "covered": 38,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/finalization.rs",
+      "lines": {
+        "count": 100,
+        "covered": 90,
+        "percent": 90.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/git_commit.rs",
+      "lines": {
+        "count": 207,
+        "covered": 171,
+        "percent": 82.6086956521739
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/interaction_record.rs",
+      "lines": {
+        "count": 28,
+        "covered": 28,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/mod.rs",
+      "lines": {
+        "count": 80,
+        "covered": 44,
+        "percent": 55.00000000000001
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/native.rs",
+      "lines": {
+        "count": 447,
+        "covered": 406,
+        "percent": 90.82774049217002
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/native/admission.rs",
+      "lines": {
+        "count": 227,
+        "covered": 192,
+        "percent": 84.58149779735683
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/native/publication.rs",
+      "lines": {
+        "count": 281,
+        "covered": 245,
+        "percent": 87.18861209964413
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/progress.rs",
+      "lines": {
+        "count": 276,
+        "covered": 245,
+        "percent": 88.768115942029
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/record.rs",
+      "lines": {
+        "count": 280,
+        "covered": 276,
+        "percent": 98.57142857142857
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/recovery.rs",
+      "lines": {
+        "count": 339,
+        "covered": 236,
+        "percent": 69.6165191740413
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/settlement.rs",
+      "lines": {
+        "count": 85,
+        "covered": 45,
+        "percent": 52.94117647058824
+      }
+    },
+    {
+      "path": "crates/application/src/control/runs/workspace.rs",
+      "lines": {
+        "count": 48,
+        "covered": 34,
+        "percent": 70.83333333333334
+      }
+    },
+    {
+      "path": "crates/application/src/control/settings.rs",
+      "lines": {
+        "count": 127,
+        "covered": 116,
+        "percent": 91.33858267716536
+      }
+    },
+    {
+      "path": "crates/application/src/control/tool_approvals.rs",
+      "lines": {
+        "count": 487,
+        "covered": 450,
+        "percent": 92.40246406570843
+      }
+    },
+    {
+      "path": "crates/application/src/control/tool_interactions.rs",
+      "lines": {
+        "count": 470,
+        "covered": 280,
+        "percent": 59.57446808510638
+      }
+    },
+    {
+      "path": "crates/application/src/control/use_cases/read_plan.rs",
+      "lines": {
+        "count": 815,
+        "covered": 680,
+        "percent": 83.43558282208589
+      }
+    },
+    {
+      "path": "crates/application/src/control/use_cases/transaction.rs",
+      "lines": {
+        "count": 488,
+        "covered": 405,
+        "percent": 82.99180327868852
+      }
+    },
+    {
+      "path": "crates/contracts/src/desktop.rs",
+      "lines": {
+        "count": 254,
+        "covered": 174,
+        "percent": 68.50393700787401
+      }
+    },
+    {
+      "path": "crates/contracts/src/lib.rs",
+      "lines": {
+        "count": 28,
+        "covered": 28,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/contracts/src/sensitive.rs",
+      "lines": {
+        "count": 160,
+        "covered": 151,
+        "percent": 94.375
+      }
+    },
+    {
+      "path": "crates/contracts/src/worker/mod.rs",
+      "lines": {
+        "count": 141,
+        "covered": 135,
+        "percent": 95.74468085106383
+      }
+    },
+    {
+      "path": "crates/contracts/src/worker/model.rs",
+      "lines": {
+        "count": 6,
+        "covered": 0,
+        "percent": 0.0
+      }
+    },
+    {
+      "path": "crates/domain/src/agent.rs",
+      "lines": {
+        "count": 63,
+        "covered": 48,
+        "percent": 76.19047619047619
+      }
+    },
+    {
+      "path": "crates/domain/src/common.rs",
+      "lines": {
+        "count": 22,
+        "covered": 10,
+        "percent": 45.45454545454545
+      }
+    },
+    {
+      "path": "crates/domain/src/cron.rs",
+      "lines": {
+        "count": 55,
+        "covered": 54,
+        "percent": 98.18181818181819
+      }
+    },
+    {
+      "path": "crates/domain/src/error.rs",
+      "lines": {
+        "count": 113,
+        "covered": 39,
+        "percent": 34.51327433628318
+      }
+    },
+    {
+      "path": "crates/domain/src/git.rs",
+      "lines": {
+        "count": 28,
+        "covered": 28,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/domain/src/instruction.rs",
+      "lines": {
+        "count": 26,
+        "covered": 26,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/domain/src/lifecycle.rs",
+      "lines": {
+        "count": 71,
+        "covered": 51,
+        "percent": 71.83098591549296
+      }
+    },
+    {
+      "path": "crates/domain/src/message.rs",
+      "lines": {
+        "count": 311,
+        "covered": 250,
+        "percent": 80.38585209003215
+      }
+    },
+    {
+      "path": "crates/domain/src/permission.rs",
+      "lines": {
+        "count": 6,
+        "covered": 6,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/domain/src/project.rs",
+      "lines": {
+        "count": 74,
+        "covered": 74,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/domain/src/run.rs",
+      "lines": {
+        "count": 228,
+        "covered": 206,
+        "percent": 90.35087719298247
+      }
+    },
+    {
+      "path": "crates/domain/src/session.rs",
+      "lines": {
+        "count": 163,
+        "covered": 137,
+        "percent": 84.04907975460121
+      }
+    },
+    {
+      "path": "crates/domain/src/tool.rs",
+      "lines": {
+        "count": 90,
+        "covered": 72,
+        "percent": 80.0
+      }
+    },
+    {
+      "path": "crates/ipc/src/codec.rs",
+      "lines": {
+        "count": 99,
+        "covered": 95,
+        "percent": 95.95959595959596
+      }
+    },
+    {
+      "path": "crates/ipc/src/codex.rs",
+      "lines": {
+        "count": 157,
+        "covered": 137,
+        "percent": 87.26114649681529
+      }
+    },
+    {
+      "path": "crates/ipc/src/connection.rs",
+      "lines": {
+        "count": 95,
+        "covered": 91,
+        "percent": 95.78947368421052
+      }
+    },
+    {
+      "path": "crates/ipc/src/mapping.rs",
+      "lines": {
+        "count": 377,
+        "covered": 96,
+        "percent": 25.46419098143236
+      }
+    },
+    {
+      "path": "crates/ipc/src/rpc.rs",
+      "lines": {
+        "count": 305,
+        "covered": 167,
+        "percent": 54.754098360655725
+      }
+    },
+    {
+      "path": "crates/ipc/src/supervisor.rs",
+      "lines": {
+        "count": 291,
+        "covered": 269,
+        "percent": 92.43986254295532
+      }
+    },
+    {
+      "path": "crates/observability/src/lib.rs",
+      "lines": {
+        "count": 99,
+        "covered": 91,
+        "percent": 91.91919191919192
+      }
+    },
+    {
+      "path": "crates/ports/src/codex.rs",
+      "lines": {
+        "count": 22,
+        "covered": 0,
+        "percent": 0.0
+      }
+    },
+    {
+      "path": "crates/ports/src/control.rs",
+      "lines": {
+        "count": 68,
+        "covered": 55,
+        "percent": 80.88235294117648
+      }
+    },
+    {
+      "path": "crates/ports/src/control/version.rs",
+      "lines": {
+        "count": 36,
+        "covered": 36,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/ports/src/dispatch.rs",
+      "lines": {
+        "count": 3,
+        "covered": 0,
+        "percent": 0.0
+      }
+    },
+    {
+      "path": "crates/ports/src/provider.rs",
+      "lines": {
+        "count": 18,
+        "covered": 14,
+        "percent": 77.77777777777779
+      }
+    },
+    {
+      "path": "crates/ports/src/run.rs",
+      "lines": {
+        "count": 125,
+        "covered": 70,
+        "percent": 56.00000000000001
+      }
+    },
+    {
+      "path": "crates/providers/src/agent.rs",
+      "lines": {
+        "count": 45,
+        "covered": 37,
+        "percent": 82.22222222222221
+      }
+    },
+    {
+      "path": "crates/providers/src/contract.rs",
+      "lines": {
+        "count": 54,
+        "covered": 43,
+        "percent": 79.62962962962963
+      }
+    },
+    {
+      "path": "crates/providers/src/error.rs",
+      "lines": {
+        "count": 26,
+        "covered": 20,
+        "percent": 76.92307692307693
+      }
+    },
+    {
+      "path": "crates/providers/src/mock.rs",
+      "lines": {
+        "count": 36,
+        "covered": 25,
+        "percent": 69.44444444444444
+      }
+    },
+    {
+      "path": "crates/providers/src/openai.rs",
+      "lines": {
+        "count": 232,
+        "covered": 135,
+        "percent": 58.189655172413794
+      }
+    },
+    {
+      "path": "crates/providers/src/protocol.rs",
+      "lines": {
+        "count": 22,
+        "covered": 22,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/providers/src/provider.rs",
+      "lines": {
+        "count": 74,
+        "covered": 55,
+        "percent": 74.32432432432432
+      }
+    },
+    {
+      "path": "crates/providers/src/secret.rs",
+      "lines": {
+        "count": 23,
+        "covered": 17,
+        "percent": 73.91304347826086
+      }
+    },
+    {
+      "path": "crates/runtime/src/engine.rs",
+      "lines": {
+        "count": 1044,
+        "covered": 780,
+        "percent": 74.71264367816092
+      }
+    },
+    {
+      "path": "crates/sandbox/src/lib.rs",
+      "lines": {
+        "count": 125,
+        "covered": 32,
+        "percent": 25.6
+      }
+    },
+    {
+      "path": "crates/scheduler/src/lib.rs",
+      "lines": {
+        "count": 275,
+        "covered": 221,
+        "percent": 80.36363636363636
+      }
+    },
+    {
+      "path": "crates/server-api/src/auth.rs",
+      "lines": {
+        "count": 63,
+        "covered": 63,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/server-api/src/connection.rs",
+      "lines": {
+        "count": 152,
+        "covered": 147,
+        "percent": 96.71052631578947
+      }
+    },
+    {
+      "path": "crates/server-api/src/lib.rs",
+      "lines": {
+        "count": 141,
+        "covered": 140,
+        "percent": 99.29078014184397
+      }
+    },
+    {
+      "path": "crates/server-api/src/outbound.rs",
+      "lines": {
+        "count": 25,
+        "covered": 25,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/server-protocol/src/lib.rs",
+      "lines": {
+        "count": 49,
+        "covered": 49,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/lib.rs",
+      "lines": {
+        "count": 541,
+        "covered": 452,
+        "percent": 83.54898336414048
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/binding.rs",
+      "lines": {
+        "count": 181,
+        "covered": 170,
+        "percent": 93.92265193370166
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/conversion.rs",
+      "lines": {
+        "count": 252,
+        "covered": 218,
+        "percent": 86.5079365079365
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/mod.rs",
+      "lines": {
+        "count": 291,
+        "covered": 221,
+        "percent": 75.9450171821306
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/native_bindings.rs",
+      "lines": {
+        "count": 71,
+        "covered": 60,
+        "percent": 84.50704225352112
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/ownership.rs",
+      "lines": {
+        "count": 84,
+        "covered": 77,
+        "percent": 91.66666666666666
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/project.rs",
+      "lines": {
+        "count": 247,
+        "covered": 219,
+        "percent": 88.66396761133603
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/projection.rs",
+      "lines": {
+        "count": 233,
+        "covered": 219,
+        "percent": 93.99141630901288
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/read.rs",
+      "lines": {
+        "count": 252,
+        "covered": 243,
+        "percent": 96.42857142857143
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/workers.rs",
+      "lines": {
+        "count": 113,
+        "covered": 91,
+        "percent": 80.53097345132744
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/portable/write.rs",
+      "lines": {
+        "count": 312,
+        "covered": 275,
+        "percent": 88.14102564102564
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/split/cutover.rs",
+      "lines": {
+        "count": 87,
+        "covered": 81,
+        "percent": 93.10344827586206
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/split/migration.rs",
+      "lines": {
+        "count": 180,
+        "covered": 171,
+        "percent": 95.0
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/split/mod.rs",
+      "lines": {
+        "count": 607,
+        "covered": 569,
+        "percent": 93.73970345963755
+      }
+    },
+    {
+      "path": "crates/storage-sqlite/src/split/project.rs",
+      "lines": {
+        "count": 263,
+        "covered": 244,
+        "percent": 92.77566539923954
+      }
+    },
+    {
+      "path": "crates/tools/src/agent.rs",
+      "lines": {
+        "count": 348,
+        "covered": 330,
+        "percent": 94.82758620689656
+      }
+    },
+    {
+      "path": "crates/tools/src/host.rs",
+      "lines": {
+        "count": 441,
+        "covered": 402,
+        "percent": 91.15646258503402
+      }
+    },
+    {
+      "path": "crates/tools/src/host/approval.rs",
+      "lines": {
+        "count": 195,
+        "covered": 174,
+        "percent": 89.23076923076925
+      }
+    },
+    {
+      "path": "crates/tools/src/host/search.rs",
+      "lines": {
+        "count": 324,
+        "covered": 287,
+        "percent": 88.58024691358025
+      }
+    },
+    {
+      "path": "crates/tools/src/host/shell.rs",
+      "lines": {
+        "count": 100,
+        "covered": 93,
+        "percent": 93.0
+      }
+    },
+    {
+      "path": "crates/tools/src/host/shell/backend.rs",
+      "lines": {
+        "count": 87,
+        "covered": 84,
+        "percent": 96.55172413793105
+      }
+    },
+    {
+      "path": "crates/tools/src/host/utility.rs",
+      "lines": {
+        "count": 93,
+        "covered": 75,
+        "percent": 80.64516129032258
+      }
+    },
+    {
+      "path": "crates/tools/src/host/web.rs",
+      "lines": {
+        "count": 292,
+        "covered": 152,
+        "percent": 52.054794520547944
+      }
+    },
+    {
+      "path": "crates/tools/src/lib.rs",
+      "lines": {
+        "count": 71,
+        "covered": 71,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/workspace-local/src/directories.rs",
+      "lines": {
+        "count": 120,
+        "covered": 120,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/workspace-local/src/workspace/blocking.rs",
+      "lines": {
+        "count": 360,
+        "covered": 328,
+        "percent": 91.11111111111111
+      }
+    },
+    {
+      "path": "crates/workspace-local/src/workspace/commit.rs",
+      "lines": {
+        "count": 222,
+        "covered": 196,
+        "percent": 88.28828828828829
+      }
+    },
+    {
+      "path": "crates/workspace-local/src/workspace/git.rs",
+      "lines": {
+        "count": 386,
+        "covered": 270,
+        "percent": 69.94818652849742
+      }
+    },
+    {
+      "path": "crates/workspace-local/src/workspace/mod.rs",
+      "lines": {
+        "count": 221,
+        "covered": 174,
+        "percent": 78.73303167420815
+      }
+    },
+    {
+      "path": "crates/workspace-local/src/workspace/worktrees.rs",
+      "lines": {
+        "count": 203,
+        "covered": 124,
+        "percent": 61.083743842364534
+      }
+    },
+    {
+      "path": "crates/workspace/src/lib.rs",
+      "lines": {
+        "count": 6,
+        "covered": 0,
+        "percent": 0.0
+      }
+    },
+    {
+      "path": "crates/workspace/src/workspace_contract.rs",
+      "lines": {
+        "count": 131,
+        "covered": 130,
+        "percent": 99.23664122137404
+      }
+    }
+  ],
+  "code_files_sha256": {
+    "Cargo.lock": "69f60e1e2d594ddc272c15920286fb9ac0791a860b7a8362182856d7965d94ff",
+    "Cargo.toml": "0f1740d0ddbc96557aa0cfe8b053152ca324b9ed62c34d05363e045256b4ee51",
+    "bins/server/Cargo.toml": "a6609dfa570062246bb1b2a8eb3df1db1149ab280555579fe464c56bf3cce7d8",
+    "bins/server/src/config/tests.rs": "8ec95754b8cc7e859ac637258ca4f6e674290f13f859bfc82368b3c74223f464",
+    "bins/server/src/config.rs": "815f5bad0aa52c82dfb0e1c88245ae8d25e33b6dda419e0b047e790b9c5ccfe8",
+    "bins/server/src/host/tests.rs": "c922934f93ff21eb84a605121110131872757f356d4e2275e41207bd7fec9982",
+    "bins/server/src/host.rs": "4c7eeb9a0206e754b84f32ecb98200e412f6fe2f940ecd66b9843ba1fdb2c611",
+    "bins/server/src/instance/tests.rs": "80a58ea7eff47635fdacf4d37d5becf1245f3741e84523a1ecb9cdc514c56888",
+    "bins/server/src/instance.rs": "795b50fe003f80381f74a2d506f920efc89f4eceb6dd2945cd45e11390240df8",
+    "bins/server/src/main.rs": "30cc76407700446a942472a8fbbea48a8ec45a978841aae4d308b79d14a82ac7",
+    "bins/server/tests/dependencies.rs": "7abaaff3ec711f9a5be5251b210666392aaaf6de6026ceaf76738db9848203bf",
+    "bins/server/tests/process/unix.rs": "44b3c8bc865edc0ca7e94b6f6159a3c67c0401b9af4a545153574ecaed61fc0b",
+    "bins/server/tests/process.rs": "41f462f207d6bc5b053ebd62ee2f11a306cf8cc960b267337aafc42775a7174d",
+    "crates/server-api/Cargo.toml": "9cb3951d035089a45c8858fbd07482602a468e29cd1a039669173c4d72f2f4ab",
+    "crates/server-api/src/auth/tests.rs": "1177bb6b5ac77d185a2d885fbcaccd7a2a3de200879c8115eb889a1a353a0991",
+    "crates/server-api/src/auth.rs": "8410c10fab5b65b2f01f0a0fb3b1c29457d1a110ab2c2b6d4d4c9b82fc568686",
+    "crates/server-api/src/connection.rs": "70c42738590daf81f39d36b0fb3afd15725f0178a150438398f96bf160ce60fb",
+    "crates/server-api/src/lib.rs": "8ac5dee2df6860072aeb8de4d14817d5895e2aa471c7582030c171b68633c3a0",
+    "crates/server-api/src/outbound/tests.rs": "9b7d71580c56c437a8a832af1647b9b8d4b3ed7621117d22c56e1f8a3e6302ca",
+    "crates/server-api/src/outbound.rs": "45537278b266bc298a52c01159e815a8b4f9310cd821ddbc296796e7bd91c4f5",
+    "crates/server-api/src/tests.rs": "2b22b29780747cfb9ddaca08a59063c24626f0515134952e9194ea42d32cd308",
+    "crates/server-api/tests/fragmentation.rs": "17414206e54d96c6c12a49813a26dddbf766fafde0a3c0ef5157d8a4f7285c9a",
+    "crates/server-protocol/Cargo.toml": "b41c66d39c44598af1174de494d5e76d1e51b183c5f1903948747bb3d25f671c",
+    "crates/server-protocol/src/lib.rs": "db25e3146fa0b90813cfdbee503ba0719b90647ae4c2fd259a315a6a2e18f00a",
+    "crates/server-protocol/src/tests.rs": "4cc0c97d62383d56ad6ad6862cb69dfe87ce113faefed949fae2c3564ace854b"
+  }
+}

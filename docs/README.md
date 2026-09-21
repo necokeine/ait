@@ -1,5 +1,12 @@
 # 概念与架构文档
 
+- [ADR-022：独立 server 与全新内部 crate](decisions/adr-022-independent-server.md)（Accepted）：
+  独立 `server` binary 与旧 daemon 并存，内部依赖全部新建；定义进程隔离、数据命名空间、
+  WebSocket、输入接纳与恢复边界。[实施计划](plans/independent-server.md)按服务骨架、离线闭环、
+  单 Provider 接入和故障矩阵分期；M0 已创建三个独立 crate，实现本机服务骨架和连接协议。
+  [使用说明](operations/independent-server.md)记录启动配置、鉴权、协议和关闭行为。
+  [验证报告](reports/independent-server-m0.md)记录 workspace 检查、新服务测试与覆盖率。
+
 - [ADR-021：Codex 原生任务取消固定运行时限](decisions/adr-021-codex-unlimited-runtime.md)（Accepted）：
   原生 writer 可持续执行，取消与失联回收保留；桌面中断告警使用独立布局并区分恢复问题。
   [验证报告](reports/codex-unlimited-runtime.md)记录时钟与浏览器回归。
