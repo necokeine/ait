@@ -110,7 +110,7 @@ impl Api {
         let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
         if services.projects.is_some() {
             capabilities.extend(
-                server_protocol::project::CAPABILITIES
+                server_protocol::project_lease::CAPABILITIES
                     .iter()
                     .map(|s| (*s).to_owned()),
             );

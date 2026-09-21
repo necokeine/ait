@@ -99,21 +99,22 @@ async fn read(
                 method,
                 params,
             })) if valid_id(&request_id) && valid_id(&method) => {
-                let result = if server_protocol::project::CAPABILITIES.contains(&method.as_str()) {
-                    if capabilities.contains(&method) {
-                        crate::projects::dispatch(&method, params, state).await
+                let result =
+                    if server_protocol::project_lease::CAPABILITIES.contains(&method.as_str()) {
+                        if capabilities.contains(&method) {
+                            crate::projects::dispatch(&method, params, state).await
+                        } else {
+                            Err(ErrorCode::UnsupportedCapability)
+                        }
+                    } else if server_protocol::agent::CAPABILITIES.contains(&method.as_str()) {
+                        if capabilities.contains(&method) {
+                            crate::agents::dispatch(&method, params, state).await
+                        } else {
+                            Err(ErrorCode::UnsupportedCapability)
+                        }
                     } else {
-                        Err(ErrorCode::UnsupportedCapability)
-                    }
-                } else if server_protocol::agent::CAPABILITIES.contains(&method.as_str()) {
-                    if capabilities.contains(&method) {
-                        crate::agents::dispatch(&method, params, state).await
-                    } else {
-                        Err(ErrorCode::UnsupportedCapability)
-                    }
-                } else {
-                    dispatch(&method, &params, state, &capabilities, &mut subscriptions)
-                };
+                        dispatch(&method, &params, state, &capabilities, &mut subscriptions)
+                    };
                 match result {
                     Ok(value) => {
                         let subscription_id = (method == "server.status.subscribe")

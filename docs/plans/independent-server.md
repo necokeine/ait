@@ -1,5 +1,9 @@
 # 独立 server 实施计划
 
+> 当前方向以 [ADR-025](../decisions/adr-025-paseo-registry.md) 为准。先移植 Paseo 的 Project / Workspace
+> 记录、协议和 registry，再接目录发现、descriptor 聚合与原 request/response handler。
+> 下文尚未实施的 Session 固定 worktree、Run/Provider 切片暂缓，待按 Paseo 重新梳理。
+
 - 日期：2026-09-21。
 - 状态：`new` 分支已实施 M0 与 M1 项目打开、Agent 配置切片；其余切片及 M2–M3 继续按顺序推进。
 - 架构决定：[ADR-022](../decisions/adr-022-independent-server.md)。
@@ -53,7 +57,7 @@ ready/draining 状态。业务订阅、持久 seq/cursor、snapshot/replay 在 M
 2026-09-22 已完成首个“项目打开”纵向切片；实施细节见 [ADR-023](../decisions/adr-023-server-project-opening.md)，
 验收见 [项目打开报告](../reports/independent-server-m1-projects.md)。本批不代表整个 M1 完成。
 Agent 配置/revision、凭据引用和显式默认选择已按 [ADR-024](../decisions/adr-024-server-agent-configuration.md)
-实现；验收见 [Agent 配置报告](../reports/independent-server-m1-agents.md)。下一步建立 Session 指针和固定工作区。
+实现；验收见 [Agent 配置报告](../reports/independent-server-m1-agents.md)。该序列已暂停；下一步按 ADR-025 接入 Paseo registry、目录服务与协议 handler。
 
 项目打开切片已创建 `server-domain`、`server-ports`、`server-application`、`server-storage`、
 `server-workspace`。后续应用内的执行 seam 使用测试专用 fake；fake 不进入生产 provider catalog。

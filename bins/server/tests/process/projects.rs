@@ -41,7 +41,7 @@ async fn binary_project_ownership_survives_catalogs_and_process_restarts() {
     let mut first = start(&first_dir, &first_log);
     let mut first_socket = connect(
         &ready(&mut first, &first_log).await,
-        server_protocol::project::CAPABILITIES,
+        server_protocol::project_lease::CAPABILITIES,
     )
     .await;
     let params = json!({"path":repo,"idempotency_key":"open"});
@@ -51,7 +51,7 @@ async fn binary_project_ownership_survives_catalogs_and_process_restarts() {
     let mut second = start(&second_dir, &second_log);
     let mut second_socket = connect(
         &ready(&mut second, &second_log).await,
-        server_protocol::project::CAPABILITIES,
+        server_protocol::project_lease::CAPABILITIES,
     )
     .await;
     assert_eq!(
@@ -66,7 +66,7 @@ async fn binary_project_ownership_survives_catalogs_and_process_restarts() {
     let mut restarted = start(&first_dir, &first_log);
     let mut restarted_socket = connect(
         &ready(&mut restarted, &first_log).await,
-        server_protocol::project::CAPABILITIES,
+        server_protocol::project_lease::CAPABILITIES,
     )
     .await;
     assert_eq!(

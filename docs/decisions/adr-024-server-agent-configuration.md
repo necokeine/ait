@@ -1,5 +1,8 @@
 # ADR-024：独立 server 的 Agent 配置与不可变 revision
 
+> 本文描述已实现的过渡 Agent preset；Paseo 复刻方向以 [ADR-025](adr-025-paseo-registry.md)
+> 为准。本类型不能视为 Paseo 的 ManagedAgent，后续执行能力需重新按源模型梳理。
+
 - 状态：Accepted，落实已授权的 M1 Agent 配置切片。
 - 日期：2026-09-22。
 - 前置：[ADR-022](adr-022-independent-server.md)、[ADR-023](adr-023-server-project-opening.md)、

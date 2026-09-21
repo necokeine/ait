@@ -1,0 +1,15 @@
+Paseo
+Copyright (c) 2025-present Mohamed Boudra
+Licensed under the Apache License, Version 2.0; see LICENSE in this directory.
+
+Rust translations and modifications in server-domain/src/registry*,
+server-protocol/src/workspace*, and server-storage/src/registry* derive from:
+getpaseo/paseo commit 2c8e8a826810337492cc5a38bb0bbd705b6fb632
+packages/server/src/server/workspace-registry.ts
+packages/server/src/server/workspace-registry-model.ts
+packages/server/src/utils/path.ts
+packages/protocol/src/messages.ts
+
+Modifications: translated TypeScript/Zod records and schemas into Rust/Serde;
+blocking registry adapters use explicit errors and Rust ownership. Scope and
+intentional differences are documented in docs/decisions/adr-025-paseo-registry.md.

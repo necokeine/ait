@@ -1,6 +1,7 @@
 //! Pure project facts and versioned Agent configuration for the independent server.
 
 pub mod agent;
+pub mod registry;
 
 use std::fmt;
 use std::str::FromStr;

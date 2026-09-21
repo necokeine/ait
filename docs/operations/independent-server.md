@@ -1,5 +1,9 @@
 # 独立 server：使用与协议
 
+> 当前运行接口仍是前两批的过渡协议。Paseo Project / Workspace 记录、wire DTO 和文件 registry
+> 已单独移植，详见 [ADR-025](../decisions/adr-025-paseo-registry.md)；尚未替换 binary 的
+> handler/组装。下文的 `project.open/list/get/close` 返回租约快照，不是 Paseo descriptor。
+
 `server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目和版本化 Agent 配置。
 内部代码全部来自新建的八个 `server-*` package；Session、Run 和 Provider 执行尚未实现。
 项目必须使用独立 clone，不能与旧 daemon 共管同一目录或共享 Git worktree。

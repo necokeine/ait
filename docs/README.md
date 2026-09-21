@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
+  新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。
+  [移植报告](reports/paseo-registry-port.md)记录原始 Zod 样本对照、registry 验收与当前接入边界。
+
 - [ADR-024：独立 server 的 Agent 配置与不可变 revision](decisions/adr-024-server-agent-configuration.md)（Accepted）：
   新 Agent 配置、历史 revision、显式默认选择、凭据引用与 catalog v1 → v2 备份升级。
   [验证报告](reports/independent-server-m1-agents.md)记录 CAS、回执、重启、秘密隔离与覆盖率。

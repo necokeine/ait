@@ -4,6 +4,7 @@ mod agents;
 mod catalog;
 mod migration;
 mod project;
+pub mod registry;
 
 use std::path::Path;
 use std::time::Duration;

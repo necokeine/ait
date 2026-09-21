@@ -1,0 +1,3445 @@
+{
+  "source": {
+    "revision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+    "zod": "4.4.3",
+    "sourceFiles": {
+      "packages/server/src/server/workspace-registry.ts": "559f7bbe77eed97427dcb3efad00a9693f6df21fabcfa5e64f8eec4c869460d2",
+      "packages/protocol/src/messages.ts": "d30a51851486f4034871ac26e7ba2f83d609dffc197769c437b05a04035018cd"
+    }
+  },
+  "cases": [
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "full",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "unknown_fields_are_stripped",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon",
+        "unknown": "discard"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_projectId",
+      "input": {
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_projectId",
+      "input": {
+        "projectId": null,
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_projectId",
+      "input": {
+        "projectId": {
+          "invalid": true
+        },
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_rootPath",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_rootPath",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": null,
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_rootPath",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": {
+          "invalid": true
+        },
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_kind",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_kind",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": null,
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_kind",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": {
+          "invalid": true
+        },
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_displayName",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_displayName",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_displayName",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": {
+          "invalid": true
+        },
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_createdAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_createdAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": null,
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_createdAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": {
+          "invalid": true
+        },
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_updatedAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_updatedAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": null,
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_updatedAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": {
+          "invalid": true
+        },
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_archivedAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_archivedAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_archivedAt",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": {
+          "invalid": true
+        },
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_projectKey",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": null,
+        "customName": "Custom",
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_projectKey",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": null,
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": null,
+        "customName": "Custom",
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_projectKey",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": {
+          "invalid": true
+        },
+        "customName": "Custom",
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_customName",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customIconRevision": "icon"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": null,
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_customName",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": null,
+        "customIconRevision": "icon"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": null,
+        "customIconRevision": "icon",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_customName",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": {
+          "invalid": true
+        },
+        "customIconRevision": "icon"
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "missing_customIconRevision",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom"
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "null_customIconRevision",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": null
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "wrong_type_customIconRevision",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "projectKey": "key",
+        "customName": "Custom",
+        "customIconRevision": {
+          "invalid": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "full",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "unknown_fields_are_stripped",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        },
+        "unknown": "discard"
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_workspaceId",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_workspaceId",
+      "input": {
+        "workspaceId": null,
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_workspaceId",
+      "input": {
+        "workspaceId": {
+          "invalid": true
+        },
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_projectId",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_projectId",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": null,
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_projectId",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": {
+          "invalid": true
+        },
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_cwd",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_cwd",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": null,
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_cwd",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": {
+          "invalid": true
+        },
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_kind",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_kind",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": null,
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_kind",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": {
+          "invalid": true
+        },
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_displayName",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_displayName",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_displayName",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": {
+          "invalid": true
+        },
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_createdAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_createdAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": null,
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_createdAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": {
+          "invalid": true
+        },
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_updatedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_updatedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": null,
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_updatedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": {
+          "invalid": true
+        },
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_archivedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_archivedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_archivedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": {
+          "invalid": true
+        },
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_title",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": null,
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_title",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": null,
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": null,
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_title",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": {
+          "invalid": true
+        },
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_branch",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": null,
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_branch",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": null,
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": null,
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_branch",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": {
+          "invalid": true
+        },
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_worktreeRoot",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": null,
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_worktreeRoot",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": null,
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": null,
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_worktreeRoot",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": {
+          "invalid": true
+        },
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_baseBranch",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_baseBranch",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_baseBranch",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": {
+          "invalid": true
+        },
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_isPaseoOwnedWorktree",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": false,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_isPaseoOwnedWorktree",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": null,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_isPaseoOwnedWorktree",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": {
+          "invalid": true
+        },
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_mainRepoRoot",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_mainRepoRoot",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_mainRepoRoot",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": {
+          "invalid": true
+        },
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_autoArchivedChangeRequestUrl",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_autoArchivedChangeRequestUrl",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_autoArchivedChangeRequestUrl",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": {
+          "invalid": true
+        },
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_pinnedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": null,
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_pinnedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": null,
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": null,
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_pinnedAt",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": {
+          "invalid": true
+        },
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_labels",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_labels",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_labels",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": {
+          "invalid": true
+        },
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "github",
+          "number": 1,
+          "headRepository": "acme/repo"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "missing_untrustedSource",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ]
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ]
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "null_untrustedSource",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "wrong_type_untrustedSource",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "title": "Title",
+        "branch": "main",
+        "worktreeRoot": "/repo",
+        "baseBranch": "refs/remotes/upstream/main",
+        "isPaseoOwnedWorktree": true,
+        "mainRepoRoot": "/main",
+        "autoArchivedChangeRequestUrl": "https://example.invalid/pr/1",
+        "pinnedAt": "2026-03-01T00:00:00.000Z",
+        "labels": [
+          "one"
+        ],
+        "untrustedSource": {
+          "invalid": true
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "minimal",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": null,
+        "customName": null,
+        "customIconRevision": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "empty_strings_and_opaque_timestamps",
+      "input": {
+        "projectId": "",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "not-a-date",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "customName": ""
+      },
+      "valid": true,
+      "output": {
+        "projectId": "",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": null,
+        "customName": "",
+        "customIconRevision": null,
+        "createdAt": "not-a-date",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "minimal",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": null,
+        "branch": null,
+        "worktreeRoot": null,
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": false,
+        "mainRepoRoot": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": null
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "source_number_0",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "x",
+          "number": 0,
+          "headRepository": "x"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "source_number_-1",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "x",
+          "number": -1,
+          "headRepository": "x"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "source_number_1.5",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "x",
+          "number": 1.5,
+          "headRepository": "x"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "source_number_9007199254740991",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "x",
+          "number": 9007199254740991,
+          "headRepository": "x"
+        }
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "title": null,
+        "branch": null,
+        "worktreeRoot": null,
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": false,
+        "mainRepoRoot": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "x",
+          "number": 9007199254740991,
+          "headRepository": "x"
+        }
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "source_number_9007199254740992",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "local_checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "untrustedSource": {
+          "kind": "change_request",
+          "forge": "x",
+          "number": 9007199254740992,
+          "headRepository": "x"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "kind_git",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "git",
+        "displayName": "repo",
+        "projectKey": null,
+        "customName": null,
+        "customIconRevision": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "kind_git",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "git",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "kind_non_git",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "non_git",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": true,
+      "output": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "non_git",
+        "displayName": "repo",
+        "projectKey": null,
+        "customName": null,
+        "customIconRevision": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      }
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "kind_non_git",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "non_git",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "kind_directory",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "directory",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "kind_directory",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "directory",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "directory",
+        "displayName": "main",
+        "title": null,
+        "branch": null,
+        "worktreeRoot": null,
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": false,
+        "mainRepoRoot": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "kind_checkout",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "checkout",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "kind_checkout",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "checkout",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "kind_worktree",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "worktree",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "kind_worktree",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "worktree",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": true,
+      "output": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "worktree",
+        "displayName": "main",
+        "title": null,
+        "branch": null,
+        "worktreeRoot": null,
+        "baseBranch": null,
+        "isPaseoOwnedWorktree": false,
+        "mainRepoRoot": null,
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null,
+        "autoArchivedChangeRequestUrl": null,
+        "pinnedAt": null
+      }
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "name": "kind_invalid",
+      "input": {
+        "projectId": "remote:github.com/acme/repo",
+        "rootPath": "/repo",
+        "kind": "invalid",
+        "displayName": "repo",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    },
+    {
+      "schema": "PersistedWorkspaceRecord",
+      "name": "kind_invalid",
+      "input": {
+        "workspaceId": "wks_1234567890abcdef",
+        "projectId": "remote:github.com/acme/repo",
+        "cwd": "/repo/sub",
+        "kind": "invalid",
+        "displayName": "main",
+        "createdAt": "2026-03-01T00:00:00.000Z",
+        "updatedAt": "2026-03-01T00:00:00.000Z",
+        "archivedAt": null
+      },
+      "valid": false
+    }
+  ]
+}

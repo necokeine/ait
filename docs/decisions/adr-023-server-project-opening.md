@@ -1,5 +1,9 @@
 # ADR-023：独立 server 的项目打开与所有权
 
+> [ADR-025](adr-025-paseo-registry.md) 已将新模型基准改为 Paseo。
+> 本文描述仍运行的过渡租约服务；对应 DTO 移到 `server-protocol::project_lease`，
+> 不再作为 Paseo Project / Workspace 的定义。
+
 - 状态：Accepted，落实已授权的 M1 首个纵向切片。
 - 日期：2026-09-22。
 - 前置：[ADR-022](adr-022-independent-server.md)、[ADR-001 v4](NEC-150/adr-001-core-domain-model-v4.md)。

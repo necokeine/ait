@@ -5,6 +5,8 @@ use serde_json::Value;
 
 pub mod agent;
 pub mod project;
+pub mod project_lease;
+pub mod workspace;
 
 /// Maximum incoming JSON message size, including fragmented messages.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;

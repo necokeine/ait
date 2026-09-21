@@ -76,7 +76,7 @@ async fn websocket_project_lifecycle_reconnect_and_validation() {
         request(&mut limited, "project.list", json!({})).await["code"],
         "unsupported_capability"
     );
-    let mut client = socket(address, server_protocol::project::CAPABILITIES).await;
+    let mut client = socket(address, server_protocol::project_lease::CAPABILITIES).await;
     for params in [
         json!({}),
         json!({"path":"relative","idempotency_key":"k"}),
@@ -115,7 +115,7 @@ async fn websocket_project_lifecycle_reconnect_and_validation() {
         );
     }
     drop(client);
-    let mut reconnected = socket(address, server_protocol::project::CAPABILITIES).await;
+    let mut reconnected = socket(address, server_protocol::project_lease::CAPABILITIES).await;
     assert_eq!(
         request(&mut reconnected, "project.open", params).await["result"],
         receipt

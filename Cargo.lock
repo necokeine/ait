@@ -3505,6 +3505,8 @@ dependencies = [
 name = "server-domain"
 version = "0.0.6"
 dependencies = [
+ "serde",
+ "serde_json",
  "thiserror",
  "uuid",
 ]
@@ -3529,11 +3531,16 @@ dependencies = [
 name = "server-storage"
 version = "0.0.6"
 dependencies = [
+ "chrono",
+ "getrandom 0.4.3",
+ "indexmap",
  "rusqlite",
+ "serde",
  "serde_json",
  "server-domain",
  "server-ports",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

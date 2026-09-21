@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 use server_application::{ProjectError, ProjectView, Projects};
 use server_domain::OwnerEpoch;
-use server_protocol::{ErrorCode, project};
+use server_protocol::{ErrorCode, project_lease as project};
 
 use crate::Shared;
 
@@ -96,9 +96,9 @@ fn encode(value: impl serde::Serialize) -> Result<Value, ErrorCode> {
     serde_json::to_value(value).map_err(|_| ErrorCode::ProjectIo)
 }
 
-fn view(view: ProjectView) -> project::Project {
+fn view(view: ProjectView) -> project::ProjectLeaseSnapshot {
     let entry = view.entry;
-    project::Project {
+    project::ProjectLeaseSnapshot {
         project_id: entry.id.to_string(),
         path: entry.path.to_string_lossy().into_owned(),
         name: entry.name,

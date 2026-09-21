@@ -92,13 +92,13 @@ async fn accepted_blocking_job_survives_disconnect_and_is_included_in_drain() {
             .await
             .unwrap();
     });
-    let mut client = socket(address, server_protocol::project::CAPABILITIES).await;
+    let mut client = socket(address, server_protocol::project_lease::CAPABILITIES).await;
     client.send(Message::Text(json!({"type":"request","request_id":"lost-response","method":"project.open","params":{"path":fixture.repo,"idempotency_key":"survive"}}).to_string().into())).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), signal)
         .await
         .unwrap()
         .unwrap();
-    let mut observer = socket(address, server_protocol::project::CAPABILITIES).await;
+    let mut observer = socket(address, server_protocol::project_lease::CAPABILITIES).await;
     assert_eq!(
         request(&mut observer, "project.list", json!({})).await["code"],
         "resource_exhausted"
