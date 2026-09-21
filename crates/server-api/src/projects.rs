@@ -12,34 +12,14 @@ pub(super) async fn dispatch(
     params: Value,
     state: &Shared,
 ) -> Result<Value, ErrorCode> {
-    let projects = state
-        .projects
-        .as_ref()
-        .ok_or(ErrorCode::UnsupportedCapability)?
-        .clone();
-    // One admitted blocking project job per server, with no unbounded waiting queue.
-    // Its tracking token survives cancellation of the connection's response future.
-    let admission = state
-        .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if state.cancellation.is_cancelled() {
-        return Err(ErrorCode::ServerDraining);
-    }
-    let permit = state
-        .project_jobs
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ErrorCode::ResourceExhausted)?;
-    let tracking = state.tasks.token();
     let method = method.to_owned();
-    let job = tokio::task::spawn_blocking(move || {
-        let (_tracking, _permit) = (tracking, permit);
-        let mut projects = projects.lock().map_err(|_| ErrorCode::ProjectIo)?;
-        execute(&mut projects, &method, params)
-    });
-    drop(admission);
-    job.await.map_err(|_| ErrorCode::ProjectIo)?
+    crate::jobs::run(
+        state,
+        state.projects.clone(),
+        ErrorCode::ProjectIo,
+        move |projects| execute(projects, &method, params),
+    )
+    .await
 }
 
 fn execute(projects: &mut Projects, method: &str, params: Value) -> Result<Value, ErrorCode> {

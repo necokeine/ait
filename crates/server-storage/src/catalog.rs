@@ -7,7 +7,7 @@ use server_ports::{Catalog, CatalogEntry, OpenIntent, ProjectError, Receipt};
 use crate::{open, parse, sql};
 
 const FAMILY: i32 = 0x4153_5343;
-const SCHEMA: &str = "
+pub(super) const SCHEMA: &str = "
 CREATE TABLE projects (
     id TEXT PRIMARY KEY NOT NULL, path TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
     base_commit TEXT NOT NULL, root_id TEXT NOT NULL, created_at INTEGER NOT NULL
@@ -22,7 +22,7 @@ const ENTRY_COLUMNS: &str = "id,path,name,base_commit,root_id,created_at";
 
 /// Durable catalog index and operation receipts, owned by the data-directory instance lease.
 #[derive(Debug)]
-pub struct SqliteCatalog(Connection);
+pub struct SqliteCatalog(pub(super) Connection);
 
 impl SqliteCatalog {
     /// Open/create `data_dir/catalog.sqlite3` in the independent catalog schema family.
@@ -30,11 +30,14 @@ impl SqliteCatalog {
     /// # Errors
     /// Rejects foreign/newer schemas, symlink state files, and storage failures.
     pub fn open(data_dir: &Path) -> Result<Self, ProjectError> {
-        Ok(Self(open(
+        let mut connection = open(
             &data_dir.join("catalog.sqlite3"),
             FAMILY,
-            SCHEMA,
-        )?))
+            &format!("{SCHEMA}{}", crate::agents::SCHEMA),
+            2,
+        )?;
+        crate::migration::catalog(&mut connection, data_dir)?;
+        Ok(Self(connection))
     }
 }
 

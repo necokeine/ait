@@ -25,7 +25,7 @@ impl Fixture {
             "stable".to_owned(),
             "instance".to_owned(),
             TOKEN.into(),
-            None,
+            crate::Services::default(),
         )
         .unwrap();
         let shutdown = api.clone();
@@ -102,7 +102,7 @@ fn rejects_bad_config_and_redacts_debug() {
                 "s".to_owned(),
                 "i".to_owned(),
                 TOKEN.into(),
-                None,
+                crate::Services::default(),
             )
             .is_err()
         );
@@ -113,7 +113,7 @@ fn rejects_bad_config_and_redacts_debug() {
             "s".to_owned(),
             "i".to_owned(),
             "short".into(),
-            None,
+            crate::Services::default(),
         )
         .is_err()
     );
@@ -122,7 +122,7 @@ fn rejects_bad_config_and_redacts_debug() {
         "s".to_owned(),
         "i".to_owned(),
         TOKEN.into(),
-        None,
+        crate::Services::default(),
     )
     .unwrap();
     assert!(!format!("{api:?}").contains(TOKEN));
@@ -131,7 +131,7 @@ fn rejects_bad_config_and_redacts_debug() {
         "s".to_owned(),
         "i".to_owned(),
         TOKEN.into(),
-        None,
+        crate::Services::default(),
     )
     .unwrap();
     let mut headers = axum::http::HeaderMap::new();

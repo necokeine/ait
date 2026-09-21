@@ -105,6 +105,12 @@ async fn read(
                     } else {
                         Err(ErrorCode::UnsupportedCapability)
                     }
+                } else if server_protocol::agent::CAPABILITIES.contains(&method.as_str()) {
+                    if capabilities.contains(&method) {
+                        crate::agents::dispatch(&method, params, state).await
+                    } else {
+                        Err(ErrorCode::UnsupportedCapability)
+                    }
                 } else {
                     dispatch(&method, &params, state, &capabilities, &mut subscriptions)
                 };

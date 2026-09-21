@@ -2,6 +2,8 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+const CREDENTIAL_SENTINEL: &str = "offline-credential-sentinel-must-never-be-persisted";
+
 const TOKEN: &str = "offline-process-token-at-least-32-characters";
 
 struct Process(Child);
@@ -25,6 +27,7 @@ fn start(directory: &Path, log: &Path) -> Process {
                 "info",
             ])
             .env("AIT_SERVER_TOKEN", TOKEN)
+            .env("AIT_SERVER_CREDENTIAL_TEST", CREDENTIAL_SENTINEL)
             .env("HOME", directory.parent().unwrap())
             .env_remove("AIT_SERVER_LISTEN")
             .stdin(Stdio::null())
@@ -34,6 +37,12 @@ fn start(directory: &Path, log: &Path) -> Process {
             .unwrap(),
     )
 }
+
+#[path = "transport.rs"]
+mod transport;
+
+#[path = "agents.rs"]
+mod agents;
 
 #[path = "projects.rs"]
 mod projects;

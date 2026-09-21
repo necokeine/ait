@@ -1,5 +1,7 @@
 //! Blocking adapter contracts. Callers must execute these ports outside async reactor threads.
 
+pub mod agent;
+
 use server_domain::{GitCommit, MessageId, OperationId, OwnerEpoch, Project, ProjectId};
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};

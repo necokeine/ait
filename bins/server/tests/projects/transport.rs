@@ -57,7 +57,10 @@ async fn websocket_project_lifecycle_reconnect_and_validation() {
         "server".to_owned(),
         "instance".to_owned(),
         TOKEN.into(),
-        Some(fixture.application("state")),
+        server_api::Services {
+            projects: Some(fixture.application("state")),
+            agents: None,
+        },
     )
     .unwrap();
     let server_api = api.clone();

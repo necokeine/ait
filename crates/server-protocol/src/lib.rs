@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod agent;
 pub mod project;
 
 /// Maximum incoming JSON message size, including fragmented messages.
@@ -172,6 +173,22 @@ pub enum ErrorCode {
     StaleOwner,
     /// Project storage, filesystem, or Git failed.
     ProjectIo,
+    /// No configured Agent has this ID.
+    AgentNotFound,
+    /// No immutable Agent revision has this number.
+    AgentRevisionNotFound,
+    /// The current Agent revision differs from the expected revision.
+    AgentRevisionConflict,
+    /// The explicit default changed since the caller read it.
+    AgentDefaultConflict,
+    /// A disabled Agent cannot be selected.
+    AgentDisabled,
+    /// A default must be deselected before it is disabled.
+    AgentIsDefault,
+    /// A transient catalog transaction lock is held.
+    CatalogBusy,
+    /// Agent storage failed.
+    AgentIo,
 }
 
 impl ErrorCode {
@@ -196,6 +213,14 @@ impl ErrorCode {
             Self::ProjectNotOpen => "Project is not open in this server",
             Self::StaleOwner => "Project owner has changed",
             Self::ProjectIo => "Project I/O failed; retry with the same key",
+            Self::AgentNotFound => "Agent is not configured",
+            Self::AgentRevisionNotFound => "Agent revision does not exist",
+            Self::AgentRevisionConflict => "Agent revision has changed",
+            Self::AgentDefaultConflict => "Default Agent selection has changed",
+            Self::AgentDisabled => "Agent is disabled",
+            Self::AgentIsDefault => "Deselect the default Agent before disabling it",
+            Self::CatalogBusy => "Catalog is busy",
+            Self::AgentIo => "Agent I/O failed; retry with the same key",
         }
     }
 
@@ -204,7 +229,12 @@ impl ErrorCode {
     pub fn retryable(self) -> bool {
         matches!(
             self,
-            Self::ResourceExhausted | Self::ServerDraining | Self::ProjectBusy | Self::ProjectIo
+            Self::ResourceExhausted
+                | Self::ServerDraining
+                | Self::ProjectBusy
+                | Self::ProjectIo
+                | Self::CatalogBusy
+                | Self::AgentIo
         )
     }
 }

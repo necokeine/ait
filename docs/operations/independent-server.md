@@ -1,7 +1,7 @@
 # 独立 server：使用与协议
 
-`server` 与现有 daemon 并存，当前支持本机服务、WebSocket 与独立 Git 项目的打开、查询和关闭。
-内部代码全部来自新建的八个 `server-*` package；尚未实现 Agent、Session、Run 或 Provider。
+`server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目和版本化 Agent 配置。
+内部代码全部来自新建的八个 `server-*` package；Session、Run 和 Provider 执行尚未实现。
 项目必须使用独立 clone，不能与旧 daemon 共管同一目录或共享 Git worktree。
 
 ## 启动
@@ -157,16 +157,62 @@ runtime 文件或仓库规则覆盖排除时拒绝准入。项目数据库、sid
 `identity_conflict`、`project_not_found`、`project_not_open`、`stale_owner`、`project_io`。
 错误只提供安全信息，既不输出数据库诊断，也不回显凭据或指令内容。
 
+## Agent 配置（M1 第二个切片）
+
+在 hello 中协商所需的以下五项 capability。配置操作不需要打开 Project 或启动 Desktop。
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `agent.configure` | `config`、`idempotency_key`；修改还需 `agent_id`、`expected_revision` | `operation_id`、`agent_id`、不可变 `revision` |
+| `agent.get` | `agent_id`；可选 `revision` | 精确配置、revision、`recorded_at`（Unix 毫秒） |
+| `agent.list` | `{}` 或 `after`、`limit`（1–50，默认 20） | 当前配置的 `agents`、`next_after` |
+| `agent.default.get` | `{}` | `agent_id`（可空）、`version`（初始 0） |
+| `agent.default.set` | `agent_id`（必须提供，可显式 null）、`expected_version`、`idempotency_key` | `operation_id`、历史 `selection` |
+
+创建配置：
+
+```json
+{"type":"request","request_id":"a1","method":"agent.configure","params":{"config":{"name":"My Codex","driver_type":"codex","model":"explicit-model-id","credential_ref":null,"enabled":true},"idempotency_key":"create-agent-1"}}
+```
+
+`model` 示例是占位标识，应替换为计划使用的模型。这里只验证标识格式，不访问 Provider。
+driver 当前只接受 `codex`；保存成功不代表模型已验证、凭据可用或执行已启用。
+不提供 `provider.models` 或运行能力，不使用用户现有原生会话做配置探测。
+
+修改时完整提供 `config`，并加上返回的 `agent_id` 与从 get 读到的 `expected_revision`。
+新操作追加 revision，不覆盖旧配置；按旧 revision 查询仍得到原值。相同配置以新 key 提交也
+产生新 revision。创建不自动设为默认；显式选择或清空默认时使用 default.get 返回的 version。
+默认指向 Agent 身份，未来 Session/Run 还需冻结具体 revision；禁用默认 Agent 前先清空或换选。
+
+字段限制：name 1–255 UTF-8 字节，不能全空白或含控制字符；model 1–128 ASCII 字节，
+仅允许字母、数字、`-_.:/`。credential_ref 可省略/null，或为 `env:AIT_SERVER_CREDENTIAL_<NAME>`；
+NAME 1–64 字节，以大写字母开头，其余仅大写字母、数字和下划线。数据库只保存该引用，
+不会读取对应环境变量，也不验证它是否存在。不要把秘密写入 name/model；API 拒绝 api_key、
+token、任意参数、endpoint 等未知字段。不支持自动加载 `.env`。
+
+写请求沿用 1–128 字节可见 ASCII key。配置 fingerprint 包含目标、expected revision 和完整
+配置，默认 fingerprint 包含目标及 expected version；重试保留这些参数。先查完成回执，再
+检查当前状态，因此旧重试不会回退配置或重新设定默认。get/list 用于查询当前状态。
+常见错误为 `agent_not_found`、`agent_revision_not_found`、`agent_revision_conflict`、
+`agent_default_conflict`、`agent_disabled`、`agent_is_default`、`idempotency_conflict`。
+I/O 和 catalog 争用分别返回可重试的 `agent_io` / `catalog_busy`。
+
+已有独立 v1 catalog 在启动时先备份为 `<data-dir>/catalog-v1-backup-<随机名>.sqlite3`，再事务
+升级到 v2，保留原项目注册和回执。全新 catalog 直接初始化 v2，项目数据库保持 v1。
+备份不会自动删除；升级失败保留 v1 数据和已完成备份。v1 server 拒绝打开 v2 catalog，
+恢复备份需停服显式处理，会丢失备份之后的 catalog 修改。此升级不读取旧 Ait 数据库。
+
 ## 预算和停止
 
 - 输入 JSON message 和单帧均上限 1 MiB；包括分片累计大小。
+- Agent 与 Project 共用每实例一个短阻塞任务预算，超出返回 `resource_exhausted`。
 - 最多 64 个同时升级的连接，超限 HTTP 429；待 hello 的连接同样占名额。
 - 每连接待发送队列最多 256 条，消息内容合计 4 MiB，正在写入的内容仍占字节预算。
 - 队列满立即终止慢连接；一次写入最多等 5 秒，最后排空/Close 最多 1 秒。
 - Unix 支持 SIGINT/SIGTERM；Windows 使用 Ctrl-C。停止先关闭接纳，再排空 HTTP 和已跟踪
-  WebSocket 和已接纳的项目操作；排空预算为 15 秒。超时记录关闭错误，非零退出。
+  WebSocket 和已接纳的项目/Agent 操作；排空预算为 15 秒。超时记录关闭错误，非零退出。
 
-客户端断开不会撤销已接纳的项目事务；服务停止会等待这些任务。关闭期限超时时返回错误，
+客户端断开不会撤销已接纳的项目/Agent 事务；服务停止会等待这些任务。关闭期限超时时返回错误，
 仍在执行的阻塞任务会继续持有 data-dir 锁，直到完成或进程结束。Tokio 的阻塞工作不能强行取消，
 因此此时进程实际退出可能晚于 15 秒；当前没有硬终止阻塞线程的机制。后续 Run 生命周期仍独立于连接。
 Linux/Windows 的平台验收以 CI/后续实测为准；本次本地报告记录具体已验证平台。

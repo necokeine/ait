@@ -33,7 +33,7 @@ pub struct SqliteProjects;
 
 impl ProjectStorage for SqliteProjects {
     fn open(&self, root: &Path) -> Result<Box<dyn ProjectStore>, ProjectError> {
-        let connection = open(&root.join(".ait-server/project.sqlite3"), FAMILY, SCHEMA)?;
+        let connection = open(&root.join(".ait-server/project.sqlite3"), FAMILY, SCHEMA, 1)?;
         Ok(Box::new(Store(connection)))
     }
 }

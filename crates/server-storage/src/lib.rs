@@ -1,6 +1,8 @@
 //! Independent SQLite schema families for project facts and a rebuildable catalog.
 
+mod agents;
 mod catalog;
+mod migration;
 mod project;
 
 use std::path::Path;
@@ -12,7 +14,12 @@ use server_ports::ProjectError;
 pub use catalog::SqliteCatalog;
 pub use project::SqliteProjects;
 
-fn open(path: &Path, family: i32, schema: &str) -> Result<Connection, ProjectError> {
+fn open(
+    path: &Path,
+    family: i32,
+    schema: &str,
+    latest_version: i32,
+) -> Result<Connection, ProjectError> {
     // Canonicalize the authorized directory, not the database file: macOS temporary
     // directories commonly pass through /var, while SQLite NOFOLLOW rejects aliases.
     // The final database/sidecar components must still be ordinary files.
@@ -68,10 +75,10 @@ fn open(path: &Path, family: i32, schema: &str) -> Result<Connection, ProjectErr
             .pragma_update(None, "application_id", family)
             .map_err(|error| sql(&error))?;
         transaction
-            .pragma_update(None, "user_version", 1)
+            .pragma_update(None, "user_version", latest_version)
             .map_err(|error| sql(&error))?;
         transaction.commit().map_err(|error| sql(&error))?;
-    } else if application != family || version != 1 {
+    } else if application != family || !(1..=latest_version).contains(&version) {
         return Err(ProjectError::UnsupportedFormat);
     }
     connection

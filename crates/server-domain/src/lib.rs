@@ -1,4 +1,6 @@
-//! Pure project identity and immutable root-message values for the independent server.
+//! Pure project facts and versioned Agent configuration for the independent server.
+
+pub mod agent;
 
 use std::fmt;
 use std::str::FromStr;
@@ -9,7 +11,7 @@ pub const MAX_INSTRUCTION_BYTES: usize = 128 * 1024;
 
 /// A persisted or supplied domain value violates an invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("invalid project domain value")]
+#[error("invalid domain value")]
 pub struct InvalidValue;
 
 macro_rules! identity {
@@ -48,6 +50,7 @@ identity!(
 );
 identity!(MessageId, "Identity of an immutable Message node.");
 identity!(OperationId, "Identity of a durable operation receipt.");
+identity!(AgentId, "Stable identity of a catalog Agent preset.");
 
 /// Validated complete Git commit object ID (SHA-1 or SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,7 +1,9 @@
 //! Authenticated local HTTP and WebSocket transport for the independent server.
 
+mod agents;
 mod auth;
 mod connection;
+mod jobs;
 mod outbound;
 mod projects;
 
@@ -17,6 +19,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use secrecy::SecretString;
 use server_application::Projects;
+use server_application::agents::Agents;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -48,7 +51,17 @@ struct Shared {
     // Serializes admission with closing the tracker, including pending HTTP upgrades.
     admission: Mutex<()>,
     projects: Option<Arc<Mutex<Projects>>>,
-    project_jobs: Arc<Semaphore>,
+    agents: Option<Arc<Mutex<Agents>>>,
+    jobs: Arc<Semaphore>,
+}
+
+/// Optional independently composed business services; only installed methods are advertised.
+#[derive(Debug, Default)]
+pub struct Services {
+    /// Project ownership and registration use cases.
+    pub projects: Option<Projects>,
+    /// Versioned Agent presets and explicit default selection.
+    pub agents: Option<Agents>,
 }
 
 impl Shared {
@@ -72,7 +85,7 @@ impl Api {
     ///
     /// `server_id` is persisted by the host; `instance_id` is unique to this process start.
     /// `token` authenticates the info and upgrade endpoints and is never returned to clients.
-    /// `projects` installs project capabilities when independent adapters have been initialized.
+    /// `services` installs capabilities only for initialized independent application services.
     ///
     /// # Errors
     /// Returns an error for non-loopback/unassigned addresses or invalid tokens.
@@ -81,7 +94,7 @@ impl Api {
         server_id: String,
         instance_id: String,
         token: SecretString,
-        projects: Option<Projects>,
+        services: Services,
     ) -> Result<Self, ConfigError> {
         use secrecy::ExposeSecret;
         if !address.ip().is_loopback() || address.port() == 0 {
@@ -95,9 +108,16 @@ impl Api {
             authorities.push("localhost".to_owned());
         }
         let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
-        if projects.is_some() {
+        if services.projects.is_some() {
             capabilities.extend(
                 server_protocol::project::CAPABILITIES
+                    .iter()
+                    .map(|s| (*s).to_owned()),
+            );
+        }
+        if services.agents.is_some() {
+            capabilities.extend(
+                server_protocol::agent::CAPABILITIES
                     .iter()
                     .map(|s| (*s).to_owned()),
             );
@@ -119,8 +139,11 @@ impl Api {
                 tasks: TaskTracker::new(),
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
                 admission: Mutex::new(()),
-                projects: projects.map(|projects| Arc::new(Mutex::new(projects))),
-                project_jobs: Arc::new(Semaphore::new(1)),
+                projects: services
+                    .projects
+                    .map(|projects| Arc::new(Mutex::new(projects))),
+                agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
+                jobs: Arc::new(Semaphore::new(1)),
             }),
         })
     }

@@ -3530,6 +3530,7 @@ name = "server-storage"
 version = "0.0.6"
 dependencies = [
  "rusqlite",
+ "serde_json",
  "server-domain",
  "server-ports",
  "tempfile",

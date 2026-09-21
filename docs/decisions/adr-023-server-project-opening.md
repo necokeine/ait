@@ -35,7 +35,8 @@ production、dev、build 与平台声明。domain 只依赖 UUID 和 thiserror�
 
 ## 3. 数据事务与重试
 
-Catalog 与 Project 使用不同 SQLite application_id 和 schema version 1；只允许初始化真正
+本切片的 Catalog 与 Project 使用不同 SQLite application_id 和 schema version 1；后续
+[ADR-024](adr-024-server-agent-configuration.md) 将 catalog 升至 v2，Project 仍为 v1。只允许初始化真正
 空的数据库，拒绝外来表、错误 family、新版本及 symlink 数据库/sidecar。没有旧数据迁移。
 SQLite 使用 FULL synchronous、外键和短事务；本批不需要 WAL 或异步连接池。
 

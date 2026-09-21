@@ -76,7 +76,12 @@ async fn accepted_blocking_job_survives_disconnect_and_is_included_in_drain() {
         "s".to_owned(),
         "i".to_owned(),
         TOKEN.into(),
-        Some(projects),
+        server_api::Services {
+            projects: Some(projects),
+            agents: Some(server_application::agents::Agents::new(Box::new(
+                SqliteCatalog::open(&fixture.state("state")).unwrap(),
+            ))),
+        },
     )
     .unwrap();
     let shutdown = api.clone();
@@ -98,6 +103,12 @@ async fn accepted_blocking_job_survives_disconnect_and_is_included_in_drain() {
         request(&mut observer, "project.list", json!({})).await["code"],
         "resource_exhausted"
     );
+    let mut agent_client = socket(address, server_protocol::agent::CAPABILITIES).await;
+    assert_eq!(
+        request(&mut agent_client, "agent.list", json!({})).await["code"],
+        "resource_exhausted"
+    );
+    drop(agent_client);
     drop(client);
     api.begin_shutdown();
     assert!(

@@ -1,5 +1,7 @@
 //! Project use cases composed exclusively from the independent domain and ports.
 
+pub mod agents;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

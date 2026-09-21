@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use server_api::Api;
+mod catalog;
+
+use server_api::{Api, Services};
 use server_application::Projects;
+use server_application::agents::Agents;
 use server_ports::{ProjectError, ProjectStorage, ProjectStore};
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::LocalWorkspace;
@@ -43,10 +46,14 @@ impl Server {
         let address = listener
             .local_addr()
             .context("read server listener address")?;
-        let (instance, projects) = tokio::task::spawn_blocking(move || {
+        let (instance, services) = tokio::task::spawn_blocking(move || {
             let instance = Arc::new(InstanceLease::acquire(&config.data_dir)?);
             let catalog = SqliteCatalog::open(&config.data_dir)?;
             let workspace = LocalWorkspace::for_user()?;
+            let agents = Agents::new(Box::new(catalog::OwnedCatalog {
+                catalog: SqliteCatalog::open(&config.data_dir)?,
+                _instance: instance.clone(),
+            }));
             let projects = Projects::new(
                 Box::new(catalog),
                 Box::new(OwnedStorage {
@@ -54,7 +61,13 @@ impl Server {
                 }),
                 Box::new(workspace),
             );
-            Ok::<_, anyhow::Error>((instance, projects))
+            Ok::<_, anyhow::Error>((
+                instance,
+                Services {
+                    projects: Some(projects),
+                    agents: Some(agents),
+                },
+            ))
         })
         .await
         .context("join server initialization")??;
@@ -63,7 +76,7 @@ impl Server {
             instance.server_id.to_string(),
             instance.instance_id.to_string(),
             config.token,
-            Some(projects),
+            services,
         )?;
         Ok(Self {
             listener,

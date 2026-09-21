@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [ADR-024：独立 server 的 Agent 配置与不可变 revision](decisions/adr-024-server-agent-configuration.md)（Accepted）：
+  新 Agent 配置、历史 revision、显式默认选择、凭据引用与 catalog v1 → v2 备份升级。
+  [验证报告](reports/independent-server-m1-agents.md)记录 CAS、回执、重启、秘密隔离与覆盖率。
+
 - [ADR-023：独立 server 的项目打开与所有权](decisions/adr-023-server-project-opening.md)（Accepted）：
   M1 首个纵向切片新增五个独立内部 crate，贯通 Project Git 准入、根 Message、SQLite、
   catalog 回执与本机所有权，以及 `project.open/list/get/close`。

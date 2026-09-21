@@ -5,12 +5,11 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+serde_json = "1.0.151"
+tempfile = "3.27.0"
 server-domain = { version = "0.0.6", path = "../server-domain" }
 server-ports = { version = "0.0.6", path = "../server-ports" }
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-tempfile = "3.27.0"
