@@ -1,4 +1,4 @@
-//! One supervised process per API Run. Durable state decides success.
+//! Supervised API Runs and native Codex operations. Durable state decides success.
 use crate::{
     codec::{Reader, Writer},
     connection::Connection,
@@ -222,7 +222,7 @@ impl WorkerSupervisor {
         let mut heartbeat = Instant::now();
         let mut interval =
             tokio::time::interval(Duration::from_millis(bootstrap.limits.heartbeat_ms));
-        let deadline = Instant::now() + Duration::from_millis(bootstrap.limits.wall_clock_ms);
+        let deadline = execution_deadline(bootstrap);
         let mut drain_deadline = None;
         let mut last_request_id = 0;
         let mut pending: FuturesUnordered<BoxFuture<'_, Reply>> = FuturesUnordered::new();
@@ -296,7 +296,7 @@ impl WorkerSupervisor {
                     if drain_deadline.is_none()
                         && (cancel.is_cancelled()
                             || self.draining.is_cancelled()
-                            || now >= deadline)
+                            || deadline.is_some_and(|deadline| now >= deadline))
                     {
                         pipe.send(Payload::Cancel).await?;
                         drain_deadline =
@@ -493,3 +493,20 @@ fn request_method(request: &ait_contracts::worker::StoreRequest) -> &'static str
         _ => "other",
     }
 }
+
+fn execution_deadline(bootstrap: &Bootstrap) -> Option<Instant> {
+    // Native writers can spend arbitrarily long in model work, tools or approvals.
+    // Heartbeat, explicit cancellation and bounded shutdown still govern their lifetime.
+    if matches!(
+        &bootstrap.executor,
+        Executor::Codex { operation, .. }
+            if matches!(operation.as_ref(), ait_contracts::worker::codex::Operation::Open { .. })
+    ) {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_millis(bootstrap.limits.wall_clock_ms))
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [ADR-021：Codex 原生任务取消固定运行时限](decisions/adr-021-codex-unlimited-runtime.md)（Accepted）：
+  原生 writer 可持续执行，取消与失联回收保留；桌面中断告警使用独立布局并区分恢复问题。
+  [验证报告](reports/codex-unlimited-runtime.md)记录时钟与浏览器回归。
+
 - [NEC-345：Codex Thread 导入时保留 Session Agent 配置](decisions/NEC-345/adr-001-codex-import-session-agent.md)（Accepted）：
   同步原生 Thread 时用其 model/reasoning metadata 建立 Session 自有 Agent，并以可恢复的 catalog →
   Project 两阶段流程补录 Codex Provider 缺失的模型与推理等级。[实现与验证报告](reports/codex-import-session-agent.md)记录回归与覆盖率。

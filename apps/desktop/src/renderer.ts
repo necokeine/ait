@@ -480,7 +480,7 @@ function renderRecoveryNotices(): void {
   const projectName = currentProject()?.name ?? (selectedProjectId ? `Project ${selectedProjectId.slice(0, 8)}` : "Project");
   container.classList.toggle("is-hidden", notices.length === 0);
   container.innerHTML = notices.map((notice) => `<button type="button" class="recovery-notice" data-recovery-project="${escapeAttribute(notice.projectId)}"${notice.sessionId ? ` data-recovery-session="${escapeAttribute(notice.sessionId)}"` : ""}>
-    <strong>Workspace recovery needs review</strong>
+    <strong>${notice.code === "RUN_RECOVERY_FAILED" ? "Workspace recovery needs review" : "Run interrupted"}</strong>
     <span>${escapeHtml(projectName)}${notice.sessionTitle ? ` / ${escapeHtml(notice.sessionTitle)}` : ""} · Run ${escapeHtml(notice.runId.slice(0, 8))}</span>
     <small>${escapeHtml(notice.message)}</small>
   </button>`).join("");
