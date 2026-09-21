@@ -1,0 +1,16 @@
+[package]
+name = "server-storage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+server-domain = { version = "0.0.6", path = "../server-domain" }
+server-ports = { version = "0.0.6", path = "../server-ports" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

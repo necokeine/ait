@@ -25,6 +25,7 @@ fn start(directory: &Path, log: &Path) -> Process {
                 "info",
             ])
             .env("AIT_SERVER_TOKEN", TOKEN)
+            .env("HOME", directory.parent().unwrap())
             .env_remove("AIT_SERVER_LISTEN")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -33,6 +34,9 @@ fn start(directory: &Path, log: &Path) -> Process {
             .unwrap(),
     )
 }
+
+#[path = "projects.rs"]
+mod projects;
 
 async fn ready(process: &mut Process, log: &Path) -> String {
     let start = Instant::now();

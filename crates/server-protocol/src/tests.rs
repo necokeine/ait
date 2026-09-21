@@ -73,6 +73,13 @@ fn bounds_diagnostic_ids_and_capability_lists() {
 
 #[test]
 fn wire_round_trips_and_tolerates_optional_future_fields() {
+    let legacy: ServerMessage = serde_json::from_value(serde_json::json!({
+        "type":"error","request_id":"1","code":"method_not_found"
+    }))
+    .unwrap();
+    assert!(
+        matches!(legacy, ServerMessage::Error { message, retryable: false, .. } if message.is_empty())
+    );
     let message = ClientMessage::Hello(hello());
     let mut value = serde_json::to_value(&message).unwrap();
     value["future_optional"] = serde_json::json!(true);
@@ -95,6 +102,8 @@ fn wire_round_trips_and_tolerates_optional_future_fields() {
         ServerMessage::Error {
             request_id: Some("1".to_owned()),
             code: ErrorCode::MethodNotFound,
+            message: ErrorCode::MethodNotFound.message().to_owned(),
+            retryable: false,
         },
         ServerMessage::Status {
             subscription_id: "2".to_owned(),

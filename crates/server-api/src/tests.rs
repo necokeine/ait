@@ -25,6 +25,7 @@ impl Fixture {
             "stable".to_owned(),
             "instance".to_owned(),
             TOKEN.into(),
+            None,
         )
         .unwrap();
         let shutdown = api.clone();
@@ -100,7 +101,8 @@ fn rejects_bad_config_and_redacts_debug() {
                 address.parse().unwrap(),
                 "s".to_owned(),
                 "i".to_owned(),
-                TOKEN.into()
+                TOKEN.into(),
+                None,
             )
             .is_err()
         );
@@ -110,7 +112,8 @@ fn rejects_bad_config_and_redacts_debug() {
             "127.0.0.1:7316".parse().unwrap(),
             "s".to_owned(),
             "i".to_owned(),
-            "short".into()
+            "short".into(),
+            None,
         )
         .is_err()
     );
@@ -119,6 +122,7 @@ fn rejects_bad_config_and_redacts_debug() {
         "s".to_owned(),
         "i".to_owned(),
         TOKEN.into(),
+        None,
     )
     .unwrap();
     assert!(!format!("{api:?}").contains(TOKEN));
@@ -127,6 +131,7 @@ fn rejects_bad_config_and_redacts_debug() {
         "s".to_owned(),
         "i".to_owned(),
         TOKEN.into(),
+        None,
     )
     .unwrap();
     let mut headers = axum::http::HeaderMap::new();
@@ -240,7 +245,7 @@ async fn physical_connections_own_negotiation_and_subscriptions() {
         request(&mut first, "server.info", Value::Null).await["result"]["server_id"],
         "stable"
     );
-    let unknown = request(&mut first, "project.open", Value::Null).await;
+    let unknown = request(&mut first, "unknown.method", Value::Null).await;
     assert_eq!(unknown["code"], "method_not_found");
     assert_eq!(unknown["request_id"], "r1");
     assert_eq!(

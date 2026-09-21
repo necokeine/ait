@@ -3450,7 +3450,10 @@ dependencies = [
  "futures-util",
  "reqwest 0.12.28",
  "secrecy",
+ "serde",
  "serde_json",
+ "server-application",
+ "server-domain",
  "server-protocol",
  "subtle",
  "thiserror",
@@ -3463,23 +3466,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "server-application"
+version = "0.0.6"
+dependencies = [
+ "server-domain",
+ "server-ports",
+]
+
+[[package]]
 name = "server-bin"
 version = "0.0.6"
 dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "futures-util",
  "reqwest 0.12.28",
  "secrecy",
  "serde",
  "serde_json",
  "server-api",
+ "server-application",
+ "server-domain",
+ "server-ports",
+ "server-protocol",
+ "server-storage",
+ "server-workspace",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "server-domain"
+version = "0.0.6"
+dependencies = [
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "server-ports"
+version = "0.0.6"
+dependencies = [
+ "server-domain",
+ "thiserror",
 ]
 
 [[package]]
@@ -3488,6 +3523,26 @@ version = "0.0.6"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "server-storage"
+version = "0.0.6"
+dependencies = [
+ "rusqlite",
+ "server-domain",
+ "server-ports",
+ "tempfile",
+]
+
+[[package]]
+name = "server-workspace"
+version = "0.0.6"
+dependencies = [
+ "libc",
+ "server-domain",
+ "server-ports",
+ "tempfile",
 ]
 
 [[package]]

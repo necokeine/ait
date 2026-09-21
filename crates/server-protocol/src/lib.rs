@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod project;
+
 /// Maximum incoming JSON message size, including fragmented messages.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum queued outgoing messages per connection.
@@ -58,6 +60,19 @@ impl Hello {
     /// # Errors
     /// Rejects malformed identifiers, incompatible versions, or missing required capabilities.
     pub fn negotiate(&self) -> Result<Vec<String>, ErrorCode> {
+        self.negotiate_available(
+            &CAPABILITIES
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// Negotiate against capabilities actually installed by the composition root.
+    ///
+    /// # Errors
+    /// Rejects malformed offers, incompatible versions, and missing required capabilities.
+    pub fn negotiate_available(&self, available: &[String]) -> Result<Vec<String>, ErrorCode> {
         if !valid_id(&self.client_id)
             || self.capabilities.len() > 64
             || self.required_capabilities.len() > 64
@@ -78,19 +93,19 @@ impl Hello {
         if self
             .required_capabilities
             .iter()
-            .any(|s| !CAPABILITIES.contains(&s.as_str()))
+            .any(|s| !available.contains(s))
         {
             return Err(ErrorCode::UnsupportedCapability);
         }
-        Ok(CAPABILITIES
+        Ok(available
             .iter()
             .filter(|cap| {
                 self.capabilities
                     .iter()
                     .chain(&self.required_capabilities)
-                    .any(|s| s == **cap)
+                    .any(|s| s == *cap)
             })
-            .map(|cap| (*cap).to_owned())
+            .cloned()
             .collect())
     }
 }
@@ -135,6 +150,63 @@ pub enum ErrorCode {
     SubscriptionNotFound,
     /// A bounded resource is exhausted.
     ResourceExhausted,
+    /// New work is no longer accepted.
+    ServerDraining,
+    /// Only independent Git roots with an existing HEAD are supported.
+    UnsupportedWorkspace,
+    /// The path belongs to an old managed project.
+    LegacyProject,
+    /// Another process holds a path or project identity lease.
+    ProjectBusy,
+    /// This is not a supported independent database schema.
+    UnsupportedFormat,
+    /// A durable key was reused for different parameters.
+    IdempotencyConflict,
+    /// Project identity or path conflicts with the catalog.
+    IdentityConflict,
+    /// No such catalog project exists.
+    ProjectNotFound,
+    /// This process does not hold the project open.
+    ProjectNotOpen,
+    /// An ownership generation has expired.
+    StaleOwner,
+    /// Project storage, filesystem, or Git failed.
+    ProjectIo,
+}
+
+impl ErrorCode {
+    /// Safe explanation without paths, database diagnostics, or credentials.
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::InvalidMessage => "Invalid message or parameters",
+            Self::IncompatibleVersion => "Incompatible protocol version",
+            Self::UnsupportedCapability => "Capability was not negotiated",
+            Self::MethodNotFound => "Unknown method",
+            Self::SubscriptionNotFound => "Unknown connection subscription",
+            Self::ResourceExhausted => "Resource budget exhausted",
+            Self::ServerDraining => "Server is draining",
+            Self::UnsupportedWorkspace => "An independent Git root with HEAD is required",
+            Self::LegacyProject => "Legacy managed projects are unsupported",
+            Self::ProjectBusy => "Project is owned by another process",
+            Self::UnsupportedFormat => "Unsupported independent database format",
+            Self::IdempotencyConflict => "Key was already used with different parameters",
+            Self::IdentityConflict => "Project identity conflicts with its registration",
+            Self::ProjectNotFound => "Project is not registered",
+            Self::ProjectNotOpen => "Project is not open in this server",
+            Self::StaleOwner => "Project owner has changed",
+            Self::ProjectIo => "Project I/O failed; retry with the same key",
+        }
+    }
+
+    /// Whether the unchanged request may succeed after a transient condition clears.
+    #[must_use]
+    pub fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::ResourceExhausted | Self::ServerDraining | Self::ProjectBusy | Self::ProjectIo
+        )
+    }
 }
 
 /// Admission state of the server process.
@@ -184,7 +256,7 @@ pub struct ServerInfo {
     pub lifecycle: Lifecycle,
     /// Public wire version.
     pub protocol: Version,
-    /// Implemented features; business capabilities are absent in M0.
+    /// Features actually installed by the host.
     pub capabilities: Vec<String>,
     /// Enforced transport budgets.
     pub limits: Limits,
@@ -216,6 +288,12 @@ pub enum ServerMessage {
         request_id: Option<String>,
         /// Stable error code.
         code: ErrorCode,
+        /// Safe explanation derived solely from the code.
+        #[serde(default)]
+        message: String,
+        /// Retry transient errors with the original durable key.
+        #[serde(default)]
+        retryable: bool,
     },
     /// Ephemeral connection-owned server lifecycle notification; not a durable event stream.
     Status {

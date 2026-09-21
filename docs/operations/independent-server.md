@@ -1,8 +1,8 @@
-# 独立 server：M0 使用与协议
+# 独立 server：使用与协议
 
-`server` 与现有 daemon 并存。当前实现进程生命周期、服务信息与 WebSocket 连接能力；
-不创建 Project、Session、Run，不调用 Provider 或旧 `ait-worker`，也不打开旧数据库。
-内部代码只有本次新建的 `server-bin`、`server-api` 和 `server-protocol`。
+`server` 与现有 daemon 并存，当前支持本机服务、WebSocket 与独立 Git 项目的打开、查询和关闭。
+内部代码全部来自新建的八个 `server-*` package；尚未实现 Agent、Session、Run 或 Provider。
+项目必须使用独立 clone，不能与旧 daemon 共管同一目录或共享 Git worktree。
 
 ## 启动
 
@@ -13,7 +13,7 @@ cargo run -p server-bin --bin server -- --listen 127.0.0.1:7316
 
 凭据只从 `AIT_SERVER_TOKEN` 读取，要求 32–256 字节可见 ASCII、无空格；请使用随机值。
 不支持命令行 token、URL token、自动加载 `.env` 或配置文件中的 token。
-M0 适用于能够设置 Authorization header 的本机程序客户端；浏览器原生 WebSocket API 的
+当前适用于能够设置 Authorization header 的本机程序客户端；浏览器原生 WebSocket API 的
 登录流程尚未实现。
 
 默认目录为 `~/.ait-server`。配置优先级为命令行 > 环境变量 > TOML > 默认值。
@@ -33,7 +33,7 @@ log_level = "info"
 `server.info` 返回实际端口。日志只记录 HTTP method、状态、耗时及启动地址，不记录
 Authorization、请求内容和 URL query。配置解析错误不回显 TOML 内容。
 
-启动先绑定端口，再初始化新目录。目录内只有 `instance.lock` 和 `server-id` 是 M0 状态：
+启动先绑定端口，再初始化新目录和 `catalog.sqlite3`。`instance.lock` 和 `server-id` 分别用于实例锁与身份：
 前者用 OS 文件锁排他持有到正常关闭完成，后者原子写入并在重启后保留。每次启动生成新的
 `instance_id`。损坏的身份文件会使启动失败，不能默默重建。锁文件不会被删除；进程结束后
 由 OS 释放锁。Unix 上新建目录使用 0700 权限。
@@ -94,12 +94,68 @@ RPC 格式：
 
 状态通知形如 `{"type":"status","subscription_id":"…","lifecycle":"ready"}`。
 每连接最多 16 个订阅，断开即清理，重连需要重新订阅。退出时 best-effort 发出 `draining`。
-这是临时连接通知，没有持久序号/回放语义；业务 outbox 与 cursor 留到 M1。
+这是临时连接通知，没有持久序号/回放语义；业务 outbox 与 cursor 留到后续 M1 切片。
 
-错误形如 `{"type":"error","request_id":"r1","code":"method_not_found"}`。
+错误形如 `{"type":"error","request_id":"r1","code":"method_not_found","message":"Unknown method","retryable":false}`。
 尚未实现的业务 method 返回 `method_not_found`，不返回空成功。有效请求的错误保留 request ID。
 不合法 envelope、重复 hello、二进制消息与握手失败会关闭连接；未知 method 或错误参数可修正后
 继续使用当前连接。请求按连接顺序处理，已响应的 request ID 可以再次使用；它不是幂等键。
+
+## 项目操作（M1 首个切片）
+
+在 hello 的 `capabilities` 或 `required_capabilities` 中加入所需的
+`project.open`、`project.list`、`project.get`、`project.close`。
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `project.open` | `path`：绝对路径；`idempotency_key` | 稳定 `operation_id`、`project_id` |
+| `project.list` | `{}` 或 `after`、`limit`（1–50，默认 20） | `projects`、`next_after` |
+| `project.get` | `project_id` | 项目摘要及本进程的 `owner_epoch` |
+| `project.close` | `project_id`、`owner_epoch`、`idempotency_key` | 稳定 `operation_id`、`project_id` |
+
+```json
+{"type":"request","request_id":"open-1","method":"project.open","params":{"path":"/absolute/path/to/independent-clone","idempotency_key":"open-project-1"}}
+```
+
+摘要包含规范路径、初始名称、冻结的 `base_commit`、`root_message_id`、`created_at`（Unix 毫秒）。
+`owner_epoch` 非空表示本进程持有项目；null 表示本进程没有持有，不能推断其他进程的状态。
+get/list 读取可重建 catalog，不隐式接管项目。`next_after` 作为下一页 `after`；完整末页后
+可能再返回一个空页。
+
+第一次打开要求该目录本身是具备 HEAD 的独立 Git 根；不自动 init 或创建 commit。
+所有 linked worktree、带额外 worktree 的主检出、旧 `.ait` 项目及其内部目录均被拒绝。
+初始根 system Message 快照来自本目录 `AGENTS.md`（最多 128 KiB，缺省为空，拒绝 symlink）；
+以后修改指令、目录名或 HEAD 都不会改写已保存的根 Message 和 Git 基线。
+
+新增状态：
+
+```text
+<data-dir>/catalog.sqlite3
+<project>/.ait-server/project.sqlite3
+<project>/.ait-server/project.lock
+HOME/.ait-server-project-locks/<project-id>.lock
+HOME/.ait-server-project-locks/<project-id>.epoch
+```
+
+server 会向项目 `.git/info/exclude` 追加 `/.ait-server/` 并验证忽略结果。已有 tracked
+runtime 文件或仓库规则覆盖排除时拒绝准入。项目数据库、sidecar 和锁路径不能是 symlink。
+失败后可能保留 runtime 目录、锁、排除规则或已提交的数据库，重试会继续处理，不自动清理。
+
+`idempotency_key` 为 1–128 字节无空白 ASCII，在一个 catalog 内按 method 去重。连接断开
+或结果不明时使用原 key 重试；不同规范参数复用同 key 会返回 `idempotency_conflict`。
+完成回执只说明该操作已经提交，当前是否打开必须用 get/list 查询。
+
+- 同 key 重放 open 不会重新打开已关闭项目；重新打开需新 key。
+- close 携带 get/list 返回的当前 epoch；新操作使用过期 epoch 返回 `stale_owner`。
+- 重放已完成 close 会直接返回旧回执，不会关闭后来重新打开的项目。
+- 重启后 catalog 项目默认未打开；未完成的打开意图通过原 key 显式重试恢复。
+- 不同 data-dir 的实例仍共用 HOME 下的 Project ID 锁；同一用户的实例必须保持一致 HOME。
+- `.epoch` 保存跨副本的本机代次上限，损坏时拒绝接管；保留它，不要当作临时文件清理。
+- 同时只接纳一个短项目操作，争用返回可重试的 `resource_exhausted`；客户端做退避重试。
+
+常见业务错误：`unsupported_workspace`、`legacy_project`、`project_busy`、`unsupported_format`、
+`identity_conflict`、`project_not_found`、`project_not_open`、`stale_owner`、`project_io`。
+错误只提供安全信息，既不输出数据库诊断，也不回显凭据或指令内容。
 
 ## 预算和停止
 
@@ -108,15 +164,17 @@ RPC 格式：
 - 每连接待发送队列最多 256 条，消息内容合计 4 MiB，正在写入的内容仍占字节预算。
 - 队列满立即终止慢连接；一次写入最多等 5 秒，最后排空/Close 最多 1 秒。
 - Unix 支持 SIGINT/SIGTERM；Windows 使用 Ctrl-C。停止先关闭接纳，再排空 HTTP 和已跟踪
-  WebSocket；总等待最多 15 秒，超时返回非零并退出进程。
+  WebSocket 和已接纳的项目操作；排空预算为 15 秒。超时记录关闭错误，非零退出。
 
-M0 没有业务任务，客户端断开只清理连接资源。后续 Run 生命周期不能用此连接生命周期代替。
+客户端断开不会撤销已接纳的项目事务；服务停止会等待这些任务。关闭期限超时时返回错误，
+仍在执行的阻塞任务会继续持有 data-dir 锁，直到完成或进程结束。Tokio 的阻塞工作不能强行取消，
+因此此时进程实际退出可能晚于 15 秒；当前没有硬终止阻塞线程的机制。后续 Run 生命周期仍独立于连接。
 Linux/Windows 的平台验收以 CI/后续实测为准；本次本地报告记录具体已验证平台。
 
 ## 开发验证
 
 ```sh
-cargo test -p server-protocol -p server-api -p server-bin
+cargo test -p server-protocol -p server-api -p server-bin -p server-domain -p server-ports -p server-application -p server-storage -p server-workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

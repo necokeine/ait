@@ -72,7 +72,7 @@ async fn read(
             _ => return error(outbound, None, ErrorCode::InvalidMessage),
         },
     };
-    let capabilities = match hello.negotiate() {
+    let capabilities = match hello.negotiate_available(&state.info.capabilities) {
         Ok(capabilities) => capabilities,
         Err(code) => return error(outbound, None, code),
     };
@@ -99,7 +99,15 @@ async fn read(
                 method,
                 params,
             })) if valid_id(&request_id) && valid_id(&method) => {
-                let result = dispatch(&method, &params, state, &capabilities, &mut subscriptions);
+                let result = if server_protocol::project::CAPABILITIES.contains(&method.as_str()) {
+                    if capabilities.contains(&method) {
+                        crate::projects::dispatch(&method, params, state).await
+                    } else {
+                        Err(ErrorCode::UnsupportedCapability)
+                    }
+                } else {
+                    dispatch(&method, &params, state, &capabilities, &mut subscriptions)
+                };
                 match result {
                     Ok(value) => {
                         let subscription_id = (method == "server.status.subscribe")
@@ -150,7 +158,12 @@ fn error(
     request_id: Option<String>,
     code: ErrorCode,
 ) -> Result<(), QueueError> {
-    outbound.send(&ServerMessage::Error { request_id, code })
+    outbound.send(&ServerMessage::Error {
+        request_id,
+        code,
+        message: code.message().to_owned(),
+        retryable: code.retryable(),
+    })
 }
 
 fn dispatch(

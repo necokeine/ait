@@ -1,9 +1,14 @@
 # 概念与架构文档
 
+- [ADR-023：独立 server 的项目打开与所有权](decisions/adr-023-server-project-opening.md)（Accepted）：
+  M1 首个纵向切片新增五个独立内部 crate，贯通 Project Git 准入、根 Message、SQLite、
+  catalog 回执与本机所有权，以及 `project.open/list/get/close`。
+  [验证报告](reports/independent-server-m1-projects.md)记录恢复、隔离、WS 与覆盖率验证。
+
 - [ADR-022：独立 server 与全新内部 crate](decisions/adr-022-independent-server.md)（Accepted）：
   独立 `server` binary 与旧 daemon 并存，内部依赖全部新建；定义进程隔离、数据命名空间、
   WebSocket、输入接纳与恢复边界。[实施计划](plans/independent-server.md)按服务骨架、离线闭环、
-  单 Provider 接入和故障矩阵分期；M0 已创建三个独立 crate，实现本机服务骨架和连接协议。
+  单 Provider 接入和故障矩阵分期；M0 的服务骨架已扩展到 M1 项目打开切片，内部依赖仍全部独立。
   [使用说明](operations/independent-server.md)记录启动配置、鉴权、协议和关闭行为。
   [验证报告](reports/independent-server-m0.md)记录 workspace 检查、新服务测试与覆盖率。
 

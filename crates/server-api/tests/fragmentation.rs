@@ -18,6 +18,7 @@ async fn fragmented_message_cannot_exceed_total_budget() {
         "stable".to_owned(),
         "instance".to_owned(),
         token.into(),
+        None,
     )
     .unwrap();
     let shutdown = api.clone();

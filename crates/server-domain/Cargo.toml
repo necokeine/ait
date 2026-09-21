@@ -1,0 +1,12 @@
+[package]
+name = "server-domain"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror = "2.0.20"
+uuid = { version = "1.26.0", features = ["v4"] }
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@
 - 用户约束：产物名为 `server`；暂时与 daemon 并存；所需内部 crate 全部新建。
 - 领域基线：[ADR-001 v4](NEC-150/adr-001-core-domain-model-v4.md) 及其已接受修订。
 - 实施顺序：[独立 server 实施计划](../plans/independent-server.md)。
-- 当前实现与运行契约：[M0 使用说明](../operations/independent-server.md)。
+- 当前实现与运行契约：[使用说明](../operations/independent-server.md)；M1 项目打开细节由 [ADR-023](adr-023-server-project-opening.md)落实。
 
 ## 1. 目标与适用范围
 
@@ -347,5 +347,5 @@ M0 没有 worker 和业务事务，只使用 15s 的进程 drain 上限；超时
 真实 provider smoke 明确区分于离线验收。实现报告记录 workspace 和新 crate 的覆盖率、
 测量命令/revision/features、平台范围和可评审 artifact，不以测试数量代替覆盖率。
 
-当前实现边界以 M0 使用说明为准。业务数据库、同 binary worker 模式与恢复协议是已接受的
-后续实施方向，尚不代表已提供对应能力。
+当前实现边界以使用说明与 ADR-023 为准。M1 已实现 Project 数据库与打开回执恢复；
+Agent/Session/Run、同 binary worker 模式与执行恢复仍为后续工作。

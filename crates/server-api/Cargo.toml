@@ -8,7 +8,10 @@ publish.workspace = true
 axum = { version = "0.8.9", features = ["ws"] }
 futures-util = "0.3.34"
 secrecy = "0.10.3"
+serde = "1.0.229"
 serde_json = "1.0.151"
+server-application = { version = "0.0.6", path = "../server-application" }
+server-domain = { version = "0.0.6", path = "../server-domain" }
 server-protocol = { path = "../server-protocol" }
 subtle = "2.6.1"
 thiserror = "2.0.20"

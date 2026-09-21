@@ -3,6 +3,7 @@
 mod auth;
 mod connection;
 mod outbound;
+mod projects;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use secrecy::SecretString;
+use server_application::Projects;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +47,8 @@ struct Shared {
     connections: Arc<Semaphore>,
     // Serializes admission with closing the tracker, including pending HTTP upgrades.
     admission: Mutex<()>,
+    projects: Option<Arc<Mutex<Projects>>>,
+    project_jobs: Arc<Semaphore>,
 }
 
 impl Shared {
@@ -68,6 +72,7 @@ impl Api {
     ///
     /// `server_id` is persisted by the host; `instance_id` is unique to this process start.
     /// `token` authenticates the info and upgrade endpoints and is never returned to clients.
+    /// `projects` installs project capabilities when independent adapters have been initialized.
     ///
     /// # Errors
     /// Returns an error for non-loopback/unassigned addresses or invalid tokens.
@@ -76,6 +81,7 @@ impl Api {
         server_id: String,
         instance_id: String,
         token: SecretString,
+        projects: Option<Projects>,
     ) -> Result<Self, ConfigError> {
         use secrecy::ExposeSecret;
         if !address.ip().is_loopback() || address.port() == 0 {
@@ -88,6 +94,14 @@ impl Api {
             authorities.push(address.to_string().trim_end_matches(":80").to_owned());
             authorities.push("localhost".to_owned());
         }
+        let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
+        if projects.is_some() {
+            capabilities.extend(
+                server_protocol::project::CAPABILITIES
+                    .iter()
+                    .map(|s| (*s).to_owned()),
+            );
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
@@ -96,7 +110,7 @@ impl Api {
                     listen: address.to_string(),
                     lifecycle: Lifecycle::Ready,
                     protocol: VERSION,
-                    capabilities: CAPABILITIES.iter().map(|s| (*s).to_owned()).collect(),
+                    capabilities,
                     limits: Limits::default(),
                 },
                 token,
@@ -105,6 +119,8 @@ impl Api {
                 tasks: TaskTracker::new(),
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
                 admission: Mutex::new(()),
+                projects: projects.map(|projects| Arc::new(Mutex::new(projects))),
+                project_jobs: Arc::new(Semaphore::new(1)),
             }),
         })
     }

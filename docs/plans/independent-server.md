@@ -1,7 +1,7 @@
 # 独立 server 实施计划
 
 - 日期：2026-09-21。
-- 状态：`new` 分支已实施 M0；M1–M3 保留为后续工作。
+- 状态：`new` 分支已实施 M0 与 M1 项目打开切片；M1 其他切片及 M2–M3 继续按顺序推进。
 - 架构决定：[ADR-022](../decisions/adr-022-independent-server.md)。
 - 代码基线：`77ab2f5ffab094cd8ee0f7ef2c6a5690584b6575`。
 - 所需内部组件全部新建；新旧服务使用独立数据和首期独立项目。
@@ -50,8 +50,12 @@ ready/draining 状态。业务订阅、持久 seq/cursor、snapshot/replay 在 M
 
 ## 3. M1：新领域与离线任务闭环
 
-依次创建 `server-domain`、`server-ports`、`server-application`、`server-storage`、
-`server-workspace`。应用内的执行 seam 使用测试专用 fake；fake 不进入生产 provider catalog。
+2026-09-22 已完成首个“项目打开”纵向切片；实施细节见 [ADR-023](../decisions/adr-023-server-project-opening.md)，
+验收见 [项目打开报告](../reports/independent-server-m1-projects.md)。本批不代表整个 M1 完成。
+下一步是独立 Agent 配置/revision 与凭据引用，随后建立 Session 指针和固定工作区。
+
+项目打开切片已创建 `server-domain`、`server-ports`、`server-application`、`server-storage`、
+`server-workspace`。后续应用内的执行 seam 使用测试专用 fake；fake 不进入生产 provider catalog。
 
 | 纵向切片 | 交付内容 | 关键验收 |
 | --- | --- | --- |

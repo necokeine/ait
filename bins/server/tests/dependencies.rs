@@ -51,7 +51,8 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
             }
             if matches!(name, "server-domain" | "server-protocol")
                 && [
-                    "tokio", "sqlx", "axum", "hyper", "reqwest", "tonic", "tauri", "rig", "codex",
+                    "tokio", "sqlx", "rusqlite", "axum", "hyper", "reqwest", "tonic", "tauri",
+                    "rig", "codex",
                 ]
                 .iter()
                 .any(|prefix| target == *prefix || target.starts_with(&format!("{prefix}-")))
