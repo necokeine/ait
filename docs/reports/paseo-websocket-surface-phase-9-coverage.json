@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-23",
+  "revision": {
+    "base": "1b8b8ed",
+    "state": "base plus the reviewed working-tree changes for ADR-026 phase 9"
+  },
+  "toolchain": {
+    "platform": "macOS 26.6.2 (Darwin 25.6.0 arm64)",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "0.8.4"
+  },
+  "measurement": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase9-cov-target cargo llvm-cov -p server-bin -p server-api -p server-application -p server-domain -p server-ports -p server-protocol -p server-storage -p server-workspace --json --summary-only --output-path /tmp/paseo-ws-phase9-coverage-raw.json --no-fail-fast -j1",
+    "scope": "all new server packages, default features; production Rust sources; test/build sources filtered by cargo-llvm-cov",
+    "localHtmlReport": "/tmp/ait-phase9-cov-target/llvm-cov/html/index.html",
+    "tests": {
+      "targets": 12,
+      "passed": 254,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "exclusions": []
+  },
+  "coverage": {
+    "serverPackages": {
+      "coveredLines": 11349,
+      "totalLines": 13085,
+      "linePercent": 86.73290026748185
+    },
+    "crates": {
+      "server-bin": { "coveredLines": 360, "totalLines": 372, "linePercent": 96.7741935483871 },
+      "server-api": { "coveredLines": 3088, "totalLines": 3569, "linePercent": 86.52283552815915 },
+      "server-application": { "coveredLines": 2603, "totalLines": 2978, "linePercent": 87.4076561450638 },
+      "server-domain": { "coveredLines": 219, "totalLines": 219, "linePercent": 100.0 },
+      "server-ports": { "coveredLines": 16, "totalLines": 16, "linePercent": 100.0 },
+      "server-protocol": { "coveredLines": 574, "totalLines": 693, "linePercent": 82.82828282828282 },
+      "server-storage": { "coveredLines": 1734, "totalLines": 1873, "linePercent": 92.57875066737854 },
+      "server-workspace": { "coveredLines": 2755, "totalLines": 3365, "linePercent": 81.87221396731054 }
+    },
+    "phaseNineDedicatedModules": {
+      "total": { "coveredLines": 1770, "totalLines": 2112, "linePercent": 83.80681818181819 },
+      "crates/server-api/src/checkout.rs": { "coveredLines": 491, "totalLines": 577, "linePercent": 85.09532062391682 },
+      "crates/server-application/src/checkout.rs": { "coveredLines": 101, "totalLines": 101, "linePercent": 100.0 },
+      "crates/server-workspace/src/checkout.rs": { "coveredLines": 1178, "totalLines": 1434, "linePercent": 82.14783821478382 }
+    },
+    "protocolAndPortFiles": [
+      "crates/server-protocol/src/checkout.rs",
+      "crates/server-ports/src/checkout.rs"
+    ]
+  },
+  "baseline": {
+    "artifact": "paseo-websocket-surface-phase-8-coverage.json",
+    "serverPackages": {
+      "coveredLines": 10582,
+      "totalLines": 12169,
+      "linePercent": 86.95866546141836
+    }
+  },
+  "workspaceRegression": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase9-workspace-target cargo test --workspace --no-fail-fast -j1",
+    "ordinaryTargets": 72,
+    "docTestTargets": 24,
+    "passed": 746,
+    "failed": 0,
+    "ignored": 5
+  },
+  "transientValidationObservation": {
+    "failure": "the first isolated workspace run saw the existing ait-daemon macos_gui_path_reaches_codex_in_the_worker readiness timeout; the first post-test coverage run saw the existing server-workspace exclusive-lease test return Busy",
+    "resolution": "both exact tests passed immediately on rerun; the complete workspace and coverage reruns then passed"
+  },
+  "lint": {
+    "workspaceDefaultFeatures": "passed: cargo clippy --workspace --all-targets -- -D warnings",
+    "changedServerPackagesAllFeatures": "passed: cargo clippy for server-protocol/server-ports/server-application/server-workspace/server-api/server-bin --all-targets --all-features -- -D warnings",
+    "workspaceAllFeaturesObservation": "the optional whole-workspace all-features attempt reaches the existing ait-worker Mock feature and fails its non-exhaustive test match; no phase-nine file participates"
+  }
+}

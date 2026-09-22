@@ -1,7 +1,7 @@
 # 独立 server：使用与协议
 
 > 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签、
-> Worktree、Workspace setup/script、Workspace attention/recovery、Git checkout 读取/订阅与 Agent runtime
+> Worktree、Workspace setup/script、Workspace attention/recovery、Git checkout 读取/订阅/变更与 Agent runtime
 > 目录/元数据生命周期 WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
@@ -280,6 +280,39 @@ snapshot fingerprint 去重；Paseo 使用 filesystem observer、workspace snaps
 refresh 只是强制执行一次新 Git 读取，尚不触发 Forge cache invalidation、workspace snapshot 广播或 diff
 fanout。结构化 diff 不生成 syntax-highlight tokens；aggregate 超过 4 MiB 时整体返回
 `diffTooLarge:true`，还没有 Paseo 的 per-file budget/placeholder。完整对齐范围见第八阶段报告。
+
+## Git 分支与修改操作
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `checkout.branch.validate.request` | `cwd`、`branchName` | `exists`、规范化 `resolvedRef`、`isRemote` 与 string `error` |
+| `checkout.branch.suggestions.request` | `cwd`、可选 `query`/`limit` | 排序后的 `branches`、local/remote/divergence `branchDetails` 与 string `error` |
+| `checkout.branch.switch.request` | `cwd`、`branch` | `success`、`branch`、可选 `source` 与 inline `error` |
+| `checkout.rename_branch.request` | `cwd`、`branch` | `success`、nullable `currentBranch` 与 inline `error` |
+| `checkout.commit.request` | `cwd`、可选 `message`/`addAll` | `success` 与 inline `error` |
+| `checkout.merge.request` | `cwd`、可选 `baseRef`/`strategy`/`requireCleanTarget` | `success` 与 inline `error` |
+| `checkout.merge_from_base.request` | `cwd`、可选 `baseRef`/`requireCleanTarget` | `success` 与 inline `error` |
+| `checkout.pull.request` | `cwd` | `success` 与 inline `error` |
+| `checkout.push.request` | `cwd` | `success` 与 inline `error` |
+| `checkout.discard_changes.request` | `cwd`、非空 repository-relative `paths` | `success` 与 inline `error` |
+| `checkout.stash.save.request` | `cwd`、可选 `branch` | `success` 与 inline `error` |
+| `checkout.stash.pop.request` | `cwd`、非负 `stashIndex` | `success` 与 inline `error` |
+| `checkout.stash.list.request` | `cwd`、可选 `paseoOnly` | `entries` 与 inline `error` |
+
+branch switch 要求工作区干净；origin-only branch 会创建同名 local tracking branch。rename 使用 Paseo 的
+lowercase slug 规则。commit 默认 `addAll:true`；独立 server 尚无 Paseo Provider commit-message generator，
+所以省略或传入空 `message` 会返回 `UNKNOWN / Commit message is required`。merge-from-base 默认要求当前
+checkout 干净；merge-to-base 默认普通 merge，也支持 squash。base branch 在另一个 linked worktree 中时，
+变更在那个 worktree 执行；同一 checkout 临时切到 base 后会恢复原 branch。检测到冲突会尝试 `merge --abort`
+并返回 `MERGE_CONFLICT`。
+
+discard 使用 literal pathspec，恢复 tracked 内容并删除所选 untracked 路径。stash save 包含 untracked 文件，
+消息前缀固定为 `paseo-auto-stash:`；stash list 默认只返回该前缀的条目。所有 Git 写操作不用 shell，清理
+`GIT_*` 环境，并使用 120 秒 deadline 与有界输出。当前没有 Paseo mutation observer/Forge cache，成功变更
+不会立即广播 Workspace/status event；已有 diff polling subscription 会在下一次轮询观察到变化。完整对齐
+范围见第九阶段报告。
 
 ## Agent runtime 目录与元数据生命周期
 

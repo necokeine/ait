@@ -3,7 +3,7 @@ use serde_json::json;
 use super::*;
 
 #[test]
-fn capabilities_use_only_canonical_checkout_read_names() {
+fn capabilities_use_only_canonical_checkout_names() {
     assert_eq!(
         CAPABILITIES,
         [
@@ -14,10 +14,76 @@ fn capabilities_use_only_canonical_checkout_read_names() {
             "checkout.diff.unsubscribe.request",
             "checkout.commits.list.request",
             "checkout.commits.file_diff.request",
+            "checkout.branch.validate.request",
+            "checkout.branch.suggestions.request",
+            "checkout.branch.switch.request",
+            "checkout.rename_branch.request",
+            "checkout.commit.request",
+            "checkout.merge.request",
+            "checkout.merge_from_base.request",
+            "checkout.pull.request",
+            "checkout.push.request",
+            "checkout.discard_changes.request",
+            "checkout.stash.save.request",
+            "checkout.stash.pop.request",
+            "checkout.stash.list.request",
         ]
     );
     assert!(!CAPABILITIES.contains(&"checkout_status_request"));
     assert!(!CAPABILITIES.contains(&"subscribe_checkout_diff_request"));
+}
+
+#[test]
+fn mutation_requests_match_paseo_optional_fields_and_camel_case() {
+    let commit: CheckoutCommitRequest = serde_json::from_value(json!({
+        "cwd":"/repo","message":"ship","addAll":false
+    }))
+    .unwrap();
+    assert_eq!(commit.message.as_deref(), Some("ship"));
+    assert_eq!(commit.add_all, Some(false));
+
+    let merge: CheckoutMergeRequest = serde_json::from_value(json!({
+        "cwd":"/repo","baseRef":"origin/main","strategy":"squash",
+        "requireCleanTarget":true
+    }))
+    .unwrap();
+    assert_eq!(merge.strategy, Some(CheckoutMergeStrategy::Squash));
+    assert_eq!(merge.require_clean_target, Some(true));
+
+    let stash: CheckoutStashListRequest = serde_json::from_value(json!({"cwd":"/repo"})).unwrap();
+    assert_eq!(stash.paseo_only, None);
+}
+
+#[test]
+fn branch_and_stash_results_match_paseo_shapes() {
+    let suggestions = serde_json::to_value(CheckoutBranchSuggestionsResult {
+        branches: vec!["main".to_owned()],
+        branch_details: Some(vec![CheckoutBranchSuggestion {
+            name: "main".to_owned(),
+            committer_date: 7,
+            has_local: true,
+            has_remote: true,
+            local_ahead: Some(1),
+            local_behind: Some(2),
+        }]),
+        error: None,
+    })
+    .unwrap();
+    assert_eq!(suggestions["branchDetails"][0]["committerDate"], 7);
+    assert_eq!(suggestions["branchDetails"][0]["localBehind"], 2);
+
+    let stashes = serde_json::to_value(CheckoutStashListResult {
+        cwd: "/repo".to_owned(),
+        entries: vec![CheckoutStashEntry {
+            index: 0,
+            message: "paseo-auto-stash: feature".to_owned(),
+            branch: Some("feature".to_owned()),
+            is_paseo: true,
+        }],
+        error: None,
+    })
+    .unwrap();
+    assert_eq!(stashes["entries"][0]["isPaseo"], true);
 }
 
 #[test]

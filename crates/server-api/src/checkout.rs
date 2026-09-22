@@ -129,6 +129,19 @@ fn execute(checkout: &Checkout, method: &str, params: Value) -> Result<Dispatch,
         "checkout.diff.get.request" => diff(checkout, decode(params)?),
         "checkout.commits.list.request" => commits(checkout, &decode(params)?),
         "checkout.commits.file_diff.request" => commit_file_diff(checkout, decode(params)?),
+        "checkout.branch.validate.request" => validate_branch(checkout, &decode(params)?),
+        "checkout.branch.suggestions.request" => branch_suggestions(checkout, &decode(params)?),
+        "checkout.branch.switch.request" => switch_branch(checkout, decode(params)?),
+        "checkout.rename_branch.request" => rename_branch(checkout, decode(params)?),
+        "checkout.commit.request" => commit(checkout, decode(params)?),
+        "checkout.merge.request" => merge_to_base(checkout, &decode(params)?),
+        "checkout.merge_from_base.request" => merge_from_base(checkout, &decode(params)?),
+        "checkout.pull.request" => mutate_path(checkout, &decode(params)?, Checkout::pull),
+        "checkout.push.request" => mutate_path(checkout, &decode(params)?, Checkout::push),
+        "checkout.discard_changes.request" => discard_changes(checkout, &decode(params)?),
+        "checkout.stash.save.request" => stash_save(checkout, &decode(params)?),
+        "checkout.stash.pop.request" => stash_pop(checkout, &decode(params)?),
+        "checkout.stash.list.request" => stash_list(checkout, decode(params)?),
         _ => Err(ErrorCode::MethodNotFound),
     }
 }
@@ -255,6 +268,246 @@ fn commit_file_diff(
         },
     };
     value(result)
+}
+
+fn validate_branch(
+    checkout: &Checkout,
+    request: &protocol::CheckoutBranchValidateRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let result = match checkout.validate_branch(&request.cwd, &request.branch_name) {
+        Ok(port::CheckoutBranchResolution::Local(name)) => protocol::CheckoutBranchValidateResult {
+            exists: true,
+            resolved_ref: Some(name),
+            is_remote: false,
+            error: None,
+        },
+        Ok(port::CheckoutBranchResolution::RemoteOnly { name, .. }) => {
+            protocol::CheckoutBranchValidateResult {
+                exists: true,
+                resolved_ref: Some(name),
+                is_remote: true,
+                error: None,
+            }
+        }
+        Ok(port::CheckoutBranchResolution::NotFound) => protocol::CheckoutBranchValidateResult {
+            exists: false,
+            resolved_ref: None,
+            is_remote: false,
+            error: None,
+        },
+        Err(error) => protocol::CheckoutBranchValidateResult {
+            exists: false,
+            resolved_ref: None,
+            is_remote: false,
+            error: Some(error.message),
+        },
+    };
+    value(result)
+}
+
+fn branch_suggestions(
+    checkout: &Checkout,
+    request: &protocol::CheckoutBranchSuggestionsRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let limit = request.limit.unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    let result = match checkout.branch_suggestions(&request.cwd, request.query.as_deref(), limit) {
+        Ok(suggestions) => {
+            let details = suggestions
+                .into_iter()
+                .map(protocol_branch_suggestion)
+                .collect::<Vec<_>>();
+            protocol::CheckoutBranchSuggestionsResult {
+                branches: details
+                    .iter()
+                    .map(|suggestion| suggestion.name.clone())
+                    .collect(),
+                branch_details: Some(details),
+                error: None,
+            }
+        }
+        Err(error) => protocol::CheckoutBranchSuggestionsResult {
+            branches: Vec::new(),
+            branch_details: None,
+            error: Some(error.message),
+        },
+    };
+    value(result)
+}
+
+fn switch_branch(
+    checkout: &Checkout,
+    request: protocol::CheckoutBranchSwitchRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let result = checkout.switch_branch(&request.cwd, &request.branch);
+    value(protocol::CheckoutBranchSwitchResult {
+        cwd: request.cwd,
+        success: result.is_ok(),
+        branch: request.branch,
+        source: result.as_ref().ok().map(|source| match source {
+            port::CheckoutBranchSource::Local => protocol::CheckoutBranchSource::Local,
+            port::CheckoutBranchSource::Remote => protocol::CheckoutBranchSource::Remote,
+        }),
+        error: result.err().map(protocol_error),
+    })
+}
+
+fn rename_branch(
+    checkout: &Checkout,
+    request: protocol::CheckoutBranchRenameRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let result = checkout.rename_branch(&request.cwd, &request.branch);
+    value(protocol::CheckoutBranchRenameResult {
+        success: result.is_ok(),
+        cwd: request.cwd,
+        current_branch: result.as_ref().ok().cloned(),
+        error: result.err().map(protocol_error),
+    })
+}
+
+fn commit(
+    checkout: &Checkout,
+    request: protocol::CheckoutCommitRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let message = request.message.unwrap_or_default();
+    mutation(
+        request.cwd.clone(),
+        checkout.commit(
+            &request.cwd,
+            message.trim(),
+            request.add_all.unwrap_or(true),
+        ),
+    )
+}
+
+fn merge_to_base(
+    checkout: &Checkout,
+    request: &protocol::CheckoutMergeRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let strategy = match request
+        .strategy
+        .unwrap_or(protocol::CheckoutMergeStrategy::Merge)
+    {
+        protocol::CheckoutMergeStrategy::Merge => port::CheckoutMergeStrategy::Merge,
+        protocol::CheckoutMergeStrategy::Squash => port::CheckoutMergeStrategy::Squash,
+    };
+    mutation(
+        request.cwd.clone(),
+        checkout.merge_to_base(
+            &request.cwd,
+            request.base_ref.as_deref(),
+            strategy,
+            request.require_clean_target.unwrap_or(false),
+        ),
+    )
+}
+
+fn merge_from_base(
+    checkout: &Checkout,
+    request: &protocol::CheckoutMergeFromBaseRequest,
+) -> Result<Dispatch, ErrorCode> {
+    mutation(
+        request.cwd.clone(),
+        checkout.merge_from_base(
+            &request.cwd,
+            request.base_ref.as_deref(),
+            request.require_clean_target.unwrap_or(true),
+        ),
+    )
+}
+
+fn mutate_path(
+    checkout: &Checkout,
+    request: &protocol::CheckoutPathRequest,
+    operation: fn(&Checkout, &str) -> Result<(), port::CheckoutRuntimeError>,
+) -> Result<Dispatch, ErrorCode> {
+    mutation(request.cwd.clone(), operation(checkout, &request.cwd))
+}
+
+fn discard_changes(
+    checkout: &Checkout,
+    request: &protocol::CheckoutDiscardChangesRequest,
+) -> Result<Dispatch, ErrorCode> {
+    if request.paths.is_empty() {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    mutation(
+        request.cwd.clone(),
+        checkout.discard_changes(&request.cwd, &request.paths),
+    )
+}
+
+fn stash_save(
+    checkout: &Checkout,
+    request: &protocol::CheckoutStashSaveRequest,
+) -> Result<Dispatch, ErrorCode> {
+    mutation(
+        request.cwd.clone(),
+        checkout.stash_save(&request.cwd, request.branch.as_deref()),
+    )
+}
+
+fn stash_pop(
+    checkout: &Checkout,
+    request: &protocol::CheckoutStashPopRequest,
+) -> Result<Dispatch, ErrorCode> {
+    mutation(
+        request.cwd.clone(),
+        checkout.stash_pop(&request.cwd, request.stash_index),
+    )
+}
+
+fn stash_list(
+    checkout: &Checkout,
+    request: protocol::CheckoutStashListRequest,
+) -> Result<Dispatch, ErrorCode> {
+    let result = match checkout.stashes(&request.cwd, request.paseo_only.unwrap_or(true)) {
+        Ok(entries) => protocol::CheckoutStashListResult {
+            cwd: request.cwd,
+            entries: entries
+                .into_iter()
+                .map(|entry| protocol::CheckoutStashEntry {
+                    index: entry.index,
+                    message: entry.message,
+                    branch: entry.branch,
+                    is_paseo: entry.is_paseo,
+                })
+                .collect(),
+            error: None,
+        },
+        Err(error) => protocol::CheckoutStashListResult {
+            cwd: request.cwd,
+            entries: Vec::new(),
+            error: Some(protocol_error(error)),
+        },
+    };
+    value(result)
+}
+
+fn mutation(
+    cwd: String,
+    result: Result<(), port::CheckoutRuntimeError>,
+) -> Result<Dispatch, ErrorCode> {
+    value(protocol::CheckoutMutationResult {
+        cwd,
+        success: result.is_ok(),
+        error: result.err().map(protocol_error),
+    })
+}
+
+fn protocol_branch_suggestion(
+    suggestion: port::CheckoutBranchSuggestion,
+) -> protocol::CheckoutBranchSuggestion {
+    protocol::CheckoutBranchSuggestion {
+        name: suggestion.name,
+        committer_date: suggestion.committer_date,
+        has_local: suggestion.has_local,
+        has_remote: suggestion.has_remote,
+        local_ahead: suggestion.local_ahead,
+        local_behind: suggestion.local_behind,
+    }
 }
 
 async fn poll_diff(

@@ -2,7 +2,8 @@ use std::path::Path;
 use std::process::Command;
 
 use server_ports::checkout::{
-    CheckoutCommitFileStatus, CheckoutDiffCompare, CheckoutDiffMode, CheckoutRuntime,
+    CheckoutBranchResolution, CheckoutBranchSource, CheckoutCommitFileStatus, CheckoutDiffCompare,
+    CheckoutDiffMode, CheckoutFailureKind, CheckoutMergeStrategy, CheckoutRuntime,
 };
 use tempfile::TempDir;
 
@@ -288,6 +289,365 @@ fn base_diff_excludes_uncommitted_changes() {
     );
 }
 
+#[test]
+fn branch_validation_suggestions_switch_and_rename_match_paseo() {
+    let fixture = Fixture::new();
+    git(&fixture.repo, &["branch", "feature"]);
+    let remote = fixture.temp.path().join("remote.git");
+    git(
+        fixture.temp.path(),
+        &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+    );
+    git(
+        &fixture.repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&fixture.repo, &["branch", "remote-only"]);
+    git(
+        &fixture.repo,
+        &["push", "origin", "main", "feature", "remote-only"],
+    );
+    git(&fixture.repo, &["branch", "-D", "remote-only"]);
+
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    assert_eq!(
+        runtime
+            .validate_branch(fixture.repo.to_str().unwrap(), "feature")
+            .unwrap(),
+        CheckoutBranchResolution::Local("feature".to_owned())
+    );
+    assert_eq!(
+        runtime
+            .validate_branch(fixture.repo.to_str().unwrap(), "origin/remote-only")
+            .unwrap(),
+        CheckoutBranchResolution::RemoteOnly {
+            name: "remote-only".to_owned(),
+            remote_ref: "origin/remote-only".to_owned(),
+        }
+    );
+    assert_eq!(
+        runtime
+            .validate_branch(fixture.repo.to_str().unwrap(), "missing")
+            .unwrap(),
+        CheckoutBranchResolution::NotFound
+    );
+    assert!(
+        runtime
+            .validate_branch(fixture.repo.to_str().unwrap(), "bad ref!")
+            .is_err()
+    );
+
+    let suggestions = runtime
+        .branch_suggestions(fixture.repo.to_str().unwrap(), Some("origin/remote"), 10)
+        .unwrap();
+    assert_eq!(suggestions.len(), 1);
+    assert_eq!(suggestions[0].name, "remote-only");
+    assert!(!suggestions[0].has_local);
+    assert!(suggestions[0].has_remote);
+    let suggestions = runtime
+        .branch_suggestions(fixture.repo.to_str().unwrap(), Some("feature"), 10)
+        .unwrap();
+    assert_eq!(suggestions[0].local_ahead, Some(0));
+    assert_eq!(suggestions[0].local_behind, Some(0));
+
+    assert_eq!(
+        runtime
+            .switch_branch(fixture.repo.to_str().unwrap(), "remote-only")
+            .unwrap(),
+        CheckoutBranchSource::Remote
+    );
+    assert_eq!(
+        runtime
+            .rename_branch(fixture.repo.to_str().unwrap(), "renamed")
+            .unwrap(),
+        "renamed"
+    );
+    let rename_error = runtime
+        .rename_branch(fixture.repo.to_str().unwrap(), "Bad_Name")
+        .unwrap_err();
+    assert_eq!(rename_error.kind, CheckoutFailureKind::Unknown);
+    std::fs::write(fixture.repo.join("tracked.txt"), "dirty\n").unwrap();
+    assert!(
+        runtime
+            .switch_branch(fixture.repo.to_str().unwrap(), "main")
+            .is_err()
+    );
+}
+
+#[test]
+fn commit_discard_and_stash_mutations_match_paseo() {
+    let fixture = Fixture::new();
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    std::fs::write(fixture.repo.join("tracked.txt"), "committed\n").unwrap();
+    std::fs::write(fixture.repo.join("added.txt"), "added\n").unwrap();
+    runtime
+        .commit(fixture.repo.to_str().unwrap(), "  mutation commit  ", true)
+        .unwrap();
+    assert_eq!(
+        git_output(&fixture.repo, &["log", "-1", "--format=%s"]),
+        "mutation commit"
+    );
+
+    std::fs::write(fixture.repo.join("tracked.txt"), "discard me\n").unwrap();
+    std::fs::write(fixture.repo.join("untracked.txt"), "remove me\n").unwrap();
+    runtime
+        .discard_changes(
+            fixture.repo.to_str().unwrap(),
+            &["tracked.txt".to_owned(), "untracked.txt".to_owned()],
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture.repo.join("tracked.txt")).unwrap(),
+        "committed\n"
+    );
+    assert!(!fixture.repo.join("untracked.txt").exists());
+
+    std::fs::write(fixture.repo.join("tracked.txt"), "stash me\n").unwrap();
+    std::fs::write(fixture.repo.join("stash-untracked.txt"), "stash me too\n").unwrap();
+    runtime
+        .stash_save(fixture.repo.to_str().unwrap(), Some(" feature "))
+        .unwrap();
+    let entries = runtime
+        .stashes(fixture.repo.to_str().unwrap(), true)
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].branch.as_deref(), Some("feature"));
+    assert!(entries[0].is_paseo);
+    runtime
+        .stash_pop(fixture.repo.to_str().unwrap(), 0)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(fixture.repo.join("tracked.txt")).unwrap(),
+        "stash me\n"
+    );
+    assert!(fixture.repo.join("stash-untracked.txt").exists());
+    runtime
+        .discard_changes(
+            fixture.repo.to_str().unwrap(),
+            &["tracked.txt".to_owned(), "stash-untracked.txt".to_owned()],
+        )
+        .unwrap();
+    std::fs::write(fixture.repo.join("tracked.txt"), "ordinary stash\n").unwrap();
+    git(&fixture.repo, &["stash", "push", "-m", "ordinary"]);
+    assert!(
+        runtime
+            .stashes(fixture.repo.to_str().unwrap(), true)
+            .unwrap()
+            .is_empty()
+    );
+    let entries = runtime
+        .stashes(fixture.repo.to_str().unwrap(), false)
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].is_paseo);
+}
+
+#[test]
+fn merge_from_base_and_merge_to_base_follow_paseo_direction() {
+    let fixture = Fixture::new();
+    git(&fixture.repo, &["checkout", "-b", "feature"]);
+    std::fs::write(fixture.repo.join("feature.txt"), "feature\n").unwrap();
+    git(&fixture.repo, &["add", "feature.txt"]);
+    git(&fixture.repo, &["commit", "-m", "feature change"]);
+    git(&fixture.repo, &["checkout", "main"]);
+    std::fs::write(fixture.repo.join("base.txt"), "base\n").unwrap();
+    git(&fixture.repo, &["add", "base.txt"]);
+    git(&fixture.repo, &["commit", "-m", "base change"]);
+    git(&fixture.repo, &["checkout", "feature"]);
+
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    runtime
+        .merge_from_base(fixture.repo.to_str().unwrap(), Some("main"), true)
+        .unwrap();
+    assert!(fixture.repo.join("base.txt").exists());
+    std::fs::write(fixture.repo.join("after-merge.txt"), "feature\n").unwrap();
+    git(&fixture.repo, &["add", "after-merge.txt"]);
+    git(&fixture.repo, &["commit", "-m", "after merge"]);
+    runtime
+        .merge_to_base(
+            fixture.repo.to_str().unwrap(),
+            Some("main"),
+            CheckoutMergeStrategy::Merge,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        git_output(&fixture.repo, &["symbolic-ref", "--short", "HEAD"]),
+        "feature"
+    );
+    assert_eq!(
+        git_output(
+            &fixture.repo,
+            &["merge-base", "--is-ancestor", "feature", "main"]
+        ),
+        ""
+    );
+}
+
+#[test]
+fn merge_conflicts_are_aborted_and_categorized() {
+    let fixture = Fixture::new();
+    git(&fixture.repo, &["checkout", "-b", "feature"]);
+    std::fs::write(fixture.repo.join("tracked.txt"), "feature\n").unwrap();
+    git(&fixture.repo, &["add", "tracked.txt"]);
+    git(&fixture.repo, &["commit", "-m", "feature conflict"]);
+    git(&fixture.repo, &["checkout", "main"]);
+    std::fs::write(fixture.repo.join("tracked.txt"), "main\n").unwrap();
+    git(&fixture.repo, &["add", "tracked.txt"]);
+    git(&fixture.repo, &["commit", "-m", "main conflict"]);
+    git(&fixture.repo, &["checkout", "feature"]);
+
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    let error = runtime
+        .merge_from_base(fixture.repo.to_str().unwrap(), Some("main"), true)
+        .unwrap_err();
+    assert_eq!(error.kind, CheckoutFailureKind::MergeConflict);
+    assert!(git_output(&fixture.repo, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn squash_merge_to_base_restores_feature_and_creates_one_base_commit() {
+    let fixture = Fixture::new();
+    git(&fixture.repo, &["checkout", "-b", "feature"]);
+    for (path, message) in [("one.txt", "one"), ("two.txt", "two")] {
+        std::fs::write(fixture.repo.join(path), format!("{path}\n")).unwrap();
+        git(&fixture.repo, &["add", path]);
+        git(&fixture.repo, &["commit", "-m", message]);
+    }
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    runtime
+        .merge_to_base(
+            fixture.repo.to_str().unwrap(),
+            Some("main"),
+            CheckoutMergeStrategy::Squash,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        git_output(&fixture.repo, &["symbolic-ref", "--short", "HEAD"]),
+        "feature"
+    );
+    assert_eq!(
+        git_output(&fixture.repo, &["log", "-1", "--format=%s", "main"]),
+        "Squash merge feature into main"
+    );
+    assert_eq!(
+        git_output(&fixture.repo, &["diff", "--name-only", "main", "feature"]),
+        ""
+    );
+}
+
+#[test]
+fn merge_to_base_mutates_an_existing_base_worktree() {
+    let fixture = Fixture::new();
+    let feature = fixture.temp.path().join("feature-worktree");
+    git(
+        &fixture.repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            feature.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(feature.join("feature.txt"), "feature\n").unwrap();
+    git(&feature, &["add", "feature.txt"]);
+    git(&feature, &["commit", "-m", "linked feature"]);
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    runtime
+        .merge_to_base(
+            feature.to_str().unwrap(),
+            Some("main"),
+            CheckoutMergeStrategy::Merge,
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        git_output(&feature, &["symbolic-ref", "--short", "HEAD"]),
+        "feature"
+    );
+    assert_eq!(
+        git_output(&fixture.repo, &["symbolic-ref", "--short", "HEAD"]),
+        "main"
+    );
+    assert!(fixture.repo.join("feature.txt").exists());
+}
+
+#[test]
+fn configured_push_remote_and_head_refspec_are_honored() {
+    let fixture = Fixture::new();
+    let remote = fixture.temp.path().join("publish.git");
+    git(
+        fixture.temp.path(),
+        &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+    );
+    git(
+        &fixture.repo,
+        &["remote", "add", "publish", remote.to_str().unwrap()],
+    );
+    git(
+        &fixture.repo,
+        &["config", "branch.main.pushRemote", "publish"],
+    );
+    git(
+        &fixture.repo,
+        &["config", "remote.publish.push", "HEAD:refs/heads/review"],
+    );
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    runtime.push(fixture.repo.to_str().unwrap()).unwrap();
+    assert_eq!(
+        git_output(&remote, &["rev-parse", "refs/heads/review"]),
+        git_output(&fixture.repo, &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn pull_and_push_use_local_origin_without_network() {
+    let fixture = Fixture::new();
+    let runtime = LocalCheckout::new(fixture.temp.path().join("managed"));
+    assert_eq!(
+        runtime
+            .pull(fixture.repo.to_str().unwrap())
+            .unwrap_err()
+            .message,
+        "Remote 'origin' is not configured."
+    );
+    let remote = fixture.temp.path().join("remote.git");
+    git(
+        fixture.temp.path(),
+        &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+    );
+    git(
+        &fixture.repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    git(&fixture.repo, &["push", "-u", "origin", "main"]);
+    let peer = fixture.temp.path().join("peer");
+    git(
+        fixture.temp.path(),
+        &["clone", remote.to_str().unwrap(), peer.to_str().unwrap()],
+    );
+    git(&peer, &["config", "user.email", "peer@example.test"]);
+    git(&peer, &["config", "user.name", "Peer"]);
+    std::fs::write(peer.join("peer.txt"), "peer\n").unwrap();
+    git(&peer, &["add", "peer.txt"]);
+    git(&peer, &["commit", "-m", "peer change"]);
+    git(&peer, &["push"]);
+
+    runtime.pull(fixture.repo.to_str().unwrap()).unwrap();
+    assert!(fixture.repo.join("peer.txt").exists());
+    std::fs::write(fixture.repo.join("local.txt"), "local\n").unwrap();
+    runtime
+        .commit(fixture.repo.to_str().unwrap(), "local change", true)
+        .unwrap();
+    runtime.push(fixture.repo.to_str().unwrap()).unwrap();
+    assert_eq!(
+        git_output(&fixture.repo, &["rev-parse", "HEAD"]),
+        git_output(&fixture.repo, &["rev-parse", "origin/main"])
+    );
+}
+
 struct Fixture {
     temp: TempDir,
     repo: std::path::PathBuf,
@@ -320,4 +680,19 @@ fn git(cwd: &Path, arguments: &[&str]) {
         arguments,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn git_output(cwd: &Path, arguments: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(arguments)
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?}: {}",
+        arguments,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }

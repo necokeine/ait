@@ -217,7 +217,71 @@ pub struct CheckoutCommits {
     pub commits: Vec<CheckoutCommit>,
 }
 
-/// Blocking read-only Git runtime.
+/// Existing branch resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckoutBranchResolution {
+    /// Existing local branch.
+    Local(String),
+    /// Existing origin tracking ref without a local branch.
+    RemoteOnly {
+        /// Normalized local branch name.
+        name: String,
+        /// Exact origin-qualified source ref.
+        remote_ref: String,
+    },
+    /// No matching branch.
+    NotFound,
+}
+
+/// Existing branch checkout source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutBranchSource {
+    /// Existing local branch.
+    Local,
+    /// Origin-only branch materialized locally.
+    Remote,
+}
+
+/// Branch suggestion facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutBranchSuggestion {
+    /// Normalized local name.
+    pub name: String,
+    /// Committer Unix timestamp.
+    pub committer_date: i64,
+    /// Whether a local branch exists.
+    pub has_local: bool,
+    /// Whether an origin ref exists.
+    pub has_remote: bool,
+    /// Commits present only locally.
+    pub local_ahead: Option<u64>,
+    /// Commits present only on origin.
+    pub local_behind: Option<u64>,
+}
+
+/// Merge-current-branch-to-base strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutMergeStrategy {
+    /// Ordinary merge.
+    Merge,
+    /// Squash and commit.
+    Squash,
+}
+
+/// One parsed stash entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutStashEntry {
+    /// Zero-based stash index.
+    pub index: usize,
+    /// Full Git subject.
+    pub message: String,
+    /// Paseo branch label.
+    pub branch: Option<String>,
+    /// Whether the subject carries the Paseo prefix.
+    pub is_paseo: bool,
+}
+
+/// Blocking Git checkout runtime.
 pub trait CheckoutRuntime: std::fmt::Debug + Send + Sync {
     /// Inspect checkout status.
     ///
@@ -257,4 +321,110 @@ pub trait CheckoutRuntime: std::fmt::Debug + Send + Sync {
         sha: &str,
         path: &str,
     ) -> Result<Option<ParsedDiffFile>, CheckoutRuntimeError>;
+
+    /// Resolve a local or origin branch.
+    ///
+    /// # Errors
+    /// Returns categorized validation, Git, timeout, or output failures.
+    fn validate_branch(
+        &self,
+        cwd: &str,
+        branch: &str,
+    ) -> Result<CheckoutBranchResolution, CheckoutRuntimeError>;
+
+    /// List matching local and origin branches.
+    ///
+    /// # Errors
+    /// Returns categorized validation, Git, timeout, or output failures.
+    fn branch_suggestions(
+        &self,
+        cwd: &str,
+        query: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CheckoutBranchSuggestion>, CheckoutRuntimeError>;
+
+    /// Check out an existing local or origin-only branch.
+    ///
+    /// # Errors
+    /// Returns categorized dirty-tree, validation, Git, timeout, or output failures.
+    fn switch_branch(
+        &self,
+        cwd: &str,
+        branch: &str,
+    ) -> Result<CheckoutBranchSource, CheckoutRuntimeError>;
+
+    /// Rename the current local branch.
+    ///
+    /// # Errors
+    /// Returns categorized detached-head, validation, Git, timeout, or output failures.
+    fn rename_branch(&self, cwd: &str, branch: &str) -> Result<String, CheckoutRuntimeError>;
+
+    /// Commit the current index, optionally staging all changes first.
+    ///
+    /// # Errors
+    /// Returns categorized validation, Git, timeout, or output failures.
+    fn commit(&self, cwd: &str, message: &str, add_all: bool) -> Result<(), CheckoutRuntimeError>;
+
+    /// Merge the current branch into its base checkout.
+    ///
+    /// # Errors
+    /// Returns categorized preflight, conflict, Git, timeout, or output failures.
+    fn merge_to_base(
+        &self,
+        cwd: &str,
+        base_ref: Option<&str>,
+        strategy: CheckoutMergeStrategy,
+        require_clean_target: bool,
+    ) -> Result<(), CheckoutRuntimeError>;
+
+    /// Merge the selected base into the current branch.
+    ///
+    /// # Errors
+    /// Returns categorized preflight, conflict, Git, timeout, or output failures.
+    fn merge_from_base(
+        &self,
+        cwd: &str,
+        base_ref: Option<&str>,
+        require_clean_target: bool,
+    ) -> Result<(), CheckoutRuntimeError>;
+
+    /// Pull the current branch.
+    ///
+    /// # Errors
+    /// Returns categorized remote, conflict, Git, timeout, or output failures.
+    fn pull(&self, cwd: &str) -> Result<(), CheckoutRuntimeError>;
+
+    /// Push the current branch.
+    ///
+    /// # Errors
+    /// Returns categorized remote, Git, timeout, or output failures.
+    fn push(&self, cwd: &str) -> Result<(), CheckoutRuntimeError>;
+
+    /// Restore tracked changes and remove selected untracked paths.
+    ///
+    /// # Errors
+    /// Returns categorized path, Git, timeout, or output failures.
+    fn discard_changes(&self, cwd: &str, paths: &[String]) -> Result<(), CheckoutRuntimeError>;
+
+    /// Save tracked and untracked changes with the Paseo stash prefix.
+    ///
+    /// # Errors
+    /// Returns categorized Git, timeout, or output failures.
+    fn stash_save(&self, cwd: &str, branch: Option<&str>) -> Result<(), CheckoutRuntimeError>;
+
+    /// Pop one stash index.
+    ///
+    /// # Errors
+    /// Returns categorized conflict, Git, timeout, or output failures.
+    fn stash_pop(&self, cwd: &str, index: usize) -> Result<(), CheckoutRuntimeError>;
+
+    /// List stashes, optionally filtering to Paseo-created entries.
+    ///
+    /// # Errors
+    /// Returns categorized Git, timeout, or output failures.
+    fn stashes(
+        &self,
+        cwd: &str,
+        paseo_only: bool,
+    ) -> Result<Vec<CheckoutStashEntry>, CheckoutRuntimeError>;
 }

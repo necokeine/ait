@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Canonical checkout read and observation methods implemented by the independent server.
+/// Canonical checkout methods implemented by the independent server.
 pub const CAPABILITIES: &[&str] = &[
     "checkout.status.get.request",
     "checkout.refresh.request",
@@ -11,6 +11,19 @@ pub const CAPABILITIES: &[&str] = &[
     "checkout.diff.unsubscribe.request",
     "checkout.commits.list.request",
     "checkout.commits.file_diff.request",
+    "checkout.branch.validate.request",
+    "checkout.branch.suggestions.request",
+    "checkout.branch.switch.request",
+    "checkout.rename_branch.request",
+    "checkout.commit.request",
+    "checkout.merge.request",
+    "checkout.merge_from_base.request",
+    "checkout.pull.request",
+    "checkout.push.request",
+    "checkout.discard_changes.request",
+    "checkout.stash.save.request",
+    "checkout.stash.pop.request",
+    "checkout.stash.list.request",
 ];
 
 /// A checkout-scoped request.
@@ -389,6 +402,266 @@ pub struct CheckoutCommitFileDiffResult {
     /// Textual diff, or null for missing/binary content.
     pub file: Option<ParsedDiffFile>,
     /// Inline error.
+    pub error: Option<CheckoutError>,
+}
+
+/// Branch existence request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchValidateRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Local name or origin-qualified name to resolve.
+    pub branch_name: String,
+}
+
+/// Branch existence result. Paseo uses a plain string error for this query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchValidateResult {
+    /// Whether the branch exists locally or on origin.
+    pub exists: bool,
+    /// Normalized local branch name.
+    pub resolved_ref: Option<String>,
+    /// Whether only the origin tracking ref exists.
+    pub is_remote: bool,
+    /// Inline validation or Git error.
+    pub error: Option<String>,
+}
+
+/// Branch suggestion request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CheckoutBranchSuggestionsRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Optional case-insensitive substring query.
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Optional result limit in the inclusive range 1..=200.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// One branch suggestion and its local/origin state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchSuggestion {
+    /// Normalized local branch name.
+    pub name: String,
+    /// Committer timestamp in Unix seconds.
+    pub committer_date: i64,
+    /// Whether a local branch exists.
+    pub has_local: bool,
+    /// Whether an origin tracking ref exists.
+    pub has_remote: bool,
+    /// Commits present only on the local branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_ahead: Option<u64>,
+    /// Commits present only on the origin tracking ref.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_behind: Option<u64>,
+}
+
+/// Branch suggestions result. Paseo uses a plain string error for this query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchSuggestionsResult {
+    /// Ordered branch names retained for compatibility.
+    pub branches: Vec<String>,
+    /// Ordered branch details.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_details: Option<Vec<CheckoutBranchSuggestion>>,
+    /// Inline Git error.
+    pub error: Option<String>,
+}
+
+/// Existing-branch checkout request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CheckoutBranchSwitchRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Existing local or origin branch.
+    pub branch: String,
+}
+
+/// Existing-branch checkout source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckoutBranchSource {
+    /// Existing local branch.
+    Local,
+    /// Origin-only branch materialized locally.
+    Remote,
+}
+
+/// Existing-branch checkout result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchSwitchResult {
+    /// Echoed request directory.
+    pub cwd: String,
+    /// Whether checkout completed.
+    pub success: bool,
+    /// Echoed requested branch.
+    pub branch: String,
+    /// Resolution source on success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<CheckoutBranchSource>,
+    /// Inline checkout error.
+    pub error: Option<CheckoutError>,
+}
+
+/// Current-branch rename request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CheckoutBranchRenameRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// New local branch name.
+    pub branch: String,
+}
+
+/// Current-branch rename result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutBranchRenameResult {
+    /// Whether rename completed.
+    pub success: bool,
+    /// Echoed request directory.
+    pub cwd: String,
+    /// Renamed branch on success.
+    pub current_branch: Option<String>,
+    /// Inline checkout error.
+    pub error: Option<CheckoutError>,
+}
+
+/// Commit request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutCommitRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Explicit commit message.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// Whether all changes should be staged first. Defaults to true.
+    #[serde(default)]
+    pub add_all: Option<bool>,
+}
+
+/// Merge strategy for merging the current branch into its base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckoutMergeStrategy {
+    /// Ordinary Git merge.
+    Merge,
+    /// Squash and commit the resulting tree.
+    Squash,
+}
+
+/// Merge-current-branch-to-base request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutMergeRequest {
+    /// Directory inside the current feature checkout.
+    pub cwd: String,
+    /// Optional base branch override.
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    /// Merge strategy. Defaults to merge.
+    #[serde(default)]
+    pub strategy: Option<CheckoutMergeStrategy>,
+    /// Require the request checkout to be clean before operating.
+    #[serde(default)]
+    pub require_clean_target: Option<bool>,
+}
+
+/// Merge-base-into-current-branch request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutMergeFromBaseRequest {
+    /// Directory inside the current feature checkout.
+    pub cwd: String,
+    /// Optional base branch override.
+    #[serde(default)]
+    pub base_ref: Option<String>,
+    /// Require a clean current checkout. Defaults to true.
+    #[serde(default)]
+    pub require_clean_target: Option<bool>,
+}
+
+/// Path-scoped discard request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CheckoutDiscardChangesRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Literal repository-relative paths to restore/remove.
+    pub paths: Vec<String>,
+}
+
+/// Paseo stash save request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CheckoutStashSaveRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Optional branch label embedded in the stash message.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// Paseo stash pop request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutStashPopRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Zero-based stash index.
+    pub stash_index: usize,
+}
+
+/// Paseo stash list request.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutStashListRequest {
+    /// Directory inside the checkout.
+    pub cwd: String,
+    /// Return only Paseo-created stashes. Defaults to true.
+    #[serde(default)]
+    pub paseo_only: Option<bool>,
+}
+
+/// One stash entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutStashEntry {
+    /// Zero-based stash index.
+    pub index: usize,
+    /// Full Git stash subject.
+    pub message: String,
+    /// Paseo branch label, when present.
+    pub branch: Option<String>,
+    /// Whether the stash uses the Paseo prefix.
+    pub is_paseo: bool,
+}
+
+/// Stash list result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckoutStashListResult {
+    /// Echoed request directory.
+    pub cwd: String,
+    /// Filtered stash entries.
+    pub entries: Vec<CheckoutStashEntry>,
+    /// Inline checkout error.
+    pub error: Option<CheckoutError>,
+}
+
+/// Shared result shape for checkout mutations without extra result fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckoutMutationResult {
+    /// Echoed request directory.
+    pub cwd: String,
+    /// Whether the mutation completed.
+    pub success: bool,
+    /// Inline checkout error.
     pub error: Option<CheckoutError>,
 }
 

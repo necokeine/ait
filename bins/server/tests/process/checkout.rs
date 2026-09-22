@@ -3,7 +3,7 @@ use std::process::Command;
 
 use serde_json::json;
 
-use super::transport::{connect, receive, request};
+use super::transport::{Socket, connect, receive, request};
 use super::{ready, start, terminate};
 
 #[tokio::test]
@@ -114,6 +114,132 @@ async fn binary_serves_checkout_reads_and_connection_owned_diff_updates() {
     terminate(&mut process).await;
 }
 
+#[tokio::test]
+async fn binary_serves_checkout_branch_and_mutation_methods() {
+    let root = tempfile::tempdir().unwrap();
+    let repository = root.path().join("repository");
+    create_clean_repository(&repository);
+    let remote = root.path().join("remote.git");
+    run(
+        root.path(),
+        &["init", "--bare", "-b", "main", remote.to_str().unwrap()],
+    );
+    run(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run(&repository, &["push", "-u", "origin", "main"]);
+    run(&repository, &["checkout", "-b", "feature"]);
+
+    let state = root.path().join("server");
+    let log = root.path().join("server.log");
+    let mut process = start(&state, &log);
+    let address = ready(&mut process, &log).await;
+    let mut client = connect(&address, server_protocol::checkout::CAPABILITIES).await;
+
+    assert_branch_methods(&mut client, &repository).await;
+    assert_mutation_methods(&mut client, &repository).await;
+
+    terminate(&mut process).await;
+}
+
+async fn assert_branch_methods(client: &mut Socket, repository: &Path) {
+    let validation = request(
+        client,
+        "checkout.branch.validate.request",
+        json!({"cwd":repository,"branchName":"main"}),
+    )
+    .await;
+    assert_eq!(validation["result"]["exists"], true, "{validation}");
+    let suggestions = request(
+        client,
+        "checkout.branch.suggestions.request",
+        json!({"cwd":repository,"query":"ma","limit":10}),
+    )
+    .await;
+    assert_eq!(suggestions["result"]["branches"], json!(["main"]));
+    let switched = request(
+        client,
+        "checkout.branch.switch.request",
+        json!({"cwd":repository,"branch":"main"}),
+    )
+    .await;
+    assert_eq!(switched["result"]["source"], "local", "{switched}");
+    let switched = request(
+        client,
+        "checkout.branch.switch.request",
+        json!({"cwd":repository,"branch":"feature"}),
+    )
+    .await;
+    assert_eq!(switched["result"]["success"], true, "{switched}");
+    let renamed = request(
+        client,
+        "checkout.rename_branch.request",
+        json!({"cwd":repository,"branch":"renamed"}),
+    )
+    .await;
+    assert_eq!(renamed["result"]["currentBranch"], "renamed", "{renamed}");
+}
+
+async fn assert_mutation_methods(client: &mut Socket, repository: &Path) {
+    std::fs::write(repository.join("committed.txt"), "committed\n").unwrap();
+    let committed = request(
+        client,
+        "checkout.commit.request",
+        json!({"cwd":repository,"message":"server mutation"}),
+    )
+    .await;
+    assert_eq!(committed["result"]["success"], true, "{committed}");
+    std::fs::write(repository.join("stash.txt"), "stash\n").unwrap();
+    let saved = request(
+        client,
+        "checkout.stash.save.request",
+        json!({"cwd":repository,"branch":"renamed"}),
+    )
+    .await;
+    assert_eq!(saved["result"]["success"], true, "{saved}");
+    let stashes = request(
+        client,
+        "checkout.stash.list.request",
+        json!({"cwd":repository}),
+    )
+    .await;
+    assert_eq!(stashes["result"]["entries"][0]["branch"], "renamed");
+    let popped = request(
+        client,
+        "checkout.stash.pop.request",
+        json!({"cwd":repository,"stashIndex":0}),
+    )
+    .await;
+    assert_eq!(popped["result"]["success"], true, "{popped}");
+    let discarded = request(
+        client,
+        "checkout.discard_changes.request",
+        json!({"cwd":repository,"paths":["stash.txt"]}),
+    )
+    .await;
+    assert_eq!(discarded["result"]["success"], true, "{discarded}");
+    assert!(!repository.join("stash.txt").exists());
+    let from_base = request(
+        client,
+        "checkout.merge_from_base.request",
+        json!({"cwd":repository,"baseRef":"main"}),
+    )
+    .await;
+    assert_eq!(from_base["result"]["success"], true, "{from_base}");
+    let to_base = request(
+        client,
+        "checkout.merge.request",
+        json!({"cwd":repository,"baseRef":"main","strategy":"merge"}),
+    )
+    .await;
+    assert_eq!(to_base["result"]["success"], true, "{to_base}");
+    let pushed = request(client, "checkout.push.request", json!({"cwd":repository})).await;
+    assert_eq!(pushed["result"]["success"], true, "{pushed}");
+    let pulled = request(client, "checkout.pull.request", json!({"cwd":repository})).await;
+    assert_eq!(pulled["result"]["success"], true, "{pulled}");
+}
+
 fn create_repository(repository: &Path) {
     std::fs::create_dir_all(repository).unwrap();
     run(repository, &["init", "--quiet", "--initial-branch=main"]);
@@ -131,6 +257,19 @@ fn create_repository(repository: &Path) {
     run(repository, &["commit", "--quiet", "-m", "feature"]);
     std::fs::write(repository.join("tracked.txt"), "feature\nworking\n").unwrap();
     std::fs::write(repository.join("new.txt"), "new\n").unwrap();
+}
+
+fn create_clean_repository(repository: &Path) {
+    std::fs::create_dir_all(repository).unwrap();
+    run(repository, &["init", "--quiet", "--initial-branch=main"]);
+    run(repository, &["config", "user.name", "Server Test"]);
+    run(
+        repository,
+        &["config", "user.email", "server@example.invalid"],
+    );
+    std::fs::write(repository.join("tracked.txt"), "base\n").unwrap();
+    run(repository, &["add", "tracked.txt"]);
+    run(repository, &["commit", "--quiet", "-m", "base"]);
 }
 
 fn run(repository: &Path, arguments: &[&str]) {

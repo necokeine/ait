@@ -8,13 +8,15 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use server_ports::checkout::{
-    AheadBehind, CheckoutCommit, CheckoutCommitFile, CheckoutCommitFileStatus, CheckoutCommits,
-    CheckoutDiff, CheckoutDiffCompare, CheckoutDiffMode, CheckoutFailureKind, CheckoutRuntime,
-    CheckoutRuntimeError, CheckoutStatus, DiffHunk, DiffLine, DiffLineKind, ParsedDiffFile,
-    ParsedDiffStatus,
+    AheadBehind, CheckoutBranchResolution, CheckoutBranchSource, CheckoutBranchSuggestion,
+    CheckoutCommit, CheckoutCommitFile, CheckoutCommitFileStatus, CheckoutCommits, CheckoutDiff,
+    CheckoutDiffCompare, CheckoutDiffMode, CheckoutFailureKind, CheckoutMergeStrategy,
+    CheckoutRuntime, CheckoutRuntimeError, CheckoutStashEntry, CheckoutStatus, DiffHunk, DiffLine,
+    DiffLineKind, ParsedDiffFile, ParsedDiffStatus,
 };
 
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 const SMALL_OUTPUT_LIMIT: u64 = 256 * 1024;
 const DIFF_OUTPUT_LIMIT: u64 = 4 * 1024 * 1024;
 const COMMIT_OUTPUT_LIMIT: u64 = 4 * 1024 * 1024;
@@ -311,11 +313,242 @@ impl CheckoutRuntime for LocalCheckout {
             .into_iter()
             .find(|file| file.path == path && !file.hunks.is_empty()))
     }
+
+    fn validate_branch(
+        &self,
+        cwd: &str,
+        branch: &str,
+    ) -> Result<CheckoutBranchResolution, CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        resolve_branch(&cwd, branch)
+    }
+
+    fn branch_suggestions(
+        &self,
+        cwd: &str,
+        query: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CheckoutBranchSuggestion>, CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        list_branch_suggestions(&cwd, query, limit)
+    }
+
+    fn switch_branch(
+        &self,
+        cwd: &str,
+        branch: &str,
+    ) -> Result<CheckoutBranchSource, CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        require_clean(&cwd)?;
+        match resolve_branch(&cwd, branch)? {
+            CheckoutBranchResolution::Local(name) => {
+                let current = git_optional(&cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+                if current.as_deref() != Some(name.as_str()) {
+                    git_write(&cwd, &["checkout", &name])?;
+                }
+                Ok(CheckoutBranchSource::Local)
+            }
+            CheckoutBranchResolution::RemoteOnly { name, remote_ref } => {
+                git_write(&cwd, &["checkout", "-b", &name, "--track", &remote_ref])?;
+                Ok(CheckoutBranchSource::Remote)
+            }
+            CheckoutBranchResolution::NotFound => Err(checkout_error(
+                CheckoutFailureKind::Unknown,
+                format!("Branch not found: {}", branch.trim()),
+            )),
+        }
+    }
+
+    fn rename_branch(&self, cwd: &str, branch: &str) -> Result<String, CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        let branch = validate_branch_slug(branch)?;
+        let current = git_optional(&cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+        if current.is_none() {
+            return Err(checkout_error(
+                CheckoutFailureKind::Unknown,
+                "Cannot rename branch in detached HEAD state",
+            ));
+        }
+        git_write(&cwd, &["branch", "-m", &branch])?;
+        git_required(
+            &cwd,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            SMALL_OUTPUT_LIMIT,
+        )
+    }
+
+    fn commit(&self, cwd: &str, message: &str, add_all: bool) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(checkout_error(
+                CheckoutFailureKind::Unknown,
+                "Commit message is required",
+            ));
+        }
+        if add_all {
+            git_write(&cwd, &["add", "-A"])?;
+        }
+        git_write(&cwd, &["commit", "-m", message]).map(|_| ())
+    }
+
+    fn merge_to_base(
+        &self,
+        cwd: &str,
+        base_ref: Option<&str>,
+        strategy: CheckoutMergeStrategy,
+        require_clean_target: bool,
+    ) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        if require_clean_target {
+            require_clean(&cwd)?;
+        }
+        let current = current_branch(&cwd, "merge")?;
+        let base = operation_base(&cwd, base_ref, Some(&current))?;
+        let base = local_base_name(&base)?;
+        if base == current {
+            return Ok(());
+        }
+        verify_local_branch(&cwd, &base)?;
+        let operation_cwd = worktree_for_branch(&cwd, &base)?.unwrap_or_else(|| cwd.clone());
+        let same_checkout = operation_cwd == cwd;
+        let original = git_optional(
+            &operation_cwd,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        )?;
+        let outcome = (|| {
+            git_write(&operation_cwd, &["checkout", &base])?;
+            match strategy {
+                CheckoutMergeStrategy::Merge => {
+                    git_write(&operation_cwd, &["merge", &current]).map(|_| ())
+                }
+                CheckoutMergeStrategy::Squash => {
+                    git_write(&operation_cwd, &["merge", "--squash", &current])?;
+                    let message = format!("Squash merge {current} into {base}");
+                    git_write(&operation_cwd, &["commit", "-m", &message]).map(|_| ())
+                }
+            }
+        })();
+        let outcome = abort_merge_on_conflict(&operation_cwd, outcome);
+        if same_checkout
+            && original.as_deref().is_some_and(|name| name != base)
+            && let Some(original) = original
+        {
+            let _ = git_write(&operation_cwd, &["checkout", &original]);
+        }
+        outcome
+    }
+
+    fn merge_from_base(
+        &self,
+        cwd: &str,
+        base_ref: Option<&str>,
+        require_clean_target: bool,
+    ) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        if require_clean_target {
+            require_clean(&cwd)?;
+        }
+        let current = current_branch(&cwd, "merge")?;
+        let base = operation_base(&cwd, base_ref, Some(&current))?;
+        let base = most_ahead_base(&cwd, &base)?;
+        if base == current {
+            return Ok(());
+        }
+        let outcome = git_write(&cwd, &["merge", &base]).map(|_| ());
+        abort_merge_on_conflict(&cwd, outcome)
+    }
+
+    fn pull(&self, cwd: &str) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        current_branch(&cwd, "pull")?;
+        require_origin(&cwd)?;
+        let outcome = git_write(&cwd, &["pull"]).map(|_| ());
+        if outcome.is_err() {
+            abort_pull_state(&cwd);
+        }
+        outcome
+    }
+
+    fn push(&self, cwd: &str) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        let current = current_branch(&cwd, "push")?;
+        if let Some((remote, head)) = configured_push_target(&cwd, &current)? {
+            return git_write(&cwd, &["push", &remote, &format!("HEAD:refs/heads/{head}")])
+                .map(|_| ());
+        }
+        if let Some(upstream) = git_optional(
+            &cwd,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ],
+        )? {
+            let (remote, head) = upstream.split_once('/').ok_or_else(|| {
+                checkout_error(CheckoutFailureKind::Unknown, "Invalid upstream branch")
+            })?;
+            return git_write(
+                &cwd,
+                &["push", "-u", remote, &format!("HEAD:refs/heads/{head}")],
+            )
+            .map(|_| ());
+        }
+        require_origin(&cwd)?;
+        git_write(&cwd, &["push", "-u", "origin", &current]).map(|_| ())
+    }
+
+    fn discard_changes(&self, cwd: &str, paths: &[String]) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        if paths.is_empty() {
+            return Err(checkout_error(
+                CheckoutFailureKind::NotAllowed,
+                "At least one checkout path is required",
+            ));
+        }
+        for path in paths {
+            validate_relative_path(path)?;
+        }
+        let refs = paths.iter().map(String::as_str).collect::<Vec<_>>();
+        discard_paths(&cwd, &refs)
+    }
+
+    fn stash_save(&self, cwd: &str, branch: Option<&str>) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        let branch = branch.map(str::trim).filter(|branch| !branch.is_empty());
+        let message = format!("paseo-auto-stash: {}", branch.unwrap_or("unnamed"));
+        git_write(
+            &cwd,
+            &["stash", "push", "--include-untracked", "-m", &message],
+        )
+        .map(|_| ())
+    }
+
+    fn stash_pop(&self, cwd: &str, index: usize) -> Result<(), CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        git_write(&cwd, &["stash", "pop", &format!("stash@{{{index}}}")]).map(|_| ())
+    }
+
+    fn stashes(
+        &self,
+        cwd: &str,
+        paseo_only: bool,
+    ) -> Result<Vec<CheckoutStashEntry>, CheckoutRuntimeError> {
+        let cwd = require_git_directory(cwd)?;
+        let output = git_required(
+            &cwd,
+            &["stash", "list", "--format=%gd%x00%s"],
+            COMMIT_OUTPUT_LIMIT,
+        )?;
+        Ok(parse_stashes(&output, paseo_only))
+    }
 }
 
 #[derive(Debug)]
 struct CommandOutput {
     stdout: String,
+    exit_code: i32,
 }
 
 #[derive(Debug)]
@@ -455,6 +688,22 @@ fn run_git(
     accepted_exit_codes: &[i32],
     output_limit: u64,
 ) -> Result<CommandOutput, CheckoutRuntimeError> {
+    run_git_with_timeout(
+        cwd,
+        arguments,
+        accepted_exit_codes,
+        output_limit,
+        READ_TIMEOUT,
+    )
+}
+
+fn run_git_with_timeout(
+    cwd: &Path,
+    arguments: &[&str],
+    accepted_exit_codes: &[i32],
+    output_limit: u64,
+    timeout: Duration,
+) -> Result<CommandOutput, CheckoutRuntimeError> {
     let mut stdout = tempfile::tempfile().map_err(|error| io_error(&error))?;
     let mut stderr = tempfile::tempfile().map_err(|error| io_error(&error))?;
     let mut command = Command::new("git");
@@ -476,7 +725,7 @@ fn run_git(
         }
     }
     let mut child = command.spawn().map_err(|error| io_error(&error))?;
-    let deadline = Instant::now() + READ_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -527,7 +776,13 @@ fn run_git(
     let bytes = read_bytes_bounded(&mut stdout, output_limit)?;
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&bytes).into_owned(),
+        exit_code: code,
     })
+}
+
+fn git_write(cwd: &Path, arguments: &[&str]) -> Result<String, CheckoutRuntimeError> {
+    run_git_with_timeout(cwd, arguments, &[0], COMMIT_OUTPUT_LIMIT, WRITE_TIMEOUT)
+        .map(|output| output.stdout.trim_end().to_owned())
 }
 
 fn read_bounded(file: &mut File, limit: u64) -> Result<String, CheckoutRuntimeError> {
@@ -650,6 +905,454 @@ fn validate_ref(value: &str) -> Result<(), CheckoutRuntimeError> {
         ));
     }
     Ok(())
+}
+
+fn validate_branch_name(value: &str) -> Result<String, CheckoutRuntimeError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 256
+        || value.contains("..")
+        || value.contains("@{")
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'))
+    {
+        return Err(checkout_error(
+            CheckoutFailureKind::NotAllowed,
+            format!("Invalid branch: {value}"),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn normalize_branch_name(value: &str) -> Result<Option<String>, CheckoutRuntimeError> {
+    let validated = validate_branch_name(value)?;
+    Ok(normalize_branch_suggestion_name(&validated))
+}
+
+fn normalize_branch_suggestion_name(value: &str) -> Option<String> {
+    let mut name = value.trim();
+    if let Some(stripped) = name.strip_prefix("refs/heads/") {
+        name = stripped;
+    } else if let Some(stripped) = name.strip_prefix("refs/remotes/") {
+        name = stripped;
+    }
+    if let Some(stripped) = name.strip_prefix("origin/") {
+        name = stripped;
+    }
+    (!name.is_empty() && name != "HEAD" && name != "origin").then(|| name.to_owned())
+}
+
+fn validate_branch_slug(value: &str) -> Result<String, CheckoutRuntimeError> {
+    let error = if value.is_empty() {
+        Some("Branch name cannot be empty")
+    } else if value.len() > 100 {
+        Some("Branch name too long (max 100 characters)")
+    } else if !value.bytes().all(|byte| {
+        byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'/')
+    }) {
+        Some(
+            "Branch name must contain only lowercase letters, numbers, hyphens, and forward slashes",
+        )
+    } else if value.starts_with('-') || value.ends_with('-') {
+        Some("Branch name cannot start or end with a hyphen")
+    } else if value.contains("--") {
+        Some("Branch name cannot have consecutive hyphens")
+    } else {
+        None
+    };
+    match error {
+        Some(error) => Err(checkout_error(CheckoutFailureKind::Unknown, error)),
+        None => Ok(value.to_owned()),
+    }
+}
+
+fn ref_exists(cwd: &Path, reference: &str) -> Result<bool, CheckoutRuntimeError> {
+    Ok(run_git(
+        cwd,
+        &["show-ref", "--verify", "--quiet", reference],
+        &[0, 1],
+        SMALL_OUTPUT_LIMIT,
+    )?
+    .exit_code
+        == 0)
+}
+
+fn resolve_branch(
+    cwd: &Path,
+    branch: &str,
+) -> Result<CheckoutBranchResolution, CheckoutRuntimeError> {
+    let Some(name) = normalize_branch_name(branch)? else {
+        return Ok(CheckoutBranchResolution::NotFound);
+    };
+    if ref_exists(cwd, &format!("refs/heads/{name}"))? {
+        return Ok(CheckoutBranchResolution::Local(name));
+    }
+    let remote_ref = format!("origin/{name}");
+    if ref_exists(cwd, &format!("refs/remotes/{remote_ref}"))? {
+        return Ok(CheckoutBranchResolution::RemoteOnly { name, remote_ref });
+    }
+    Ok(CheckoutBranchResolution::NotFound)
+}
+
+#[derive(Debug)]
+struct BranchMeta {
+    committer_date: i64,
+    local_oid: Option<String>,
+    remote_oid: Option<String>,
+}
+
+fn list_branch_suggestions(
+    cwd: &Path,
+    query: Option<&str>,
+    limit: usize,
+) -> Result<Vec<CheckoutBranchSuggestion>, CheckoutRuntimeError> {
+    let mut branches = BTreeMap::<String, BranchMeta>::new();
+    for (prefix, remote) in [("refs/heads", false), ("refs/remotes/origin", true)] {
+        let output = git_required(
+            cwd,
+            &[
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--format=%(refname)%09%(committerdate:unix)%09%(objectname)",
+                prefix,
+            ],
+            COMMIT_OUTPUT_LIMIT,
+        )?;
+        for line in output.lines() {
+            let mut fields = line.split('\t');
+            let Some(raw_name) = fields.next() else {
+                continue;
+            };
+            let Some(date) = fields.next().and_then(|value| value.parse::<i64>().ok()) else {
+                continue;
+            };
+            let Some(oid) = fields.next().filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            let Some(name) = normalize_branch_suggestion_name(raw_name) else {
+                continue;
+            };
+            let entry = branches.entry(name).or_insert_with(|| BranchMeta {
+                committer_date: 0,
+                local_oid: None,
+                remote_oid: None,
+            });
+            entry.committer_date = entry.committer_date.max(date);
+            if remote {
+                entry.remote_oid = Some(oid.to_owned());
+            } else {
+                entry.local_oid = Some(oid.to_owned());
+            }
+        }
+    }
+    let raw_query = query.unwrap_or_default().trim().to_ascii_lowercase();
+    let query = normalize_branch_suggestion_name(&raw_query).unwrap_or(raw_query);
+    let mut names = branches
+        .keys()
+        .filter(|name| query.is_empty() || name.to_ascii_lowercase().contains(&query))
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort_by(|left, right| {
+        let left_prefix = left.to_ascii_lowercase().starts_with(&query);
+        let right_prefix = right.to_ascii_lowercase().starts_with(&query);
+        right_prefix
+            .cmp(&left_prefix)
+            .then_with(|| {
+                branches[right]
+                    .committer_date
+                    .cmp(&branches[left].committer_date)
+            })
+            .then_with(|| left.cmp(right))
+    });
+    names
+        .into_iter()
+        .take(limit.clamp(1, 200))
+        .map(|name| {
+            let meta = &branches[&name];
+            let divergence =
+                if let (Some(local), Some(remote)) = (&meta.local_oid, &meta.remote_oid) {
+                    if local == remote {
+                        Some((0, 0))
+                    } else {
+                        compare_refs(cwd, &format!("origin/{name}"), &name)?
+                            .map(|counts| (counts.ahead, counts.behind))
+                    }
+                } else {
+                    None
+                };
+            Ok(CheckoutBranchSuggestion {
+                name,
+                committer_date: meta.committer_date,
+                has_local: meta.local_oid.is_some(),
+                has_remote: meta.remote_oid.is_some(),
+                local_ahead: divergence.map(|counts| counts.0),
+                local_behind: divergence.map(|counts| counts.1),
+            })
+        })
+        .collect()
+}
+
+fn require_clean(cwd: &Path) -> Result<(), CheckoutRuntimeError> {
+    let status = git_required(
+        cwd,
+        &["status", "--porcelain=v1", "--untracked-files=normal"],
+        SMALL_OUTPUT_LIMIT,
+    )?;
+    if status.is_empty() {
+        Ok(())
+    } else {
+        Err(checkout_error(
+            CheckoutFailureKind::Unknown,
+            "Working directory has uncommitted changes.",
+        ))
+    }
+}
+
+fn current_branch(cwd: &Path, operation: &str) -> Result<String, CheckoutRuntimeError> {
+    git_optional(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"])?.ok_or_else(|| {
+        checkout_error(
+            CheckoutFailureKind::Unknown,
+            format!("Unable to determine current branch for {operation}"),
+        )
+    })
+}
+
+fn operation_base(
+    cwd: &Path,
+    requested: Option<&str>,
+    current: Option<&str>,
+) -> Result<String, CheckoutRuntimeError> {
+    requested
+        .map(str::trim)
+        .filter(|base| !base.is_empty())
+        .map(str::to_owned)
+        .map_or_else(
+            || resolve_default_branch(cwd, current),
+            |base| Ok(Some(base)),
+        )?
+        .ok_or_else(|| {
+            checkout_error(
+                CheckoutFailureKind::Unknown,
+                "Unable to determine base branch for merge",
+            )
+        })
+}
+
+fn local_base_name(base: &str) -> Result<String, CheckoutRuntimeError> {
+    if base.starts_with("refs/remotes/") && !base.starts_with("refs/remotes/origin/") {
+        return Err(checkout_error(
+            CheckoutFailureKind::Unknown,
+            format!("No local merge target is recorded for base ref {base}"),
+        ));
+    }
+    normalize_branch_name(base)?
+        .ok_or_else(|| checkout_error(CheckoutFailureKind::NotAllowed, "Invalid base branch"))
+}
+
+fn verify_local_branch(cwd: &Path, branch: &str) -> Result<(), CheckoutRuntimeError> {
+    if ref_exists(cwd, &format!("refs/heads/{branch}"))? {
+        Ok(())
+    } else {
+        Err(checkout_error(
+            CheckoutFailureKind::Unknown,
+            format!("Base branch not found locally: {branch}"),
+        ))
+    }
+}
+
+fn worktree_for_branch(cwd: &Path, branch: &str) -> Result<Option<PathBuf>, CheckoutRuntimeError> {
+    let output = git_required(
+        cwd,
+        &["worktree", "list", "--porcelain"],
+        COMMIT_OUTPUT_LIMIT,
+    )?;
+    let wanted = format!("refs/heads/{branch}");
+    let mut path = None;
+    for line in output.lines() {
+        if let Some(value) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(value));
+        } else if line.strip_prefix("branch ") == Some(wanted.as_str()) {
+            return Ok(path);
+        }
+    }
+    Ok(None)
+}
+
+fn most_ahead_base(cwd: &Path, base: &str) -> Result<String, CheckoutRuntimeError> {
+    if base.starts_with("refs/heads/") || base.starts_with("refs/remotes/") {
+        if ref_exists(cwd, base)? {
+            return Ok(base.to_owned());
+        }
+        return Err(checkout_error(
+            CheckoutFailureKind::Unknown,
+            format!("Base ref not found: {base}"),
+        ));
+    }
+    let name = local_base_name(base)?;
+    let local = ref_exists(cwd, &format!("refs/heads/{name}"))?;
+    let origin = ref_exists(cwd, &format!("refs/remotes/origin/{name}"))?;
+    match (local, origin) {
+        (true, false) => Ok(name),
+        (false, true) => Ok(format!("origin/{name}")),
+        (false, false) => Err(checkout_error(
+            CheckoutFailureKind::Unknown,
+            format!("Base branch not found locally or on origin: {name}"),
+        )),
+        (true, true) => {
+            let counts = compare_refs(cwd, &name, &format!("origin/{name}"))?;
+            if counts.is_some_and(|counts| counts.ahead > counts.behind) {
+                Ok(format!("origin/{name}"))
+            } else {
+                Ok(name)
+            }
+        }
+    }
+}
+
+fn abort_merge_on_conflict(
+    cwd: &Path,
+    result: Result<(), CheckoutRuntimeError>,
+) -> Result<(), CheckoutRuntimeError> {
+    let Err(mut error) = result else {
+        return Ok(());
+    };
+    let conflicts = git_optional(cwd, &["diff", "--name-only", "--diff-filter=U"])
+        .ok()
+        .flatten()
+        .is_some_and(|paths| !paths.is_empty());
+    if error.kind == CheckoutFailureKind::MergeConflict || conflicts {
+        let _ = git_write(cwd, &["merge", "--abort"]);
+        error.kind = CheckoutFailureKind::MergeConflict;
+    }
+    Err(error)
+}
+
+fn require_origin(cwd: &Path) -> Result<(), CheckoutRuntimeError> {
+    let remotes = lines(&git_required(cwd, &["remote"], SMALL_OUTPUT_LIMIT)?);
+    if remotes.iter().any(|remote| remote == "origin") {
+        Ok(())
+    } else {
+        Err(checkout_error(
+            CheckoutFailureKind::Unknown,
+            "Remote 'origin' is not configured.",
+        ))
+    }
+}
+
+fn abort_pull_state(cwd: &Path) {
+    let _ = git_write(cwd, &["merge", "--abort"]);
+    let _ = git_write(cwd, &["rebase", "--abort"]);
+}
+
+fn configured_push_target(
+    cwd: &Path,
+    branch: &str,
+) -> Result<Option<(String, String)>, CheckoutRuntimeError> {
+    let Some(remote) = git_optional(
+        cwd,
+        &["config", "--get", &format!("branch.{branch}.pushRemote")],
+    )?
+    else {
+        return Ok(None);
+    };
+    let Some(refspec) = git_optional(cwd, &["config", "--get", &format!("remote.{remote}.push")])?
+    else {
+        return Ok(None);
+    };
+    if git_optional(cwd, &["config", "--get", &format!("remote.{remote}.url")])?.is_none() {
+        return Ok(None);
+    }
+    let normalized = refspec.trim().strip_prefix('+').unwrap_or(refspec.trim());
+    Ok(normalized
+        .strip_prefix("HEAD:refs/heads/")
+        .map(str::trim)
+        .filter(|head| !head.is_empty())
+        .map(|head| (remote, head.to_owned())))
+}
+
+fn discard_paths(cwd: &Path, paths: &[&str]) -> Result<(), CheckoutRuntimeError> {
+    let mut reset = vec!["--literal-pathspecs", "reset", "-q", "HEAD", "--"];
+    reset.extend_from_slice(paths);
+    if git_write(cwd, &reset).is_err() {
+        let mut remove = vec![
+            "--literal-pathspecs",
+            "rm",
+            "--cached",
+            "-r",
+            "-q",
+            "--ignore-unmatch",
+            "--",
+        ];
+        remove.extend_from_slice(paths);
+        git_write(cwd, &remove)?;
+    }
+    let mut status = vec![
+        "--literal-pathspecs",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--",
+    ];
+    status.extend_from_slice(paths);
+    let output = git_write(cwd, &status)?;
+    let mut tracked = Vec::new();
+    let mut untracked = Vec::new();
+    let mut tokens = output.split('\0');
+    while let Some(token) = tokens.next() {
+        if token.len() < 4 {
+            continue;
+        }
+        let state = &token[..2];
+        let path = &token[3..];
+        if state.starts_with('R') || state.starts_with('C') {
+            let _ = tokens.next();
+        }
+        if state == "??" {
+            untracked.push(path);
+        } else {
+            tracked.push(path);
+        }
+    }
+    if !tracked.is_empty() {
+        let mut checkout = vec!["--literal-pathspecs", "checkout", "-q", "--"];
+        checkout.extend(tracked);
+        git_write(cwd, &checkout)?;
+    }
+    if !untracked.is_empty() {
+        let mut clean = vec!["--literal-pathspecs", "clean", "-fd", "-q", "--"];
+        clean.extend(untracked);
+        git_write(cwd, &clean)?;
+    }
+    Ok(())
+}
+
+fn parse_stashes(output: &str, paseo_only: bool) -> Vec<CheckoutStashEntry> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (reference, message) = line.split_once('\0')?;
+            let index = reference
+                .split_once('{')?
+                .1
+                .strip_suffix('}')?
+                .parse::<usize>()
+                .ok()?;
+            let prefix = "paseo-auto-stash:";
+            let branch = message
+                .find(prefix)
+                .map(|position| message[position + prefix.len()..].trim())
+                .filter(|branch| !branch.is_empty())
+                .map(str::to_owned);
+            let is_paseo = message.contains(prefix);
+            (!paseo_only || is_paseo).then(|| CheckoutStashEntry {
+                index,
+                message: message.to_owned(),
+                branch,
+                is_paseo,
+            })
+        })
+        .collect()
 }
 
 fn validate_commit(value: &str) -> Result<(), CheckoutRuntimeError> {

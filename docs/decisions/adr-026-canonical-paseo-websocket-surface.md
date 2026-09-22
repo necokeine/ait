@@ -196,6 +196,26 @@ Paseo 的 filesystem observer/workspace snapshot/debounce、Forge cache invalida
 ref、syntax highlighting、per-file diff budget 和丰富 remote/forge resolution 尚未移植。第八阶段报告记录
 这些行为差异和真实 Git 测试范围。
 
+## 第九阶段能力
+
+第九阶段生产组装公开 13 个 Git 分支与修改方法：`checkout.branch.validate.request`、
+`checkout.branch.suggestions.request`、`checkout.branch.switch.request`、`checkout.rename_branch.request`、
+`checkout.commit.request`、`checkout.merge.request`、`checkout.merge_from_base.request`、
+`checkout.pull.request`、`checkout.push.request`、`checkout.discard_changes.request`、
+`checkout.stash.save.request`、`checkout.stash.pop.request` 和 `checkout.stash.list.request`。对应下划线 Paseo
+名称只保留在 catalog，不作为 wire alias。
+
+同一个全新 `CheckoutRuntime` port 扩展 typed branch resolution/suggestion、mutation、merge strategy 和 stash
+entry；`LocalCheckout` 继续只以参数数组启动 Git、清理 `GIT_*`，并为写操作使用 120 秒 deadline。实现保留
+Paseo 的 clean-tree preflight、origin-only tracking checkout、严格 rename slug、commit `addAll` 默认值、
+merge 方向、linked base worktree、冲突 abort、most-ahead base、pull abort、push target、literal discard 和
+`paseo-auto-stash:` 过滤语义。API 的共享 blocking semaphore 和 checkout mutex 对这些操作提供有界排队与
+进程内串行化。
+
+当前没有 Provider commit-message generator，空消息按 Paseo 最终失败语义拒绝；没有 mutation observer、
+Workspace/status event 和 Forge cache invalidation，diff polling 只能在下一轮观察变化；configured push target
+成功后不额外写本地 remote-tracking ref。第九阶段报告记录完整差异和真实 branch/merge/local-remote 测试。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
@@ -217,4 +237,6 @@ provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法�
 归档恢复与真实 Git 验证记录在
 [WebSocket 接口第七阶段报告](../reports/paseo-websocket-surface-phase-7.md)；Git checkout 状态、Diff、
 订阅和提交历史记录在
-[WebSocket 接口第八阶段报告](../reports/paseo-websocket-surface-phase-8.md)。
+[WebSocket 接口第八阶段报告](../reports/paseo-websocket-surface-phase-8.md)；Git 分支、commit、merge、pull、
+push、discard 与 stash 记录在
+[WebSocket 接口第九阶段报告](../reports/paseo-websocket-surface-phase-9.md)。

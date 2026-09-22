@@ -1,8 +1,9 @@
 use serde_json::json;
 use server_application::checkout::{
-    AheadBehind, Checkout, CheckoutCommit, CheckoutCommitFile, CheckoutCommitFileStatus,
-    CheckoutCommits, CheckoutDiff, CheckoutDiffCompare, CheckoutFailureKind, CheckoutRuntime,
-    CheckoutRuntimeError, CheckoutStatus, ParsedDiffFile,
+    AheadBehind, Checkout, CheckoutBranchResolution, CheckoutBranchSource,
+    CheckoutBranchSuggestion, CheckoutCommit, CheckoutCommitFile, CheckoutCommitFileStatus,
+    CheckoutCommits, CheckoutDiff, CheckoutDiffCompare, CheckoutFailureKind, CheckoutMergeStrategy,
+    CheckoutRuntime, CheckoutRuntimeError, CheckoutStashEntry, CheckoutStatus, ParsedDiffFile,
 };
 
 use super::execute;
@@ -63,6 +64,106 @@ fn commits_project_files_and_malformed_requests_are_rejected() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn branch_queries_and_mutations_project_paseo_shapes() {
+    let checkout = checkout();
+    let validation = execute(
+        &checkout,
+        "checkout.branch.validate.request",
+        json!({"cwd":"/repo","branchName":"feature"}),
+    )
+    .unwrap()
+    .value;
+    assert_eq!(
+        validation,
+        json!({
+            "exists":true,"resolvedRef":"feature","isRemote":false,"error":null
+        })
+    );
+
+    let suggestions = execute(
+        &checkout,
+        "checkout.branch.suggestions.request",
+        json!({"cwd":"/repo"}),
+    )
+    .unwrap()
+    .value;
+    assert_eq!(suggestions["branches"], json!(["feature"]));
+    assert_eq!(suggestions["branchDetails"][0]["hasLocal"], true);
+
+    let switched = execute(
+        &checkout,
+        "checkout.branch.switch.request",
+        json!({"cwd":"/repo","branch":"feature"}),
+    )
+    .unwrap()
+    .value;
+    assert_eq!(switched["source"], "local");
+    assert_eq!(switched["success"], true);
+
+    let renamed = execute(
+        &checkout,
+        "checkout.rename_branch.request",
+        json!({"cwd":"/repo","branch":"renamed"}),
+    )
+    .unwrap()
+    .value;
+    assert_eq!(renamed["currentBranch"], "renamed");
+}
+
+#[test]
+fn mutation_defaults_and_inline_errors_match_paseo() {
+    let checkout = checkout();
+    for (method, params) in [
+        (
+            "checkout.commit.request",
+            json!({"cwd":"/repo","message":"ship"}),
+        ),
+        ("checkout.merge.request", json!({"cwd":"/repo"})),
+        ("checkout.merge_from_base.request", json!({"cwd":"/repo"})),
+        ("checkout.pull.request", json!({"cwd":"/repo"})),
+        ("checkout.push.request", json!({"cwd":"/repo"})),
+        (
+            "checkout.discard_changes.request",
+            json!({"cwd":"/repo","paths":["a.txt"]}),
+        ),
+        ("checkout.stash.save.request", json!({"cwd":"/repo"})),
+        (
+            "checkout.stash.pop.request",
+            json!({"cwd":"/repo","stashIndex":0}),
+        ),
+    ] {
+        let result = execute(&checkout, method, params).unwrap().value;
+        assert_eq!(result, json!({"cwd":"/repo","success":true,"error":null}));
+    }
+    let failed = execute(&checkout, "checkout.commit.request", json!({"cwd":"fail"}))
+        .unwrap()
+        .value;
+    assert_eq!(failed["success"], false);
+    assert_eq!(failed["error"]["code"], "NOT_GIT_REPO");
+    assert!(
+        execute(
+            &checkout,
+            "checkout.discard_changes.request",
+            json!({"cwd":"/repo","paths":[]}),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn stash_list_defaults_to_paseo_only_and_preserves_entry_shape() {
+    let result = execute(
+        &checkout(),
+        "checkout.stash.list.request",
+        json!({"cwd":"/repo"}),
+    )
+    .unwrap()
+    .value;
+    assert_eq!(result["entries"][0]["branch"], "feature");
+    assert_eq!(result["entries"][0]["isPaseo"], true);
 }
 
 fn checkout() -> Checkout {
@@ -141,6 +242,108 @@ impl CheckoutRuntime for FakeCheckout {
     ) -> Result<Option<ParsedDiffFile>, CheckoutRuntimeError> {
         fail(cwd)?;
         Ok(None)
+    }
+
+    fn validate_branch(
+        &self,
+        cwd: &str,
+        branch: &str,
+    ) -> Result<CheckoutBranchResolution, CheckoutRuntimeError> {
+        fail(cwd)?;
+        Ok(CheckoutBranchResolution::Local(branch.to_owned()))
+    }
+
+    fn branch_suggestions(
+        &self,
+        cwd: &str,
+        _query: Option<&str>,
+        _limit: usize,
+    ) -> Result<Vec<CheckoutBranchSuggestion>, CheckoutRuntimeError> {
+        fail(cwd)?;
+        Ok(vec![CheckoutBranchSuggestion {
+            name: "feature".to_owned(),
+            committer_date: 1,
+            has_local: true,
+            has_remote: false,
+            local_ahead: None,
+            local_behind: None,
+        }])
+    }
+
+    fn switch_branch(
+        &self,
+        cwd: &str,
+        _branch: &str,
+    ) -> Result<CheckoutBranchSource, CheckoutRuntimeError> {
+        fail(cwd)?;
+        Ok(CheckoutBranchSource::Local)
+    }
+
+    fn rename_branch(&self, cwd: &str, branch: &str) -> Result<String, CheckoutRuntimeError> {
+        fail(cwd)?;
+        Ok(branch.to_owned())
+    }
+
+    fn commit(
+        &self,
+        cwd: &str,
+        _message: &str,
+        _add_all: bool,
+    ) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn merge_to_base(
+        &self,
+        cwd: &str,
+        _base_ref: Option<&str>,
+        _strategy: CheckoutMergeStrategy,
+        _require_clean_target: bool,
+    ) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn merge_from_base(
+        &self,
+        cwd: &str,
+        _base_ref: Option<&str>,
+        _require_clean_target: bool,
+    ) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn pull(&self, cwd: &str) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn push(&self, cwd: &str) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn discard_changes(&self, cwd: &str, _paths: &[String]) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn stash_save(&self, cwd: &str, _branch: Option<&str>) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn stash_pop(&self, cwd: &str, _index: usize) -> Result<(), CheckoutRuntimeError> {
+        fail(cwd)
+    }
+
+    fn stashes(
+        &self,
+        cwd: &str,
+        _paseo_only: bool,
+    ) -> Result<Vec<CheckoutStashEntry>, CheckoutRuntimeError> {
+        fail(cwd)?;
+        Ok(vec![CheckoutStashEntry {
+            index: 0,
+            message: "paseo-auto-stash: feature".to_owned(),
+            branch: Some("feature".to_owned()),
+            is_paseo: true,
+        }])
     }
 }
 
