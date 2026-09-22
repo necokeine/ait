@@ -9,16 +9,20 @@ mod catalog;
 use chrono::{SecondsFormat, Utc};
 use server_api::{Api, LifecycleIntent, Services};
 use server_application::Projects;
+use server_application::agent_runtime::AgentRuntimeDirectory;
 use server_application::agents::Agents;
 use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
 use server_application::worktrees::Worktrees;
+use server_ports::agent_runtime::AgentRuntimeRegistry;
 use server_ports::registry::{ProjectRegistry, WorkspaceRegistry};
 use server_ports::{ProjectError, ProjectStorage, ProjectStore};
 use server_storage::daemon_config::FileDaemonConfigStore;
-use server_storage::registry::{FileBackedProjectRegistry, FileBackedWorkspaceRegistry};
+use server_storage::registry::{
+    FileBackedAgentRuntimeRegistry, FileBackedProjectRegistry, FileBackedWorkspaceRegistry,
+};
 use server_storage::workspace_labels::FileWorkspaceLabelStore;
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::{
@@ -56,85 +60,14 @@ impl Server {
         let listener = TcpListener::bind(config.listen)
             .await
             .context("bind server listener")?;
+        let token = config.token.clone();
         let address = listener
             .local_addr()
             .context("read server listener address")?;
         let (instance, services) = tokio::task::spawn_blocking(move || {
             let instance = Arc::new(InstanceLease::acquire(&config.data_dir)?);
-            let project_registry =
-                FileBackedProjectRegistry::new(config.data_dir.join("projects/projects.json"));
-            let workspace_registry =
-                FileBackedWorkspaceRegistry::new(config.data_dir.join("projects/workspaces.json"));
-            project_registry.initialize()?;
-            workspace_registry.initialize()?;
-            let workspace_labels = WorkspaceLabels::new(Box::new(FileWorkspaceLabelStore::new(
-                &config.data_dir,
-                workspace_registry.clone(),
-            )))?;
-            let catalog = SqliteCatalog::open(&config.data_dir)?;
-            let workspace = LocalWorkspace::for_user()?;
-            let agents = Agents::new(Box::new(catalog::OwnedCatalog {
-                catalog: SqliteCatalog::open(&config.data_dir)?,
-                _instance: instance.clone(),
-            }));
-            let projects = Projects::new(
-                Box::new(catalog),
-                Box::new(OwnedStorage {
-                    _instance: instance.clone(),
-                }),
-                Box::new(workspace),
-            );
-            let server_id = instance.server_id.to_string();
-            let worktrees = Worktrees::new(
-                Box::new(project_registry.clone()),
-                Box::new(workspace_registry.clone()),
-                Box::new(LocalManagedWorktrees::new(
-                    config.data_dir.join("worktrees"),
-                )),
-                server_id.clone(),
-            );
-            let workspace_automation = WorkspaceAutomation::new(
-                Box::new(workspace_registry.clone()),
-                Box::new(LocalWorkspaceAutomation::default()),
-            );
-            let daemon = Daemon::new(
-                DaemonRuntime {
-                    server_id: server_id.clone(),
-                    version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                    pid: std::process::id(),
-                    executable: std::env::current_exe()
-                        .context("resolve server executable")?
-                        .to_string_lossy()
-                        .into_owned(),
-                    started_at: Some(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
-                    listen: address.to_string(),
-                },
-                Box::new(FileDaemonConfigStore::with_defaults(
-                    config.data_dir.join("config.json"),
-                )),
-            );
-            daemon.get_config().context("initialize daemon config")?;
-            Ok::<_, anyhow::Error>((
-                instance,
-                Services {
-                    projects: Some(projects),
-                    agents: Some(agents),
-                    daemon: Some(daemon),
-                    directory: Some(Directory::new(
-                        Box::new(project_registry),
-                        Box::new(workspace_registry),
-                        Box::new(LocalDirectorySource),
-                        Box::new(LocalProjectConfigStore),
-                        Box::new(LocalProjectIconStore::new(
-                            config.data_dir.join("projects/icons"),
-                        )),
-                        server_id,
-                    )),
-                    workspace_labels: Some(workspace_labels),
-                    workspace_automation: Some(workspace_automation),
-                    worktrees: Some(worktrees),
-                },
-            ))
+            let services = compose_services(&config, address, &instance)?;
+            Ok::<_, anyhow::Error>((instance, services))
         })
         .await
         .context("join server initialization")??;
@@ -142,7 +75,7 @@ impl Server {
             address,
             instance.server_id.to_string(),
             instance.instance_id.to_string(),
-            config.token,
+            token,
             services,
         )?;
         Ok(Self {
@@ -206,6 +139,90 @@ impl Server {
         result?;
         Ok(lifecycle_intent)
     }
+}
+
+fn compose_services(
+    config: &Config,
+    address: SocketAddr,
+    instance: &Arc<InstanceLease>,
+) -> anyhow::Result<Services> {
+    let project_registry =
+        FileBackedProjectRegistry::new(config.data_dir.join("projects/projects.json"));
+    let workspace_registry =
+        FileBackedWorkspaceRegistry::new(config.data_dir.join("projects/workspaces.json"));
+    project_registry.initialize()?;
+    workspace_registry.initialize()?;
+    let agent_runtime_registry =
+        FileBackedAgentRuntimeRegistry::new(config.data_dir.join("agents/agents.json"));
+    agent_runtime_registry.initialize()?;
+    let workspace_labels = WorkspaceLabels::new(Box::new(FileWorkspaceLabelStore::new(
+        &config.data_dir,
+        workspace_registry.clone(),
+    )))?;
+    let agents = Agents::new(Box::new(catalog::OwnedCatalog {
+        catalog: SqliteCatalog::open(&config.data_dir)?,
+        _instance: instance.clone(),
+    }));
+    let projects = Projects::new(
+        Box::new(SqliteCatalog::open(&config.data_dir)?),
+        Box::new(OwnedStorage {
+            _instance: instance.clone(),
+        }),
+        Box::new(LocalWorkspace::for_user()?),
+    );
+    let server_id = instance.server_id.to_string();
+    let worktrees = Worktrees::new(
+        Box::new(project_registry.clone()),
+        Box::new(workspace_registry.clone()),
+        Box::new(LocalManagedWorktrees::new(
+            config.data_dir.join("worktrees"),
+        )),
+        server_id.clone(),
+    );
+    let workspace_automation = WorkspaceAutomation::new(
+        Box::new(workspace_registry.clone()),
+        Box::new(LocalWorkspaceAutomation::default()),
+    );
+    let daemon = Daemon::new(
+        DaemonRuntime {
+            server_id: server_id.clone(),
+            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            pid: std::process::id(),
+            executable: std::env::current_exe()
+                .context("resolve server executable")?
+                .to_string_lossy()
+                .into_owned(),
+            started_at: Some(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+            listen: address.to_string(),
+        },
+        Box::new(FileDaemonConfigStore::with_defaults(
+            config.data_dir.join("config.json"),
+        )),
+    );
+    daemon.get_config().context("initialize daemon config")?;
+    Ok(Services {
+        projects: Some(projects),
+        agents: Some(agents),
+        agent_runtime: Some(AgentRuntimeDirectory::new(
+            Box::new(agent_runtime_registry),
+            Box::new(workspace_registry.clone()),
+            Box::new(project_registry.clone()),
+        )),
+        daemon: Some(daemon),
+        directory: Some(Directory::new(
+            Box::new(project_registry),
+            Box::new(workspace_registry),
+            Box::new(LocalDirectorySource),
+            Box::new(LocalProjectConfigStore),
+            Box::new(LocalProjectIconStore::new(
+                config.data_dir.join("projects/icons"),
+            )),
+            server_id,
+        )),
+        workspace_labels: Some(workspace_labels),
+        workspace_automation: Some(workspace_automation),
+        worktrees: Some(worktrees),
+    })
 }
 
 #[cfg(test)]

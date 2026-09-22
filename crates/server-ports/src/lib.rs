@@ -1,6 +1,7 @@
 //! Blocking adapter contracts. Callers must execute these ports outside async reactor threads.
 
 pub mod agent;
+pub mod agent_runtime;
 pub mod daemon;
 pub mod provisioning;
 pub mod registry;

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod agent;
+pub mod agent_lifecycle;
 pub mod daemon;
 pub mod directory;
 pub mod methods;
@@ -189,7 +190,7 @@ pub enum ErrorCode {
     StaleOwner,
     /// Project storage, filesystem, or Git failed.
     ProjectIo,
-    /// No configured Agent has this ID.
+    /// No Agent has this ID.
     AgentNotFound,
     /// No immutable Agent revision has this number.
     AgentRevisionNotFound,
@@ -245,7 +246,7 @@ impl ErrorCode {
             Self::ProjectNotOpen => "Project is not open in this server",
             Self::StaleOwner => "Project owner has changed",
             Self::ProjectIo => "Project I/O failed; retry with the same key",
-            Self::AgentNotFound => "Agent is not configured",
+            Self::AgentNotFound => "Agent was not found",
             Self::AgentRevisionNotFound => "Agent revision does not exist",
             Self::AgentRevisionConflict => "Agent revision has changed",
             Self::AgentDefaultConflict => "Default Agent selection has changed",

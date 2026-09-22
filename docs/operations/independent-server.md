@@ -1,13 +1,14 @@
 # 独立 server：使用与协议
 
 > 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签、
-> Worktree 与 Workspace setup/script
+> Worktree、Workspace setup/script 与 Agent runtime 目录/元数据生命周期
 > WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
 
-`server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目和版本化 Agent 配置。
-内部代码全部来自新建的八个 `server-*` package；Session、Run 和 Provider 执行尚未实现。
+`server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目、Paseo Agent runtime
+snapshot 和版本化 Agent 配置。内部代码全部来自新建的八个 `server-*` package；Session、Run 和
+Provider 执行尚未实现。
 项目必须使用独立 clone，不能与旧 daemon 共管同一目录或共享 Git worktree。
 
 ## 启动
@@ -225,6 +226,37 @@ history/input；stdout/stderr 不进入
 Terminal API。service proxy URL 与 health 尚未实现，相关字段为 null/省略，hostname 暂用 script key。
 实时 `workspace_setup_progress` / `script_status_update` event、`worktree.terminals` 自动启动和 archive
 teardown 等待后续订阅、Terminal 与 proxy 切片。完整差异见第五阶段报告。
+
+## Agent runtime 目录与元数据生命周期
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `agent.list.request` | 可选 `scope:"active"`、`filter`、`sort`、`page` | placement 后的 unarchived Agent rows 与 `pageInfo` |
+| `agent.history.get.request` | 可选 `filter`、`search`、`sort`、`page` | 默认包含 archived Agent 的 rows 与 `pageInfo` |
+| `agent.get.request` | `agentId`（完整 ID、唯一前缀或精确标题） | nullable `agent`、nullable `project` 与 inline `error` |
+| `agent.update.request` | `agentId`，以及非空 `name` 或 `labels` | `agentId`、`accepted` 与 inline `error` |
+| `agent.archive.request` | `agentId` | `agentId`、`archivedAt` |
+| `agent.delete.request` | `agentId` | 已永久删除的 `agentId` |
+| `agent.detach.request` | `agentId` | `agentId`、`accepted` 与 inline `error` |
+| `agent.attention.clear.request` | 一个 `agentId` 或 Agent ID 数组 | 原 selection 与更新后的 `agents` |
+| `agent.items.close.request` | `agentIds`；当前 `terminalIds` 必须为空 | 成功归档的 `agents` 与空 `terminals` |
+
+runtime snapshot 保存于 `<data-dir>/agents/agents.json`，shape 来自 Paseo `StoredAgentRecord`，与下文
+ADR-024 Agent preset catalog 是两类数据。list/history 会用 Workspace/Project registry 生成 placement，
+过滤 internal 或 placement 已不存在的记录；支持 label、project key、status、attention、thinking、archive
+过滤，最多每页 200 条。当前 cursor 是十进制 offset。get 仍可读取 placement 已不存在的公共记录。
+
+archive 会清除 attention，把 running/initializing snapshot 收敛为 idle，并递归归档同 Workspace 的 delegated
+child；跨 Workspace 或带 open-tab label 的 child 会 detach。delegated Agent 的 detach 删除
+`paseo.parent-agent-id` 和全部 `paseo.open-agent-tab.*` label，已经没有 parent label 时保持不变。delete
+是永久删除；close-items 独立处理每个 Agent，按 Paseo 行为只返回成功项。
+
+当前没有 Provider runtime，所有 stored Agent 都以 `providerUnavailable:true` 返回，`persistence` 为 null，
+没有 active turn、available modes 或 pending permissions。list 请求中的 `subscribe`/`sync` 和非空
+`terminalIds` 返回 `unsupported_capability`。Provider 创建、恢复、消息、取消、timeline 与真正 Terminal
+关闭等待后续切片。完整对齐范围和差异见第六阶段报告。
 
 ## 项目操作（M1 首个切片）
 

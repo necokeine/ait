@@ -212,6 +212,12 @@ async fn route_request(
         } else {
             Err(ErrorCode::UnsupportedCapability)
         }
+    } else if server_protocol::agent_lifecycle::CAPABILITIES.contains(&method) {
+        if supported {
+            crate::agent_runtime::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
     } else if server_protocol::directory::CAPABILITIES.contains(&method)
         || server_protocol::project_config::CAPABILITIES.contains(&method)
         || server_protocol::project_icon::CAPABILITIES.contains(&method)

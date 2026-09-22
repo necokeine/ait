@@ -1,5 +1,6 @@
 //! Authenticated local HTTP and WebSocket transport for the independent server.
 
+mod agent_runtime;
 mod agents;
 mod auth;
 mod connection;
@@ -24,6 +25,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use secrecy::SecretString;
 use server_application::Projects;
+use server_application::agent_runtime::AgentRuntimeDirectory;
 use server_application::agents::Agents;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
@@ -63,6 +65,7 @@ struct Shared {
     lifecycle_intent: Mutex<Option<LifecycleIntent>>,
     projects: Option<Arc<Mutex<Projects>>>,
     agents: Option<Arc<Mutex<Agents>>>,
+    agent_runtime: Option<Arc<Mutex<AgentRuntimeDirectory>>>,
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
@@ -78,6 +81,8 @@ pub struct Services {
     pub projects: Option<Projects>,
     /// Versioned Agent presets and explicit default selection.
     pub agents: Option<Agents>,
+    /// Paseo Agent runtime directory and metadata lifecycle use cases.
+    pub agent_runtime: Option<AgentRuntimeDirectory>,
     /// Daemon status, mutable configuration, diagnostics, and update boundary.
     pub daemon: Option<Daemon>,
     /// Paseo-shaped project and workspace registries.
@@ -186,6 +191,9 @@ impl Api {
                     .projects
                     .map(|projects| Arc::new(Mutex::new(projects))),
                 agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
+                agent_runtime: services
+                    .agent_runtime
+                    .map(|directory| Arc::new(Mutex::new(directory))),
                 daemon: services.daemon.map(|daemon| Arc::new(Mutex::new(daemon))),
                 directory: services
                     .directory
@@ -266,6 +274,10 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
         (
             services.agents.is_some(),
             server_protocol::agent::CAPABILITIES,
+        ),
+        (
+            services.agent_runtime.is_some(),
+            server_protocol::agent_lifecycle::CAPABILITIES,
         ),
         (
             services.daemon.is_some(),

@@ -1,6 +1,7 @@
 //! Pure project facts and versioned Agent configuration for the independent server.
 
 pub mod agent;
+pub mod agent_runtime;
 pub mod registry;
 pub mod workspace_labels;
 

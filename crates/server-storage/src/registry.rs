@@ -1,12 +1,14 @@
 //! File-backed Paseo Project/Workspace registries; hosts must hold a data-directory lease.
 //! Rust translation and modifications: see third-party/paseo/NOTICE and LICENSE.
 
+mod agent_runtime;
 mod core;
 mod listeners;
 mod paths;
 mod projects;
 mod workspaces;
 
+pub use agent_runtime::FileBackedAgentRuntimeRegistry;
 pub use projects::FileBackedProjectRegistry;
 pub use workspaces::FileBackedWorkspaceRegistry;
 

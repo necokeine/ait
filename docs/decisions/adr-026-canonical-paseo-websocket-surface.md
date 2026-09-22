@@ -133,11 +133,31 @@ PTY terminal history/input、service proxy/health、实时 setup/script event、
 仍需要后续 Terminal、订阅与 proxy 边界。这些字段按 Paseo shape 返回 null/省略或使用逻辑 terminal ID，
 并在阶段报告逐项列出，不能声称已具备对应能力。
 
+## 第六阶段能力
+
+第六阶段生产组装公开 9 个 Agent runtime 目录与元数据生命周期方法：
+`agent.list.request`、`agent.history.get.request`、`agent.get.request`、`agent.update.request`、
+`agent.archive.request`、`agent.delete.request`、`agent.detach.request`、
+`agent.attention.clear.request` 和 `agent.items.close.request`。历史下划线名称只保留在 catalog，
+不作为 wire alias。
+
+`server-domain::agent_runtime::PersistedAgentRuntimeRecord` 独立复制 Paseo `StoredAgentRecord` 的 durable
+shape，与 ADR-024 的 Agent preset/revision 类型分开。`server-ports::agent_runtime::AgentRuntimeRegistry`
+隔离存储；`server-storage::FileBackedAgentRuntimeRegistry` 通过 `<data-dir>/agents/agents.json` 的原子 JSON
+数组保存 snapshot。`server-application::agent_runtime::AgentRuntimeDirectory` 组合 Agent、Workspace 与
+Project registry，负责 placement、过滤、排序、分页、ID/prefix/title 查找以及更新、attention、detach、
+archive cascade 和 delete。
+
+Provider runtime 尚未建立，所以 stored snapshot 统一投影为 `providerUnavailable:true`，不公开 persistence
+resume handle，也没有 active turn、dynamic mode 或 pending permission。create/resume/import/send/wait/cancel、
+provider execution、timeline 和 config apply 等方法继续保持未发布。list 的 subscribe/sync、close-items 的
+非空 terminal 集合返回 `unsupported_capability`，避免把尚未建立的事件或 Terminal 生命周期伪装为成功。
+
 ## 后果与后续
 
-后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent、terminal、
-provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新
-crate 边界和生命周期完成前保持未发布。
+后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
+provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新 crate 边界和
+生命周期完成前保持未发布。
 
 当前 Paseo 对齐差异、每个第一阶段方法的状态和验证结果记录在
 [WebSocket 接口第一阶段报告](../reports/paseo-websocket-surface-phase-1.md)；daemon/config 的行为、
@@ -148,4 +168,6 @@ crate 边界和生命周期完成前保持未发布。
 真实 Git 验证与剩余差异记录在
 [WebSocket 接口第四阶段报告](../reports/paseo-websocket-surface-phase-4.md)；Workspace setup/script
 执行、测试和 Terminal/Proxy 差异记录在
-[WebSocket 接口第五阶段报告](../reports/paseo-websocket-surface-phase-5.md)。
+[WebSocket 接口第五阶段报告](../reports/paseo-websocket-surface-phase-5.md)；Agent runtime 目录、
+元数据生命周期与 Provider runtime 差异记录在
+[WebSocket 接口第六阶段报告](../reports/paseo-websocket-surface-phase-6.md)。

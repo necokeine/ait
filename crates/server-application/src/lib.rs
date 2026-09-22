@@ -1,5 +1,6 @@
 //! Project use cases composed exclusively from the independent domain and ports.
 
+pub mod agent_runtime;
 pub mod agents;
 pub mod daemon;
 pub mod directory;
