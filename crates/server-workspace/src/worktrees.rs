@@ -5,6 +5,9 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{DateTime, Utc};
+use server_ports::workspace_recovery::{
+    ArchivedWorktreeRestore, WorkspaceRecoveryRuntime, WorkspaceRecoveryRuntimeError,
+};
 use server_ports::worktrees::{
     CreatedManagedWorktree, ManagedWorktreeCreate, ManagedWorktreeInfo, ManagedWorktrees,
     OwnedWorktree, WorktreeCreateMode, WorktreeError,
@@ -221,6 +224,88 @@ impl ManagedWorktrees for LocalManagedWorktrees {
     }
 }
 
+impl WorkspaceRecoveryRuntime for LocalManagedWorktrees {
+    fn is_directory(&self, path: &str) -> bool {
+        Path::new(path).is_dir()
+    }
+
+    fn restore_worktree(
+        &self,
+        input: &ArchivedWorktreeRestore,
+    ) -> Result<(), WorkspaceRecoveryRuntimeError> {
+        let previous_root = normalized_absolute(Path::new(&input.previous_worktree_root))
+            .map_err(map_recovery_error)?;
+        let workspace_cwd =
+            normalized_absolute(Path::new(&input.workspace_cwd)).map_err(map_recovery_error)?;
+        let relative_cwd = workspace_cwd
+            .strip_prefix(&previous_root)
+            .map(Path::to_path_buf)
+            .map_err(|_| {
+                WorkspaceRecoveryRuntimeError::Invalid(format!(
+                    "Workspace directory is outside its saved worktree: {}",
+                    input.workspace_cwd
+                ))
+            })?;
+        if previous_root
+            .try_exists()
+            .map_err(|error| WorkspaceRecoveryRuntimeError::Io(error.to_string()))?
+        {
+            return Err(WorkspaceRecoveryRuntimeError::Invalid(format!(
+                "Archived worktree path already exists: {}",
+                previous_root.display()
+            )));
+        }
+        let slug = previous_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                WorkspaceRecoveryRuntimeError::Invalid(
+                    "Archived worktree path has no valid directory name".to_owned(),
+                )
+            })?
+            .to_owned();
+        let _ = git(
+            Path::new(&input.source_repo_root),
+            &["worktree", "prune"],
+            READ_TIMEOUT,
+            &[0],
+        );
+        let created = self
+            .create(&ManagedWorktreeCreate {
+                cwd: input.source_repo_root.clone(),
+                slug,
+                mode: WorktreeCreateMode::Restore {
+                    branch_name: input.branch.clone(),
+                    base_ref: input.base_ref.clone(),
+                },
+            })
+            .map_err(map_recovery_error)?;
+        let created_root =
+            normalized_absolute(Path::new(&created.worktree_path)).map_err(map_recovery_error)?;
+        let restored_cwd = created_root.join(relative_cwd);
+        if created_root != previous_root || !restored_cwd.is_dir() {
+            let _ = self.remove(&OwnedWorktree {
+                path: created.worktree_path,
+                repo_root: Some(created.repo_root),
+            });
+            let message = if created_root == previous_root {
+                format!(
+                    "Selected project directory is missing from the restored worktree: {}",
+                    restored_cwd.display()
+                )
+            } else {
+                format!(
+                    "Recreated worktree diverged from {}: {}",
+                    previous_root.display(),
+                    created_root.display()
+                )
+            };
+            return Err(WorkspaceRecoveryRuntimeError::Invalid(message));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct Repository {
     source_cwd: PathBuf,
@@ -299,6 +384,42 @@ fn create_plan(
                 comparison_base_ref: None,
                 arguments: vec![branch_name.clone()],
             })
+        }
+        WorktreeCreateMode::Restore {
+            branch_name,
+            base_ref,
+        } => {
+            validate_branch(repo_root, branch_name)?;
+            ensure_local_branch(repo_root, branch_name)?;
+            if branch_checked_out(repo_root, branch_name)? {
+                return Err(WorktreeError::BranchAlreadyCheckedOut(branch_name.clone()));
+            }
+            Ok(CreatePlan {
+                branch_name: branch_name.clone(),
+                comparison_base_ref: base_ref
+                    .as_deref()
+                    .and_then(|base_ref| resolve_base(repo_root, base_ref).ok()),
+                arguments: vec![branch_name.clone()],
+            })
+        }
+    }
+}
+
+fn map_recovery_error(error: WorktreeError) -> WorkspaceRecoveryRuntimeError {
+    match error {
+        WorktreeError::BranchAlreadyCheckedOut(branch) => {
+            WorkspaceRecoveryRuntimeError::BranchAlreadyCheckedOut(branch)
+        }
+        WorktreeError::UnknownBranch(branch) => {
+            WorkspaceRecoveryRuntimeError::UnknownBranch(branch)
+        }
+        WorktreeError::Invalid(message) => WorkspaceRecoveryRuntimeError::Invalid(message),
+        WorktreeError::Io(message) => WorkspaceRecoveryRuntimeError::Io(message),
+        error @ (WorktreeError::NotGitRepository
+        | WorktreeError::NotAllowed
+        | WorktreeError::MissingCheckoutTarget
+        | WorktreeError::ForgeUnavailable) => {
+            WorkspaceRecoveryRuntimeError::Invalid(error.to_string())
         }
     }
 }

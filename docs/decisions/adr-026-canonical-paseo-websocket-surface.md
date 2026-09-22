@@ -153,6 +153,26 @@ resume handle，也没有 active turn、dynamic mode 或 pending permission。cr
 provider execution、timeline 和 config apply 等方法继续保持未发布。list 的 subscribe/sync、close-items 的
 非空 terminal 集合返回 `unsupported_capability`，避免把尚未建立的事件或 Terminal 生命周期伪装为成功。
 
+## 第七阶段能力
+
+第七阶段生产组装公开 4 个 Workspace 状态方法：`workspace.clear_attention.request`、
+`workspace.mark_unread.request`、`workspace.recovery.inspect.request` 和
+`workspace.recovery.restore.request`。
+
+`server-application::workspace_state::WorkspaceState` 组合共享的 Agent runtime、Workspace、Project
+registry 与新的 `WorkspaceRecoveryRuntime` port。clear-attention 按 Workspace ID 所有权处理一个或多个
+Workspace，保留 permission attention；mark-unread 只选择 active Workspace 中最新的 finished/read root
+Agent，并用单调时间戳持久化 `finished` attention。
+
+recovery inspect 复制 Paseo 的六个 unavailable reason，并区分现存目录的 `unarchive` 与已删除 managed
+worktree 的 `restore`。本地 adapter 用保存的 main repository、worktree root、branch、base 和相对 cwd
+恢复原路径；branch 已在别处 checkout 时明确拒绝，不创建后缀 branch。成功后取消 Workspace 与 Project
+archive，并在 response 后发布 `workspace.update`。
+
+attention 事件广播、live Provider pending-permission 状态、Project Git placement 重探测、merged change-request
+latch、Paseo worktree metadata 以及 plugin recovery hook 仍等待对应的新事件、Provider、Forge 和 Plugin 边界；
+第七阶段报告记录这些差异。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
@@ -170,4 +190,6 @@ provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法�
 执行、测试和 Terminal/Proxy 差异记录在
 [WebSocket 接口第五阶段报告](../reports/paseo-websocket-surface-phase-5.md)；Agent runtime 目录、
 元数据生命周期与 Provider runtime 差异记录在
-[WebSocket 接口第六阶段报告](../reports/paseo-websocket-surface-phase-6.md)。
+[WebSocket 接口第六阶段报告](../reports/paseo-websocket-surface-phase-6.md)；Workspace attention、
+归档恢复与真实 Git 验证记录在
+[WebSocket 接口第七阶段报告](../reports/paseo-websocket-surface-phase-7.md)。

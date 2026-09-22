@@ -240,6 +240,102 @@ fn repositories_receive_distinct_hashed_roots() {
     );
 }
 
+#[test]
+fn restores_the_exact_saved_branch_and_nested_workspace_directory() {
+    let fixture = Fixture::new();
+    let nested = fixture.repository.join("packages/app");
+    std::fs::create_dir_all(&nested).expect("nested directory");
+    std::fs::write(nested.join("README.md"), "app\n").expect("nested file");
+    run(&fixture.repository, &["add", "."]);
+    run(
+        &fixture.repository,
+        &[
+            "-c",
+            "user.name=Server Test",
+            "-c",
+            "user.email=server@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "nested",
+        ],
+    );
+    let adapter = fixture.adapter();
+    let created = adapter
+        .create(&ManagedWorktreeCreate {
+            cwd: path(&fixture.repository),
+            slug: "restore-feature".to_owned(),
+            mode: WorktreeCreateMode::BranchOff {
+                base_ref: Some("main".to_owned()),
+                branch_name: "restore-feature".to_owned(),
+            },
+        })
+        .expect("create restore fixture");
+    let workspace_cwd = Path::new(&created.worktree_path).join("packages/app");
+    adapter
+        .remove(&OwnedWorktree {
+            path: created.worktree_path.clone(),
+            repo_root: Some(created.repo_root.clone()),
+        })
+        .expect("archive worktree");
+
+    adapter
+        .restore_worktree(&ArchivedWorktreeRestore {
+            source_repo_root: created.repo_root,
+            previous_worktree_root: created.worktree_path.clone(),
+            workspace_cwd: path(&workspace_cwd),
+            branch: "restore-feature".to_owned(),
+            base_ref: Some("refs/heads/main".to_owned()),
+        })
+        .expect("restore worktree");
+
+    assert!(workspace_cwd.is_dir());
+    assert_eq!(branch(Path::new(&created.worktree_path)), "restore-feature");
+}
+
+#[test]
+fn restore_rejects_a_branch_checked_out_elsewhere_without_inventing_a_suffix() {
+    let fixture = Fixture::new();
+    let adapter = fixture.adapter();
+    let created = adapter
+        .create(&ManagedWorktreeCreate {
+            cwd: path(&fixture.repository),
+            slug: "restore-conflict".to_owned(),
+            mode: WorktreeCreateMode::BranchOff {
+                base_ref: Some("main".to_owned()),
+                branch_name: "restore-conflict".to_owned(),
+            },
+        })
+        .expect("create restore fixture");
+    adapter
+        .remove(&OwnedWorktree {
+            path: created.worktree_path.clone(),
+            repo_root: Some(created.repo_root.clone()),
+        })
+        .expect("archive worktree");
+    run(
+        &fixture.repository,
+        &["switch", "--quiet", "restore-conflict"],
+    );
+
+    let restored = adapter.restore_worktree(&ArchivedWorktreeRestore {
+        source_repo_root: created.repo_root,
+        previous_worktree_root: created.worktree_path.clone(),
+        workspace_cwd: created.worktree_path.clone(),
+        branch: "restore-conflict".to_owned(),
+        base_ref: Some("main".to_owned()),
+    });
+
+    assert_eq!(
+        restored,
+        Err(WorkspaceRecoveryRuntimeError::BranchAlreadyCheckedOut(
+            "restore-conflict".to_owned()
+        ))
+    );
+    assert!(!Path::new(&created.worktree_path).exists());
+    assert_eq!(branch(&fixture.repository), "restore-conflict");
+}
+
 fn run(root: &Path, arguments: &[&str]) {
     let output = Command::new("git")
         .args(arguments)

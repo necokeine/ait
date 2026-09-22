@@ -7,6 +7,7 @@ pub mod provisioning;
 pub mod registry;
 pub mod workspace_automation;
 pub mod workspace_labels;
+pub mod workspace_recovery;
 pub mod worktrees;
 
 use server_domain::{GitCommit, MessageId, OperationId, OwnerEpoch, Project, ProjectId};

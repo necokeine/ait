@@ -11,6 +11,7 @@ mod outbound;
 mod projects;
 mod workspace_automation;
 mod workspace_labels;
+mod workspace_state;
 mod worktrees;
 
 use std::net::SocketAddr;
@@ -31,6 +32,7 @@ use server_application::daemon::Daemon;
 use server_application::directory::Directory;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
+use server_application::workspace_state::WorkspaceState;
 use server_application::worktrees::Worktrees;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
@@ -70,6 +72,7 @@ struct Shared {
     directory: Option<Arc<Mutex<Directory>>>,
     workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
     workspace_automation: Option<Arc<Mutex<WorkspaceAutomation>>>,
+    workspace_state: Option<Arc<Mutex<WorkspaceState>>>,
     worktrees: Option<Arc<Mutex<Worktrees>>>,
     jobs: Arc<Semaphore>,
 }
@@ -91,6 +94,8 @@ pub struct Services {
     pub workspace_labels: Option<WorkspaceLabels>,
     /// Paseo workspace setup and configured script runtime.
     pub workspace_automation: Option<WorkspaceAutomation>,
+    /// Workspace attention and archived-placement recovery use cases.
+    pub workspace_state: Option<WorkspaceState>,
     /// Paseo-owned Git worktree lifecycle use cases.
     pub worktrees: Option<Worktrees>,
 }
@@ -204,6 +209,9 @@ impl Api {
                 workspace_automation: services
                     .workspace_automation
                     .map(|automation| Arc::new(Mutex::new(automation))),
+                workspace_state: services
+                    .workspace_state
+                    .map(|workspace_state| Arc::new(Mutex::new(workspace_state))),
                 worktrees: services
                     .worktrees
                     .map(|worktrees| Arc::new(Mutex::new(worktrees))),
@@ -306,6 +314,10 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
         (
             services.workspace_automation.is_some(),
             server_protocol::workspace_automation::CAPABILITIES,
+        ),
+        (
+            services.workspace_state.is_some(),
+            server_protocol::workspace_state::CAPABILITIES,
         ),
     ];
     for (_, group) in groups.iter().filter(|(installed, _)| *installed) {

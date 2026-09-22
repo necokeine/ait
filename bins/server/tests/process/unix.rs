@@ -59,6 +59,9 @@ mod daemon;
 #[path = "workspace_labels.rs"]
 mod workspace_labels;
 
+#[path = "workspace_state.rs"]
+mod workspace_state;
+
 #[path = "worktrees.rs"]
 mod worktrees;
 

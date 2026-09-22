@@ -11,7 +11,9 @@
   lifecycle、registry 协调与测试；[第五阶段报告](reports/paseo-websocket-surface-phase-5.md)记录
   5 个 Workspace setup/script 方法、真实子进程、信任准入及 Terminal/Proxy 明确差异；
   [第六阶段报告](reports/paseo-websocket-surface-phase-6.md)记录 9 个 Agent runtime 目录与元数据生命周期
-  方法、Paseo `StoredAgentRecord`、归档级联及 Provider runtime 明确差异。
+  方法、Paseo `StoredAgentRecord`、归档级联及 Provider runtime 明确差异；
+  [第七阶段报告](reports/paseo-websocket-surface-phase-7.md)记录 4 个 Workspace attention/recovery 方法、
+  精确分支 worktree 恢复及事件/placement reconciliation 差异。
 
 - [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
   新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。

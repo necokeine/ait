@@ -30,6 +30,13 @@ pub enum WorktreeCreateMode {
         /// Existing branch name.
         branch_name: String,
     },
+    /// Restore an archived worktree using its exact saved branch.
+    Restore {
+        /// Existing local branch; it must not be checked out elsewhere.
+        branch_name: String,
+        /// Saved comparison base, retained when it still resolves.
+        base_ref: Option<String>,
+    },
 }
 
 /// Input to the atomic Git portion of managed worktree creation.

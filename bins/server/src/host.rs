@@ -15,6 +15,7 @@ use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
+use server_application::workspace_state::WorkspaceState;
 use server_application::worktrees::Worktrees;
 use server_ports::agent_runtime::AgentRuntimeRegistry;
 use server_ports::registry::{ProjectRegistry, WorkspaceRegistry};
@@ -183,6 +184,14 @@ fn compose_services(
         Box::new(workspace_registry.clone()),
         Box::new(LocalWorkspaceAutomation::default()),
     );
+    let workspace_state = WorkspaceState::new(
+        Box::new(agent_runtime_registry.clone()),
+        Box::new(workspace_registry.clone()),
+        Box::new(project_registry.clone()),
+        Box::new(LocalManagedWorktrees::new(
+            config.data_dir.join("worktrees"),
+        )),
+    );
     let daemon = Daemon::new(
         DaemonRuntime {
             server_id: server_id.clone(),
@@ -221,6 +230,7 @@ fn compose_services(
         )),
         workspace_labels: Some(workspace_labels),
         workspace_automation: Some(workspace_automation),
+        workspace_state: Some(workspace_state),
         worktrees: Some(worktrees),
     })
 }

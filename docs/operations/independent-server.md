@@ -1,7 +1,7 @@
 # 独立 server：使用与协议
 
 > 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签、
-> Worktree、Workspace setup/script 与 Agent runtime 目录/元数据生命周期
+> Worktree、Workspace setup/script、Workspace attention/recovery 与 Agent runtime 目录/元数据生命周期
 > WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
@@ -226,6 +226,34 @@ history/input；stdout/stderr 不进入
 Terminal API。service proxy URL 与 health 尚未实现，相关字段为 null/省略，hostname 暂用 script key。
 实时 `workspace_setup_progress` / `script_status_update` event、`worktree.terminals` 自动启动和 archive
 teardown 等待后续订阅、Terminal 与 proxy 切片。完整差异见第五阶段报告。
+
+## Workspace attention 与归档恢复
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `workspace.clear_attention.request` | `workspaceId` 字符串或字符串数组 | flattened `clearedAgentIds`、逐 Workspace `results`、`success` 与 inline `error` |
+| `workspace.mark_unread.request` | `workspaceId` | nullable `markedAgentId`、`success` 与 inline `error` |
+| `workspace.recovery.inspect.request` | `workspaceId` | `recoverable` 或 `unavailable` 的 `state` |
+| `workspace.recovery.restore.request` | `workspaceId` | `accepted` 与 inline `error`；成功后发送 `workspace.update` |
+
+clear-attention 只处理 active Workspace 中归属 ID 完全匹配、未归档、非 internal 且没有 permission reason
+的 Agent。批量请求逐项执行，单个 Workspace 失败不会撤销已经提交的其他项。mark-unread 沿
+`paseo.parent-agent-id` 找到 Workspace root，跳过循环、缺失 parent、running、已 unread 或 archived Agent，
+在候选中选择更新时间最新的 finished Agent；写入 `requiresAttention:true`、`attentionReason:"finished"`。
+
+recovery inspect 的稳定 unavailable reason 为 `workspace_not_found`、`workspace_not_archived`、
+`project_not_found`、`project_directory_missing`、`workspace_directory_missing` 和
+`worktree_branch_missing`。现存目录直接 unarchive；删除的 managed worktree 从保存的 main repository 和
+branch 恢复到原 worktree root，并验证原 Workspace 相对目录仍存在。分支已在其他 checkout 使用时恢复失败，
+不会创建另一条带后缀的 branch。恢复成功会同时取消 owning Project 的 archive。
+
+当前 Agent 是 durable stored snapshot，没有 live Provider pending-permission 集合；clear-attention 以
+`attentionReason:"permission"` 作为 fail-safe 排除条件。attention 修改尚无 Agent/Workspace subscription
+event；recovery 只发布统一 envelope 的 `workspace.update`。恢复不会重新探测 Project kind/project key、
+merged change-request latch，不写 Paseo metadata，也不调用 plugin recovery hook。完整对齐范围和差异见
+第七阶段报告。
 
 ## Agent runtime 目录与元数据生命周期
 

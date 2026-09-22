@@ -7,9 +7,9 @@ use server_ports::registry::RegistryError;
 use super::core::FileRegistry;
 
 /// Atomically persisted registry of Paseo Agent runtime snapshots.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileBackedAgentRuntimeRegistry {
-    file: FileRegistry<PersistedAgentRuntimeRecord>,
+    file: std::sync::Arc<FileRegistry<PersistedAgentRuntimeRecord>>,
 }
 
 impl FileBackedAgentRuntimeRegistry {
@@ -17,7 +17,7 @@ impl FileBackedAgentRuntimeRegistry {
     #[must_use]
     pub fn new(path: PathBuf) -> Self {
         Self {
-            file: FileRegistry::new(path, |record| &record.id),
+            file: std::sync::Arc::new(FileRegistry::new(path, |record| &record.id)),
         }
     }
 }

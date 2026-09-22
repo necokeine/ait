@@ -265,6 +265,14 @@ async fn route_request(
         } else {
             Err(ErrorCode::UnsupportedCapability)
         }
+    } else if server_protocol::workspace_state::CAPABILITIES.contains(&method) {
+        if !supported {
+            return (Err(ErrorCode::UnsupportedCapability), None, None);
+        }
+        return match crate::workspace_state::dispatch(method, params, state).await {
+            Ok(dispatched) => (Ok(dispatched.value), None, dispatched.event),
+            Err(error) => (Err(error), None, None),
+        };
     } else {
         dispatch(method, &params, state, capabilities, subscriptions)
     };
