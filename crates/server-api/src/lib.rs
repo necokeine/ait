@@ -3,6 +3,7 @@
 mod agent_runtime;
 mod agents;
 mod auth;
+mod checkout;
 mod connection;
 mod daemon;
 mod directory;
@@ -28,6 +29,7 @@ use secrecy::SecretString;
 use server_application::Projects;
 use server_application::agent_runtime::AgentRuntimeDirectory;
 use server_application::agents::Agents;
+use server_application::checkout::Checkout;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
 use server_application::workspace_automation::WorkspaceAutomation;
@@ -67,6 +69,7 @@ struct Shared {
     lifecycle_intent: Mutex<Option<LifecycleIntent>>,
     projects: Option<Arc<Mutex<Projects>>>,
     agents: Option<Arc<Mutex<Agents>>>,
+    checkout: Option<Arc<Mutex<Checkout>>>,
     agent_runtime: Option<Arc<Mutex<AgentRuntimeDirectory>>>,
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
@@ -84,6 +87,8 @@ pub struct Services {
     pub projects: Option<Projects>,
     /// Versioned Agent presets and explicit default selection.
     pub agents: Option<Agents>,
+    /// Git checkout status, diff, refresh, and history use cases.
+    pub checkout: Option<Checkout>,
     /// Paseo Agent runtime directory and metadata lifecycle use cases.
     pub agent_runtime: Option<AgentRuntimeDirectory>,
     /// Daemon status, mutable configuration, diagnostics, and update boundary.
@@ -196,6 +201,9 @@ impl Api {
                     .projects
                     .map(|projects| Arc::new(Mutex::new(projects))),
                 agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
+                checkout: services
+                    .checkout
+                    .map(|checkout| Arc::new(Mutex::new(checkout))),
                 agent_runtime: services
                     .agent_runtime
                     .map(|directory| Arc::new(Mutex::new(directory))),
@@ -286,6 +294,10 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
         (
             services.agent_runtime.is_some(),
             server_protocol::agent_lifecycle::CAPABILITIES,
+        ),
+        (
+            services.checkout.is_some(),
+            server_protocol::checkout::CAPABILITIES,
         ),
         (
             services.daemon.is_some(),

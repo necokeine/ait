@@ -5,6 +5,7 @@ use serde_json::Value;
 
 pub mod agent;
 pub mod agent_lifecycle;
+pub mod checkout;
 pub mod daemon;
 pub mod directory;
 pub mod methods;

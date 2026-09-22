@@ -173,6 +173,29 @@ attention 事件广播、live Provider pending-permission 状态、Project Git p
 latch、Paseo worktree metadata 以及 plugin recovery hook 仍等待对应的新事件、Provider、Forge 和 Plugin 边界；
 第七阶段报告记录这些差异。
 
+## 第八阶段能力
+
+第八阶段生产组装公开 7 个 checkout 读取与观察方法：`checkout.status.get.request`、
+`checkout.refresh.request`、`checkout.diff.get.request`、`checkout.diff.subscribe.request`、
+`checkout.diff.unsubscribe.request`、`checkout.commits.list.request` 和
+`checkout.commits.file_diff.request`。历史名称 `checkout_status_request`、
+`subscribe_checkout_diff_request` 与 `unsubscribe_checkout_diff_request` 只保留在 catalog；服务端 diff
+event 统一为 `checkout.diff.update`。
+
+`server-ports::checkout::CheckoutRuntime` 隔离阻塞 Git；`server-workspace::LocalCheckout` 通过有时限、
+有输出预算且不经过 shell 的 Git 子进程实现 status、merge-base diff、untracked diff、commit history 与
+单文件 commit diff。commit list 保留全部 Workspace commit，再附加最多十条从 fork point 开始的 base
+context，并标记 remote/base reachability 与文件状态。owned worktree 必须同时满足 managed root 的
+`<repository-hash>/<slug>` 布局和 linked-worktree Git common-dir 事实。
+
+diff subscription 属于物理 WebSocket connection；初始 snapshot response 写出后才启动 200 ms bounded
+polling，同一 ID 替换旧任务，显式 unsubscribe、通用 release、断开和 drain 均取消任务。snapshot 以完整
+响应 fingerprint 去重，变化时发布 `checkout.diff.update`。
+
+Paseo 的 filesystem observer/workspace snapshot/debounce、Forge cache invalidation、worktree metadata base
+ref、syntax highlighting、per-file diff budget 和丰富 remote/forge resolution 尚未移植。第八阶段报告记录
+这些行为差异和真实 Git 测试范围。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
@@ -192,4 +215,6 @@ provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法�
 元数据生命周期与 Provider runtime 差异记录在
 [WebSocket 接口第六阶段报告](../reports/paseo-websocket-surface-phase-6.md)；Workspace attention、
 归档恢复与真实 Git 验证记录在
-[WebSocket 接口第七阶段报告](../reports/paseo-websocket-surface-phase-7.md)。
+[WebSocket 接口第七阶段报告](../reports/paseo-websocket-surface-phase-7.md)；Git checkout 状态、Diff、
+订阅和提交历史记录在
+[WebSocket 接口第八阶段报告](../reports/paseo-websocket-surface-phase-8.md)。

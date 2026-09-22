@@ -62,6 +62,9 @@ mod workspace_labels;
 #[path = "workspace_state.rs"]
 mod workspace_state;
 
+#[path = "checkout.rs"]
+mod checkout;
+
 #[path = "worktrees.rs"]
 mod worktrees;
 

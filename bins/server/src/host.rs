@@ -11,6 +11,7 @@ use server_api::{Api, LifecycleIntent, Services};
 use server_application::Projects;
 use server_application::agent_runtime::AgentRuntimeDirectory;
 use server_application::agents::Agents;
+use server_application::checkout::Checkout;
 use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
 use server_application::workspace_automation::WorkspaceAutomation;
@@ -27,8 +28,8 @@ use server_storage::registry::{
 use server_storage::workspace_labels::FileWorkspaceLabelStore;
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::{
-    LocalDirectorySource, LocalManagedWorktrees, LocalProjectConfigStore, LocalProjectIconStore,
-    LocalWorkspace, LocalWorkspaceAutomation,
+    LocalCheckout, LocalDirectorySource, LocalManagedWorktrees, LocalProjectConfigStore,
+    LocalProjectIconStore, LocalWorkspace, LocalWorkspaceAutomation,
 };
 use tokio::net::TcpListener;
 
@@ -212,6 +213,9 @@ fn compose_services(
     Ok(Services {
         projects: Some(projects),
         agents: Some(agents),
+        checkout: Some(Checkout::new(Box::new(LocalCheckout::new(
+            config.data_dir.join("worktrees"),
+        )))),
         agent_runtime: Some(AgentRuntimeDirectory::new(
             Box::new(agent_runtime_registry),
             Box::new(workspace_registry.clone()),

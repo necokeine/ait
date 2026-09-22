@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod agent_runtime;
+pub mod checkout;
 pub mod daemon;
 pub mod provisioning;
 pub mod registry;

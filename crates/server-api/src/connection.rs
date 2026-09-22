@@ -12,6 +12,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::Shared;
+use crate::checkout::CheckoutDiffSubscription;
 use crate::outbound::{Outbound, QueueError};
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -19,15 +20,26 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_SUBSCRIPTIONS: usize = 16;
 
+type RouteResult = (
+    Result<Value, ErrorCode>,
+    Option<crate::workspace_labels::PendingSubscription>,
+    Option<crate::checkout::PendingSubscription>,
+    Option<Value>,
+);
+
 #[derive(Default)]
 struct ConnectionSubscriptions {
+    diffs: BTreeMap<String, CheckoutDiffSubscription>,
     status: BTreeSet<String>,
     labels: BTreeMap<String, WorkspaceLabelSubscription>,
 }
 
 impl ConnectionSubscriptions {
     fn len(&self) -> usize {
-        self.status.len().saturating_add(self.labels.len())
+        self.status
+            .len()
+            .saturating_add(self.labels.len())
+            .saturating_add(self.diffs.len())
     }
 }
 
@@ -143,15 +155,16 @@ async fn process_request(
     capabilities: &[String],
     subscriptions: &mut ConnectionSubscriptions,
 ) -> Result<(), QueueError> {
-    let (result, pending_label_subscription, workspace_event) = route_request(
-        &method,
-        params,
-        state,
-        outbound,
-        capabilities,
-        subscriptions,
-    )
-    .await;
+    let (result, pending_label_subscription, pending_diff_subscription, workspace_event) =
+        route_request(
+            &method,
+            params,
+            state,
+            outbound,
+            capabilities,
+            subscriptions,
+        )
+        .await;
     let value = match result {
         Ok(value) => value,
         Err(code) => return error(outbound, Some(request_id), code),
@@ -171,6 +184,10 @@ async fn process_request(
     if let Some(pending) = pending_label_subscription {
         let (subscription_id, subscription) = pending.activate()?;
         subscriptions.labels.insert(subscription_id, subscription);
+    }
+    if let Some(pending) = pending_diff_subscription {
+        let (subscription_id, subscription) = pending.activate();
+        subscriptions.diffs.insert(subscription_id, subscription);
     }
     if let Some(subscription_id) = status_subscription_id {
         outbound.send(&ServerMessage::Status {
@@ -194,11 +211,7 @@ async fn route_request(
     outbound: &Outbound,
     capabilities: &[String],
     subscriptions: &mut ConnectionSubscriptions,
-) -> (
-    Result<Value, ErrorCode>,
-    Option<crate::workspace_labels::PendingSubscription>,
-    Option<Value>,
-) {
+) -> RouteResult {
     let supported = capabilities.iter().any(|capability| capability == method);
     let result = if server_protocol::project_lease::CAPABILITIES.contains(&method) {
         if supported {
@@ -235,7 +248,7 @@ async fn route_request(
         }
     } else if server_protocol::workspace_labels::CAPABILITIES.contains(&method) {
         if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None, None);
+            return (Err(ErrorCode::UnsupportedCapability), None, None, None);
         }
         if method == "workspace.label.list.request"
             && params
@@ -243,21 +256,23 @@ async fn route_request(
                 .is_some_and(|subscribe| !subscribe.is_null())
             && subscriptions.len() >= MAX_SUBSCRIPTIONS
         {
-            return (Err(ErrorCode::ResourceExhausted), None, None);
+            return (Err(ErrorCode::ResourceExhausted), None, None, None);
         }
         return match crate::workspace_labels::dispatch(method, params, state, outbound.clone())
             .await
         {
-            Ok(dispatched) => (Ok(dispatched.value), dispatched.subscription, None),
-            Err(error) => (Err(error), None, None),
+            Ok(dispatched) => (Ok(dispatched.value), dispatched.subscription, None, None),
+            Err(error) => (Err(error), None, None, None),
         };
+    } else if server_protocol::checkout::CAPABILITIES.contains(&method) {
+        return route_checkout(method, params, state, outbound, supported, subscriptions).await;
     } else if server_protocol::worktrees::CAPABILITIES.contains(&method) {
         if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None, None);
+            return (Err(ErrorCode::UnsupportedCapability), None, None, None);
         }
         return match crate::worktrees::dispatch(method, params, state).await {
-            Ok(dispatched) => (Ok(dispatched.value), None, dispatched.event),
-            Err(error) => (Err(error), None, None),
+            Ok(dispatched) => (Ok(dispatched.value), None, None, dispatched.event),
+            Err(error) => (Err(error), None, None, None),
         };
     } else if server_protocol::workspace_automation::CAPABILITIES.contains(&method) {
         if supported {
@@ -267,16 +282,64 @@ async fn route_request(
         }
     } else if server_protocol::workspace_state::CAPABILITIES.contains(&method) {
         if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None, None);
+            return (Err(ErrorCode::UnsupportedCapability), None, None, None);
         }
         return match crate::workspace_state::dispatch(method, params, state).await {
-            Ok(dispatched) => (Ok(dispatched.value), None, dispatched.event),
-            Err(error) => (Err(error), None, None),
+            Ok(dispatched) => (Ok(dispatched.value), None, None, dispatched.event),
+            Err(error) => (Err(error), None, None, None),
         };
     } else {
         dispatch(method, &params, state, capabilities, subscriptions)
     };
-    (result, None, None)
+    (result, None, None, None)
+}
+
+async fn route_checkout(
+    method: &str,
+    params: Value,
+    state: &Shared,
+    outbound: &Outbound,
+    supported: bool,
+    subscriptions: &mut ConnectionSubscriptions,
+) -> RouteResult {
+    if !supported {
+        return (Err(ErrorCode::UnsupportedCapability), None, None, None);
+    }
+    if method == "checkout.diff.unsubscribe.request" {
+        let request = serde_json::from_value::<
+            server_protocol::checkout::CheckoutDiffUnsubscribeRequest,
+        >(params);
+        let request = match request {
+            Ok(request) if valid_id(&request.subscription_id) => request,
+            _ => return (Err(ErrorCode::InvalidMessage), None, None, None),
+        };
+        if subscriptions
+            .diffs
+            .remove(&request.subscription_id)
+            .is_none()
+        {
+            return (Err(ErrorCode::SubscriptionNotFound), None, None, None);
+        }
+        return (
+            Ok(json!({"subscriptionId":request.subscription_id})),
+            None,
+            None,
+            None,
+        );
+    }
+    if method == "checkout.diff.subscribe.request" {
+        let replacement = params
+            .get("subscriptionId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| subscriptions.diffs.contains_key(id));
+        if subscriptions.len() >= MAX_SUBSCRIPTIONS && !replacement {
+            return (Err(ErrorCode::ResourceExhausted), None, None, None);
+        }
+    }
+    match crate::checkout::dispatch(method, params, state, outbound.clone()).await {
+        Ok(dispatched) => (Ok(dispatched.value), None, dispatched.subscription, None),
+        Err(error) => (Err(error), None, None, None),
+    }
 }
 
 async fn receive(stream: &mut SplitStream<WebSocket>) -> Option<Result<ClientMessage, ErrorCode>> {
@@ -359,6 +422,7 @@ fn dispatch(
             }
             subscriptions.status.remove(&request.subscription_id);
             subscriptions.labels.remove(&request.subscription_id);
+            subscriptions.diffs.remove(&request.subscription_id);
             serde_json::to_value(SubscriptionReleaseResult {
                 subscription_id: request.subscription_id,
             })

@@ -2,6 +2,7 @@
 
 pub mod agent_runtime;
 pub mod agents;
+pub mod checkout;
 pub mod daemon;
 pub mod directory;
 pub mod workspace_automation;

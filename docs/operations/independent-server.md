@@ -1,8 +1,8 @@
 # 独立 server：使用与协议
 
 > 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签、
-> Worktree、Workspace setup/script、Workspace attention/recovery 与 Agent runtime 目录/元数据生命周期
-> WebSocket 接口，详见
+> Worktree、Workspace setup/script、Workspace attention/recovery、Git checkout 读取/订阅与 Agent runtime
+> 目录/元数据生命周期 WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
 
@@ -254,6 +254,32 @@ branch 恢复到原 worktree root，并验证原 Workspace 相对目录仍存在
 event；recovery 只发布统一 envelope 的 `workspace.update`。恢复不会重新探测 Project kind/project key、
 merged change-request latch，不写 Paseo metadata，也不调用 plugin recovery hook。完整对齐范围和差异见
 第七阶段报告。
+
+## Git checkout 状态、Diff 与提交历史
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `checkout.status.get.request` | `cwd` | Git/root/branch/dirty/base/upstream/remote/managed-worktree 状态与 inline `error` |
+| `checkout.refresh.request` | `cwd` | `success` 与 inline `error` |
+| `checkout.diff.get.request` | `cwd`、`compare` | path-sorted structured `files`、inline `error`、可选 `diffTooLarge` |
+| `checkout.diff.subscribe.request` | 可选 `subscriptionId`、`cwd`、`compare` | 初始 snapshot；变化后发送 `checkout.diff.update` |
+| `checkout.diff.unsubscribe.request` | `subscriptionId` | 已释放的 `subscriptionId` |
+| `checkout.commits.list.request` | `cwd` | Workspace commits、最多十条 base context、remote/base 标记与文件统计 |
+| `checkout.commits.file_diff.request` | `cwd`、hex `sha`、repository-relative `path` | nullable textual structured diff 与 inline `error` |
+
+`compare.mode` 支持 `uncommitted` 和 `base`；后者比较 merge-base 到 `HEAD`，不会混入 working tree
+修改。uncommitted 模式合并 tracked、staged 与 untracked 文件。Git 子进程不经过 shell，清理继承的
+`GIT_*` 环境，禁用 optional locks/fsmonitor/color，限制为 10 秒和有界输出。managed ownership 只在
+checkout 是 `<data-dir>/worktrees/<repository-hash>/<slug>` 下的 linked worktree 时成立。
+
+diff 订阅属于当前 WebSocket connection；同一 ID 再次订阅会替换旧订阅，显式 unsubscribe、通用
+`subscription.release.request`、连接断开和 server drain 都会取消轮询任务。当前实现每 200 ms 读取并按
+snapshot fingerprint 去重；Paseo 使用 filesystem observer、workspace snapshot 和 150 ms debounce。
+refresh 只是强制执行一次新 Git 读取，尚不触发 Forge cache invalidation、workspace snapshot 广播或 diff
+fanout。结构化 diff 不生成 syntax-highlight tokens；aggregate 超过 4 MiB 时整体返回
+`diffTooLarge:true`，还没有 Paseo 的 per-file budget/placeholder。完整对齐范围见第八阶段报告。
 
 ## Agent runtime 目录与元数据生命周期
 

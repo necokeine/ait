@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-23",
+  "revision": {
+    "base": "a0dcbdb",
+    "state": "base plus the reviewed working-tree changes for ADR-026 phase 8"
+  },
+  "toolchain": {
+    "platform": "macOS 26.6.2 (Darwin 25.6.0 arm64)",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "0.8.4"
+  },
+  "measurement": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase8-cov-target cargo llvm-cov -p server-bin -p server-api -p server-application -p server-domain -p server-ports -p server-protocol -p server-storage -p server-workspace --json --summary-only --output-path /tmp/paseo-ws-phase8-coverage-raw.json --no-fail-fast -j1",
+    "scope": "all new server packages, default features; production Rust sources; test/build sources filtered by cargo-llvm-cov",
+    "tests": {
+      "targets": 12,
+      "passed": 240,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "exclusions": []
+  },
+  "coverage": {
+    "serverPackages": {
+      "coveredLines": 10582,
+      "totalLines": 12169,
+      "linePercent": 86.95866546141836
+    },
+    "crates": {
+      "server-bin": { "coveredLines": 360, "totalLines": 372, "linePercent": 96.7741935483871 },
+      "server-api": { "coveredLines": 2899, "totalLines": 3348, "linePercent": 86.58900836320191 },
+      "server-application": { "coveredLines": 2529, "totalLines": 2904, "linePercent": 87.08677685950413 },
+      "server-domain": { "coveredLines": 219, "totalLines": 219, "linePercent": 100.0 },
+      "server-ports": { "coveredLines": 16, "totalLines": 16, "linePercent": 100.0 },
+      "server-protocol": { "coveredLines": 574, "totalLines": 693, "linePercent": 82.82828282828282 },
+      "server-storage": { "coveredLines": 1734, "totalLines": 1873, "linePercent": 92.57875066737854 },
+      "server-workspace": { "coveredLines": 2251, "totalLines": 2744, "linePercent": 82.033527696793 }
+    },
+    "phaseEightDedicatedModules": {
+      "total": { "coveredLines": 1004, "totalLines": 1196, "linePercent": 83.94648829431438 },
+      "crates/server-api/src/checkout.rs": { "coveredLines": 302, "totalLines": 356, "linePercent": 84.8314606741573 },
+      "crates/server-application/src/checkout.rs": { "coveredLines": 27, "totalLines": 27, "linePercent": 100.0 },
+      "crates/server-workspace/src/checkout.rs": { "coveredLines": 675, "totalLines": 813, "linePercent": 83.02583025830258 }
+    },
+    "protocolAndPortFiles": [
+      "crates/server-protocol/src/checkout.rs",
+      "crates/server-ports/src/checkout.rs"
+    ]
+  },
+  "baseline": {
+    "artifact": "paseo-websocket-surface-phase-7-coverage.json",
+    "serverPackages": {
+      "coveredLines": 9497,
+      "totalLines": 10886,
+      "linePercent": 87.2404923755282
+    }
+  },
+  "workspaceRegression": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase8-workspace-target cargo test --workspace --no-fail-fast -j1",
+    "ordinaryTargets": 72,
+    "passed": 730,
+    "failed": 0,
+    "ignored": 5
+  },
+  "transientValidationObservation": {
+    "failure": "existing server-workspace exclusive-lease test returned Busy during two earlier shared-target package runs",
+    "resolution": "the exact test, serial server-workspace target, isolated coverage run, and final isolated full-workspace regression passed"
+  }
+}
