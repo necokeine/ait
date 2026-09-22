@@ -11,7 +11,9 @@ pub mod project;
 pub mod project_config;
 pub mod project_icon;
 pub mod project_lease;
+pub mod subscription;
 pub mod workspace;
+pub mod workspace_labels;
 
 /// Maximum incoming JSON message size, including fragmented messages.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -22,7 +24,12 @@ pub const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum simultaneous upgraded connections.
 pub const MAX_CONNECTIONS: usize = 64;
 /// Capabilities implemented in the first server milestone.
-pub const CAPABILITIES: &[&str] = &["server.info", "connection.ping", "server.status.subscribe"];
+pub const CAPABILITIES: &[&str] = &[
+    "server.info",
+    "connection.ping",
+    "server.status.subscribe",
+    "subscription.release.request",
+];
 
 /// Supported protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +211,14 @@ pub enum ErrorCode {
     DaemonConfigInvalid,
     /// Daemon configuration or runtime I/O failed.
     DaemonIo,
+    /// Normalized workspace label name is empty.
+    LabelNameEmpty,
+    /// No workspace label has the requested name.
+    LabelNotFound,
+    /// Another workspace label already owns the requested name.
+    LabelNameTaken,
+    /// A compound label/catalog write has an uncertain durable outcome.
+    WorkspaceLabelStorageUncertain,
 }
 
 impl ErrorCode {
@@ -240,6 +255,12 @@ impl ErrorCode {
             Self::RegistryIo => "Project or workspace registry I/O failed",
             Self::DaemonConfigInvalid => "Daemon configuration is invalid",
             Self::DaemonIo => "Daemon configuration or runtime I/O failed",
+            Self::LabelNameEmpty => "Workspace label name cannot be empty",
+            Self::LabelNotFound => "Workspace label was not found",
+            Self::LabelNameTaken => "A workspace label with that name already exists",
+            Self::WorkspaceLabelStorageUncertain => {
+                "Workspace label storage outcome is uncertain; restart before retrying"
+            }
         }
     }
 
@@ -256,6 +277,7 @@ impl ErrorCode {
                 | Self::AgentIo
                 | Self::RegistryIo
                 | Self::DaemonIo
+                | Self::WorkspaceLabelStorageUncertain
         )
     }
 }
@@ -352,6 +374,13 @@ pub enum ServerMessage {
         subscription_id: String,
         /// Current admission state.
         lifecycle: Lifecycle,
+    },
+    /// Ephemeral method-tagged event owned by a connection subscription.
+    Event {
+        /// Canonical event method.
+        method: String,
+        /// Method-specific payload.
+        params: Value,
     },
 }
 

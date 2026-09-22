@@ -34,6 +34,40 @@ impl FileBackedWorkspaceRegistry {
     fn notify(&self, mutation: &WorkspaceMutation) -> Result<(), RegistryError> {
         self.listeners.notify(mutation, true)
     }
+
+    pub(crate) fn commit_workspace_label_mutation(
+        &self,
+        updates: &[PersistedWorkspaceRecord],
+        force_persist: bool,
+        before_write: impl FnOnce(&[PersistedWorkspaceRecord]) -> Result<(), RegistryError>,
+        after_write: impl FnOnce() -> Result<(), RegistryError>,
+        publish: bool,
+    ) -> Result<(), RegistryError> {
+        self.file.mutate_with(
+            |records| {
+                for update in updates {
+                    if !records.contains_key(&update.workspace_id) {
+                        return Err(RegistryError::InvalidRecord);
+                    }
+                    records.insert(update.workspace_id.clone(), update.clone());
+                }
+                Ok(((), force_persist))
+            },
+            before_write,
+            after_write,
+        )?;
+        if publish {
+            for update in updates {
+                self.notify(&WorkspaceMutation {
+                    kind: MutationKind::Upsert,
+                    workspace_id: update.workspace_id.clone(),
+                    workspace: Some(update.clone()),
+                    expects_initial_agent: None,
+                })?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl WorkspaceRegistry for FileBackedWorkspaceRegistry {

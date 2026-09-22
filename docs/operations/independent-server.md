@@ -1,6 +1,7 @@
 # 独立 server：使用与协议
 
-> 当前 binary 已接通规范化后的 Paseo Project/Workspace 与 daemon/config WebSocket 接口，详见
+> 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config 与 Workspace 标签
+> WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
 
@@ -99,6 +100,7 @@ RPC 格式：
 | `connection.ping` | `nonce`，1–128 字节、无控制字符 | 回显 nonce |
 | `server.status.subscribe` | 空 | 新的 `subscription_id`；随后发送 ready 状态 |
 | `server.status.unsubscribe` | `subscription_id` | `unsubscribed: true`；只能取消本连接订阅 |
+| `subscription.release.request` | `subscriptionId` | 幂等释放本连接的 connection-owned 订阅 |
 
 状态通知形如 `{"type":"status","subscription_id":"…","lifecycle":"ready"}`。
 每连接最多 16 个订阅，断开即清理，重连需要重新订阅。退出时 best-effort 发出 `draining`。
@@ -129,6 +131,38 @@ legacy 名称 `get_daemon_config_request`、`set_daemon_config_request`、
 `restart_server_request`、`shutdown_server_request` 不作为 alias，返回 `method_not_found`。
 外部 SIGINT/SIGTERM 与 WebSocket lifecycle 请求共用 15 秒 drain 预算。restart 保留 `server_id`，
 生成新的 `instance_id`；使用端口 0 时系统可能分配新的实际端口。
+
+## Workspace 标签
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `workspace.label.list.request` | 可选 `sync:{generation,afterSeq}`；订阅时加 `subscribe:{}` | `labels`、`sync`，订阅时另有服务端 `subscriptionId` |
+| `workspace.label.assignment.set.request` | `workspaceId`、`label:{name,color}`、`assigned` | 权威 label 与完整 `workspaceLabels` |
+| `workspace.label.update.request` | `name`，可选 `newName` / `color` | 原子编辑后的 label 与受影响 Workspace 数 |
+| `workspace.label.delete.inspect.request` | `name` | active/archived Workspace 的受影响数量 |
+| `workspace.label.delete.request` | `name` | 删除 definition 和 assignments 后的受影响数量 |
+
+标签名会 trim 并折叠内部空白，以不区分大小写的 key 查找；同名已有 definition 时，其显示名和
+颜色优先。palette 为 `violet`、`sky`、`emerald`、`orange`、`pink`、`indigo`、`teal`、
+`red`、`amber`、`blue`。assignment 只接受 active Workspace；删除不存在的标签以及释放不存在的
+订阅均幂等成功。
+
+订阅 ID 由服务端分配；现代请求必须发送 `subscribe:{}`，不能提供 `subscriptionId`。同一连接可
+建立多个独立订阅。live update 使用统一 envelope：
+
+```json
+{"type":"event","method":"workspace.label.update","params":{"kind":"upsert","subscriptionId":"…","label":{"name":"QA","color":"blue"},"generation":"…","seq":1}}
+```
+
+客户端保存 `sync.generation` 和 `sync.headSeq` 作为下次 list 的 cursor。同一进程内且 cursor 仍在
+256 条 journal 窗口内时返回压缩后的 `changes`；进程重启、generation 不匹配、未来序号或过期
+cursor 返回完整 `snapshot`。调用 `subscription.release.request` 或断开连接后停止该订阅的推送。
+
+catalog 位于 `<data-dir>/projects/workspace-labels.json`。跨 catalog 与 `workspaces.json` 的写入使用
+`workspace-labels.transaction.json` 恢复；正常完成后 journal 会删除。出现
+`workspace_label_storage_uncertain` 时停止写入并重启 server，让启动恢复先确定一致状态。
 
 ## 项目操作（M1 首个切片）
 

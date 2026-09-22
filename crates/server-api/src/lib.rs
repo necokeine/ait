@@ -8,6 +8,7 @@ mod directory;
 mod jobs;
 mod outbound;
 mod projects;
+mod workspace_labels;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,7 @@ use server_application::Projects;
 use server_application::agents::Agents;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
+use server_application::workspace_labels::WorkspaceLabels;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -59,6 +61,7 @@ struct Shared {
     agents: Option<Arc<Mutex<Agents>>>,
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
+    workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
     jobs: Arc<Semaphore>,
 }
 
@@ -73,6 +76,8 @@ pub struct Services {
     pub daemon: Option<Daemon>,
     /// Paseo-shaped project and workspace registries.
     pub directory: Option<Directory>,
+    /// Paseo workspace label catalog, assignment, and subscription use cases.
+    pub workspace_labels: Option<WorkspaceLabels>,
 }
 
 /// Process lifecycle action requested through the WebSocket API.
@@ -187,6 +192,13 @@ impl Api {
                     .map(|method| (*method).to_owned()),
             );
         }
+        if services.workspace_labels.is_some() {
+            capabilities.extend(
+                server_protocol::workspace_labels::CAPABILITIES
+                    .iter()
+                    .map(|method| (*method).to_owned()),
+            );
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
@@ -213,6 +225,9 @@ impl Api {
                 directory: services
                     .directory
                     .map(|directory| Arc::new(Mutex::new(directory))),
+                workspace_labels: services
+                    .workspace_labels
+                    .map(|labels| Arc::new(Mutex::new(labels))),
                 jobs: Arc::new(Semaphore::new(1)),
             }),
         })

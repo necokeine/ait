@@ -62,6 +62,7 @@ async fn websocket_project_lifecycle_reconnect_and_validation() {
             agents: None,
             daemon: None,
             directory: None,
+            workspace_labels: None,
         },
     )
     .unwrap();

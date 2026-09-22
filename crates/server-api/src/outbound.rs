@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use server_protocol::{MAX_QUEUE_BYTES, MAX_QUEUE_MESSAGES, ServerMessage};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum QueueError {
@@ -17,9 +18,11 @@ pub(super) struct Queued {
     _bytes: OwnedSemaphorePermit,
 }
 
+#[derive(Clone)]
 pub(super) struct Outbound {
     sender: mpsc::Sender<Queued>,
     bytes: Arc<Semaphore>,
+    failed: CancellationToken,
 }
 
 impl Outbound {
@@ -29,12 +32,25 @@ impl Outbound {
             Self {
                 sender,
                 bytes: Arc::new(Semaphore::new(MAX_QUEUE_BYTES)),
+                failed: CancellationToken::new(),
             },
             receiver,
         )
     }
 
     pub fn send(&self, message: &ServerMessage) -> Result<(), QueueError> {
+        let result = self.try_send(message);
+        if result.is_err() {
+            self.failed.cancel();
+        }
+        result
+    }
+
+    pub fn failure(&self) -> CancellationToken {
+        self.failed.clone()
+    }
+
+    fn try_send(&self, message: &ServerMessage) -> Result<(), QueueError> {
         let text = serde_json::to_string(message)?;
         let count = u32::try_from(text.len()).map_err(|_| QueueError::Full)?;
         let bytes = self

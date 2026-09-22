@@ -53,6 +53,9 @@ mod directory;
 #[path = "daemon.rs"]
 mod daemon;
 
+#[path = "workspace_labels.rs"]
+mod workspace_labels;
+
 async fn ready(process: &mut Process, log: &Path) -> String {
     let start = Instant::now();
     loop {

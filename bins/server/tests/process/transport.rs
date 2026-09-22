@@ -23,7 +23,7 @@ pub(super) async fn connect(address: &str, capabilities: &[&str]) -> Socket {
     socket
 }
 
-async fn receive(socket: &mut Socket) -> Value {
+pub(super) async fn receive(socket: &mut Socket) -> Value {
     let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
         .await
         .unwrap()

@@ -6,6 +6,7 @@ pub mod daemon_config;
 mod migration;
 mod project;
 pub mod registry;
+pub mod workspace_labels;
 
 use std::path::Path;
 use std::time::Duration;

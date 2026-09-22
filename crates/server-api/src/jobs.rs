@@ -1,16 +1,15 @@
 use std::sync::{Arc, Mutex};
 
-use serde_json::Value;
 use server_protocol::ErrorCode;
 
 use crate::Shared;
 
-pub(super) async fn run<T: Send + 'static>(
+pub(super) async fn run<S: Send + 'static, R: Send + 'static>(
     state: &Shared,
-    service: Option<Arc<Mutex<T>>>,
+    service: Option<Arc<Mutex<S>>>,
     failure: ErrorCode,
-    execute: impl FnOnce(&mut T) -> Result<Value, ErrorCode> + Send + 'static,
-) -> Result<Value, ErrorCode> {
+    execute: impl FnOnce(&mut S) -> Result<R, ErrorCode> + Send + 'static,
+) -> Result<R, ErrorCode> {
     let service = service.ok_or(ErrorCode::UnsupportedCapability)?;
     // One short catalog/project job at a time. Tracking and admission survive
     // a disconnected response future and are serialized with shutdown.

@@ -76,6 +76,27 @@ config 的可写字段，未知 passthrough 字段不成为隐式设置入口。
 走同一 drain 边界。self-update 保留 Paseo 结果形状，但 standalone 安装没有包管理器 adapter，
 因此明确返回失败，不触发重启。
 
+## 第三阶段能力
+
+第三阶段生产组装公开 5 个 Workspace 标签方法：`workspace.label.list.request`、
+`workspace.label.assignment.set.request`、`workspace.label.update.request`、
+`workspace.label.delete.inspect.request` 和 `workspace.label.delete.request`；同时公开所有后续
+connection-owned 订阅共用的 `subscription.release.request`。
+
+标签 definition 是 host-wide catalog，Workspace 记录只保存名称 assignment。名称先折叠空白并
+trim，以不区分大小写的 key 比较；颜色限制为 Paseo 固定的十色 palette。重命名与改色是一个
+原子编辑，名称冲突时两个字段都不落盘；重命名和删除同时重写 active/archived Workspace 的
+assignment。删除检查与真正删除使用同一计数集合。
+
+`<data-dir>/projects/workspace-labels.json` 与 `workspaces.json` 通过
+`workspace-labels.transaction.json` 的 prepared/committed journal 协调。prepared 中断在重启时
+回滚两份文件；committed marker 只用于清理，不把旧 after-image 覆盖到更新的 Workspace。无法
+判断提交结果时冻结 registry 写入直到重启，并返回 `workspace_label_storage_uncertain`。
+
+标签 list 可携带 generation/sequence cursor 并选择订阅。服务端先建立监听，再返回一致的
+snapshot 或压缩 changes；响应发送完成后才放行 bootstrap 期间的 live update。一个连接可持有
+多个服务端分配 ID 的标签订阅，断开或 `subscription.release.request` 会独立释放对应监听。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 worktree、Agent、
@@ -85,4 +106,6 @@ crate 边界和生命周期完成前保持未发布。
 当前 Paseo 对齐差异、每个第一阶段方法的状态和验证结果记录在
 [WebSocket 接口第一阶段报告](../reports/paseo-websocket-surface-phase-1.md)；daemon/config 的行为、
 测试和安装边界记录在
-[WebSocket 接口第二阶段报告](../reports/paseo-websocket-surface-phase-2.md)。
+[WebSocket 接口第二阶段报告](../reports/paseo-websocket-surface-phase-2.md)；Workspace 标签、事务与
+订阅边界记录在
+[WebSocket 接口第三阶段报告](../reports/paseo-websocket-surface-phase-3.md)。

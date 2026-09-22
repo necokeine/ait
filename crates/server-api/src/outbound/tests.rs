@@ -15,6 +15,7 @@ fn count_budget_rejects_slow_consumer_and_releases_on_drop() {
         queue.send(&message(1)).unwrap();
     }
     assert!(matches!(queue.send(&message(1)), Err(QueueError::Full)));
+    assert!(queue.failed.is_cancelled());
     drop(receiver.try_recv().unwrap());
     queue.send(&message(1)).unwrap();
     drop(receiver);

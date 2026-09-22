@@ -91,6 +91,15 @@ impl<R: Clone + Serialize + DeserializeOwned> FileRegistry<R> {
         &self,
         update: impl FnOnce(&mut IndexMap<String, R>) -> Result<(T, bool), RegistryError>,
     ) -> Result<T, RegistryError> {
+        self.mutate_with(update, |_| Ok(()), || Ok(()))
+    }
+
+    pub(super) fn mutate_with<T>(
+        &self,
+        update: impl FnOnce(&mut IndexMap<String, R>) -> Result<(T, bool), RegistryError>,
+        before_write: impl FnOnce(&[R]) -> Result<(), RegistryError>,
+        after_write: impl FnOnce() -> Result<(), RegistryError>,
+    ) -> Result<T, RegistryError> {
         let mut state = self.loaded()?;
         if state.frozen {
             return Err(RegistryError::Frozen);
@@ -103,7 +112,10 @@ impl<R: Clone + Serialize + DeserializeOwned> FileRegistry<R> {
                 serde_json::to_vec_pretty(&records).map_err(|_| RegistryError::InvalidRecord)?;
             // Validate programmatically constructed records too (e.g. positive request numbers).
             serde_json::from_slice::<Vec<R>>(&bytes).map_err(|_| RegistryError::InvalidRecord)?;
+            let records = staged.values().cloned().collect::<Vec<_>>();
+            before_write(&records)?;
             (self.writer)(&self.path, &bytes)?;
+            after_write()?;
             state.records = staged;
         }
         Ok(result)

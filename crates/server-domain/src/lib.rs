@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod registry;
+pub mod workspace_labels;
 
 use std::fmt;
 use std::str::FromStr;

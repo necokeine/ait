@@ -1,10 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use serde_json::{Value, json};
+use server_application::workspace_labels::WorkspaceLabelSubscription;
+use server_protocol::subscription::{SubscriptionReleaseRequest, SubscriptionReleaseResult};
 use server_protocol::{ClientMessage, ErrorCode, Lifecycle, ServerMessage, valid_id};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -17,9 +19,22 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_SUBSCRIPTIONS: usize = 16;
 
+#[derive(Default)]
+struct ConnectionSubscriptions {
+    status: BTreeSet<String>,
+    labels: BTreeMap<String, WorkspaceLabelSubscription>,
+}
+
+impl ConnectionSubscriptions {
+    fn len(&self) -> usize {
+        self.status.len().saturating_add(self.labels.len())
+    }
+}
+
 pub(super) async fn serve(socket: WebSocket, state: Arc<Shared>) {
     let (mut sink, stream) = socket.split();
     let (outbound, mut receiver) = Outbound::new();
+    let outbound_failure = outbound.failure();
     let stopped = tokio_util::sync::CancellationToken::new();
     let writer = async {
         loop {
@@ -52,6 +67,7 @@ pub(super) async fn serve(socket: WebSocket, state: Arc<Shared>) {
     let reader = async {
         tokio::select! {
             () = stopped.cancelled() => {},
+            () = outbound_failure.cancelled() => {},
             _ = read(stream, &state, &outbound) => {},
         }
         stopped.cancel();
@@ -81,12 +97,12 @@ async fn read(
         connection_id: Uuid::new_v4().to_string(),
         negotiated_capabilities: capabilities.clone(),
     })?;
-    let mut subscriptions = BTreeSet::new();
+    let mut subscriptions = ConnectionSubscriptions::default();
     loop {
         let message = tokio::select! {
             biased;
             () = state.cancellation.cancelled() => {
-                for subscription_id in subscriptions {
+                for subscription_id in subscriptions.status {
                     outbound.send(&ServerMessage::Status { subscription_id, lifecycle: Lifecycle::Draining })?;
                 }
                 return Ok(());
@@ -99,60 +115,16 @@ async fn read(
                 method,
                 params,
             })) if valid_id(&request_id) && valid_id(&method) => {
-                let result =
-                    if server_protocol::project_lease::CAPABILITIES.contains(&method.as_str()) {
-                        if capabilities.contains(&method) {
-                            crate::projects::dispatch(&method, params, state).await
-                        } else {
-                            Err(ErrorCode::UnsupportedCapability)
-                        }
-                    } else if server_protocol::agent::CAPABILITIES.contains(&method.as_str()) {
-                        if capabilities.contains(&method) {
-                            crate::agents::dispatch(&method, params, state).await
-                        } else {
-                            Err(ErrorCode::UnsupportedCapability)
-                        }
-                    } else if server_protocol::directory::CAPABILITIES.contains(&method.as_str())
-                        || server_protocol::project_config::CAPABILITIES.contains(&method.as_str())
-                        || server_protocol::project_icon::CAPABILITIES.contains(&method.as_str())
-                    {
-                        if capabilities.contains(&method) {
-                            crate::directory::dispatch(&method, params, state).await
-                        } else {
-                            Err(ErrorCode::UnsupportedCapability)
-                        }
-                    } else if server_protocol::daemon::CAPABILITIES.contains(&method.as_str()) {
-                        if capabilities.contains(&method) {
-                            crate::daemon::dispatch(&method, params, state).await
-                        } else {
-                            Err(ErrorCode::UnsupportedCapability)
-                        }
-                    } else {
-                        dispatch(&method, &params, state, &capabilities, &mut subscriptions)
-                    };
-                match result {
-                    Ok(value) => {
-                        let subscription_id = (method == "server.status.subscribe")
-                            .then(|| {
-                                value
-                                    .get("subscription_id")
-                                    .and_then(Value::as_str)
-                                    .map(str::to_owned)
-                            })
-                            .flatten();
-                        outbound.send(&ServerMessage::Response {
-                            request_id,
-                            result: value,
-                        })?;
-                        if let Some(subscription_id) = subscription_id {
-                            outbound.send(&ServerMessage::Status {
-                                subscription_id,
-                                lifecycle: state.info().lifecycle,
-                            })?;
-                        }
-                    }
-                    Err(code) => error(outbound, Some(request_id), code)?,
-                }
+                process_request(
+                    request_id,
+                    method,
+                    params,
+                    state,
+                    outbound,
+                    &capabilities,
+                    &mut subscriptions,
+                )
+                .await?;
             }
             None => return Ok(()),
             Some(Ok(ClientMessage::Hello(_) | ClientMessage::Request { .. }) | Err(_)) => {
@@ -160,6 +132,116 @@ async fn read(
             }
         }
     }
+}
+
+async fn process_request(
+    request_id: String,
+    method: String,
+    params: Value,
+    state: &Shared,
+    outbound: &Outbound,
+    capabilities: &[String],
+    subscriptions: &mut ConnectionSubscriptions,
+) -> Result<(), QueueError> {
+    let (result, pending_label_subscription) = route_request(
+        &method,
+        params,
+        state,
+        outbound,
+        capabilities,
+        subscriptions,
+    )
+    .await;
+    let value = match result {
+        Ok(value) => value,
+        Err(code) => return error(outbound, Some(request_id), code),
+    };
+    let status_subscription_id = (method == "server.status.subscribe")
+        .then(|| {
+            value
+                .get("subscription_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten();
+    outbound.send(&ServerMessage::Response {
+        request_id,
+        result: value,
+    })?;
+    if let Some(pending) = pending_label_subscription {
+        let (subscription_id, subscription) = pending.activate()?;
+        subscriptions.labels.insert(subscription_id, subscription);
+    }
+    if let Some(subscription_id) = status_subscription_id {
+        outbound.send(&ServerMessage::Status {
+            subscription_id,
+            lifecycle: state.info().lifecycle,
+        })?;
+    }
+    Ok(())
+}
+
+async fn route_request(
+    method: &str,
+    params: Value,
+    state: &Shared,
+    outbound: &Outbound,
+    capabilities: &[String],
+    subscriptions: &mut ConnectionSubscriptions,
+) -> (
+    Result<Value, ErrorCode>,
+    Option<crate::workspace_labels::PendingSubscription>,
+) {
+    let supported = capabilities.iter().any(|capability| capability == method);
+    let result = if server_protocol::project_lease::CAPABILITIES.contains(&method) {
+        if supported {
+            crate::projects::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
+    } else if server_protocol::agent::CAPABILITIES.contains(&method) {
+        if supported {
+            crate::agents::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
+    } else if server_protocol::directory::CAPABILITIES.contains(&method)
+        || server_protocol::project_config::CAPABILITIES.contains(&method)
+        || server_protocol::project_icon::CAPABILITIES.contains(&method)
+    {
+        if supported {
+            crate::directory::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
+    } else if server_protocol::daemon::CAPABILITIES.contains(&method) {
+        if supported {
+            crate::daemon::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
+    } else if server_protocol::workspace_labels::CAPABILITIES.contains(&method) {
+        if !supported {
+            return (Err(ErrorCode::UnsupportedCapability), None);
+        }
+        if method == "workspace.label.list.request"
+            && params
+                .get("subscribe")
+                .is_some_and(|subscribe| !subscribe.is_null())
+            && subscriptions.len() >= MAX_SUBSCRIPTIONS
+        {
+            return (Err(ErrorCode::ResourceExhausted), None);
+        }
+        return match crate::workspace_labels::dispatch(method, params, state, outbound.clone())
+            .await
+        {
+            Ok(dispatched) => (Ok(dispatched.value), dispatched.subscription),
+            Err(error) => (Err(error), None),
+        };
+    } else {
+        dispatch(method, &params, state, capabilities, subscriptions)
+    };
+    (result, None)
 }
 
 async fn receive(stream: &mut SplitStream<WebSocket>) -> Option<Result<ClientMessage, ErrorCode>> {
@@ -193,10 +275,13 @@ fn dispatch(
     params: &Value,
     state: &Shared,
     capabilities: &[String],
-    subscriptions: &mut BTreeSet<String>,
+    subscriptions: &mut ConnectionSubscriptions,
 ) -> Result<Value, ErrorCode> {
     let capability = match method {
-        "server.info" | "connection.ping" | "server.status.subscribe" => method,
+        "server.info"
+        | "connection.ping"
+        | "server.status.subscribe"
+        | "subscription.release.request" => method,
         "server.status.unsubscribe" => "server.status.subscribe",
         _ => return Err(ErrorCode::MethodNotFound),
     };
@@ -218,7 +303,7 @@ fn dispatch(
                 return Err(ErrorCode::ResourceExhausted);
             }
             let id = Uuid::new_v4().to_string();
-            subscriptions.insert(id.clone());
+            subscriptions.status.insert(id.clone());
             Ok(json!({"subscription_id":id}))
         }
         "server.status.unsubscribe" => {
@@ -226,10 +311,23 @@ fn dispatch(
                 .get("subscription_id")
                 .and_then(Value::as_str)
                 .ok_or(ErrorCode::InvalidMessage)?;
-            if !subscriptions.remove(id) {
+            if !subscriptions.status.remove(id) {
                 return Err(ErrorCode::SubscriptionNotFound);
             }
             Ok(json!({"unsubscribed":true}))
+        }
+        "subscription.release.request" => {
+            let request: SubscriptionReleaseRequest =
+                serde_json::from_value(params.clone()).map_err(|_| ErrorCode::InvalidMessage)?;
+            if !valid_id(&request.subscription_id) {
+                return Err(ErrorCode::InvalidMessage);
+            }
+            subscriptions.status.remove(&request.subscription_id);
+            subscriptions.labels.remove(&request.subscription_id);
+            serde_json::to_value(SubscriptionReleaseResult {
+                subscription_id: request.subscription_id,
+            })
+            .map_err(|_| ErrorCode::InvalidMessage)
         }
         _ => Err(ErrorCode::MethodNotFound),
     }

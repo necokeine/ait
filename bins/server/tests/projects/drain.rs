@@ -83,6 +83,7 @@ async fn accepted_blocking_job_survives_disconnect_and_is_included_in_drain() {
             ))),
             daemon: None,
             directory: None,
+            workspace_labels: None,
         },
     )
     .unwrap();
