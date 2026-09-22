@@ -14,6 +14,7 @@ use server_application::agents::Agents;
 use server_application::checkout::Checkout;
 use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
+use server_application::forge::Forge;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
 use server_application::workspace_state::WorkspaceState;
@@ -28,8 +29,8 @@ use server_storage::registry::{
 use server_storage::workspace_labels::FileWorkspaceLabelStore;
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::{
-    LocalCheckout, LocalDirectorySource, LocalManagedWorktrees, LocalProjectConfigStore,
-    LocalProjectIconStore, LocalWorkspace, LocalWorkspaceAutomation,
+    LocalCheckout, LocalDirectorySource, LocalForge, LocalManagedWorktrees,
+    LocalProjectConfigStore, LocalProjectIconStore, LocalWorkspace, LocalWorkspaceAutomation,
 };
 use tokio::net::TcpListener;
 
@@ -232,6 +233,7 @@ fn compose_services(
             )),
             server_id,
         )),
+        forge: Some(Forge::new(Box::new(LocalForge::new()))),
         workspace_labels: Some(workspace_labels),
         workspace_automation: Some(workspace_automation),
         workspace_state: Some(workspace_state),

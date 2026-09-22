@@ -16,26 +16,31 @@ impl Drop for Process {
 }
 
 fn start(directory: &Path, log: &Path) -> Process {
-    Process(
-        Command::new(env!("CARGO_BIN_EXE_server"))
-            .args([
-                "--data-dir",
-                directory.to_str().unwrap(),
-                "--listen",
-                "127.0.0.1:0",
-                "--log-level",
-                "info",
-            ])
-            .env("AIT_SERVER_TOKEN", TOKEN)
-            .env("AIT_SERVER_CREDENTIAL_TEST", CREDENTIAL_SENTINEL)
-            .env("HOME", directory.parent().unwrap())
-            .env_remove("AIT_SERVER_LISTEN")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(log).unwrap())
-            .spawn()
-            .unwrap(),
-    )
+    start_with_path(directory, log, None)
+}
+
+fn start_with_path(directory: &Path, log: &Path, path: Option<&std::ffi::OsStr>) -> Process {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_server"));
+    command
+        .args([
+            "--data-dir",
+            directory.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+            "--log-level",
+            "info",
+        ])
+        .env("AIT_SERVER_TOKEN", TOKEN)
+        .env("AIT_SERVER_CREDENTIAL_TEST", CREDENTIAL_SENTINEL)
+        .env("HOME", directory.parent().unwrap())
+        .env_remove("AIT_SERVER_LISTEN")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(log).unwrap());
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    Process(command.spawn().unwrap())
 }
 
 #[path = "transport.rs"]
@@ -64,6 +69,9 @@ mod workspace_state;
 
 #[path = "checkout.rs"]
 mod checkout;
+
+#[path = "forge.rs"]
+mod forge;
 
 #[path = "worktrees.rs"]
 mod worktrees;

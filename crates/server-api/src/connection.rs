@@ -266,6 +266,12 @@ async fn route_request(
         };
     } else if server_protocol::checkout::CAPABILITIES.contains(&method) {
         return route_checkout(method, params, state, outbound, supported, subscriptions).await;
+    } else if server_protocol::forge::CAPABILITIES.contains(&method) {
+        if supported {
+            crate::forge::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
     } else if server_protocol::worktrees::CAPABILITIES.contains(&method) {
         if !supported {
             return (Err(ErrorCode::UnsupportedCapability), None, None, None);

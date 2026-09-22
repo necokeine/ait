@@ -314,6 +314,32 @@ discard 使用 literal pathspec，恢复 tracked 内容并删除所选 untracked
 不会立即广播 Workspace/status event；已有 diff polling subscription 会在下一次轮询观察到变化。完整对齐
 范围见第九阶段报告。
 
+## Forge、Pull Request 与检查状态
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `forge.search.request` | `cwd`、`query`、可选 `limit`/`kinds` | neutral issue/change-request `items`、`authState`、string `error` |
+| `github.search.request` | 同上，兼容 `github-issue`/`github-pr`/`pr` kind | legacy issue/PR `items` 与两个 availability flag |
+| `checkout.pr.create.request` | `cwd`、`title`、`body`、可选 `baseRef` | nullable `url`/`number` 与 inline `error` |
+| `checkout.pr.merge.request` | `cwd`、`mergeMethod` | `success` 与 inline `error` |
+| `checkout.pr.status.request` | `cwd` | nullable current PR、check rollup、forge/auth 与 inline `error` |
+| `checkout.pr.timeline.request` | `cwd`、正数 `prNumber`、`repoOwner`、`repoName` | review/comment/thread items、`truncated` 与 timeline error |
+| `checkout.forge.set_auto_merge.request` | `cwd`、`enabled`、启用时必需 `mergeMethod` | requested state、`success` 与 inline `error` |
+| `checkout.github.set_auto_merge.request` | 同上 | GitHub compatibility 入口，结果 shape 相同 |
+| `checkout.forge.get_check_details.request` | `cwd`、repo identity、check/workflow ID | annotation/failed-job details 与 inline `error` |
+| `checkout.github.get_check_details.request` | 同上 | GitHub compatibility 入口，结果 shape 相同 |
+
+当前 adapter 使用本机 `gh` 认证，只支持 GitHub 和已配置的 GitHub Enterprise。搜索 limit 为 1–50；省略
+kind 时同时查询 issue 和 PR。PR create 需要显式非空 title/body，先执行 `git push -u origin <head>`，再调用
+GitHub API。独立 server 尚无 Paseo Provider PR 文本生成器，不能补齐省略字段。auto-merge 启用时必须提供
+`merge`、`squash` 或 `rebase`，禁用时不能携带 merge method。
+
+CLI stdin 关闭，读操作限制 30 秒，push/创建/merge/auto-merge 限制 120 秒，输出有界；凭据仍由用户现有
+Git/`gh` 配置提供。当前没有 GitLab/Gitea/Forgejo/Codeberg adapter、Forge cache/batch poll、status event、
+mutation invalidation、GitHub merge-policy GraphQL facts或 failed-job log tail。完整对齐范围见第十阶段报告。
+
 ## Agent runtime 目录与元数据生命周期
 
 以下 capability 已在生产 binary 组装：

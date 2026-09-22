@@ -7,6 +7,7 @@ mod checkout;
 mod connection;
 mod daemon;
 mod directory;
+mod forge;
 mod jobs;
 mod outbound;
 mod projects;
@@ -32,6 +33,7 @@ use server_application::agents::Agents;
 use server_application::checkout::Checkout;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
+use server_application::forge::Forge;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
 use server_application::workspace_state::WorkspaceState;
@@ -73,6 +75,7 @@ struct Shared {
     agent_runtime: Option<Arc<Mutex<AgentRuntimeDirectory>>>,
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
+    forge: Option<Arc<Mutex<Forge>>>,
     workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
     workspace_automation: Option<Arc<Mutex<WorkspaceAutomation>>>,
     workspace_state: Option<Arc<Mutex<WorkspaceState>>>,
@@ -95,6 +98,8 @@ pub struct Services {
     pub daemon: Option<Daemon>,
     /// Paseo-shaped project and workspace registries.
     pub directory: Option<Directory>,
+    /// Forge search and pull request use cases.
+    pub forge: Option<Forge>,
     /// Paseo workspace label catalog, assignment, and subscription use cases.
     pub workspace_labels: Option<WorkspaceLabels>,
     /// Paseo workspace setup and configured script runtime.
@@ -211,6 +216,7 @@ impl Api {
                 directory: services
                     .directory
                     .map(|directory| Arc::new(Mutex::new(directory))),
+                forge: services.forge.map(|forge| Arc::new(Mutex::new(forge))),
                 workspace_labels: services
                     .workspace_labels
                     .map(|labels| Arc::new(Mutex::new(labels))),
@@ -314,6 +320,10 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
         (
             services.directory.is_some(),
             server_protocol::project_icon::CAPABILITIES,
+        ),
+        (
+            services.forge.is_some(),
+            server_protocol::forge::CAPABILITIES,
         ),
         (
             services.workspace_labels.is_some(),

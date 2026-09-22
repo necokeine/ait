@@ -216,10 +216,31 @@ merge 方向、linked base worktree、冲突 abort、most-ahead base、pull abor
 Workspace/status event 和 Forge cache invalidation，diff polling 只能在下一轮观察变化；configured push target
 成功后不额外写本地 remote-tracking ref。第九阶段报告记录完整差异和真实 branch/merge/local-remote 测试。
 
+## 第十阶段能力
+
+第十阶段生产组装公开 10 个 Forge、PR 与检查状态方法：`forge.search.request`、
+`github.search.request`、`checkout.pr.create.request`、`checkout.pr.merge.request`、
+`checkout.pr.status.request`、`checkout.pr.timeline.request`、
+`checkout.forge.set_auto_merge.request`、`checkout.forge.get_check_details.request`、
+`checkout.github.set_auto_merge.request` 和 `checkout.github.get_check_details.request`。历史下划线名称只保留在
+catalog；两个 `checkout.github.*` capability 保留 Paseo compatibility payload，但与对应 neutral Forge 方法
+共用同一个新 port/adapter。
+
+`server-ports::forge::ForgeRuntime` 隔离阻塞 Git 与 forge CLI；`server-workspace::LocalForge` 当前实现 GitHub
+与已经由 `gh` 配置的 GitHub Enterprise。所有命令使用参数数组、关闭 stdin、30 秒读预算、120 秒写预算、
+4 MiB stdout 与 64 KiB stderr 上限。search 合并 issue/PR 并按更新时间排序；status 投影 branch 对应 PR 与
+check rollup；timeline 保留 review、general comment、inline thread 与 truncation；check details 读取 annotation
+和 failed job；PR create 在调用 Forge 前真实 push 当前 branch。
+
+Paseo 的 forge registry 还包含 GitLab、Gitea、Forgejo 和 Codeberg，并为 status、merge/auto-merge 维护更丰富的
+forge-specific facts、cache、batch polling 与 mutation invalidation。当前 GitHub adapter 没有这些多 Forge 与
+观察能力，也没有 Provider-backed PR 文本生成和 failed-job log tail；显式 title/body、GitHub 核心命令与 wire
+shape 已对齐。第十阶段报告记录完整差异和受控 CLI/本地 remote 测试。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
-provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新 crate 边界和
+provider、剩余多 Forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新 crate 边界和
 生命周期完成前保持未发布。
 
 当前 Paseo 对齐差异、每个第一阶段方法的状态和验证结果记录在
@@ -239,4 +260,6 @@ provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法�
 订阅和提交历史记录在
 [WebSocket 接口第八阶段报告](../reports/paseo-websocket-surface-phase-8.md)；Git 分支、commit、merge、pull、
 push、discard 与 stash 记录在
-[WebSocket 接口第九阶段报告](../reports/paseo-websocket-surface-phase-9.md)。
+[WebSocket 接口第九阶段报告](../reports/paseo-websocket-surface-phase-9.md)；Forge search、PR lifecycle、timeline
+与 check details 记录在
+[WebSocket 接口第十阶段报告](../reports/paseo-websocket-surface-phase-10.md)。
