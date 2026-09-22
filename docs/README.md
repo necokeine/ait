@@ -8,7 +8,8 @@
   [第三阶段报告](reports/paseo-websocket-surface-phase-3.md)记录 5 个 Workspace 标签方法、
   connection-owned 订阅、跨 catalog/workspace 的恢复事务和通用订阅释放；
   [第四阶段报告](reports/paseo-websocket-surface-phase-4.md)记录 3 个 Worktree 方法、真实 Git
-  lifecycle、registry 协调、测试及尚待 Agent/Forge/Setup 服务补齐的明确差异。
+  lifecycle、registry 协调与测试；[第五阶段报告](reports/paseo-websocket-surface-phase-5.md)记录
+  5 个 Workspace setup/script 方法、真实子进程、信任准入及 Terminal/Proxy 明确差异。
 
 - [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
   新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。

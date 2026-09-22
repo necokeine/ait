@@ -18,6 +18,7 @@ use crate::Shared;
 pub(super) struct Dispatched {
     pub(super) value: Value,
     pub(super) event: Option<Value>,
+    created_workspace_id: Option<String>,
 }
 
 pub(super) async fn dispatch(
@@ -26,13 +27,28 @@ pub(super) async fn dispatch(
     state: &Shared,
 ) -> Result<Dispatched, ErrorCode> {
     let method = method.to_owned();
-    crate::jobs::run(
+    let dispatched = crate::jobs::run(
         state,
         state.worktrees.clone(),
         ErrorCode::RegistryIo,
         move |worktrees| execute(worktrees, &method, params),
     )
-    .await
+    .await?;
+    if let Some(workspace_id) = dispatched.created_workspace_id.clone() {
+        let _ = crate::jobs::run(
+            state,
+            state.workspace_automation.clone(),
+            ErrorCode::RegistryIo,
+            move |automation| {
+                automation
+                    .start_created_setup(&workspace_id)
+                    .map(|_| ())
+                    .map_err(|_| ErrorCode::RegistryIo)
+            },
+        )
+        .await;
+    }
+    Ok(dispatched)
 }
 
 fn execute(
@@ -111,6 +127,7 @@ fn create(worktrees: &Worktrees, request: WorktreeCreateRequest) -> Result<Dispa
                     setup_skipped_reason: None,
                 },
                 Some(event),
+                Some(created.workspace.workspace_id),
             )
         }
         Err(error) => dispatched(
@@ -121,6 +138,7 @@ fn create(worktrees: &Worktrees, request: WorktreeCreateRequest) -> Result<Dispa
                 setup_terminal_id: None,
                 setup_skipped_reason: None,
             },
+            None,
             None,
         ),
     }
@@ -189,13 +207,18 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ErrorCode> 
 }
 
 fn value(value: impl Serialize) -> Result<Dispatched, ErrorCode> {
-    dispatched(value, None)
+    dispatched(value, None, None)
 }
 
-fn dispatched(value: impl Serialize, event: Option<Value>) -> Result<Dispatched, ErrorCode> {
+fn dispatched(
+    value: impl Serialize,
+    event: Option<Value>,
+    created_workspace_id: Option<String>,
+) -> Result<Dispatched, ErrorCode> {
     Ok(Dispatched {
         value: serde_json::to_value(value).map_err(|_| ErrorCode::RegistryIo)?,
         event,
+        created_workspace_id,
     })
 }
 

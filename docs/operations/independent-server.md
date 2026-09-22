@@ -1,7 +1,7 @@
 # 独立 server：使用与协议
 
-> 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签与
-> Worktree
+> 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签、
+> Worktree 与 Workspace setup/script
 > WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
@@ -187,9 +187,44 @@ managed worktree。`scope:"worktree"` 归档该 worktree 内全部 active Worksp
 ownership 共同决定。成功创建后，响应之后会收到
 `{"type":"event","method":"workspace.update",...}` upsert event。
 
-当前 create 不执行 `paseo.json` setup script，也不创建 setup terminal；archive 不执行 teardown、
-Agent/terminal 清理，因此 `removedAgents` 为空。`checkoutSource` 与 `githubPrNumber` 在 Forge 服务
-接通前返回明确失败。这些限制不会返回伪成功，完整差异见第四阶段报告。
+当前 create 会在 registry 提交后异步执行 `paseo.json` setup，但不创建 PTY setup terminal；archive
+不执行 teardown、Agent/terminal 清理，因此 `removedAgents` 为空。`checkoutSource` 与
+`githubPrNumber` 在 Forge 服务接通前返回明确失败。这些限制不会返回伪成功，完整差异见第四、
+第五阶段报告。
+
+## Workspace setup 与脚本
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `workspace.setup.status.request` | `workspaceId` | `workspaceId` 与 nullable setup `snapshot` |
+| `workspace.setup.run.request` | `workspaceId` | `started` 与 inline `error` |
+| `workspace.script.list.request` | `workspaceId` | 已排序 script payload 与 inline `error` |
+| `workspace.script.start.request` | `workspaceId`、`scriptName` | 启动后的 `script` 或 inline `error` |
+| `workspace.script.stop.request` | `workspaceId`、`scriptName` | 停止后的 `script` 或 inline `error` |
+
+配置读取 Workspace cwd 下的 `paseo.json`。文件必须是不超过 1 MiB 的普通文件；symlink、非 JSON 或
+非 object 会返回明确 parse error。`worktree.setup` 接受一条字符串或字符串数组，trim 后按顺序执行；
+`scripts` 只采纳 object 中带非空 `command` 的条目，`type:"service"` 识别为 service，其他 type 按
+Paseo 规则视为普通 script。list 以 script name 做不区分大小写的稳定排序。
+
+setup 命令注入 `PASEO_SOURCE_CHECKOUT_PATH`、`PASEO_ROOT_PATH`、`PASEO_WORKTREE_PATH`、
+`PASEO_BRANCH_NAME` 和进程内稳定的 `PASEO_WORKTREE_PORT`。单条命令最多运行 30 分钟、capture 最多
+8 MiB；公开 log 保留 64 KiB 的首尾并标记 truncated。第一条失败命令会终止 setup 序列，status 可
+轮询 running/completed/failed 和逐命令结果。
+
+带 `untrustedSource` 的 change-request Workspace 在批准前返回 blocked snapshot，也拒绝 script start。
+调用 setup run 会先持久化清除 provenance，再启动后台 setup；已 trusted 的 Workspace 返回
+`started:false`。普通 worktree 创建会自动触发 setup。
+
+script start 启动真实 shell 子进程，同一 Workspace/name 运行中重复启动会失败；list 会刷新退出状态，
+stop 先终止 Unix process group 再等待回收。server 最后一个 runtime owner 释放时也会清理仍在运行的
+Unix process group 或 Windows 直接子进程。当前 `terminalId` 是逻辑 process identity，没有 PTY
+history/input；stdout/stderr 不进入
+Terminal API。service proxy URL 与 health 尚未实现，相关字段为 null/省略，hostname 暂用 script key。
+实时 `workspace_setup_progress` / `script_status_update` event、`worktree.terminals` 自动启动和 archive
+teardown 等待后续订阅、Terminal 与 proxy 切片。完整差异见第五阶段报告。
 
 ## 项目操作（M1 首个切片）
 

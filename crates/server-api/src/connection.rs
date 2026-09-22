@@ -253,6 +253,12 @@ async fn route_request(
             Ok(dispatched) => (Ok(dispatched.value), None, dispatched.event),
             Err(error) => (Err(error), None, None),
         };
+    } else if server_protocol::workspace_automation::CAPABILITIES.contains(&method) {
+        if supported {
+            crate::workspace_automation::dispatch(method, params, state).await
+        } else {
+            Err(ErrorCode::UnsupportedCapability)
+        }
     } else {
         dispatch(method, &params, state, capabilities, subscriptions)
     };

@@ -67,9 +67,9 @@ worktree scope 先归档 root 或其子目录下的全部 active Workspace，再
 5. Paseo 的 `checkoutSource`/`githubPrNumber` 通过 Forge service 解析和 fetch change-request refs，
    并为跨仓库来源写 untrusted provenance。新 server 尚无 Forge service，这两种输入返回
    `errorCode:"unknown"` 与明确 message，不创建 Git/registry 数据。
-6. Paseo create response 后异步执行 setup、启动 terminals/scripts，并维护 setup snapshot；当前
-   `setupTerminalId` 为 null，不执行 setup。Paseo archive 会先处理 Agent、terminal、script 和
-   teardown；当前只协调 Workspace registry 与 Git，因此 `removedAgents` 始终为空。
+6. 第五阶段已在 create 的 registry 提交后异步执行 setup 并维护可轮询 snapshot；
+   `setupTerminalId` 仍为 null，也不自动启动 terminals/scripts。Paseo archive 会先处理 Agent、
+   terminal、script 和 teardown；当前只协调 Workspace registry 与 Git，因此 `removedAgents` 始终为空。
 7. Paseo recursive removal 有短退避重试；Rust adapter 先让 Git 删除、再执行一次 recursive remove。
    Windows 短暂文件占用下可能比 Paseo 更早返回失败，失败不会伪装成功。
 8. Paseo 发顶层 `workspace_update`；新 server 按 ADR-026 在 create response 之后发送

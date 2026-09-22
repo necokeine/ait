@@ -12,6 +12,7 @@ use server_application::Projects;
 use server_application::agents::Agents;
 use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
+use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
 use server_application::worktrees::Worktrees;
 use server_ports::registry::{ProjectRegistry, WorkspaceRegistry};
@@ -22,7 +23,7 @@ use server_storage::workspace_labels::FileWorkspaceLabelStore;
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::{
     LocalDirectorySource, LocalManagedWorktrees, LocalProjectConfigStore, LocalProjectIconStore,
-    LocalWorkspace,
+    LocalWorkspace, LocalWorkspaceAutomation,
 };
 use tokio::net::TcpListener;
 
@@ -92,6 +93,10 @@ impl Server {
                 )),
                 server_id.clone(),
             );
+            let workspace_automation = WorkspaceAutomation::new(
+                Box::new(workspace_registry.clone()),
+                Box::new(LocalWorkspaceAutomation::default()),
+            );
             let daemon = Daemon::new(
                 DaemonRuntime {
                     server_id: server_id.clone(),
@@ -126,6 +131,7 @@ impl Server {
                         server_id,
                     )),
                     workspace_labels: Some(workspace_labels),
+                    workspace_automation: Some(workspace_automation),
                     worktrees: Some(worktrees),
                 },
             ))

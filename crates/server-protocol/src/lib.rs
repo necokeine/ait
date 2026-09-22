@@ -13,6 +13,7 @@ pub mod project_icon;
 pub mod project_lease;
 pub mod subscription;
 pub mod workspace;
+pub mod workspace_automation;
 pub mod workspace_labels;
 pub mod worktrees;
 

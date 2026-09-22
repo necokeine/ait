@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-22",
+  "revision": {
+    "base": "cf9ed23",
+    "state": "base plus the reviewed working-tree changes for ADR-026 phase 5"
+  },
+  "toolchain": {
+    "platform": "macOS 26.6.2 (Darwin 25.6.0 arm64)",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "0.8.4"
+  },
+  "measurement": {
+    "command": "cargo llvm-cov -p server-bin -p server-api -p server-application -p server-domain -p server-ports -p server-protocol -p server-storage -p server-workspace --json --summary-only --output-path /tmp/paseo-ws-phase5-coverage-raw.json --no-fail-fast -j1",
+    "scope": "all new server packages, default features; production Rust sources; test/build sources filtered by cargo-llvm-cov",
+    "tests": {
+      "targets": 12,
+      "passed": 187,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "exclusions": []
+  },
+  "coverage": {
+    "serverPackages": {
+      "coveredLines": 8080,
+      "totalLines": 9164,
+      "linePercent": 88.17110432125709
+    },
+    "crates": {
+      "server-bin": { "coveredLines": 337, "totalLines": 349, "linePercent": 96.56160458452722 },
+      "server-api": { "coveredLines": 2064, "totalLines": 2354, "linePercent": 87.68054375531011 },
+      "server-application": { "coveredLines": 1734, "totalLines": 1945, "linePercent": 89.15167095115682 },
+      "server-domain": { "coveredLines": 219, "totalLines": 219, "linePercent": 100.0 },
+      "server-ports": { "coveredLines": 16, "totalLines": 16, "linePercent": 100.0 },
+      "server-protocol": { "coveredLines": 545, "totalLines": 664, "linePercent": 82.07831325301204 },
+      "server-storage": { "coveredLines": 1656, "totalLines": 1787, "linePercent": 92.66927811975377 },
+      "server-workspace": { "coveredLines": 1509, "totalLines": 1830, "linePercent": 82.45901639344262 }
+    },
+    "phaseFiveModules": {
+      "total": { "coveredLines": 751, "totalLines": 869, "linePercent": 86.42117376294591 },
+      "crates/server-api/src/workspace_automation.rs": { "coveredLines": 178, "totalLines": 200, "linePercent": 89.0 },
+      "crates/server-application/src/workspace_automation.rs": { "coveredLines": 125, "totalLines": 133, "linePercent": 93.98496240601504 },
+      "crates/server-protocol/src/workspace_automation.rs": { "coveredLines": 3, "totalLines": 3, "linePercent": 100.0 },
+      "crates/server-workspace/src/workspace_automation.rs": { "coveredLines": 445, "totalLines": 533, "linePercent": 83.48968105065666 }
+    }
+  },
+  "baseline": {
+    "artifact": "paseo-websocket-surface-phase-4-coverage.json",
+    "serverPackages": {
+      "coveredLines": 7300,
+      "totalLines": 8269,
+      "linePercent": 88.28153343814246
+    }
+  },
+  "workspaceRegression": {
+    "command": "cargo test --workspace --no-fail-fast -j1",
+    "ordinaryTargets": 72,
+    "passed": 675,
+    "failed": 2,
+    "ignored": 5,
+    "resolvedTargetedFailure": "server-bin dependency guard passed after removing the server-api to server-ports edge; server-api doctest also passed after recompilation",
+    "remainingBaselineFailure": "ait-daemon daemon_is_ready_and_rejects_unsent_native_recovery_without_replay became ready in about 33 seconds and exceeded its pre-existing 15-second desktop readiness window; isolated rerun reproduced the timing failure"
+  }
+}

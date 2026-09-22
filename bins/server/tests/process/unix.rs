@@ -59,6 +59,9 @@ mod workspace_labels;
 #[path = "worktrees.rs"]
 mod worktrees;
 
+#[path = "workspace_automation.rs"]
+mod workspace_automation;
+
 async fn ready(process: &mut Process, log: &Path) -> String {
     let start = Instant::now();
     loop {

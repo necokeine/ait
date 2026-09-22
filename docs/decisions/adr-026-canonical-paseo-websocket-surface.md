@@ -114,7 +114,24 @@ scope 只归档一个记录，最后一个 active 引用消失才删目录；`wo
 创建支持 source cwd 位于 repository 子目录、branch-off/default branch、已有 branch/路径 collision
 suffix、existing branch checkout、首 Agent prompt 的 provisional title 和未跟踪 `paseo.json` 种子
 复制。创建响应之后发布统一 envelope 的 `workspace.update` upsert event。change-request checkout、
-setup/teardown script、Agent/terminal 清理和 Paseo metadata 留待对应服务接入，不能以空成功伪装。
+teardown script、Agent/terminal 清理和 Paseo metadata 留待对应服务接入，不能以空成功伪装。
+
+## 第五阶段能力
+
+第五阶段生产组装公开 5 个 Workspace automation 方法：`workspace.setup.status.request`、
+`workspace.setup.run.request`、`workspace.script.list.request`、`workspace.script.start.request` 和
+`workspace.script.stop.request`。历史名称 `workspace_setup_status_request` 与
+`start_workspace_script_request` 只保留在 catalog；后者与当前 script start 名称合并为一个 capability。
+
+`server-ports::workspace_automation::WorkspaceAutomationRuntime` 隔离 `paseo.json`、shell 与子进程；
+`server-workspace::LocalWorkspaceAutomation` 保存进程内 setup/script 快照。setup 在 worktree registry
+提交后异步启动，或在 change-request Workspace 显式批准后清除 durable `untrustedSource` 再启动。
+命令顺序执行并注入 Paseo workspace 环境；输出有界，状态通过 setup status 轮询。script list 解析并
+排序有效配置；start/stop 操作真实子进程并按 Workspace/script identity 防止重复启动。
+
+PTY terminal history/input、service proxy/health、实时 setup/script event、自动 terminal、archive teardown
+仍需要后续 Terminal、订阅与 proxy 边界。这些字段按 Paseo shape 返回 null/省略或使用逻辑 terminal ID，
+并在阶段报告逐项列出，不能声称已具备对应能力。
 
 ## 后果与后续
 
@@ -129,4 +146,6 @@ crate 边界和生命周期完成前保持未发布。
 订阅边界记录在
 [WebSocket 接口第三阶段报告](../reports/paseo-websocket-surface-phase-3.md)；Worktree 生命周期、
 真实 Git 验证与剩余差异记录在
-[WebSocket 接口第四阶段报告](../reports/paseo-websocket-surface-phase-4.md)。
+[WebSocket 接口第四阶段报告](../reports/paseo-websocket-surface-phase-4.md)；Workspace setup/script
+执行、测试和 Terminal/Proxy 差异记录在
+[WebSocket 接口第五阶段报告](../reports/paseo-websocket-surface-phase-5.md)。

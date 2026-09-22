@@ -8,6 +8,7 @@ mod directory;
 mod jobs;
 mod outbound;
 mod projects;
+mod workspace_automation;
 mod workspace_labels;
 mod worktrees;
 
@@ -26,6 +27,7 @@ use server_application::Projects;
 use server_application::agents::Agents;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
+use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
 use server_application::worktrees::Worktrees;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
@@ -64,6 +66,7 @@ struct Shared {
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
+    workspace_automation: Option<Arc<Mutex<WorkspaceAutomation>>>,
     worktrees: Option<Arc<Mutex<Worktrees>>>,
     jobs: Arc<Semaphore>,
 }
@@ -81,6 +84,8 @@ pub struct Services {
     pub directory: Option<Directory>,
     /// Paseo workspace label catalog, assignment, and subscription use cases.
     pub workspace_labels: Option<WorkspaceLabels>,
+    /// Paseo workspace setup and configured script runtime.
+    pub workspace_automation: Option<WorkspaceAutomation>,
     /// Paseo-owned Git worktree lifecycle use cases.
     pub worktrees: Option<Worktrees>,
 }
@@ -158,59 +163,7 @@ impl Api {
             authorities.push(address.to_string().trim_end_matches(":80").to_owned());
             authorities.push("localhost".to_owned());
         }
-        let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
-        if services.projects.is_some() {
-            capabilities.extend(
-                server_protocol::project_lease::CAPABILITIES
-                    .iter()
-                    .map(|s| (*s).to_owned()),
-            );
-        }
-        if services.agents.is_some() {
-            capabilities.extend(
-                server_protocol::agent::CAPABILITIES
-                    .iter()
-                    .map(|s| (*s).to_owned()),
-            );
-        }
-        if services.daemon.is_some() {
-            capabilities.extend(
-                server_protocol::daemon::CAPABILITIES
-                    .iter()
-                    .map(|method| (*method).to_owned()),
-            );
-        }
-        if services.directory.is_some() {
-            capabilities.extend(
-                server_protocol::directory::CAPABILITIES
-                    .iter()
-                    .map(|method| (*method).to_owned()),
-            );
-            capabilities.extend(
-                server_protocol::project_config::CAPABILITIES
-                    .iter()
-                    .map(|method| (*method).to_owned()),
-            );
-            capabilities.extend(
-                server_protocol::project_icon::CAPABILITIES
-                    .iter()
-                    .map(|method| (*method).to_owned()),
-            );
-        }
-        if services.workspace_labels.is_some() {
-            capabilities.extend(
-                server_protocol::workspace_labels::CAPABILITIES
-                    .iter()
-                    .map(|method| (*method).to_owned()),
-            );
-        }
-        if services.worktrees.is_some() {
-            capabilities.extend(
-                server_protocol::worktrees::CAPABILITIES
-                    .iter()
-                    .map(|method| (*method).to_owned()),
-            );
-        }
+        let capabilities = installed_capabilities(&services);
         Ok(Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
@@ -240,6 +193,9 @@ impl Api {
                 workspace_labels: services
                     .workspace_labels
                     .map(|labels| Arc::new(Mutex::new(labels))),
+                workspace_automation: services
+                    .workspace_automation
+                    .map(|automation| Arc::new(Mutex::new(automation))),
                 worktrees: services
                     .worktrees
                     .map(|worktrees| Arc::new(Mutex::new(worktrees))),
@@ -298,6 +254,52 @@ impl Api {
     pub async fn wait_draining(&self) {
         self.shared.cancellation.cancelled().await;
     }
+}
+
+fn installed_capabilities(services: &Services) -> Vec<String> {
+    let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
+    let groups: &[(bool, &[&str])] = &[
+        (
+            services.projects.is_some(),
+            server_protocol::project_lease::CAPABILITIES,
+        ),
+        (
+            services.agents.is_some(),
+            server_protocol::agent::CAPABILITIES,
+        ),
+        (
+            services.daemon.is_some(),
+            server_protocol::daemon::CAPABILITIES,
+        ),
+        (
+            services.directory.is_some(),
+            server_protocol::directory::CAPABILITIES,
+        ),
+        (
+            services.directory.is_some(),
+            server_protocol::project_config::CAPABILITIES,
+        ),
+        (
+            services.directory.is_some(),
+            server_protocol::project_icon::CAPABILITIES,
+        ),
+        (
+            services.workspace_labels.is_some(),
+            server_protocol::workspace_labels::CAPABILITIES,
+        ),
+        (
+            services.worktrees.is_some(),
+            server_protocol::worktrees::CAPABILITIES,
+        ),
+        (
+            services.workspace_automation.is_some(),
+            server_protocol::workspace_automation::CAPABILITIES,
+        ),
+    ];
+    for (_, group) in groups.iter().filter(|(installed, _)| *installed) {
+        capabilities.extend(group.iter().map(|method| (*method).to_owned()));
+    }
+    capabilities
 }
 
 struct ApiError(StatusCode);

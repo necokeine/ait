@@ -5,11 +5,13 @@ mod identity;
 mod project_config;
 mod project_icon;
 mod provisioning;
+mod workspace_automation;
 mod worktrees;
 
 pub use project_config::LocalProjectConfigStore;
 pub use project_icon::LocalProjectIconStore;
 pub use provisioning::LocalDirectorySource;
+pub use workspace_automation::LocalWorkspaceAutomation;
 pub use worktrees::LocalManagedWorktrees;
 
 use std::fs::{File, OpenOptions};
