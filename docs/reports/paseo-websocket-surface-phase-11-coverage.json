@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-23",
+  "revision": {
+    "base": "02df2c7",
+    "state": "base plus the reviewed working-tree changes for ADR-026 phase 11"
+  },
+  "toolchain": {
+    "platform": "macOS 26.6.2 (Darwin 25.6.0 arm64)",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "0.8.4"
+  },
+  "measurement": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase10-cov-target cargo llvm-cov --workspace --json --summary-only --output-path /tmp/paseo-ws-phase11-workspace-coverage-raw.json --no-fail-fast -j1",
+    "htmlCommand": "CARGO_TARGET_DIR=/tmp/ait-phase10-cov-target cargo llvm-cov report --html",
+    "scope": "entire Cargo workspace, default features; production Rust sources; cargo-llvm-cov default filtering excludes test/build sources; coverage run excludes doctests",
+    "localHtmlReport": "/tmp/ait-phase10-cov-target/llvm-cov/html/index.html",
+    "localRawReport": "/tmp/paseo-ws-phase11-workspace-coverage-raw.json",
+    "productionFiles": 231,
+    "tests": {
+      "targets": 72,
+      "passed": 788,
+      "failed": 0,
+      "ignored": 5,
+      "measured": 0,
+      "filtered": 0
+    },
+    "explicitFileExclusions": [],
+    "ignoredTests": [
+      "codex_native_tools_create_and_verify_python_hello_world ... ignored, requires logged-in Codex and Python 3; performs two real model turns",
+      "deepseek_live_default_catalog ... ignored, requires DEEPSEEK_API_KEY and DEEPSEEK_MODEL; makes one paid API request",
+      "wf11_real_deepseek_python_hello_world ... ignored, uses API credits, credentials, and Python; run ./test_with_deepseek.sh",
+      "wf10_create_project_with_real_codex_and_commit ... ignored, requires real Codex credentials/model access and a built ait-daemon; see WF-10",
+      "permission_change::replay_permission_change_with_external_worker ... ignored, requires AIT_TEST_WORKER_EXECUTABLE pointing to a separately built worker"
+    ],
+    "unavailablePlatforms": [
+      "Windows",
+      "Linux"
+    ]
+  },
+  "coverage": {
+    "workspace": {
+      "coveredLines": 37641,
+      "totalLines": 46634,
+      "linePercent": 80.71578676502124
+    },
+    "serverPackages": {
+      "coveredLines": 14213,
+      "totalLines": 16503,
+      "linePercent": 86.12373507847059
+    },
+    "crates": {
+      "server-bin": {
+        "coveredLines": 363,
+        "totalLines": 376,
+        "linePercent": 96.54255319148936
+      },
+      "server-api": {
+        "coveredLines": 4207,
+        "totalLines": 4866,
+        "linePercent": 86.4570489108097
+      },
+      "server-application": {
+        "coveredLines": 2738,
+        "totalLines": 3122,
+        "linePercent": 87.70019218449711
+      },
+      "server-domain": {
+        "coveredLines": 219,
+        "totalLines": 219,
+        "linePercent": 100
+      },
+      "server-ports": {
+        "coveredLines": 19,
+        "totalLines": 19,
+        "linePercent": 100
+      },
+      "server-protocol": {
+        "coveredLines": 622,
+        "totalLines": 743,
+        "linePercent": 83.71467025572005
+      },
+      "server-storage": {
+        "coveredLines": 1734,
+        "totalLines": 1873,
+        "linePercent": 92.57875066737854
+      },
+      "server-workspace": {
+        "coveredLines": 4311,
+        "totalLines": 5285,
+        "linePercent": 81.57048249763481
+      }
+    },
+    "phaseElevenDedicatedModules": {
+      "total": {
+        "coveredLines": 1519,
+        "totalLines": 1641,
+        "linePercent": 92.56550883607557
+      },
+      "crates/server-api/src/files.rs": {
+        "coveredLines": 257,
+        "totalLines": 272,
+        "linePercent": 94.48529411764706
+      },
+      "crates/server-api/src/files/connection.rs": {
+        "coveredLines": 276,
+        "totalLines": 296,
+        "linePercent": 93.24324324324324
+      },
+      "crates/server-api/src/files/transfer.rs": {
+        "coveredLines": 173,
+        "totalLines": 188,
+        "linePercent": 92.02127659574468
+      },
+      "crates/server-application/src/files.rs": {
+        "coveredLines": 47,
+        "totalLines": 47,
+        "linePercent": 100
+      },
+      "crates/server-ports/src/files.rs": {
+        "coveredLines": 3,
+        "totalLines": 3,
+        "linePercent": 100
+      },
+      "crates/server-protocol/src/file_transfer.rs": {
+        "coveredLines": 48,
+        "totalLines": 50,
+        "linePercent": 96
+      },
+      "crates/server-workspace/src/files.rs": {
+        "coveredLines": 485,
+        "totalLines": 522,
+        "linePercent": 92.91187739463602
+      },
+      "crates/server-workspace/src/files/search.rs": {
+        "coveredLines": 161,
+        "totalLines": 188,
+        "linePercent": 85.63829787234043
+      },
+      "crates/server-workspace/src/files/upload.rs": {
+        "coveredLines": 69,
+        "totalLines": 75,
+        "linePercent": 92
+      }
+    },
+    "newFilesWithoutExecutableLines": [
+      "crates/server-protocol/src/files.rs"
+    ]
+  },
+  "baseline": {
+    "artifact": "paseo-websocket-surface-phase-10-coverage.json",
+    "scope": "comparable independent server production files, default features; prior measurement ran only server packages",
+    "serverPackages": {
+      "coveredLines": 12634,
+      "totalLines": 14798,
+      "linePercent": 85.37640221651574
+    },
+    "serverChangePercentagePoints": 0.7473328619548454,
+    "workspace": "No comparable full-workspace baseline was measured in phase 10."
+  },
+  "workspaceRegression": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase10-workspace-target cargo test --workspace --no-fail-fast -j1",
+    "ordinaryTargets": 72,
+    "docTestTargets": 24,
+    "passed": 788,
+    "failed": 1,
+    "ignored": 5,
+    "measured": 0,
+    "filtered": 0,
+    "failure": {
+      "test": "daemon_is_ready_and_rejects_unsent_native_recovery_without_replay",
+      "assertion": "started_at.elapsed() < DESKTOP_READINESS_WINDOW (15 seconds)",
+      "context": "Unmodified legacy daemon test ran concurrently with the instrumented workspace build; build contention is suspected, not established as the cause.",
+      "retryCommand": "/tmp/ait-phase10-workspace-target/debug/deps/codex_http-90713081ac6f2977 daemon_is_ready_and_rejects_unsent_native_recovery_without_replay --exact --test-threads=1",
+      "retryWorkingDirectory": "/Users/necokeine/Documents/ait/bins/daemon",
+      "retry": {
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered": 4
+      },
+      "independentCoverageRerun": "passed in the complete instrumented workspace run"
+    },
+    "independentServerTests": {
+      "passed": 297,
+      "failed": 0,
+      "ignored": 0,
+      "newTests": 29
+    }
+  },
+  "lint": {
+    "workspaceDefaultFeatures": "passed: cargo clippy --workspace --all-targets -- -D warnings",
+    "changedServerPackagesAllFeatures": "passed: cargo clippy -p server-protocol -p server-ports -p server-application -p server-workspace -p server-api -p server-bin --all-targets --all-features -- -D warnings",
+    "format": "passed: cargo fmt --all -- --check",
+    "diffCheck": "passed: git diff --check"
+  },
+  "interfaceCounts": {
+    "sourceNames": 191,
+    "canonicalPaseoMethods": 188,
+    "publishedCapabilities": 104,
+    "implementedPaseoMethods": 93,
+    "independentMethods": 11,
+    "remainingPaseoMethods": 95
+  },
+  "importantUncoveredBehavior": [
+    "Several OS I/O failure and concurrent target-replacement branches; classification deadline and large directory/copy resource-limit exhaustion",
+    "Duplicate Begin rejection, upload directory symlink error, and selected invalid binary/upload metadata branches",
+    "HTTP extra-query/service-unavailable/stream-interruption branches and non-ASCII download filename substitution",
+    "Subscription blocking-permit pressure and queue/shutdown races under sustained binary traffic",
+    "Native watcher sharing/debounce and exact Paseo fuzzy ordering are not implemented; Linux and Windows are untested"
+  ]
+}

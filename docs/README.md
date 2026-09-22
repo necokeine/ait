@@ -19,7 +19,9 @@
   [第九阶段报告](reports/paseo-websocket-surface-phase-9.md)记录 13 个 branch/commit/merge/pull/push/
   discard/stash 方法、120 秒写预算、真实本地 remote 验证及 Provider/observer 差异；
   [第十阶段报告](reports/paseo-websocket-surface-phase-10.md)记录 10 个 Forge/PR/search/timeline/check 方法、
-  bounded GitHub CLI adapter、本地 push 与真实 WebSocket 验证，以及多 Forge、cache/poll 与 Provider 差异。
+  bounded GitHub CLI adapter、本地 push 与真实 WebSocket 验证，以及多 Forge、cache/poll 与 Provider 差异；
+  [第十一阶段报告](reports/paseo-websocket-surface-phase-11.md)记录 11 个文件/目录方法、revision 写入、
+  文件订阅、二进制上传下载及一次性 HTTP 下载 token，并更正来源名与已发布方法的统计口径。
 
 - [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
   新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。

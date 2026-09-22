@@ -8,6 +8,8 @@ pub mod agent_lifecycle;
 pub mod checkout;
 pub mod daemon;
 pub mod directory;
+pub mod file_transfer;
+pub mod files;
 pub mod forge;
 pub mod methods;
 pub mod project;

@@ -13,7 +13,7 @@ pub(super) enum QueueError {
 }
 
 pub(super) struct Queued {
-    pub text: String,
+    pub message: axum::extract::ws::Message,
     // Budget remains reserved until the active socket write completes or is dropped.
     _bytes: OwnedSemaphorePermit,
 }
@@ -60,10 +60,25 @@ impl Outbound {
             .map_err(|_| QueueError::Full)?;
         self.sender
             .try_send(Queued {
-                text,
+                message: axum::extract::ws::Message::Text(text.into()),
                 _bytes: bytes,
             })
             .map_err(|_| QueueError::Full)
+    }
+
+    pub async fn binary(&self, data: Vec<u8>) -> Result<(), QueueError> {
+        let count = u32::try_from(data.len()).map_err(|_| QueueError::Full)?;
+        if data.len() > MAX_QUEUE_BYTES {
+            return Err(QueueError::Full);
+        }
+        let bytes = tokio::select! {
+            () = self.failed.cancelled() => return Err(QueueError::Full),
+            permit = self.bytes.clone().acquire_many_owned(count) => permit.map_err(|_| QueueError::Full)?,
+        };
+        tokio::select! {
+            () = self.failed.cancelled() => Err(QueueError::Full),
+            result = self.sender.send(Queued { message: axum::extract::ws::Message::Binary(data.into()), _bytes: bytes }) => result.map_err(|_| QueueError::Full),
+        }
     }
 }
 

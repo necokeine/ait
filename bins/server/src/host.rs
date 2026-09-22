@@ -14,6 +14,7 @@ use server_application::agents::Agents;
 use server_application::checkout::Checkout;
 use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
+use server_application::files::Files;
 use server_application::forge::Forge;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
@@ -234,6 +235,11 @@ fn compose_services(
             server_id,
         )),
         forge: Some(Forge::new(Box::new(LocalForge::new()))),
+        files: Some(Files::new(Box::new(server_workspace::LocalFiles::new(
+            std::env::var_os("HOME")
+                .map_or_else(|| config.data_dir.clone(), std::path::PathBuf::from),
+            &config.data_dir,
+        )))),
         workspace_labels: Some(workspace_labels),
         workspace_automation: Some(workspace_automation),
         workspace_state: Some(workspace_state),

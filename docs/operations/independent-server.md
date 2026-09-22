@@ -19,7 +19,8 @@ cargo run -p server-bin --bin server -- --listen 127.0.0.1:7316
 ```
 
 凭据只从 `AIT_SERVER_TOKEN` 读取，要求 32–256 字节可见 ASCII、无空格；请使用随机值。
-不支持命令行 token、URL token、自动加载 `.env` 或配置文件中的 token。
+不支持命令行 server bearer、URL server bearer、自动加载 `.env` 或配置文件中的 token。
+文件下载使用单独签发的短时一次性 token，详见下方文件接口。
 当前适用于能够设置 Authorization header 的本机程序客户端；浏览器原生 WebSocket API 的
 登录流程尚未实现。
 
@@ -110,7 +111,7 @@ RPC 格式：
 
 错误形如 `{"type":"error","request_id":"r1","code":"method_not_found","message":"Unknown method","retryable":false}`。
 尚未实现的业务 method 返回 `method_not_found`，不返回空成功。有效请求的错误保留 request ID。
-不合法 envelope、重复 hello、二进制消息与握手失败会关闭连接；未知 method 或错误参数可修正后
+不合法 envelope、重复 hello、未协商或非法二进制消息与握手失败会关闭连接；未知 method 或错误参数可修正后
 继续使用当前连接。请求按连接顺序处理，已响应的 request ID 可以再次使用；它不是幂等键。
 
 ## Daemon、配置与诊断
@@ -339,6 +340,46 @@ GitHub API。独立 server 尚无 Paseo Provider PR 文本生成器，不能补�
 CLI stdin 关闭，读操作限制 30 秒，push/创建/merge/auto-merge 限制 120 秒，输出有界；凭据仍由用户现有
 Git/`gh` 配置提供。当前没有 GitLab/Gitea/Forgejo/Codeberg adapter、Forge cache/batch poll、status event、
 mutation invalidation、GitHub merge-policy GraphQL facts或 failed-job log tail。完整对齐范围见第十阶段报告。
+
+## 文件、目录与上传下载
+
+以下 11 个 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `directory.suggestions.request` | `query`，可选 `cwd`/`includeFiles`/`includeDirectories`/`matchMode`/`limit` | `directories`、`entries`、nullable `error` |
+| `fs.explorer.request` | `cwd`、`mode: list/file`，可选 `path`/`acceptBinary`/`maxBytes` | `directory` 或 `file`，或者二进制文件帧 |
+| `fs.file.subscribe.request` | `cwd`、`path`，可选 `subscriptionId` | `subscriptionId`、`initial`；随后 `fs.file.update` |
+| `fs.file.unsubscribe.request` | `subscriptionId` | `subscriptionId` |
+| `fs.file.write.request` | `cwd`、`path`、`content`、`expectedModifiedAt`，可选 `expectedRevision` | `result.status: written/conflict/error` |
+| `fs.entry.create.request` | `cwd`、`parentPath`、`name`、`kind: file/directory` | nullable `path`、`success`、`error` |
+| `fs.entry.rename.request` | `cwd`、`path`、`name` | nullable `renamedPath`、`success`、`error` |
+| `fs.entry.duplicate.request` | `cwd`、`path` | nullable `duplicatedPath`、`success`、`error` |
+| `fs.entry.delete.request` | `cwd`、`path` | `success`、`error` |
+| `fs.file.download_token.request` | `cwd`、`path` | nullable `token`/`fileName`/`mimeType`/`size`、`error` |
+| `file.upload.request` | `fileName`、`mimeType`、`size`、`modifiedAt` | End 后返回 uploaded-file attachment 或 `error` |
+
+写入优先比较 `expectedRevision`，缺失时比较显示时间；只编辑已存在、最多 1 MiB 的 UTF-8 文本。
+临时文件同步、再次检查版本后原子替换，并保留权限。目录按 mtime 降序、同时间按名称排序；复制使用
+`name copy.ext` / `name copy 2.ext`；已跟踪条目通过 `git mv` 重命名；删除 symlink 只删除链接。
+目录入口拒绝作用域外路径，workspace 根不可重命名、复制或删除。
+
+文件订阅每 200 ms 检查 metadata，发布 `ready/missing/error` 版本，不传文件内容。订阅 ID 属于当前连接，
+同名订阅替换旧订阅，`subscription.release.request` 也可释放，断线自动取消。
+
+`acceptBinary:true` 的文件读取用 Paseo binary framing 返回 Begin/Chunk/End，chunk 最大 256 KiB；
+上传在标准 request 后以相同 `request_id` 发送这三类帧，完成时才收到标准 response。空文件也必须发送
+Begin 和 End。上传最多 64 MiB，每连接最多 8 个待完成传输，10 分钟空闲后清理（最多 30 秒检查延迟）。
+未完成文件在失败和断线后删除；已完成文件保留在独立 data-dir 的 `uploads/`。
+
+JSON preview 上限 512 KiB，图片用 base64，其他二进制只返回 metadata。大文件使用 binary 或 HTTP 下载：
+先通过 WebSocket 获取 token，再调用 `GET /api/files/download?token=...`，无需 server bearer；token
+60 秒过期、单次消费，Host/Origin 检查仍生效。未提供 token 返回 400，无效/重复 token 返回 403，
+目标已移除返回 404。响应是附件流，带 `no-store`/`nosniff`。不要把通用 server bearer 放在 URL 中。
+
+目录搜索默认 limit 30（1–100）、默认只含目录；有 cwd 时返回相对路径且空 query 浏览子项，无 cwd 时
+搜索 home、返回绝对路径且空 query 不返回结果。当前 fuzzy 排序、轮询监听和资源上限与 Paseo 的差异
+记录在第十一阶段报告。
 
 ## Agent runtime 目录与元数据生命周期
 

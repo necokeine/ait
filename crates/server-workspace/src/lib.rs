@@ -1,6 +1,7 @@
 //! Local Git inspection and independent server ownership leases.
 
 mod checkout;
+mod files;
 mod forge;
 mod git;
 mod identity;
@@ -11,6 +12,7 @@ mod workspace_automation;
 mod worktrees;
 
 pub use checkout::LocalCheckout;
+pub use files::LocalFiles;
 pub use forge::LocalForge;
 pub use project_config::LocalProjectConfigStore;
 pub use project_icon::LocalProjectIconStore;

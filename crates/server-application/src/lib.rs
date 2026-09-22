@@ -5,6 +5,7 @@ pub mod agents;
 pub mod checkout;
 pub mod daemon;
 pub mod directory;
+pub mod files;
 pub mod forge;
 pub mod workspace_automation;
 pub mod workspace_labels;

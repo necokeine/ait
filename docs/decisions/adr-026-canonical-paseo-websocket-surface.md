@@ -237,6 +237,34 @@ forge-specific facts、cache、batch polling 与 mutation invalidation。当前 
 观察能力，也没有 Provider-backed PR 文本生成和 failed-job log tail；显式 title/body、GitHub 核心命令与 wire
 shape 已对齐。第十阶段报告记录完整差异和受控 CLI/本地 remote 测试。
 
+## 第十一阶段能力
+
+公开文件与目录分组的 11 个规范方法：`directory.suggestions.request`、`fs.explorer.request`、
+`fs.file.subscribe.request`、`fs.file.unsubscribe.request`、`fs.file.write.request`、
+`fs.entry.create.request`、`fs.entry.rename.request`、`fs.entry.duplicate.request`、
+`fs.entry.delete.request`、`fs.file.download_token.request` 和 `file.upload.request`。
+
+全新 `server-ports::files` 隔离文件元数据、reader、upload writer 与阻塞文件操作；
+`server-application::Files` 管理 60 秒、一次性、最多 256 个下载授权；`server-workspace::LocalFiles`
+处理 scoped realpath、revision、原子文本替换、tracked Git rename、目录搜索及临时上传目录。
+继续只依赖新的 `server-*` crate，protocol 不依赖内部 port 或运行时。
+
+API 将文件订阅绑定物理连接，响应入队后启动 200 ms polling，按版本去重。释放订阅与发布事件共享一个
+短临界区，取消确认之后不再为该订阅发布事件；同名替换、disconnect、drain 均清理资源。
+文件内容使用 Paseo 的 0x10/0x11/0x12 二进制帧及 256 KiB chunk，文本 envelope 保持原协议；
+只有已协商 `file.upload.request` 的连接可以发送文件帧。上传必须先声明请求并发送 Begin，End 校验长度，
+未完成上传在失败、替换、断线或空闲超时后删除。二进制发送复用文本队列的消息数/字节预算并等待背压。
+
+`GET /api/files/download?token=...` 是 server bearer URL 禁令的唯一例外：这里只接受独立随机、短时、
+单次使用的文件授权 token，仍校验 Host/Origin，不接受通用 server bearer。授权固定签发时的 canonical
+target 和下载名，消费时重新检查作用域与 regular-file 类型；数据流读取开放句柄，失败不返还 token。
+日志 span 仅记录 HTTP method，不记录 URL/query。响应带 `no-store` 和 `nosniff`。
+
+Paseo 的共享 native watcher、完整 fuzzy 排序与 8 秒 cache 尚未移植；当前复制和列目录有数量/字节上限，
+inline preview 上限 512 KiB，上传上限 64 MiB、每连接最多 8 个。完整差异与对应测试见第十一阶段报告。
+本阶段完成后的 capability 总数为 104，其中 Paseo 清单内 93、原有独立接口 11；188 个独立 Paseo 方法
+中剩余 95 个未接通。握手、推送事件和未单独发布 capability 的兼容取消入口不计入此数。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
@@ -262,4 +290,5 @@ provider、剩余多 Forge、schedule、plugin、hub、voice、push 或 browser 
 push、discard 与 stash 记录在
 [WebSocket 接口第九阶段报告](../reports/paseo-websocket-surface-phase-9.md)；Forge search、PR lifecycle、timeline
 与 check details 记录在
-[WebSocket 接口第十阶段报告](../reports/paseo-websocket-surface-phase-10.md)。
+[WebSocket 接口第十阶段报告](../reports/paseo-websocket-surface-phase-10.md)；文件、目录、上传下载及文件版本
+订阅记录在 [WebSocket 接口第十一阶段报告](../reports/paseo-websocket-surface-phase-11.md)。

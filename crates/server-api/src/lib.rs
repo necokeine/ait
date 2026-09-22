@@ -7,6 +7,7 @@ mod checkout;
 mod connection;
 mod daemon;
 mod directory;
+mod files;
 mod forge;
 mod jobs;
 mod outbound;
@@ -33,6 +34,7 @@ use server_application::agents::Agents;
 use server_application::checkout::Checkout;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
+use server_application::files::Files;
 use server_application::forge::Forge;
 use server_application::workspace_automation::WorkspaceAutomation;
 use server_application::workspace_labels::WorkspaceLabels;
@@ -76,6 +78,7 @@ struct Shared {
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     forge: Option<Arc<Mutex<Forge>>>,
+    files: Option<Arc<Mutex<Files>>>,
     workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
     workspace_automation: Option<Arc<Mutex<WorkspaceAutomation>>>,
     workspace_state: Option<Arc<Mutex<WorkspaceState>>>,
@@ -100,6 +103,8 @@ pub struct Services {
     pub directory: Option<Directory>,
     /// Forge search and pull request use cases.
     pub forge: Option<Forge>,
+    /// Scoped filesystem, upload, and download operations.
+    pub files: Option<Files>,
     /// Paseo workspace label catalog, assignment, and subscription use cases.
     pub workspace_labels: Option<WorkspaceLabels>,
     /// Paseo workspace setup and configured script runtime.
@@ -217,6 +222,7 @@ impl Api {
                     .directory
                     .map(|directory| Arc::new(Mutex::new(directory))),
                 forge: services.forge.map(|forge| Arc::new(Mutex::new(forge))),
+                files: services.files.map(|files| Arc::new(Mutex::new(files))),
                 workspace_labels: services
                     .workspace_labels
                     .map(|labels| Arc::new(Mutex::new(labels))),
@@ -241,6 +247,7 @@ impl Api {
             .route("/readyz", get(ready))
             .route("/v1/server/info", get(info))
             .route("/v1/ws", get(upgrade))
+            .route("/api/files/download", get(files::download))
             .fallback(|| async { ApiError(StatusCode::NOT_FOUND) })
             .layer(middleware::from_fn_with_state(self.shared.clone(), guard))
             .layer(TimeoutLayer::with_status_code(
@@ -289,6 +296,10 @@ impl Api {
 fn installed_capabilities(services: &Services) -> Vec<String> {
     let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
     let groups: &[(bool, &[&str])] = &[
+        (
+            services.files.is_some(),
+            server_protocol::files::CAPABILITIES,
+        ),
         (
             services.projects.is_some(),
             server_protocol::project_lease::CAPABILITIES,
@@ -368,11 +379,13 @@ async fn guard(
     next: Next,
 ) -> Result<Response, ApiError> {
     auth::validate_source(request.headers(), &state.authorities)?;
-    if !matches!(request.uri().path(), "/healthz" | "/readyz") {
+    let download = request.method() == axum::http::Method::GET
+        && request.uri().path() == "/api/files/download";
+    if !matches!(request.uri().path(), "/healthz" | "/readyz") && !download {
         auth::authenticate(request.headers(), &state.token)?;
     }
     // Credentials and client state must never be accepted in a URL.
-    if request.uri().query().is_some() {
+    if request.uri().query().is_some() && !download {
         return Err(ApiError(StatusCode::BAD_REQUEST));
     }
     Ok(next.run(request).await)

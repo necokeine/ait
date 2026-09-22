@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use server_ports::ProjectError;
 
-// Git commands here are read-only, fixed arguments, with bounded output and lifetime.
+// Fixed Git invocations with bounded output and lifetime; callers select reads or mutations.
 pub(super) fn run(root: &Path, arguments: &[&str]) -> Result<String, ProjectError> {
     let mut output = tempfile::tempfile().map_err(|_| ProjectError::Io)?;
     let mut command = Command::new("git");

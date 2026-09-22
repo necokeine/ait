@@ -29,6 +29,7 @@ type RouteResult = (
 
 #[derive(Default)]
 struct ConnectionSubscriptions {
+    files: crate::files::FileConnection,
     diffs: BTreeMap<String, CheckoutDiffSubscription>,
     status: BTreeSet<String>,
     labels: BTreeMap<String, WorkspaceLabelSubscription>,
@@ -40,6 +41,7 @@ impl ConnectionSubscriptions {
             .len()
             .saturating_add(self.labels.len())
             .saturating_add(self.diffs.len())
+            .saturating_add(self.files.len())
     }
 }
 
@@ -56,7 +58,7 @@ pub(super) async fn serve(socket: WebSocket, state: Arc<Shared>) {
                 queued = receiver.recv() => match queued { Some(queued) => queued, None => break },
             };
             if !matches!(
-                timeout(WRITE_TIMEOUT, sink.send(Message::Text(queued.text.into()))).await,
+                timeout(WRITE_TIMEOUT, sink.send(queued.message)).await,
                 Ok(Ok(()))
             ) {
                 break;
@@ -66,7 +68,7 @@ pub(super) async fn serve(socket: WebSocket, state: Arc<Shared>) {
         let _ = timeout(CLOSE_TIMEOUT, async {
             // Flush already bounded diagnostic/error/status messages before closing.
             while let Ok(queued) = receiver.try_recv() {
-                sink.send(Message::Text(queued.text.into())).await?;
+                sink.send(queued.message).await?;
             }
             sink.send(Message::Close(Some(CloseFrame {
                 code: close_code::AWAY,
@@ -96,7 +98,7 @@ async fn read(
     let hello = tokio::select! {
         () = state.cancellation.cancelled() => return Ok(()),
         result = timeout(HELLO_TIMEOUT, receive(&mut stream)) => match result {
-            Ok(Some(Ok(ClientMessage::Hello(hello)))) => hello,
+            Ok(Some(Ok(Incoming::Text(ClientMessage::Hello(hello))))) => hello,
             _ => return error(outbound, None, ErrorCode::InvalidMessage),
         },
     };
@@ -110,7 +112,9 @@ async fn read(
         negotiated_capabilities: capabilities.clone(),
     })?;
     let mut subscriptions = ConnectionSubscriptions::default();
+    let mut upload_expiry = tokio::time::interval(Duration::from_secs(30));
     loop {
+        subscriptions.files.prune_uploads();
         let message = tokio::select! {
             biased;
             () = state.cancellation.cancelled() => {
@@ -120,13 +124,17 @@ async fn read(
                 return Ok(());
             },
             message = receive(&mut stream) => message,
+            _ = upload_expiry.tick() => {
+                subscriptions.files.prune_uploads();
+                continue;
+            },
         };
         match message {
-            Some(Ok(ClientMessage::Request {
+            Some(Ok(Incoming::Text(ClientMessage::Request {
                 request_id,
                 method,
                 params,
-            })) if valid_id(&request_id) && valid_id(&method) => {
+            }))) if valid_id(&request_id) && valid_id(&method) => {
                 process_request(
                     request_id,
                     method,
@@ -139,7 +147,26 @@ async fn read(
                 .await?;
             }
             None => return Ok(()),
-            Some(Ok(ClientMessage::Hello(_) | ClientMessage::Request { .. }) | Err(_)) => {
+            Some(Ok(Incoming::Binary(bytes)))
+                if capabilities
+                    .iter()
+                    .any(|method| method == "file.upload.request") =>
+            {
+                let Some((id, frame)) = server_protocol::file_transfer::decode(&bytes) else {
+                    return error(outbound, None, ErrorCode::InvalidMessage);
+                };
+                subscriptions
+                    .files
+                    .frame(id, frame, state, outbound)
+                    .await?;
+            }
+            Some(
+                Ok(
+                    Incoming::Text(ClientMessage::Hello(_) | ClientMessage::Request { .. })
+                    | Incoming::Binary(_),
+                )
+                | Err(_),
+            ) => {
                 return error(outbound, None, ErrorCode::InvalidMessage);
             }
         }
@@ -155,6 +182,25 @@ async fn process_request(
     capabilities: &[String],
     subscriptions: &mut ConnectionSubscriptions,
 ) -> Result<(), QueueError> {
+    if server_protocol::files::CAPABILITIES.contains(&method.as_str()) {
+        if !capabilities.contains(&method) {
+            return error(outbound, Some(request_id), ErrorCode::UnsupportedCapability);
+        }
+        let available_subscriptions = MAX_SUBSCRIPTIONS.saturating_sub(subscriptions.len());
+        return subscriptions
+            .files
+            .request(
+                crate::files::FileRequest {
+                    id: request_id,
+                    method,
+                    params,
+                    available_subscriptions,
+                },
+                state,
+                outbound,
+            )
+            .await;
+    }
     let (result, pending_label_subscription, pending_diff_subscription, workspace_event) =
         route_request(
             &method,
@@ -348,15 +394,24 @@ async fn route_checkout(
     }
 }
 
-async fn receive(stream: &mut SplitStream<WebSocket>) -> Option<Result<ClientMessage, ErrorCode>> {
+enum Incoming {
+    Text(ClientMessage),
+    Binary(Vec<u8>),
+}
+
+async fn receive(stream: &mut SplitStream<WebSocket>) -> Option<Result<Incoming, ErrorCode>> {
     loop {
         match stream.next().await? {
             Ok(Message::Text(text)) => {
-                return Some(serde_json::from_str(&text).map_err(|_| ErrorCode::InvalidMessage));
+                return Some(
+                    serde_json::from_str(&text)
+                        .map(Incoming::Text)
+                        .map_err(|_| ErrorCode::InvalidMessage),
+                );
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => {}
             Ok(Message::Close(_)) | Err(_) => return None,
-            Ok(Message::Binary(_)) => return Some(Err(ErrorCode::InvalidMessage)),
+            Ok(Message::Binary(bytes)) => return Some(Ok(Incoming::Binary(bytes.to_vec()))),
         }
     }
 }
@@ -429,6 +484,7 @@ fn dispatch(
             subscriptions.status.remove(&request.subscription_id);
             subscriptions.labels.remove(&request.subscription_id);
             subscriptions.diffs.remove(&request.subscription_id);
+            subscriptions.files.release(&request.subscription_id);
             serde_json::to_value(SubscriptionReleaseResult {
                 subscription_id: request.subscription_id,
             })

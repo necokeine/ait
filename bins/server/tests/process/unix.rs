@@ -73,6 +73,9 @@ mod checkout;
 #[path = "forge.rs"]
 mod forge;
 
+#[path = "files.rs"]
+mod files;
+
 #[path = "worktrees.rs"]
 mod worktrees;
 
