@@ -60,6 +60,7 @@ async fn websocket_project_lifecycle_reconnect_and_validation() {
         server_api::Services {
             projects: Some(fixture.application("state")),
             agents: None,
+            directory: None,
         },
     )
     .unwrap();

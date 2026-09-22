@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-22",
+  "revision": {
+    "base": "5e0eb7f",
+    "state": "base plus the reviewed working-tree changes for ADR-026 phase 1"
+  },
+  "toolchain": {
+    "platform": "macOS 26.6.2 (Darwin 25.6.0 arm64)",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "0.8.4"
+  },
+  "measurement": {
+    "command": "cargo llvm-cov --workspace --html -- --skip command_approval_secrets_never_reach_durable_or_reconnected_views --skip daemon_is_ready_and_rejects_unsent_native_recovery_without_replay",
+    "scope": "workspace default features; production Rust sources; test/build sources filtered by cargo-llvm-cov; doc tests not instrumented",
+    "html": "target/llvm-cov/html/index.html",
+    "tests": {
+      "targets": 72,
+      "passed": 593,
+      "failed": 0,
+      "ignored": 5,
+      "filtered": 2
+    },
+    "exclusions": [
+      {
+        "test": "command_approval_secrets_never_reach_durable_or_reconnected_views",
+        "reason": "Existing instrumentation timeout exclusion retained from earlier server reports."
+      },
+      {
+        "test": "daemon_is_ready_and_rejects_unsent_native_recovery_without_replay",
+        "reason": "Existing daemon test repeatedly reached readiness after its fixed 15-second window; no changed file is in the daemon path."
+      }
+    ]
+  },
+  "coverage": {
+    "workspace": {
+      "coveredLines": 27926,
+      "totalLines": 35198,
+      "linePercent": 79.33973521222796
+    },
+    "serverPackages": {
+      "coveredLines": 4527,
+      "totalLines": 5067,
+      "linePercent": 89.34280639431617
+    },
+    "crates": {
+      "server-bin": { "coveredLines": 299, "totalLines": 311, "linePercent": 96.14147909967846 },
+      "server-api": { "coveredLines": 1191, "totalLines": 1406, "linePercent": 84.70839260312944 },
+      "server-application": { "coveredLines": 839, "totalLines": 915, "linePercent": 91.69398907103825 },
+      "server-domain": { "coveredLines": 213, "totalLines": 213, "linePercent": 100.0 },
+      "server-ports": { "coveredLines": 16, "totalLines": 16, "linePercent": 100.0 },
+      "server-protocol": { "coveredLines": 368, "totalLines": 396, "linePercent": 92.92929292929293 },
+      "server-storage": { "coveredLines": 1068, "totalLines": 1155, "linePercent": 92.46753246753246 },
+      "server-workspace": { "coveredLines": 533, "totalLines": 655, "linePercent": 81.37404580152672 }
+    },
+    "changedProductionFiles": {
+      "crates/server-api/src/directory.rs": { "coveredLines": 491, "totalLines": 685, "linePercent": 71.67883211678831 },
+      "crates/server-application/src/directory.rs": { "coveredLines": 661, "totalLines": 736, "linePercent": 89.80978260869564 },
+      "crates/server-protocol/src/directory.rs": { "coveredLines": 29, "totalLines": 29, "linePercent": 100.0 },
+      "crates/server-protocol/src/methods.rs": { "coveredLines": 12, "totalLines": 12, "linePercent": 100.0 },
+      "crates/server-protocol/src/project_config.rs": { "coveredLines": 137, "totalLines": 156, "linePercent": 87.82051282051282 },
+      "crates/server-workspace/src/project_config.rs": { "coveredLines": 70, "totalLines": 74, "linePercent": 94.5945945945946 },
+      "crates/server-workspace/src/project_icon.rs": { "coveredLines": 134, "totalLines": 212, "linePercent": 63.20754716981132 },
+      "crates/server-workspace/src/provisioning.rs": { "coveredLines": 109, "totalLines": 137, "linePercent": 79.56204379562044 }
+    }
+  },
+  "baseline": {
+    "artifact": "paseo-registry-coverage.json",
+    "workspace": { "coveredLines": 26237, "totalLines": 33111, "linePercent": 79.24 },
+    "serverPackages": { "coveredLines": 2841, "totalLines": 2980, "linePercent": 95.34 }
+  }
+}

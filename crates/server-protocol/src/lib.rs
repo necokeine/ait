@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod agent;
+pub mod directory;
+pub mod methods;
 pub mod project;
+pub mod project_config;
+pub mod project_icon;
 pub mod project_lease;
 pub mod workspace;
 
@@ -191,6 +195,10 @@ pub enum ErrorCode {
     CatalogBusy,
     /// Agent storage failed.
     AgentIo,
+    /// A workspace record does not exist.
+    WorkspaceNotFound,
+    /// Project or workspace registry storage failed.
+    RegistryIo,
 }
 
 impl ErrorCode {
@@ -223,6 +231,8 @@ impl ErrorCode {
             Self::AgentIsDefault => "Deselect the default Agent before disabling it",
             Self::CatalogBusy => "Catalog is busy",
             Self::AgentIo => "Agent I/O failed; retry with the same key",
+            Self::WorkspaceNotFound => "Workspace is not registered",
+            Self::RegistryIo => "Project or workspace registry I/O failed",
         }
     }
 
@@ -237,6 +247,7 @@ impl ErrorCode {
                 | Self::ProjectIo
                 | Self::CatalogBusy
                 | Self::AgentIo
+                | Self::RegistryIo
         )
     }
 }

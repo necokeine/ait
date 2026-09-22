@@ -112,6 +112,15 @@ async fn read(
                         } else {
                             Err(ErrorCode::UnsupportedCapability)
                         }
+                    } else if server_protocol::directory::CAPABILITIES.contains(&method.as_str())
+                        || server_protocol::project_config::CAPABILITIES.contains(&method.as_str())
+                        || server_protocol::project_icon::CAPABILITIES.contains(&method.as_str())
+                    {
+                        if capabilities.contains(&method) {
+                            crate::directory::dispatch(&method, params, state).await
+                        } else {
+                            Err(ErrorCode::UnsupportedCapability)
+                        }
                     } else {
                         dispatch(&method, &params, state, &capabilities, &mut subscriptions)
                     };

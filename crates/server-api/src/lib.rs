@@ -3,6 +3,7 @@
 mod agents;
 mod auth;
 mod connection;
+mod directory;
 mod jobs;
 mod outbound;
 mod projects;
@@ -20,6 +21,7 @@ use axum::{Json, Router};
 use secrecy::SecretString;
 use server_application::Projects;
 use server_application::agents::Agents;
+use server_application::directory::Directory;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -52,6 +54,7 @@ struct Shared {
     admission: Mutex<()>,
     projects: Option<Arc<Mutex<Projects>>>,
     agents: Option<Arc<Mutex<Agents>>>,
+    directory: Option<Arc<Mutex<Directory>>>,
     jobs: Arc<Semaphore>,
 }
 
@@ -62,6 +65,8 @@ pub struct Services {
     pub projects: Option<Projects>,
     /// Versioned Agent presets and explicit default selection.
     pub agents: Option<Agents>,
+    /// Paseo-shaped project and workspace registries.
+    pub directory: Option<Directory>,
 }
 
 impl Shared {
@@ -122,6 +127,23 @@ impl Api {
                     .map(|s| (*s).to_owned()),
             );
         }
+        if services.directory.is_some() {
+            capabilities.extend(
+                server_protocol::directory::CAPABILITIES
+                    .iter()
+                    .map(|method| (*method).to_owned()),
+            );
+            capabilities.extend(
+                server_protocol::project_config::CAPABILITIES
+                    .iter()
+                    .map(|method| (*method).to_owned()),
+            );
+            capabilities.extend(
+                server_protocol::project_icon::CAPABILITIES
+                    .iter()
+                    .map(|method| (*method).to_owned()),
+            );
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
@@ -143,6 +165,9 @@ impl Api {
                     .projects
                     .map(|projects| Arc::new(Mutex::new(projects))),
                 agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
+                directory: services
+                    .directory
+                    .map(|directory| Arc::new(Mutex::new(directory))),
                 jobs: Arc::new(Semaphore::new(1)),
             }),
         })

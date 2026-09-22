@@ -6,6 +6,8 @@ publish.workspace = true
 
 [dependencies]
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 futures-util = "0.3.34"
 secrecy = "0.10.3"
 serde = "1.0.229"

@@ -3447,6 +3447,8 @@ name = "server-api"
 version = "0.0.6"
 dependencies = [
  "axum",
+ "base64",
+ "chrono",
  "futures-util",
  "reqwest 0.12.28",
  "secrecy",
@@ -3469,8 +3471,11 @@ dependencies = [
 name = "server-application"
 version = "0.0.6"
 dependencies = [
+ "getrandom 0.4.3",
+ "serde_json",
  "server-domain",
  "server-ports",
+ "thiserror",
 ]
 
 [[package]]
@@ -3515,6 +3520,7 @@ dependencies = [
 name = "server-ports"
 version = "0.0.6"
 dependencies = [
+ "serde_json",
  "server-domain",
  "thiserror",
 ]
@@ -3548,8 +3554,10 @@ name = "server-workspace"
 version = "0.0.6"
 dependencies = [
  "libc",
+ "serde_json",
  "server-domain",
  "server-ports",
+ "sha2 0.10.9",
  "tempfile",
 ]
 

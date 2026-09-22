@@ -1,6 +1,7 @@
 //! Project use cases composed exclusively from the independent domain and ports.
 
 pub mod agents;
+pub mod directory;
 
 use std::collections::BTreeMap;
 use std::path::Path;

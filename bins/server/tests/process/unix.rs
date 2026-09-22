@@ -47,6 +47,9 @@ mod agents;
 #[path = "projects.rs"]
 mod projects;
 
+#[path = "directory.rs"]
+mod directory;
+
 async fn ready(process: &mut Process, log: &Path) -> String {
     let start = Instant::now();
     loop {

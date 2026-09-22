@@ -9,9 +9,14 @@ mod catalog;
 use server_api::{Api, Services};
 use server_application::Projects;
 use server_application::agents::Agents;
+use server_application::directory::Directory;
+use server_ports::registry::{ProjectRegistry, WorkspaceRegistry};
 use server_ports::{ProjectError, ProjectStorage, ProjectStore};
+use server_storage::registry::{FileBackedProjectRegistry, FileBackedWorkspaceRegistry};
 use server_storage::{SqliteCatalog, SqliteProjects};
-use server_workspace::LocalWorkspace;
+use server_workspace::{
+    LocalDirectorySource, LocalProjectConfigStore, LocalProjectIconStore, LocalWorkspace,
+};
 use tokio::net::TcpListener;
 
 use crate::config::Config;
@@ -48,6 +53,12 @@ impl Server {
             .context("read server listener address")?;
         let (instance, services) = tokio::task::spawn_blocking(move || {
             let instance = Arc::new(InstanceLease::acquire(&config.data_dir)?);
+            let project_registry =
+                FileBackedProjectRegistry::new(config.data_dir.join("projects/projects.json"));
+            let workspace_registry =
+                FileBackedWorkspaceRegistry::new(config.data_dir.join("projects/workspaces.json"));
+            project_registry.initialize()?;
+            workspace_registry.initialize()?;
             let catalog = SqliteCatalog::open(&config.data_dir)?;
             let workspace = LocalWorkspace::for_user()?;
             let agents = Agents::new(Box::new(catalog::OwnedCatalog {
@@ -61,11 +72,22 @@ impl Server {
                 }),
                 Box::new(workspace),
             );
+            let server_id = instance.server_id.to_string();
             Ok::<_, anyhow::Error>((
                 instance,
                 Services {
                     projects: Some(projects),
                     agents: Some(agents),
+                    directory: Some(Directory::new(
+                        Box::new(project_registry),
+                        Box::new(workspace_registry),
+                        Box::new(LocalDirectorySource),
+                        Box::new(LocalProjectConfigStore),
+                        Box::new(LocalProjectIconStore::new(
+                            config.data_dir.join("projects/icons"),
+                        )),
+                        server_id,
+                    )),
                 },
             ))
         })

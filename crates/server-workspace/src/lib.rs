@@ -2,6 +2,13 @@
 
 mod git;
 mod identity;
+mod project_config;
+mod project_icon;
+mod provisioning;
+
+pub use project_config::LocalProjectConfigStore;
+pub use project_icon::LocalProjectIconStore;
+pub use provisioning::LocalDirectorySource;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
