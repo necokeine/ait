@@ -2,6 +2,7 @@
 
 mod agents;
 mod catalog;
+pub mod daemon_config;
 mod migration;
 mod project;
 pub mod registry;

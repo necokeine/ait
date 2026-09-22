@@ -1,8 +1,8 @@
 # 独立 server：使用与协议
 
-> 当前运行接口仍是前两批的过渡协议。Paseo Project / Workspace 记录、wire DTO 和文件 registry
-> 已单独移植，详见 [ADR-025](../decisions/adr-025-paseo-registry.md)；尚未替换 binary 的
-> handler/组装。下文的 `project.open/list/get/close` 返回租约快照，不是 Paseo descriptor。
+> 当前 binary 已接通规范化后的 Paseo Project/Workspace 与 daemon/config WebSocket 接口，详见
+> [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
+> `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
 
 `server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目和版本化 Agent 配置。
 内部代码全部来自新建的八个 `server-*` package；Session、Run 和 Provider 执行尚未实现。
@@ -32,6 +32,10 @@ cargo run -p server-bin --bin server -- --listen 127.0.0.1:7316
 listen = "127.0.0.1:7316"
 log_level = "info"
 ```
+
+运行期 mutable daemon 配置单独保存在 `<data-dir>/config.json`，由
+`daemon.config.get.request`、`daemon.config.set.request` 和 `daemon.config.reload.request`
+管理。它不保存 bearer token，也不改变上述启动参数优先级。
 
 允许 IPv4/IPv6 loopback；拒绝 `0.0.0.0` 和其他远程地址。端口 `0` 可用于隔离测试，日志与
 `server.info` 返回实际端口。日志只记录 HTTP method、状态、耗时及启动地址，不记录
@@ -104,6 +108,27 @@ RPC 格式：
 尚未实现的业务 method 返回 `method_not_found`，不返回空成功。有效请求的错误保留 request ID。
 不合法 envelope、重复 hello、二进制消息与握手失败会关闭连接；未知 method 或错误参数可修正后
 继续使用当前连接。请求按连接顺序处理，已响应的 request ID 可以再次使用；它不是幂等键。
+
+## Daemon、配置与诊断
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `daemon.get_status.request` | `{}` | server/version/pid/executable/start/listen、relay、provider 状态 |
+| `daemon.get_pairing_offer.request` | `{}` | `url`、`qr`、`relayEnabled`；当前无 relay，返回空 offer |
+| `daemon.config.get.request` | `{}` | 规范化 mutable config |
+| `daemon.config.set.request` | `config` patch | 原子持久化后的规范化 config |
+| `daemon.config.reload.request` | `{}` | live、需重启、启动 override 控制的路径分类 |
+| `diagnostics.request` | `{}` | 不含凭据的进程、系统与 capability 文本报告 |
+| `daemon.update.request` | `{}` | Paseo update 结果；standalone 安装明确返回 unsupported failure |
+| `server.restart.request` | 可选 `reason` | 响应后 drain，释放锁并在同一进程重新组装实例 |
+| `server.shutdown.request` | `{}` | 响应后 drain 并正常退出 |
+
+legacy 名称 `get_daemon_config_request`、`set_daemon_config_request`、
+`restart_server_request`、`shutdown_server_request` 不作为 alias，返回 `method_not_found`。
+外部 SIGINT/SIGTERM 与 WebSocket lifecycle 请求共用 15 秒 drain 预算。restart 保留 `server_id`，
+生成新的 `instance_id`；使用端口 0 时系统可能分配新的实际端口。
 
 ## 项目操作（M1 首个切片）
 

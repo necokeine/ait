@@ -3,6 +3,7 @@
 mod agents;
 mod auth;
 mod connection;
+mod daemon;
 mod directory;
 mod jobs;
 mod outbound;
@@ -21,6 +22,7 @@ use axum::{Json, Router};
 use secrecy::SecretString;
 use server_application::Projects;
 use server_application::agents::Agents;
+use server_application::daemon::Daemon;
 use server_application::directory::Directory;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
@@ -52,8 +54,10 @@ struct Shared {
     connections: Arc<Semaphore>,
     // Serializes admission with closing the tracker, including pending HTTP upgrades.
     admission: Mutex<()>,
+    lifecycle_intent: Mutex<Option<LifecycleIntent>>,
     projects: Option<Arc<Mutex<Projects>>>,
     agents: Option<Arc<Mutex<Agents>>>,
+    daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     jobs: Arc<Semaphore>,
 }
@@ -65,8 +69,22 @@ pub struct Services {
     pub projects: Option<Projects>,
     /// Versioned Agent presets and explicit default selection.
     pub agents: Option<Agents>,
+    /// Daemon status, mutable configuration, diagnostics, and update boundary.
+    pub daemon: Option<Daemon>,
     /// Paseo-shaped project and workspace registries.
     pub directory: Option<Directory>,
+}
+
+/// Process lifecycle action requested through the WebSocket API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleIntent {
+    /// Stop the standalone server process.
+    Shutdown,
+    /// Rebuild the standalone server in-process.
+    Restart {
+        /// Normalized diagnostic reason.
+        reason: String,
+    },
 }
 
 impl Shared {
@@ -76,6 +94,24 @@ impl Shared {
             info.lifecycle = Lifecycle::Draining;
         }
         info
+    }
+
+    fn request_lifecycle(&self, intent: LifecycleIntent) {
+        let admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut requested = self
+            .lifecycle_intent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if requested.is_none() {
+            *requested = Some(intent);
+        }
+        self.cancellation.cancel();
+        self.tasks.close();
+        drop(requested);
+        drop(admission);
     }
 }
 
@@ -127,6 +163,13 @@ impl Api {
                     .map(|s| (*s).to_owned()),
             );
         }
+        if services.daemon.is_some() {
+            capabilities.extend(
+                server_protocol::daemon::CAPABILITIES
+                    .iter()
+                    .map(|method| (*method).to_owned()),
+            );
+        }
         if services.directory.is_some() {
             capabilities.extend(
                 server_protocol::directory::CAPABILITIES
@@ -161,10 +204,12 @@ impl Api {
                 tasks: TaskTracker::new(),
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
                 admission: Mutex::new(()),
+                lifecycle_intent: Mutex::new(None),
                 projects: services
                     .projects
                     .map(|projects| Arc::new(Mutex::new(projects))),
                 agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
+                daemon: services.daemon.map(|daemon| Arc::new(Mutex::new(daemon))),
                 directory: services
                     .directory
                     .map(|directory| Arc::new(Mutex::new(directory))),
@@ -201,6 +246,16 @@ impl Api {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.shared.cancellation.cancel();
         self.shared.tasks.close();
+    }
+
+    /// Return the first WebSocket lifecycle request accepted during this run.
+    #[must_use]
+    pub fn lifecycle_intent(&self) -> Option<LifecycleIntent> {
+        self.shared
+            .lifecycle_intent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Wait for all admitted upgrades and connections after calling `begin_shutdown`.

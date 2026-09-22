@@ -50,6 +50,9 @@ mod projects;
 #[path = "directory.rs"]
 mod directory;
 
+#[path = "daemon.rs"]
+mod daemon;
+
 async fn ready(process: &mut Process, log: &Path) -> String {
     let start = Instant::now();
     loop {

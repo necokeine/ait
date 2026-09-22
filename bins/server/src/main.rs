@@ -33,10 +33,16 @@ async fn run(cli: config::Cli) -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .try_init()
         .map_err(|error| anyhow::anyhow!("initialize logging: {error}"))?;
-    let shutdown = shutdown_signal()?;
-    let server = host::Server::bind(config).await?;
-    tracing::info!(listen = %server.address(), "server ready");
-    server.serve(shutdown).await
+    loop {
+        let server = host::Server::bind(config.clone()).await?;
+        tracing::info!(listen = %server.address(), "server ready");
+        match server.serve(shutdown_signal()?).await? {
+            Some(server_api::LifecycleIntent::Restart { reason }) => {
+                tracing::info!(%reason, "restarting server");
+            }
+            Some(server_api::LifecycleIntent::Shutdown) | None => return Ok(()),
+        }
+    }
 }
 
 fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {

@@ -6,12 +6,15 @@ use std::time::Duration;
 use anyhow::Context;
 mod catalog;
 
-use server_api::{Api, Services};
+use chrono::{SecondsFormat, Utc};
+use server_api::{Api, LifecycleIntent, Services};
 use server_application::Projects;
 use server_application::agents::Agents;
+use server_application::daemon::{Daemon, DaemonRuntime};
 use server_application::directory::Directory;
 use server_ports::registry::{ProjectRegistry, WorkspaceRegistry};
 use server_ports::{ProjectError, ProjectStorage, ProjectStore};
+use server_storage::daemon_config::FileDaemonConfigStore;
 use server_storage::registry::{FileBackedProjectRegistry, FileBackedWorkspaceRegistry};
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::{
@@ -73,11 +76,29 @@ impl Server {
                 Box::new(workspace),
             );
             let server_id = instance.server_id.to_string();
+            let daemon = Daemon::new(
+                DaemonRuntime {
+                    server_id: server_id.clone(),
+                    version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                    pid: std::process::id(),
+                    executable: std::env::current_exe()
+                        .context("resolve server executable")?
+                        .to_string_lossy()
+                        .into_owned(),
+                    started_at: Some(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)),
+                    listen: address.to_string(),
+                },
+                Box::new(FileDaemonConfigStore::with_defaults(
+                    config.data_dir.join("config.json"),
+                )),
+            );
+            daemon.get_config().context("initialize daemon config")?;
             Ok::<_, anyhow::Error>((
                 instance,
                 Services {
                     projects: Some(projects),
                     agents: Some(agents),
+                    daemon: Some(daemon),
                     directory: Some(Directory::new(
                         Box::new(project_registry),
                         Box::new(workspace_registry),
@@ -116,17 +137,20 @@ impl Server {
     pub async fn serve(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<LifecycleIntent>> {
         let Self {
             listener,
             api,
             instance,
         } = self;
-        let result = async {
+        let result: anyhow::Result<()> = async {
             let shutdown_api = api.clone();
             let server = axum::serve(listener, api.router())
                 .with_graceful_shutdown(async move {
-                    shutdown.await;
+                    tokio::select! {
+                        () = shutdown => {},
+                        () = shutdown_api.wait_draining() => {},
+                    }
                     shutdown_api.begin_shutdown();
                 })
                 .into_future();
@@ -151,10 +175,12 @@ impl Server {
             Ok(())
         }
         .await;
+        let lifecycle_intent = api.lifecycle_intent();
         // Drop routers and application storage before the data-directory instance lease.
         drop(api);
         drop(instance);
-        result
+        result?;
+        Ok(lifecycle_intent)
     }
 }
 

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod agent;
+pub mod daemon;
 pub mod directory;
 pub mod methods;
 pub mod project;
@@ -199,6 +200,10 @@ pub enum ErrorCode {
     WorkspaceNotFound,
     /// Project or workspace registry storage failed.
     RegistryIo,
+    /// Persisted daemon configuration is invalid.
+    DaemonConfigInvalid,
+    /// Daemon configuration or runtime I/O failed.
+    DaemonIo,
 }
 
 impl ErrorCode {
@@ -233,6 +238,8 @@ impl ErrorCode {
             Self::AgentIo => "Agent I/O failed; retry with the same key",
             Self::WorkspaceNotFound => "Workspace is not registered",
             Self::RegistryIo => "Project or workspace registry I/O failed",
+            Self::DaemonConfigInvalid => "Daemon configuration is invalid",
+            Self::DaemonIo => "Daemon configuration or runtime I/O failed",
         }
     }
 
@@ -248,6 +255,7 @@ impl ErrorCode {
                 | Self::CatalogBusy
                 | Self::AgentIo
                 | Self::RegistryIo
+                | Self::DaemonIo
         )
     }
 }

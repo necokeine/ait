@@ -3,7 +3,8 @@
 - [ADR-026：规范化 Paseo WebSocket 接口并按能力分期接入](decisions/adr-026-canonical-paseo-websocket-surface.md)（Accepted）：
   登记 191 个 Paseo 入站名称并统一为 dotted method；只有 DTO、use case、adapter、生产组装与
   WebSocket 验证均完成的方法才发布 capability。[第一阶段报告](reports/paseo-websocket-surface-phase-1.md)
-  记录首批 15 个 Project/Workspace 方法、测试和明确差异。
+  记录首批 15 个 Project/Workspace 方法；[第二阶段报告](reports/paseo-websocket-surface-phase-2.md)
+  记录 9 个 daemon/config/diagnostics/lifecycle 方法、进程内重启、测试和明确差异。
 
 - [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
   新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。

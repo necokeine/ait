@@ -81,6 +81,7 @@ async fn accepted_blocking_job_survives_disconnect_and_is_included_in_drain() {
             agents: Some(server_application::agents::Agents::new(Box::new(
                 SqliteCatalog::open(&fixture.state("state")).unwrap(),
             ))),
+            daemon: None,
             directory: None,
         },
     )

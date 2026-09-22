@@ -63,6 +63,19 @@ active workspace、恢复最早且 Project 仍 active 的 archived workspace，�
 `workspace.create` 对 directory source 总是新建。Project config 采用 revision compare-and-swap
 和同目录原子替换。Project icon 只允许 automatic 或客户端 upload，禁止服务端抓取任意 URL。
 
+## 第二阶段能力
+
+第二阶段生产组装公开 9 个 daemon 方法：`daemon.get_status.request`、
+`daemon.get_pairing_offer.request`、`daemon.config.reload.request`、`daemon.update.request`、
+`diagnostics.request`、`daemon.config.get.request`、`daemon.config.set.request`、
+`server.restart.request` 和 `server.shutdown.request`。
+
+配置使用 `<data-dir>/config.json`、同目录原子替换和内存发布顺序；patch 只采纳 Paseo mutable
+config 的可写字段，未知 passthrough 字段不成为隐式设置入口。reload 对外部修改做 live/restart
+路径分类。restart 在 standalone Rust 进程内释放旧实例并重新组装服务；shutdown 完成相关响应后
+走同一 drain 边界。self-update 保留 Paseo 结果形状，但 standalone 安装没有包管理器 adapter，
+因此明确返回失败，不触发重启。
+
 ## 后果与后续
 
 后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 worktree、Agent、
@@ -70,4 +83,6 @@ terminal、provider、forge、schedule、plugin、hub、voice、push 或 browser
 crate 边界和生命周期完成前保持未发布。
 
 当前 Paseo 对齐差异、每个第一阶段方法的状态和验证结果记录在
-[WebSocket 接口第一阶段报告](../reports/paseo-websocket-surface-phase-1.md)。
+[WebSocket 接口第一阶段报告](../reports/paseo-websocket-surface-phase-1.md)；daemon/config 的行为、
+测试和安装边界记录在
+[WebSocket 接口第二阶段报告](../reports/paseo-websocket-surface-phase-2.md)。

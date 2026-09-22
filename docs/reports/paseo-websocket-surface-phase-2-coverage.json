@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-22",
+  "revision": {
+    "base": "2b7f428",
+    "state": "base plus the reviewed working-tree changes for ADR-026 phase 2"
+  },
+  "toolchain": {
+    "platform": "macOS 26.6.2 (Darwin 25.6.0 arm64)",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "0.8.4"
+  },
+  "measurement": {
+    "command": "cargo llvm-cov -p server-bin -p server-api -p server-application -p server-domain -p server-ports -p server-protocol -p server-storage -p server-workspace --json --summary-only --output-path /tmp/paseo-ws-phase2-coverage-raw.json --no-fail-fast -j 1",
+    "scope": "all new server packages, default features; production Rust sources; test/build sources filtered by cargo-llvm-cov",
+    "html": "target/llvm-cov/html/index.html",
+    "tests": {
+      "targets": 12,
+      "passed": 118,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0
+    },
+    "exclusions": []
+  },
+  "coverage": {
+    "serverPackages": {
+      "coveredLines": 5191,
+      "totalLines": 5819,
+      "linePercent": 89.20776765767316
+    },
+    "crates": {
+      "server-bin": { "coveredLines": 320, "totalLines": 332, "linePercent": 96.3855421686747 },
+      "server-api": { "coveredLines": 1353, "totalLines": 1572, "linePercent": 86.06870229007633 },
+      "server-application": { "coveredLines": 898, "totalLines": 980, "linePercent": 91.63265306122449 },
+      "server-domain": { "coveredLines": 213, "totalLines": 213, "linePercent": 100.0 },
+      "server-ports": { "coveredLines": 16, "totalLines": 16, "linePercent": 100.0 },
+      "server-protocol": { "coveredLines": 477, "totalLines": 559, "linePercent": 85.3309481216458 },
+      "server-storage": { "coveredLines": 1381, "totalLines": 1492, "linePercent": 92.56032171581769 },
+      "server-workspace": { "coveredLines": 533, "totalLines": 655, "linePercent": 81.37404580152672 }
+    },
+    "phaseTwoModules": {
+      "total": { "coveredLines": 606, "totalLines": 691, "linePercent": 87.69942112879884 },
+      "crates/server-api/src/daemon.rs": { "coveredLines": 125, "totalLines": 128, "linePercent": 97.65625 },
+      "crates/server-application/src/daemon.rs": { "coveredLines": 59, "totalLines": 65, "linePercent": 90.76923076923077 },
+      "crates/server-protocol/src/daemon.rs": { "coveredLines": 109, "totalLines": 161, "linePercent": 67.70186335403726 },
+      "crates/server-storage/src/daemon_config.rs": { "coveredLines": 313, "totalLines": 337, "linePercent": 92.87833827893176 }
+    }
+  },
+  "baseline": {
+    "artifact": "paseo-websocket-surface-phase-1-coverage.json",
+    "serverPackages": { "coveredLines": 4527, "totalLines": 5067, "linePercent": 89.34280639431617 }
+  }
+}

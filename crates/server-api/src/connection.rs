@@ -121,6 +121,12 @@ async fn read(
                         } else {
                             Err(ErrorCode::UnsupportedCapability)
                         }
+                    } else if server_protocol::daemon::CAPABILITIES.contains(&method.as_str()) {
+                        if capabilities.contains(&method) {
+                            crate::daemon::dispatch(&method, params, state).await
+                        } else {
+                            Err(ErrorCode::UnsupportedCapability)
+                        }
                     } else {
                         dispatch(&method, &params, state, &capabilities, &mut subscriptions)
                     };

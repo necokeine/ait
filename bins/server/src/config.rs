@@ -35,7 +35,7 @@ struct FileConfig {
     log_level: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct Config {
     pub data_dir: PathBuf,
     pub listen: SocketAddr,
