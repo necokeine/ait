@@ -543,7 +543,7 @@ fn project_descriptor(project: &PersistedProjectRecord) -> WorkspaceProjectDescr
     }
 }
 
-fn workspace_descriptor(
+pub(super) fn workspace_descriptor(
     workspace: &PersistedWorkspaceRecord,
     project: Option<&PersistedProjectRecord>,
 ) -> WorkspaceDescriptorPayload {

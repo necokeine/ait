@@ -14,6 +14,7 @@ pub mod project_lease;
 pub mod subscription;
 pub mod workspace;
 pub mod workspace_labels;
+pub mod worktrees;
 
 /// Maximum incoming JSON message size, including fragmented messages.
 pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;

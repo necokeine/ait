@@ -4,6 +4,7 @@ pub mod agents;
 pub mod daemon;
 pub mod directory;
 pub mod workspace_labels;
+pub mod worktrees;
 
 use std::collections::BTreeMap;
 use std::path::Path;

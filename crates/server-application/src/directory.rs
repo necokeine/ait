@@ -845,7 +845,7 @@ fn normalize_optional_text(text: Option<String>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-fn basename(path: &str) -> String {
+pub(crate) fn basename(path: &str) -> String {
     Path::new(path)
         .file_name()
         .and_then(|name| name.to_str())
@@ -854,7 +854,7 @@ fn basename(path: &str) -> String {
         .to_owned()
 }
 
-fn generate_workspace_id() -> Result<String, DirectoryError> {
+pub(crate) fn generate_workspace_id() -> Result<String, DirectoryError> {
     let mut bytes = [0_u8; 8];
     getrandom::fill(&mut bytes).map_err(|_| DirectoryError::FileSystem)?;
     Ok(format!("wks_{}", hex(&bytes)))
@@ -884,7 +884,7 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-fn derive_project_key(checkout: &Checkout, server_id: &str) -> String {
+pub(crate) fn derive_project_key(checkout: &Checkout, server_id: &str) -> String {
     let selected_path = checkout
         .worktree_root
         .as_deref()

@@ -143,7 +143,7 @@ async fn process_request(
     capabilities: &[String],
     subscriptions: &mut ConnectionSubscriptions,
 ) -> Result<(), QueueError> {
-    let (result, pending_label_subscription) = route_request(
+    let (result, pending_label_subscription, workspace_event) = route_request(
         &method,
         params,
         state,
@@ -178,6 +178,12 @@ async fn process_request(
             lifecycle: state.info().lifecycle,
         })?;
     }
+    if let Some(params) = workspace_event {
+        outbound.send(&ServerMessage::Event {
+            method: "workspace.update".to_owned(),
+            params,
+        })?;
+    }
     Ok(())
 }
 
@@ -191,6 +197,7 @@ async fn route_request(
 ) -> (
     Result<Value, ErrorCode>,
     Option<crate::workspace_labels::PendingSubscription>,
+    Option<Value>,
 ) {
     let supported = capabilities.iter().any(|capability| capability == method);
     let result = if server_protocol::project_lease::CAPABILITIES.contains(&method) {
@@ -222,7 +229,7 @@ async fn route_request(
         }
     } else if server_protocol::workspace_labels::CAPABILITIES.contains(&method) {
         if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None);
+            return (Err(ErrorCode::UnsupportedCapability), None, None);
         }
         if method == "workspace.label.list.request"
             && params
@@ -230,18 +237,26 @@ async fn route_request(
                 .is_some_and(|subscribe| !subscribe.is_null())
             && subscriptions.len() >= MAX_SUBSCRIPTIONS
         {
-            return (Err(ErrorCode::ResourceExhausted), None);
+            return (Err(ErrorCode::ResourceExhausted), None, None);
         }
         return match crate::workspace_labels::dispatch(method, params, state, outbound.clone())
             .await
         {
-            Ok(dispatched) => (Ok(dispatched.value), dispatched.subscription),
-            Err(error) => (Err(error), None),
+            Ok(dispatched) => (Ok(dispatched.value), dispatched.subscription, None),
+            Err(error) => (Err(error), None, None),
+        };
+    } else if server_protocol::worktrees::CAPABILITIES.contains(&method) {
+        if !supported {
+            return (Err(ErrorCode::UnsupportedCapability), None, None);
+        }
+        return match crate::worktrees::dispatch(method, params, state).await {
+            Ok(dispatched) => (Ok(dispatched.value), None, dispatched.event),
+            Err(error) => (Err(error), None, None),
         };
     } else {
         dispatch(method, &params, state, capabilities, subscriptions)
     };
-    (result, None)
+    (result, None, None)
 }
 
 async fn receive(stream: &mut SplitStream<WebSocket>) -> Option<Result<ClientMessage, ErrorCode>> {

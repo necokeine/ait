@@ -97,10 +97,29 @@ assignment。删除检查与真正删除使用同一计数集合。
 snapshot 或压缩 changes；响应发送完成后才放行 bootstrap 期间的 live update。一个连接可持有
 多个服务端分配 ID 的标签订阅，断开或 `subscription.release.request` 会独立释放对应监听。
 
+## 第四阶段能力
+
+第四阶段生产组装公开 3 个 Worktree 方法：`workspace.worktree.list.request`、
+`workspace.worktree.create.request` 和 `workspace.worktree.archive.request`。三个历史 Paseo 名称
+`paseo_worktree_list_request`、`create_paseo_worktree_request`、
+`paseo_worktree_archive_request` 只保留在 catalog，不作为 wire alias。
+
+`server-ports::worktrees::ManagedWorktrees` 隔离阻塞 Git 与文件操作；
+`server-workspace::LocalManagedWorktrees` 把 owned worktree 固定放在
+`<data-dir>/worktrees/<repo-hash>/<slug>`。application 先完成 Git 创建，再选择或新建 Project、写入
+Paseo-shaped Workspace record；后续 registry 失败会删除刚创建的 worktree。归档时 `workspace`
+scope 只归档一个记录，最后一个 active 引用消失才删目录；`worktree` scope 归档该 checkout 下的
+全部 active Workspace，并且必须先通过 managed-root ownership 检查。
+
+创建支持 source cwd 位于 repository 子目录、branch-off/default branch、已有 branch/路径 collision
+suffix、existing branch checkout、首 Agent prompt 的 provisional title 和未跟踪 `paseo.json` 种子
+复制。创建响应之后发布统一 envelope 的 `workspace.update` upsert event。change-request checkout、
+setup/teardown script、Agent/terminal 清理和 Paseo metadata 留待对应服务接入，不能以空成功伪装。
+
 ## 后果与后续
 
-后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 worktree、Agent、
-terminal、provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新
+后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent、terminal、
+provider、forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新
 crate 边界和生命周期完成前保持未发布。
 
 当前 Paseo 对齐差异、每个第一阶段方法的状态和验证结果记录在
@@ -108,4 +127,6 @@ crate 边界和生命周期完成前保持未发布。
 测试和安装边界记录在
 [WebSocket 接口第二阶段报告](../reports/paseo-websocket-surface-phase-2.md)；Workspace 标签、事务与
 订阅边界记录在
-[WebSocket 接口第三阶段报告](../reports/paseo-websocket-surface-phase-3.md)。
+[WebSocket 接口第三阶段报告](../reports/paseo-websocket-surface-phase-3.md)；Worktree 生命周期、
+真实 Git 验证与剩余差异记录在
+[WebSocket 接口第四阶段报告](../reports/paseo-websocket-surface-phase-4.md)。

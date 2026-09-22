@@ -1,6 +1,7 @@
 # 独立 server：使用与协议
 
-> 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config 与 Workspace 标签
+> 当前 binary 已接通规范化后的 Paseo Project/Workspace、daemon/config、Workspace 标签与
+> Worktree
 > WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
 > `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
@@ -163,6 +164,32 @@ cursor 返回完整 `snapshot`。调用 `subscription.release.request` 或断开
 catalog 位于 `<data-dir>/projects/workspace-labels.json`。跨 catalog 与 `workspaces.json` 的写入使用
 `workspace-labels.transaction.json` 恢复；正常完成后 journal 会删除。出现
 `workspace_label_storage_uncertain` 时停止写入并重启 server，让启动恢复先确定一致状态。
+
+## Worktree
+
+以下 capability 已在生产 binary 组装：
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `workspace.worktree.list.request` | `cwd` 或 `repoRoot` | managed `worktrees` 与 inline `error` |
+| `workspace.worktree.create.request` | `cwd`，可选 `projectId`、`worktreeSlug`、first-Agent context、`refName`、`action` | Workspace descriptor、setup 字段与 inline error |
+| `workspace.worktree.archive.request` | path 或 repo+branch，可选 `workspaceId`、`scope` | `success`、`removedAgents` 与 inline error |
+
+worktree 固定创建在 `<data-dir>/worktrees/<repo-hash>/<slug>`，不会把 repository 内的任意 linked
+worktree 认作服务所有。`branch-off` 从 `refName` 或 default branch 创建新分支；`checkout` 使用
+现有 local branch，必要时从 origin 获取。同名 branch 或目录采用 `-1`、`-2` 后缀。source cwd
+可以位于 repository 子目录，返回的 `workspaceDirectory` 保留相对位置；source cwd 中未跟踪的
+`paseo.json` 会以 create-new 方式复制到对应目录，不覆盖 checkout 已有文件。
+
+`scope` 缺省为 `workspace`：只归档目标 Workspace，且只在没有其他 active Workspace 引用时删除
+managed worktree。`scope:"worktree"` 归档该 worktree 内全部 active Workspace 后删除目录；外部
+路径返回 `NOT_ALLOWED`。legacy `deleteWorktreeFromDisk` 被解析但不控制删除，规则由 scope、引用与
+ownership 共同决定。成功创建后，响应之后会收到
+`{"type":"event","method":"workspace.update",...}` upsert event。
+
+当前 create 不执行 `paseo.json` setup script，也不创建 setup terminal；archive 不执行 teardown、
+Agent/terminal 清理，因此 `removedAgents` 为空。`checkoutSource` 与 `githubPrNumber` 在 Forge 服务
+接通前返回明确失败。这些限制不会返回伪成功，完整差异见第四阶段报告。
 
 ## 项目操作（M1 首个切片）
 

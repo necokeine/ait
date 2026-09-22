@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod provisioning;
 pub mod registry;
 pub mod workspace_labels;
+pub mod worktrees;
 
 use server_domain::{GitCommit, MessageId, OperationId, OwnerEpoch, Project, ProjectId};
 use std::fmt::Debug;

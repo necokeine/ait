@@ -9,6 +9,7 @@ mod jobs;
 mod outbound;
 mod projects;
 mod workspace_labels;
+mod worktrees;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,7 @@ use server_application::agents::Agents;
 use server_application::daemon::Daemon;
 use server_application::directory::Directory;
 use server_application::workspace_labels::WorkspaceLabels;
+use server_application::worktrees::Worktrees;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -62,6 +64,7 @@ struct Shared {
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
+    worktrees: Option<Arc<Mutex<Worktrees>>>,
     jobs: Arc<Semaphore>,
 }
 
@@ -78,6 +81,8 @@ pub struct Services {
     pub directory: Option<Directory>,
     /// Paseo workspace label catalog, assignment, and subscription use cases.
     pub workspace_labels: Option<WorkspaceLabels>,
+    /// Paseo-owned Git worktree lifecycle use cases.
+    pub worktrees: Option<Worktrees>,
 }
 
 /// Process lifecycle action requested through the WebSocket API.
@@ -199,6 +204,13 @@ impl Api {
                     .map(|method| (*method).to_owned()),
             );
         }
+        if services.worktrees.is_some() {
+            capabilities.extend(
+                server_protocol::worktrees::CAPABILITIES
+                    .iter()
+                    .map(|method| (*method).to_owned()),
+            );
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
@@ -228,6 +240,9 @@ impl Api {
                 workspace_labels: services
                     .workspace_labels
                     .map(|labels| Arc::new(Mutex::new(labels))),
+                worktrees: services
+                    .worktrees
+                    .map(|worktrees| Arc::new(Mutex::new(worktrees))),
                 jobs: Arc::new(Semaphore::new(1)),
             }),
         })

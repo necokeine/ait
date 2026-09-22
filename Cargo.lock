@@ -3554,6 +3554,7 @@ dependencies = [
 name = "server-workspace"
 version = "0.0.6"
 dependencies = [
+ "chrono",
  "libc",
  "serde_json",
  "server-domain",

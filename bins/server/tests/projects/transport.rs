@@ -59,10 +59,7 @@ async fn websocket_project_lifecycle_reconnect_and_validation() {
         TOKEN.into(),
         server_api::Services {
             projects: Some(fixture.application("state")),
-            agents: None,
-            daemon: None,
-            directory: None,
-            workspace_labels: None,
+            ..server_api::Services::default()
         },
     )
     .unwrap();
