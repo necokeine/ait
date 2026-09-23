@@ -277,8 +277,10 @@ inline preview 上限 512 KiB，上传上限 64 MiB、每连接最多 8 个。�
 optional 与 64 个 required capability；需要调用多个接口时按需声明。
 
 分发先统一验证规范名称、消息方向、协商与当前 host 的实现状态，再进入独立文件处理器或按功能分组的
-真实业务处理器。业务分组在单一 routing table 中登记；标签、Git diff 的订阅以及 Workspace 事件
-保留原有响应后激活顺序。未知旧名称仍返回 `method_not_found`，错误不会关闭已握手连接。
+真实业务处理器。当前实现把规范方法和独立方法按 dotted prefix 建成只读路由树，完整方法名的叶子
+记录方向、协商能力和业务处理器；同一前缀的叶子可以归属不同处理器，`project.list` 也可与
+`project.list.request` 共存。标签、Git diff 的订阅以及 Workspace 事件保留原有响应后激活顺序。
+未知旧名称仍返回 `method_not_found`，错误不会关闭已握手连接。
 此修订覆盖本 ADR 前面的“未实现方法不参与 hello 协商”旧准入规则；`CAPABILITIES` 模块常量继续仅列
 真实实现，用于后续逐项替换占位方法。
 

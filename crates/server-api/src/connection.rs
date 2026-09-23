@@ -195,17 +195,15 @@ async fn process_request(
     capabilities: &[String],
     subscriptions: &mut ConnectionSubscriptions,
 ) -> Result<(), QueueError> {
-    if server_protocol::methods::by_canonical_name(&method)
-        .is_some_and(|spec| spec.kind != InboundKind::Request)
-    {
-        return error(outbound, Some(request_id), ErrorCode::InvalidMessage);
-    }
-    let Some(capability) = routing::request_capability(&method) else {
+    let Some(route) = routing::lookup(&method) else {
         return error(outbound, Some(request_id), ErrorCode::MethodNotFound);
     };
+    if route.kind != InboundKind::Request {
+        return error(outbound, Some(request_id), ErrorCode::InvalidMessage);
+    }
     if !capabilities
         .iter()
-        .any(|negotiated| negotiated == capability)
+        .any(|negotiated| negotiated == route.capability)
     {
         return error(outbound, Some(request_id), ErrorCode::UnsupportedCapability);
     }
@@ -218,7 +216,10 @@ async fn process_request(
     {
         return error(outbound, Some(request_id), ErrorCode::NotImplemented);
     }
-    if server_protocol::files::CAPABILITIES.contains(&method.as_str()) {
+    let Some(handler) = route.handler else {
+        return error(outbound, Some(request_id), ErrorCode::NotImplemented);
+    };
+    if handler == routing::Handler::Files {
         let available_subscriptions = MAX_SUBSCRIPTIONS.saturating_sub(subscriptions.len());
         return subscriptions
             .files
@@ -239,7 +240,7 @@ async fn process_request(
         label_subscription,
         diff_subscription,
         workspace_event,
-    } = routing::route_request(&method, params, state, outbound, subscriptions).await;
+    } = routing::route_request(handler, &method, params, state, outbound, subscriptions).await;
     let value = match result {
         Ok(value) => value,
         Err(code) => return error(outbound, Some(request_id), code),

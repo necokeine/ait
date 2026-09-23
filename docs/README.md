@@ -23,7 +23,9 @@
   [第十一阶段报告](reports/paseo-websocket-surface-phase-11.md)记录 11 个文件/目录方法、revision 写入、
   文件订阅、二进制上传下载及一次性 HTTP 下载 token，并更正来源名与已发布方法的统计口径；
   [第十二阶段报告](reports/paseo-websocket-surface-phase-12.md)记录全部 188 个规范方法的占位入口、
-  已实现能力标记、请求分发整理及测试。
+  已实现能力标记、请求分发整理及测试；
+  [层级路由报告](reports/server-websocket-hierarchical-routing.md)记录按 dotted prefix 查找的只读路由树、
+  完整方法叶子的处理器归属与回归覆盖率。
 
 - [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
   新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。

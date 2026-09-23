@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
 use server_protocol::checkout::CheckoutDiffUnsubscribeRequest;
-use server_protocol::methods::{InboundKind, by_canonical_name};
+use server_protocol::methods::{InboundKind, PASEO_METHODS};
 use server_protocol::subscription::{SubscriptionReleaseRequest, SubscriptionReleaseResult};
 use server_protocol::{ErrorCode, valid_id};
 use uuid::Uuid;
@@ -9,8 +12,9 @@ use super::{ConnectionSubscriptions, MAX_SUBSCRIPTIONS};
 use crate::Shared;
 use crate::outbound::Outbound;
 
-#[derive(Clone, Copy)]
-enum Handler {
+/// Business or connection-owned destination selected by a complete method name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Handler {
     Projects,
     Agents,
     AgentRuntime,
@@ -22,45 +26,162 @@ enum Handler {
     Worktrees,
     Automation,
     WorkspaceState,
+    Files,
     Base,
 }
 
-const ROUTES: &[(Handler, &[&str])] = &[
-    (
+/// Inbound method metadata stored at one route-tree leaf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Route {
+    /// Accepted envelope direction.
+    pub(super) kind: InboundKind,
+    /// Capability the client must negotiate before using this method.
+    pub(super) capability: &'static str,
+    /// None for a catalog method whose business behavior is still a placeholder.
+    pub(super) handler: Option<Handler>,
+}
+
+#[derive(Default)]
+struct RouteNode {
+    children: BTreeMap<&'static str, RouteNode>,
+    route: Option<Route>,
+}
+
+impl RouteNode {
+    fn leaf_mut(&mut self, method: &'static str) -> &mut Option<Route> {
+        let mut node = self;
+        for segment in method.split('.') {
+            node = node.children.entry(segment).or_default();
+        }
+        &mut node.route
+    }
+
+    fn find(&self, method: &str) -> Option<&Route> {
+        let mut node = self;
+        for segment in method.split('.') {
+            node = node.children.get(segment)?;
+        }
+        node.route.as_ref()
+    }
+}
+
+fn routes() -> &'static RouteNode {
+    static ROUTES: OnceLock<RouteNode> = OnceLock::new();
+    ROUTES.get_or_init(build_routes)
+}
+
+fn build_routes() -> RouteNode {
+    let mut root = RouteNode::default();
+    for spec in PASEO_METHODS {
+        let leaf = root.leaf_mut(spec.canonical_name);
+        if let Some(existing) = leaf {
+            assert_eq!(existing.kind, spec.kind, "conflicting method direction");
+        } else {
+            *leaf = Some(Route {
+                kind: spec.kind,
+                capability: spec.canonical_name,
+                handler: None,
+            });
+        }
+    }
+    register_group(&mut root, Handler::Base, server_protocol::CAPABILITIES);
+    register_group(
+        &mut root,
         Handler::Projects,
         server_protocol::project_lease::CAPABILITIES,
-    ),
-    (Handler::Agents, server_protocol::agent::CAPABILITIES),
-    (
+    );
+    register_group(
+        &mut root,
+        Handler::Agents,
+        server_protocol::agent::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
         Handler::AgentRuntime,
         server_protocol::agent_lifecycle::CAPABILITIES,
-    ),
-    (Handler::Directory, server_protocol::directory::CAPABILITIES),
-    (
+    );
+    register_group(
+        &mut root,
+        Handler::Directory,
+        server_protocol::directory::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
         Handler::Directory,
         server_protocol::project_config::CAPABILITIES,
-    ),
-    (
+    );
+    register_group(
+        &mut root,
         Handler::Directory,
         server_protocol::project_icon::CAPABILITIES,
-    ),
-    (Handler::Daemon, server_protocol::daemon::CAPABILITIES),
-    (
+    );
+    register_group(
+        &mut root,
+        Handler::Daemon,
+        server_protocol::daemon::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
         Handler::Labels,
         server_protocol::workspace_labels::CAPABILITIES,
-    ),
-    (Handler::Checkout, server_protocol::checkout::CAPABILITIES),
-    (Handler::Forge, server_protocol::forge::CAPABILITIES),
-    (Handler::Worktrees, server_protocol::worktrees::CAPABILITIES),
-    (
+    );
+    register_group(
+        &mut root,
+        Handler::Checkout,
+        server_protocol::checkout::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
+        Handler::Forge,
+        server_protocol::forge::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
+        Handler::Worktrees,
+        server_protocol::worktrees::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
         Handler::Automation,
         server_protocol::workspace_automation::CAPABILITIES,
-    ),
-    (
+    );
+    register_group(
+        &mut root,
         Handler::WorkspaceState,
         server_protocol::workspace_state::CAPABILITIES,
-    ),
-];
+    );
+    register_group(
+        &mut root,
+        Handler::Files,
+        server_protocol::files::CAPABILITIES,
+    );
+    let leaf = root.leaf_mut("server.status.unsubscribe");
+    assert!(leaf.is_none(), "duplicate status unsubscribe route");
+    *leaf = Some(Route {
+        kind: InboundKind::Request,
+        capability: "server.status.subscribe",
+        handler: Some(Handler::Base),
+    });
+    root
+}
+
+fn register_group(root: &mut RouteNode, handler: Handler, methods: &'static [&'static str]) {
+    for &method in methods {
+        let leaf = root.leaf_mut(method);
+        let route = leaf.get_or_insert(Route {
+            kind: InboundKind::Request,
+            capability: method,
+            handler: None,
+        });
+        assert_eq!(
+            route.kind,
+            InboundKind::Request,
+            "non-request handler route"
+        );
+        assert!(route.handler.is_none(), "duplicate request handler route");
+        route.handler = Some(handler);
+    }
+}
 
 /// A routed request's value and subscriptions or events activated after its response is sent.
 pub(super) struct RouteResult {
@@ -85,32 +206,27 @@ impl RouteResult {
     }
 }
 
-/// Return the capability required by a request method, or `None` for an unknown or wrong-kind name.
-pub(super) fn request_capability(method: &str) -> Option<&str> {
-    match method {
-        "server.info"
-        | "connection.ping"
-        | "server.status.subscribe"
-        | "subscription.release.request" => Some(method),
-        "server.status.unsubscribe" => Some("server.status.subscribe"),
-        _ if ROUTES.iter().any(|(_, methods)| methods.contains(&method)) => Some(method),
-        _ => by_canonical_name(method)
-            .filter(|spec| spec.kind == InboundKind::Request)
-            .map(|spec| spec.canonical_name),
-    }
+/// Look up one exact method after following its dotted prefix nodes.
+///
+/// Returns `None` for unknown names and an unimplemented leaf for known placeholders.
+pub(super) fn lookup(method: &str) -> Option<Route> {
+    routes().find(method).copied()
 }
 
 /// Classify an event or client response by catalog direction and negotiated capability.
 ///
 /// All current event and client response methods return a non-retryable placeholder error.
 pub(super) fn placeholder(method: &str, kind: InboundKind, negotiated: &[String]) -> ErrorCode {
-    let Some(spec) = by_canonical_name(method) else {
+    let Some(route) = lookup(method) else {
         return ErrorCode::MethodNotFound;
     };
-    if spec.kind != kind {
+    if route.kind != kind {
         return ErrorCode::InvalidMessage;
     }
-    if !negotiated.iter().any(|capability| capability == method) {
+    if !negotiated
+        .iter()
+        .any(|capability| capability == route.capability)
+    {
         return ErrorCode::UnsupportedCapability;
     }
     ErrorCode::NotImplemented
@@ -118,16 +234,13 @@ pub(super) fn placeholder(method: &str, kind: InboundKind, negotiated: &[String]
 
 /// Dispatch an admitted, implemented request and retain post-response side effects.
 pub(super) async fn route_request(
+    handler: Handler,
     method: &str,
     params: Value,
     state: &Shared,
     outbound: &Outbound,
     subscriptions: &mut ConnectionSubscriptions,
 ) -> RouteResult {
-    let handler = ROUTES
-        .iter()
-        .find(|(_, methods)| methods.contains(&method))
-        .map_or(Handler::Base, |(handler, _)| *handler);
     match handler {
         Handler::Labels => route_labels(method, params, state, outbound, subscriptions).await,
         Handler::Checkout => route_checkout(method, params, state, outbound, subscriptions).await,
@@ -171,6 +284,7 @@ pub(super) async fn route_request(
             RouteResult::plain(crate::workspace_automation::dispatch(method, params, state).await)
         }
         Handler::Base => RouteResult::plain(dispatch_base(method, &params, state, subscriptions)),
+        Handler::Files => RouteResult::plain(Err(ErrorCode::MethodNotFound)),
     }
 }
 
