@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [ADR-028：GitHub 仓库发现与独立 Project 克隆注册](decisions/adr-028-github-project-provisioning.md)
+  （Accepted）：新 server 接通仓库搜索与克隆注册两个 Paseo WebSocket 方法；
+  [实现报告](reports/paseo-github-project-provisioning.md)记录测试、覆盖率及与 Paseo 的差异。
+
 - [ADR-027：独立 AgentSession 与 AgentManager 生命周期边界](decisions/adr-027-independent-agent-session-manager.md)
   （Accepted）：为新 server 建立 Provider session 创建、恢复、关闭与 durable snapshot 注册边界；
   [实现报告](reports/independent-agent-session-manager.md)记录已验证行为及尚未接入的执行接口。

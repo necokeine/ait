@@ -73,6 +73,9 @@ mod checkout;
 #[path = "forge.rs"]
 mod forge;
 
+#[path = "github_projects.rs"]
+mod github_projects;
+
 #[path = "files.rs"]
 mod files;
 

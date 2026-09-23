@@ -5,6 +5,10 @@ use std::path::Path;
 use server_domain::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
 };
+pub use server_ports::github_projects::{
+    GithubCloneProtocol, GithubProjectsError, GithubProjectsRuntime, GithubRepository,
+    GithubRepositoryVisibility,
+};
 use server_ports::provisioning::{
     Checkout, DirectorySource, DirectorySourceError, ProjectConfigRevision as StoreConfigRevision,
     ProjectConfigStore, ProjectConfigStoreError, ProjectConfigWrite, ProjectIconStore,
@@ -113,6 +117,19 @@ pub struct ProjectIconValue {
     pub mime_type: String,
 }
 
+/// GitHub clone outcome, including a checkout left behind when registration fails.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GithubCloneOutcome {
+    /// Normalized owner/repository path, or the original input when validation fails.
+    pub repo: String,
+    /// Completed checkout path; present even if Project registration then fails.
+    pub checkout_path: Option<String>,
+    /// Registered Project after a successful clone.
+    pub project: Option<PersistedProjectRecord>,
+    /// Safe business failure; no transport error is needed for an expected clone failure.
+    pub error: Option<String>,
+}
+
 /// Blocking project/workspace directory coordinator.
 #[derive(Debug)]
 pub struct Directory {
@@ -121,27 +138,106 @@ pub struct Directory {
     source: Box<dyn DirectorySource>,
     config_store: Box<dyn ProjectConfigStore>,
     icon_store: Box<dyn ProjectIconStore>,
+    github: Box<dyn GithubProjectsRuntime>,
     server_id: String,
+}
+
+/// Independent adapters composed for Project and Workspace directory use cases.
+#[derive(Debug)]
+pub struct DirectoryDependencies {
+    /// Durable Project records.
+    pub projects: Box<dyn ProjectRegistry>,
+    /// Durable Workspace records.
+    pub workspaces: Box<dyn WorkspaceRegistry>,
+    /// Local directory inspection and creation.
+    pub source: Box<dyn DirectorySource>,
+    /// `paseo.json` persistence.
+    pub config_store: Box<dyn ProjectConfigStore>,
+    /// Project icon persistence.
+    pub icon_store: Box<dyn ProjectIconStore>,
+    /// GitHub search and clone operations.
+    pub github: Box<dyn GithubProjectsRuntime>,
+    /// Stable current server identity.
+    pub server_id: String,
 }
 
 impl Directory {
     /// Compose independent registry adapters.
     #[must_use]
-    pub fn new(
-        projects: Box<dyn ProjectRegistry>,
-        workspaces: Box<dyn WorkspaceRegistry>,
-        source: Box<dyn DirectorySource>,
-        config_store: Box<dyn ProjectConfigStore>,
-        icon_store: Box<dyn ProjectIconStore>,
-        server_id: String,
-    ) -> Self {
+    pub fn new(dependencies: DirectoryDependencies) -> Self {
         Self {
-            projects,
-            workspaces,
-            source,
-            config_store,
-            icon_store,
-            server_id,
+            projects: dependencies.projects,
+            workspaces: dependencies.workspaces,
+            source: dependencies.source,
+            config_store: dependencies.config_store,
+            icon_store: dependencies.icon_store,
+            github: dependencies.github,
+            server_id: dependencies.server_id,
+        }
+    }
+
+    /// Search GitHub repositories using the host CLI and its configured clone protocol.
+    ///
+    /// # Errors
+    /// Returns CLI availability, authentication, command, or response failures.
+    pub fn search_github_repositories(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<GithubRepository>, GithubProjectsError> {
+        self.github.search_repositories(query, limit)
+    }
+
+    /// Clone a GitHub repository, then register its completed checkout as a Project.
+    ///
+    /// The checkout remains on disk if Project registration fails, matching Paseo's observable
+    /// response with a non-null `checkoutPath` and null `project`.
+    #[must_use]
+    pub fn clone_github_project(
+        &self,
+        repo: &str,
+        protocol: Option<GithubCloneProtocol>,
+        target_directory: &str,
+        timestamp: &str,
+    ) -> GithubCloneOutcome {
+        let original_repo = repo.trim().to_owned();
+        let Some((name, display_name, clone_url)) = normalize_clone_repository(repo, protocol)
+        else {
+            return GithubCloneOutcome {
+                repo: original_repo,
+                checkout_path: None,
+                project: None,
+                error: Some("Repository must use owner/repo format or a GitHub remote URL with a valid clone protocol".to_owned()),
+            };
+        };
+        let checkout_path = self.github.checkout_path(target_directory, &name).ok();
+        let checkout_path = match self
+            .github
+            .clone_repository(&clone_url, target_directory, &name)
+        {
+            Ok(path) => path,
+            Err(error) => {
+                return GithubCloneOutcome {
+                    repo: display_name,
+                    checkout_path,
+                    project: None,
+                    error: Some(error.to_string()),
+                };
+            }
+        };
+        match self.add_project(&checkout_path, timestamp) {
+            Ok(project) => GithubCloneOutcome {
+                repo: display_name,
+                checkout_path: Some(checkout_path),
+                project: Some(project),
+                error: None,
+            },
+            Err(error) => GithubCloneOutcome {
+                repo: display_name,
+                checkout_path: Some(checkout_path),
+                project: None,
+                error: Some(error.to_string()),
+            },
         }
     }
 
@@ -989,6 +1085,59 @@ fn percent_decode(value: &str) -> Option<String> {
         }
     }
     String::from_utf8(decoded).ok()
+}
+
+fn normalize_clone_repository(
+    repo: &str,
+    protocol: Option<GithubCloneProtocol>,
+) -> Option<(String, String, String)> {
+    let trimmed = repo.trim();
+    if trimmed.len() < 3 || trimmed.len() > 4096 || trimmed.chars().any(char::is_control) {
+        return None;
+    }
+    let direct_url = trimmed.starts_with("https://github.com/")
+        || trimmed.starts_with("git@github.com:")
+        || trimmed.starts_with("ssh://git@github.com/");
+    if direct_url {
+        if trimmed.contains(['?', '#']) {
+            return None;
+        }
+        let remote = parse_remote(trimmed)?;
+        if remote.host != "github.com" || remote.port.is_some() {
+            return None;
+        }
+        let (owner, name) = clone_owner_and_name(&remote.path)?;
+        return Some((
+            name.to_owned(),
+            format!("{owner}/{name}"),
+            trimmed.to_owned(),
+        ));
+    }
+    if trimmed.contains("://") || trimmed.contains('@') || trimmed.contains(':') {
+        return None;
+    }
+    let (owner, name) = clone_owner_and_name(trimmed)?;
+    let protocol = protocol?;
+    let clone_url = match protocol {
+        GithubCloneProtocol::Https => format!("https://github.com/{owner}/{name}.git"),
+        GithubCloneProtocol::Ssh => format!("git@github.com:{owner}/{name}.git"),
+    };
+    Some((name.to_owned(), format!("{owner}/{name}"), clone_url))
+}
+
+fn clone_owner_and_name(path: &str) -> Option<(&str, &str)> {
+    let (owner, raw_name) = path.split_once('/')?;
+    let name = raw_name.strip_suffix(".git").unwrap_or(raw_name);
+    (valid_clone_segment(owner) && valid_clone_segment(name)).then_some((owner, name))
+}
+
+fn valid_clone_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 const fn hex_digit(byte: u8) -> Option<u8> {

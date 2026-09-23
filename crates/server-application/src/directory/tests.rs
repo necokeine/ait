@@ -3,6 +3,9 @@ use std::sync::Mutex;
 use server_domain::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
 };
+use server_ports::github_projects::{
+    GithubProjectsError, GithubProjectsRuntime, GithubRepository, GithubRepositoryVisibility,
+};
 use server_ports::provisioning::{Checkout, DirectorySource, DirectorySourceError};
 use server_ports::provisioning::{
     ProjectConfigDocument, ProjectConfigRevision as StoreConfigRevision, ProjectConfigStore,
@@ -15,7 +18,9 @@ use server_ports::registry::{
     WorkspaceRegistry,
 };
 
-use super::{Directory, DirectoryError, derive_project_key};
+use super::{
+    Directory, DirectoryDependencies, DirectoryError, GithubCloneProtocol, derive_project_key,
+};
 
 #[derive(Debug, Default)]
 struct Projects(Mutex<Vec<PersistedProjectRecord>>);
@@ -223,6 +228,47 @@ impl MutationSubscription for Subscription {}
 #[derive(Debug, Default)]
 struct Source;
 
+#[derive(Debug, Default)]
+struct Github;
+
+impl GithubProjectsRuntime for Github {
+    fn search_repositories(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<GithubRepository>, GithubProjectsError> {
+        Ok(vec![GithubRepository {
+            id: "R_1".to_owned(),
+            name: "repo".to_owned(),
+            name_with_owner: "owner/repo".to_owned(),
+            description: None,
+            visibility: GithubRepositoryVisibility::Public,
+            updated_at: "2026-09-23T00:00:00Z".to_owned(),
+            clone_url: "https://github.com/owner/repo".to_owned(),
+        }])
+    }
+
+    fn checkout_path(
+        &self,
+        target_directory: &str,
+        name: &str,
+    ) -> Result<String, GithubProjectsError> {
+        Ok(format!("{target_directory}/{name}"))
+    }
+
+    fn clone_repository(
+        &self,
+        _clone_url: &str,
+        target_directory: &str,
+        name: &str,
+    ) -> Result<String, GithubProjectsError> {
+        if name == "exists" {
+            return Err(GithubProjectsError::TargetExists);
+        }
+        Ok(format!("{target_directory}/{name}"))
+    }
+}
+
 impl DirectorySource for Source {
     fn inspect(&self, path: &str) -> Result<Checkout, DirectorySourceError> {
         if path.contains("missing") {
@@ -378,14 +424,99 @@ fn workspace() -> PersistedWorkspaceRecord {
 }
 
 fn directory() -> Directory {
-    Directory::new(
-        Box::new(Projects(Mutex::new(vec![project()]))),
-        Box::new(Workspaces(Mutex::new(vec![workspace()]))),
-        Box::<Source>::default(),
-        Box::<ConfigStore>::default(),
-        Box::<IconStore>::default(),
-        "server-test".to_owned(),
-    )
+    Directory::new(DirectoryDependencies {
+        projects: Box::new(Projects(Mutex::new(vec![project()]))),
+        workspaces: Box::new(Workspaces(Mutex::new(vec![workspace()]))),
+        source: Box::<Source>::default(),
+        config_store: Box::<ConfigStore>::default(),
+        icon_store: Box::<IconStore>::default(),
+        github: Box::<Github>::default(),
+        server_id: "server-test".to_owned(),
+    })
+}
+
+#[test]
+fn github_clone_normalizes_repo_and_registers_project_without_workspace() {
+    let directory = directory();
+    let outcome = directory.clone_github_project(
+        " owner/repo.git ",
+        Some(GithubCloneProtocol::Ssh),
+        "/tmp/projects",
+        "2026-09-23T00:00:00Z",
+    );
+
+    assert_eq!(outcome.repo, "owner/repo");
+    assert_eq!(outcome.checkout_path.as_deref(), Some("/tmp/projects/repo"));
+    assert_eq!(
+        outcome
+            .project
+            .as_ref()
+            .map(|project| project.root_path.as_str()),
+        Some("/tmp/projects/repo")
+    );
+    assert!(outcome.error.is_none());
+    assert_eq!(
+        directory
+            .search_github_repositories("repo", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn github_clone_rejects_unsafe_input_without_launching_or_registering() {
+    let directory = directory();
+    for repo in [
+        "owner/../repo",
+        "https://evil.example/owner/repo",
+        "owner/repo",
+    ] {
+        let outcome = directory.clone_github_project(repo, None, "/tmp/projects", "time");
+        assert!(outcome.checkout_path.is_none(), "{repo}");
+        assert!(outcome.project.is_none(), "{repo}");
+        assert!(outcome.error.is_some(), "{repo}");
+    }
+}
+
+#[test]
+fn github_clone_preserves_completed_checkout_on_registration_failure() {
+    let directory = directory();
+
+    let outcome = directory.clone_github_project(
+        "owner/missing",
+        Some(GithubCloneProtocol::Https),
+        "/tmp/projects",
+        "time",
+    );
+
+    assert_eq!(
+        outcome.checkout_path.as_deref(),
+        Some("/tmp/projects/missing")
+    );
+    assert!(outcome.project.is_none());
+    assert!(outcome.error.is_some());
+}
+
+#[test]
+fn github_clone_reports_planned_checkout_path_when_clone_fails() {
+    let directory = directory();
+    let outcome = directory.clone_github_project(
+        "owner/exists",
+        Some(GithubCloneProtocol::Https),
+        "/tmp/projects",
+        "time",
+    );
+
+    assert_eq!(
+        outcome.checkout_path.as_deref(),
+        Some("/tmp/projects/exists")
+    );
+    assert!(outcome.project.is_none());
+    assert_eq!(
+        outcome.error.as_deref(),
+        Some("Checkout path already exists")
+    );
 }
 
 #[test]

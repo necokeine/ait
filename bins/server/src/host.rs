@@ -13,7 +13,7 @@ use server_application::agent_runtime::AgentRuntimeDirectory;
 use server_application::agents::Agents;
 use server_application::checkout::Checkout;
 use server_application::daemon::{Daemon, DaemonRuntime};
-use server_application::directory::Directory;
+use server_application::directory::{Directory, DirectoryDependencies};
 use server_application::files::Files;
 use server_application::forge::Forge;
 use server_application::workspace_automation::WorkspaceAutomation;
@@ -30,7 +30,7 @@ use server_storage::registry::{
 use server_storage::workspace_labels::FileWorkspaceLabelStore;
 use server_storage::{SqliteCatalog, SqliteProjects};
 use server_workspace::{
-    LocalCheckout, LocalDirectorySource, LocalForge, LocalManagedWorktrees,
+    LocalCheckout, LocalDirectorySource, LocalForge, LocalGithubProjects, LocalManagedWorktrees,
     LocalProjectConfigStore, LocalProjectIconStore, LocalWorkspace, LocalWorkspaceAutomation,
 };
 use tokio::net::TcpListener;
@@ -224,16 +224,17 @@ fn compose_services(
             Box::new(project_registry.clone()),
         )),
         daemon: Some(daemon),
-        directory: Some(Directory::new(
-            Box::new(project_registry),
-            Box::new(workspace_registry),
-            Box::new(LocalDirectorySource),
-            Box::new(LocalProjectConfigStore),
-            Box::new(LocalProjectIconStore::new(
+        directory: Some(Directory::new(DirectoryDependencies {
+            projects: Box::new(project_registry),
+            workspaces: Box::new(workspace_registry),
+            source: Box::new(LocalDirectorySource),
+            config_store: Box::new(LocalProjectConfigStore),
+            icon_store: Box::new(LocalProjectIconStore::new(
                 config.data_dir.join("projects/icons"),
             )),
+            github: Box::new(LocalGithubProjects::new()),
             server_id,
-        )),
+        })),
         forge: Some(Forge::new(Box::new(LocalForge::new()))),
         files: Some(Files::new(Box::new(server_workspace::LocalFiles::new(
             std::env::var_os("HOME")

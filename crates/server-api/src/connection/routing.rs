@@ -108,6 +108,11 @@ fn build_routes() -> RouteNode {
     register_group(
         &mut root,
         Handler::Directory,
+        server_protocol::github_projects::CAPABILITIES,
+    );
+    register_group(
+        &mut root,
+        Handler::Directory,
         server_protocol::project_config::CAPABILITIES,
     );
     register_group(

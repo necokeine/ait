@@ -7,6 +7,7 @@ pub mod checkout;
 pub mod daemon;
 pub mod files;
 pub mod forge;
+pub mod github_projects;
 pub mod provisioning;
 pub mod registry;
 pub mod workspace_automation;

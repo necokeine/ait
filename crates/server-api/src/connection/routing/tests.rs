@@ -28,6 +28,10 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
         (Handler::Directory, server_protocol::directory::CAPABILITIES),
         (
             Handler::Directory,
+            server_protocol::github_projects::CAPABILITIES,
+        ),
+        (
+            Handler::Directory,
             server_protocol::project_config::CAPABILITIES,
         ),
         (
@@ -65,7 +69,7 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
             assert_eq!(route.handler, Some(expected), "{method}");
         }
     }
-    assert_eq!(implemented.len(), 104);
+    assert_eq!(implemented.len(), 106);
 
     let advertised = crate::registered_capabilities(
         &implemented
@@ -94,6 +98,10 @@ fn prefix_nodes_can_be_methods_and_have_children_with_different_owners() {
     assert_eq!(handler("project.list"), Some(Handler::Projects));
     assert_eq!(handler("project.list.request"), Some(Handler::Directory));
     assert_eq!(handler("workspace.open.request"), Some(Handler::Directory));
+    assert_eq!(
+        handler("workspace.github.search_repositories.request"),
+        Some(Handler::Directory)
+    );
     assert_eq!(
         handler("workspace.label.list.request"),
         Some(Handler::Labels)
