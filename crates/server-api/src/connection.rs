@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
-use serde_json::{Value, json};
+use serde_json::Value;
 use server_application::workspace_labels::WorkspaceLabelSubscription;
-use server_protocol::subscription::{SubscriptionReleaseRequest, SubscriptionReleaseResult};
+use server_protocol::methods::InboundKind;
 use server_protocol::{ClientMessage, ErrorCode, Lifecycle, ServerMessage, valid_id};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -15,17 +15,12 @@ use crate::Shared;
 use crate::checkout::CheckoutDiffSubscription;
 use crate::outbound::{Outbound, QueueError};
 
+mod routing;
+
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_SUBSCRIPTIONS: usize = 16;
-
-type RouteResult = (
-    Result<Value, ErrorCode>,
-    Option<crate::workspace_labels::PendingSubscription>,
-    Option<crate::checkout::PendingSubscription>,
-    Option<Value>,
-);
 
 #[derive(Default)]
 struct ConnectionSubscriptions {
@@ -119,7 +114,10 @@ async fn read(
             biased;
             () = state.cancellation.cancelled() => {
                 for subscription_id in subscriptions.status {
-                    outbound.send(&ServerMessage::Status { subscription_id, lifecycle: Lifecycle::Draining })?;
+                    outbound.send(&ServerMessage::Status {
+                        subscription_id,
+                        lifecycle: Lifecycle::Draining,
+                    })?;
                 }
                 return Ok(());
             },
@@ -146,6 +144,16 @@ async fn read(
                 )
                 .await?;
             }
+            Some(Ok(Incoming::Text(ClientMessage::Event { method, .. }))) if valid_id(&method) => {
+                let code = routing::placeholder(&method, InboundKind::Event, &capabilities);
+                error(outbound, None, code)?;
+            }
+            Some(Ok(Incoming::Text(ClientMessage::Response {
+                request_id, method, ..
+            }))) if valid_id(&method) && request_id.as_deref().is_none_or(valid_id) => {
+                let code = routing::placeholder(&method, InboundKind::Response, &capabilities);
+                error(outbound, request_id, code)?;
+            }
             None => return Ok(()),
             Some(Ok(Incoming::Binary(bytes)))
                 if capabilities
@@ -162,7 +170,12 @@ async fn read(
             }
             Some(
                 Ok(
-                    Incoming::Text(ClientMessage::Hello(_) | ClientMessage::Request { .. })
+                    Incoming::Text(
+                        ClientMessage::Hello(_)
+                        | ClientMessage::Request { .. }
+                        | ClientMessage::Event { .. }
+                        | ClientMessage::Response { .. },
+                    )
                     | Incoming::Binary(_),
                 )
                 | Err(_),
@@ -182,10 +195,30 @@ async fn process_request(
     capabilities: &[String],
     subscriptions: &mut ConnectionSubscriptions,
 ) -> Result<(), QueueError> {
+    if server_protocol::methods::by_canonical_name(&method)
+        .is_some_and(|spec| spec.kind != InboundKind::Request)
+    {
+        return error(outbound, Some(request_id), ErrorCode::InvalidMessage);
+    }
+    let Some(capability) = routing::request_capability(&method) else {
+        return error(outbound, Some(request_id), ErrorCode::MethodNotFound);
+    };
+    if !capabilities
+        .iter()
+        .any(|negotiated| negotiated == capability)
+    {
+        return error(outbound, Some(request_id), ErrorCode::UnsupportedCapability);
+    }
+    if method != "server.status.unsubscribe"
+        && !state
+            .info
+            .implemented_capabilities
+            .iter()
+            .any(|implemented| implemented == &method)
+    {
+        return error(outbound, Some(request_id), ErrorCode::NotImplemented);
+    }
     if server_protocol::files::CAPABILITIES.contains(&method.as_str()) {
-        if !capabilities.contains(&method) {
-            return error(outbound, Some(request_id), ErrorCode::UnsupportedCapability);
-        }
         let available_subscriptions = MAX_SUBSCRIPTIONS.saturating_sub(subscriptions.len());
         return subscriptions
             .files
@@ -201,16 +234,12 @@ async fn process_request(
             )
             .await;
     }
-    let (result, pending_label_subscription, pending_diff_subscription, workspace_event) =
-        route_request(
-            &method,
-            params,
-            state,
-            outbound,
-            capabilities,
-            subscriptions,
-        )
-        .await;
+    let routing::RouteResult {
+        result,
+        label_subscription,
+        diff_subscription,
+        workspace_event,
+    } = routing::route_request(&method, params, state, outbound, subscriptions).await;
     let value = match result {
         Ok(value) => value,
         Err(code) => return error(outbound, Some(request_id), code),
@@ -227,11 +256,11 @@ async fn process_request(
         request_id,
         result: value,
     })?;
-    if let Some(pending) = pending_label_subscription {
+    if let Some(pending) = label_subscription {
         let (subscription_id, subscription) = pending.activate()?;
         subscriptions.labels.insert(subscription_id, subscription);
     }
-    if let Some(pending) = pending_diff_subscription {
+    if let Some(pending) = diff_subscription {
         let (subscription_id, subscription) = pending.activate();
         subscriptions.diffs.insert(subscription_id, subscription);
     }
@@ -248,150 +277,6 @@ async fn process_request(
         })?;
     }
     Ok(())
-}
-
-async fn route_request(
-    method: &str,
-    params: Value,
-    state: &Shared,
-    outbound: &Outbound,
-    capabilities: &[String],
-    subscriptions: &mut ConnectionSubscriptions,
-) -> RouteResult {
-    let supported = capabilities.iter().any(|capability| capability == method);
-    let result = if server_protocol::project_lease::CAPABILITIES.contains(&method) {
-        if supported {
-            crate::projects::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::agent::CAPABILITIES.contains(&method) {
-        if supported {
-            crate::agents::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::agent_lifecycle::CAPABILITIES.contains(&method) {
-        if supported {
-            crate::agent_runtime::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::directory::CAPABILITIES.contains(&method)
-        || server_protocol::project_config::CAPABILITIES.contains(&method)
-        || server_protocol::project_icon::CAPABILITIES.contains(&method)
-    {
-        if supported {
-            crate::directory::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::daemon::CAPABILITIES.contains(&method) {
-        if supported {
-            crate::daemon::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::workspace_labels::CAPABILITIES.contains(&method) {
-        if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None, None, None);
-        }
-        if method == "workspace.label.list.request"
-            && params
-                .get("subscribe")
-                .is_some_and(|subscribe| !subscribe.is_null())
-            && subscriptions.len() >= MAX_SUBSCRIPTIONS
-        {
-            return (Err(ErrorCode::ResourceExhausted), None, None, None);
-        }
-        return match crate::workspace_labels::dispatch(method, params, state, outbound.clone())
-            .await
-        {
-            Ok(dispatched) => (Ok(dispatched.value), dispatched.subscription, None, None),
-            Err(error) => (Err(error), None, None, None),
-        };
-    } else if server_protocol::checkout::CAPABILITIES.contains(&method) {
-        return route_checkout(method, params, state, outbound, supported, subscriptions).await;
-    } else if server_protocol::forge::CAPABILITIES.contains(&method) {
-        if supported {
-            crate::forge::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::worktrees::CAPABILITIES.contains(&method) {
-        if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None, None, None);
-        }
-        return match crate::worktrees::dispatch(method, params, state).await {
-            Ok(dispatched) => (Ok(dispatched.value), None, None, dispatched.event),
-            Err(error) => (Err(error), None, None, None),
-        };
-    } else if server_protocol::workspace_automation::CAPABILITIES.contains(&method) {
-        if supported {
-            crate::workspace_automation::dispatch(method, params, state).await
-        } else {
-            Err(ErrorCode::UnsupportedCapability)
-        }
-    } else if server_protocol::workspace_state::CAPABILITIES.contains(&method) {
-        if !supported {
-            return (Err(ErrorCode::UnsupportedCapability), None, None, None);
-        }
-        return match crate::workspace_state::dispatch(method, params, state).await {
-            Ok(dispatched) => (Ok(dispatched.value), None, None, dispatched.event),
-            Err(error) => (Err(error), None, None, None),
-        };
-    } else {
-        dispatch(method, &params, state, capabilities, subscriptions)
-    };
-    (result, None, None, None)
-}
-
-async fn route_checkout(
-    method: &str,
-    params: Value,
-    state: &Shared,
-    outbound: &Outbound,
-    supported: bool,
-    subscriptions: &mut ConnectionSubscriptions,
-) -> RouteResult {
-    if !supported {
-        return (Err(ErrorCode::UnsupportedCapability), None, None, None);
-    }
-    if method == "checkout.diff.unsubscribe.request" {
-        let request = serde_json::from_value::<
-            server_protocol::checkout::CheckoutDiffUnsubscribeRequest,
-        >(params);
-        let request = match request {
-            Ok(request) if valid_id(&request.subscription_id) => request,
-            _ => return (Err(ErrorCode::InvalidMessage), None, None, None),
-        };
-        if subscriptions
-            .diffs
-            .remove(&request.subscription_id)
-            .is_none()
-        {
-            return (Err(ErrorCode::SubscriptionNotFound), None, None, None);
-        }
-        return (
-            Ok(json!({"subscriptionId":request.subscription_id})),
-            None,
-            None,
-            None,
-        );
-    }
-    if method == "checkout.diff.subscribe.request" {
-        let replacement = params
-            .get("subscriptionId")
-            .and_then(Value::as_str)
-            .is_some_and(|id| subscriptions.diffs.contains_key(id));
-        if subscriptions.len() >= MAX_SUBSCRIPTIONS && !replacement {
-            return (Err(ErrorCode::ResourceExhausted), None, None, None);
-        }
-    }
-    match crate::checkout::dispatch(method, params, state, outbound.clone()).await {
-        Ok(dispatched) => (Ok(dispatched.value), None, dispatched.subscription, None),
-        Err(error) => (Err(error), None, None, None),
-    }
 }
 
 enum Incoming {
@@ -427,69 +312,4 @@ fn error(
         message: code.message().to_owned(),
         retryable: code.retryable(),
     })
-}
-
-fn dispatch(
-    method: &str,
-    params: &Value,
-    state: &Shared,
-    capabilities: &[String],
-    subscriptions: &mut ConnectionSubscriptions,
-) -> Result<Value, ErrorCode> {
-    let capability = match method {
-        "server.info"
-        | "connection.ping"
-        | "server.status.subscribe"
-        | "subscription.release.request" => method,
-        "server.status.unsubscribe" => "server.status.subscribe",
-        _ => return Err(ErrorCode::MethodNotFound),
-    };
-    if !capabilities.iter().any(|c| c == capability) {
-        return Err(ErrorCode::UnsupportedCapability);
-    }
-    match method {
-        "server.info" => serde_json::to_value(state.info()).map_err(|_| ErrorCode::InvalidMessage),
-        "connection.ping" => {
-            let nonce = params
-                .get("nonce")
-                .and_then(Value::as_str)
-                .filter(|s| valid_id(s))
-                .ok_or(ErrorCode::InvalidMessage)?;
-            Ok(json!({"nonce":nonce}))
-        }
-        "server.status.subscribe" => {
-            if subscriptions.len() >= MAX_SUBSCRIPTIONS {
-                return Err(ErrorCode::ResourceExhausted);
-            }
-            let id = Uuid::new_v4().to_string();
-            subscriptions.status.insert(id.clone());
-            Ok(json!({"subscription_id":id}))
-        }
-        "server.status.unsubscribe" => {
-            let id = params
-                .get("subscription_id")
-                .and_then(Value::as_str)
-                .ok_or(ErrorCode::InvalidMessage)?;
-            if !subscriptions.status.remove(id) {
-                return Err(ErrorCode::SubscriptionNotFound);
-            }
-            Ok(json!({"unsubscribed":true}))
-        }
-        "subscription.release.request" => {
-            let request: SubscriptionReleaseRequest =
-                serde_json::from_value(params.clone()).map_err(|_| ErrorCode::InvalidMessage)?;
-            if !valid_id(&request.subscription_id) {
-                return Err(ErrorCode::InvalidMessage);
-            }
-            subscriptions.status.remove(&request.subscription_id);
-            subscriptions.labels.remove(&request.subscription_id);
-            subscriptions.diffs.remove(&request.subscription_id);
-            subscriptions.files.release(&request.subscription_id);
-            serde_json::to_value(SubscriptionReleaseResult {
-                subscription_id: request.subscription_id,
-            })
-            .map_err(|_| ErrorCode::InvalidMessage)
-        }
-        _ => Err(ErrorCode::MethodNotFound),
-    }
 }

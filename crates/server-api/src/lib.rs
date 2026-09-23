@@ -166,7 +166,7 @@ impl Api {
     ///
     /// `server_id` is persisted by the host; `instance_id` is unique to this process start.
     /// `token` authenticates the info and upgrade endpoints and is never returned to clients.
-    /// `services` installs capabilities only for initialized independent application services.
+    /// `services` selects implemented methods; catalog placeholders remain negotiable.
     ///
     /// # Errors
     /// Returns an error for non-loopback/unassigned addresses or invalid tokens.
@@ -188,7 +188,8 @@ impl Api {
             authorities.push(address.to_string().trim_end_matches(":80").to_owned());
             authorities.push("localhost".to_owned());
         }
-        let capabilities = installed_capabilities(&services);
+        let implemented_capabilities = installed_capabilities(&services);
+        let capabilities = registered_capabilities(&implemented_capabilities);
         Ok(Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
@@ -198,6 +199,7 @@ impl Api {
                     lifecycle: Lifecycle::Ready,
                     protocol: VERSION,
                     capabilities,
+                    implemented_capabilities,
                     limits: Limits::default(),
                 },
                 token,
@@ -355,6 +357,19 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
     ];
     for (_, group) in groups.iter().filter(|(installed, _)| *installed) {
         capabilities.extend(group.iter().map(|method| (*method).to_owned()));
+    }
+    capabilities
+}
+
+fn registered_capabilities(implemented: &[String]) -> Vec<String> {
+    let mut capabilities = implemented.to_vec();
+    for method in server_protocol::methods::PASEO_METHODS {
+        if !capabilities
+            .iter()
+            .any(|capability| capability == method.canonical_name)
+        {
+            capabilities.push(method.canonical_name.to_owned());
+        }
     }
     capabilities
 }

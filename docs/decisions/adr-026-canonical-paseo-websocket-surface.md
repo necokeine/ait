@@ -33,15 +33,19 @@ WebSocket transport。接口移植需要保留这条连接边界，同时让业�
 一个规范名称；当前明确合并 `agent.create`、`project.icon.get` 和 `workspace.script.start` 三组。
 catalog 测试固定条目总数、名称唯一性、格式和允许的合并集合，防止后续静默改变协议。
 
-只有完成 DTO、application use case、port/adapter、生产组装及 WebSocket 验证的方法才能加入
-对应模块的 `CAPABILITIES`。catalog 中登记但未实现的方法不参与 hello 协商，调用返回
-`method_not_found`；客户端没有协商已实现方法时返回 `unsupported_capability`。这样客户端不会
-把路线图误认为当前能力。
+对应模块的 `CAPABILITIES` 只保存完成 DTO、application use case、port/adapter、生产组装及
+WebSocket 验证的方法。第十二阶段把全部规范名称也注册到连接层；`ServerInfo.capabilities`
+表示可协商的方法，`ServerInfo.implemented_capabilities` 单独列出已真正实现且在当前 host 组装的方法。
+规范方法已协商但仍为占位时返回非重试型 `not_implemented`；没有协商时返回
+`unsupported_capability`，未知名称或旧名称返回 `method_not_found`。客户端应使用
+`implemented_capabilities` 判断可用行为。
 
-WebSocket 继续使用新 server 的统一 envelope：客户端发送
-`{type:"request",request_id,method,params}`，服务端返回 correlated response/error。Paseo 的
-method-specific payload 被移植进 `params`/`result`，不复制其顶层 discriminated union。这个差异
-保留现有认证、大小限制、背压、drain 和 capability 协商语义。
+WebSocket 继续使用新 server 的统一 envelope：客户端请求发送
+`{type:"request",request_id,method,params}`，服务端返回 correlated response/error。客户端通知
+发送 `{type:"event",method,params}`，对服务端发起工作的回传发送
+`{type:"response",request_id?,method,params}`；当前这两类规范方法均为占位并收到明确错误。
+Paseo 的 method-specific payload 位于 `params`/`result`，不复制其顶层 discriminated union。
+原有认证、大小限制、背压、drain 和 capability 协商边界继续适用。
 
 Project/Workspace 方法通过 `server-application::directory::Directory` 协调纯 port；本地 Git、
 文件、`paseo.json` 和图标处理由 `server-workspace` adapter 实现。API 不直接依赖 port 或存储
@@ -262,14 +266,27 @@ target 和下载名，消费时重新检查作用域与 regular-file 类型；�
 
 Paseo 的共享 native watcher、完整 fuzzy 排序与 8 秒 cache 尚未移植；当前复制和列目录有数量/字节上限，
 inline preview 上限 512 KiB，上传上限 64 MiB、每连接最多 8 个。完整差异与对应测试见第十一阶段报告。
-本阶段完成后的 capability 总数为 104，其中 Paseo 清单内 93、原有独立接口 11；188 个独立 Paseo 方法
-中剩余 95 个未接通。握手、推送事件和未单独发布 capability 的兼容取消入口不计入此数。
+第十一阶段结束时已实现方法总数为 104，其中 Paseo 清单内 93、原有独立接口 11；188 个独立 Paseo
+方法中剩余 95 个尚未实现。握手、服务端推送事件和兼容取消入口不计入此数。
+
+## 第十二阶段：全部接口登记与分发
+
+全部 188 个规范 Paseo 方法现在可通过 hello 协商并在对应的 request、event 或客户端 response envelope
+中分发。已实现的 104 个方法保留原处理器；另外 95 个规范方法统一返回 `not_implemented`，不生成空成功
+响应或副作用。当前总共公开 199 个唯一名称，包括 11 个独立 server 方法。每条连接仍最多声明 64 个
+optional 与 64 个 required capability；需要调用多个接口时按需声明。
+
+分发先统一验证规范名称、消息方向、协商与当前 host 的实现状态，再进入独立文件处理器或按功能分组的
+真实业务处理器。业务分组在单一 routing table 中登记；标签、Git diff 的订阅以及 Workspace 事件
+保留原有响应后激活顺序。未知旧名称仍返回 `method_not_found`，错误不会关闭已握手连接。
+此修订覆盖本 ADR 前面的“未实现方法不参与 hello 协商”旧准入规则；`CAPABILITIES` 模块常量继续仅列
+真实实现，用于后续逐项替换占位方法。
 
 ## 后果与后续
 
-后续接口按功能组继续移植，并复用同一规范化规则和 capability 准入门槛。涉及 Agent 执行、terminal、
-provider、剩余多 Forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新 crate 边界和
-生命周期完成前保持未发布。
+后续接口按功能组继续移植，并复用同一规范化规则。涉及 Agent 执行、terminal、provider、剩余多
+Forge、schedule、plugin、hub、voice、push 或 browser 的方法，在各自全新 crate 边界和生命周期
+完成前保持 `not_implemented`，并且不进入 `implemented_capabilities`。
 
 当前 Paseo 对齐差异、每个第一阶段方法的状态和验证结果记录在
 [WebSocket 接口第一阶段报告](../reports/paseo-websocket-surface-phase-1.md)；daemon/config 的行为、
@@ -291,4 +308,5 @@ push、discard 与 stash 记录在
 [WebSocket 接口第九阶段报告](../reports/paseo-websocket-surface-phase-9.md)；Forge search、PR lifecycle、timeline
 与 check details 记录在
 [WebSocket 接口第十阶段报告](../reports/paseo-websocket-surface-phase-10.md)；文件、目录、上传下载及文件版本
-订阅记录在 [WebSocket 接口第十一阶段报告](../reports/paseo-websocket-surface-phase-11.md)。
+订阅记录在 [WebSocket 接口第十一阶段报告](../reports/paseo-websocket-surface-phase-11.md)；全部规范方法的
+占位分发与测试记录在 [WebSocket 接口第十二阶段报告](../reports/paseo-websocket-surface-phase-12.md)。

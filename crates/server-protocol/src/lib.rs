@@ -155,6 +155,25 @@ pub enum ClientMessage {
         #[serde(default)]
         params: Value,
     },
+    /// Uncorrelated client notification using a canonical event method.
+    Event {
+        /// Event method name.
+        method: String,
+        /// Method-specific event payload.
+        #[serde(default)]
+        params: Value,
+    },
+    /// Reply to a server-initiated operation using a canonical response method.
+    Response {
+        /// Optional original server request identifier.
+        #[serde(default)]
+        request_id: Option<String>,
+        /// Response method name.
+        method: String,
+        /// Method-specific response payload.
+        #[serde(default)]
+        params: Value,
+    },
 }
 
 /// Safe, stable machine-readable error codes.
@@ -167,8 +186,10 @@ pub enum ErrorCode {
     IncompatibleVersion,
     /// A required or unnegotiated capability cannot be used.
     UnsupportedCapability,
-    /// No such method is implemented.
+    /// No such canonical method is registered.
     MethodNotFound,
+    /// The method is registered, but its behavior is awaiting implementation.
+    NotImplemented,
     /// A subscription does not belong to this physical connection.
     SubscriptionNotFound,
     /// A bounded resource is exhausted.
@@ -238,6 +259,7 @@ impl ErrorCode {
             Self::IncompatibleVersion => "Incompatible protocol version",
             Self::UnsupportedCapability => "Capability was not negotiated",
             Self::MethodNotFound => "Unknown method",
+            Self::NotImplemented => "Method is not implemented yet",
             Self::SubscriptionNotFound => "Unknown connection subscription",
             Self::ResourceExhausted => "Resource budget exhausted",
             Self::ServerDraining => "Server is draining",
@@ -324,7 +346,7 @@ impl Default for Limits {
     }
 }
 
-/// Non-secret server identity and implemented capabilities.
+/// Non-secret server identity, registered methods, and implemented capabilities.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerInfo {
     /// Stable UUID persisted in this server's data directory.
@@ -337,8 +359,11 @@ pub struct ServerInfo {
     pub lifecycle: Lifecycle,
     /// Public wire version.
     pub protocol: Version,
-    /// Features actually installed by the host.
+    /// Methods admitted for negotiation, including explicit placeholders.
     pub capabilities: Vec<String>,
+    /// Methods with real implementations installed by the host.
+    #[serde(default)]
+    pub implemented_capabilities: Vec<String>,
     /// Enforced transport budgets.
     pub limits: Limits,
 }

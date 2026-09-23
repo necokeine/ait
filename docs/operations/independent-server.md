@@ -84,7 +84,10 @@ Origin 可以缺省（本机原生客户端）；提供时必须是相同允许 
 
 major 必须为 1，minor 区间必须包含 0。未知 optional capability 被忽略，未知 required
 capability 拒绝握手。服务端返回 `type=server_info`，包含 `info`、新的 `connection_id` 与
-`negotiated_capabilities`。能力必须协商后才能调用。`client_id` 仅用于诊断，不用于身份、
+`negotiated_capabilities`。`info.capabilities` 列出 199 个可协商规范名称及独立方法，
+`info.implemented_capabilities` 列出当前 host 真正组装的 104 个方法。尚未实现的 95 个规范方法
+可协商，但调用后会返回 `not_implemented`；每次 hello 最多传 64 个 optional 和 64 个 required
+名称，请按需声明。能力必须协商后才能调用。`client_id` 仅用于诊断，不用于身份、
 接管、去重或订阅共享；即使重复，两个物理连接也拥有不同的 connection ID。
 
 RPC 格式：
@@ -109,8 +112,12 @@ RPC 格式：
 每连接最多 16 个订阅，断开即清理，重连需要重新订阅。退出时 best-effort 发出 `draining`。
 这是临时连接通知，没有持久序号/回放语义；业务 outbox 与 cursor 留到后续 M1 切片。
 
-错误形如 `{"type":"error","request_id":"r1","code":"method_not_found","message":"Unknown method","retryable":false}`。
-尚未实现的业务 method 返回 `method_not_found`，不返回空成功。有效请求的错误保留 request ID。
+错误形如 `{"type":"error","request_id":"r1","code":"not_implemented","message":"Method is not implemented yet","retryable":false}`。
+已登记但未实现的方法返回 `not_implemented`，未知方法或原版旧名称返回 `method_not_found`；未协商
+的方法返回 `unsupported_capability`。有效请求的错误保留 request ID。客户端通知使用
+`{"type":"event","method":"terminal.input","params":{...}}`；客户端回传使用
+`{"type":"response","request_id":"...","method":"browser.automation.execute.response","params":{...}}`。
+这两类当前都返回 `not_implemented`；通知的错误没有 request ID，回传错误会附带提供的 ID。
 不合法 envelope、重复 hello、未协商或非法二进制消息与握手失败会关闭连接；未知 method 或错误参数可修正后
 继续使用当前连接。请求按连接顺序处理，已响应的 request ID 可以再次使用；它不是幂等键。
 

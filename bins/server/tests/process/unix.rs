@@ -76,6 +76,9 @@ mod forge;
 #[path = "files.rs"]
 mod files;
 
+#[path = "catalog.rs"]
+mod catalog;
+
 #[path = "worktrees.rs"]
 mod worktrees;
 

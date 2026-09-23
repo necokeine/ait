@@ -202,7 +202,12 @@ async fn http_authentication_origins_and_readiness() {
         .unwrap();
     assert_eq!(info.server_id, "stable");
     assert_eq!(info.lifecycle, Lifecycle::Ready);
-    assert_eq!(info.capabilities, CAPABILITIES);
+    assert_eq!(info.implemented_capabilities, CAPABILITIES);
+    assert_eq!(info.capabilities.len(), 190);
+    assert!(
+        info.capabilities
+            .contains(&"schedule.list.request".to_owned())
+    );
     assert_eq!(
         client
             .get(fixture.url("/missing"))
@@ -226,6 +231,9 @@ async fn http_authentication_origins_and_readiness() {
     assert_eq!(fixture.api.shared.info().lifecycle, Lifecycle::Draining);
     fixture.stop().await;
 }
+
+#[path = "tests/placeholders.rs"]
+mod placeholders;
 
 #[tokio::test]
 async fn physical_connections_own_negotiation_and_subscriptions() {

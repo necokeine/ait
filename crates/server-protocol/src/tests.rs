@@ -126,3 +126,31 @@ fn wire_round_trips_and_tolerates_optional_future_fields() {
     assert_eq!(limits.queue_bytes, 4_194_304);
     assert_eq!(limits.connections, 64);
 }
+
+#[test]
+fn placeholder_event_response_and_error_have_stable_wire_shapes() {
+    let event: ClientMessage = serde_json::from_value(serde_json::json!({
+        "type":"event", "method":"terminal.input"
+    }))
+    .unwrap();
+    assert_eq!(
+        event,
+        ClientMessage::Event {
+            method: "terminal.input".to_owned(),
+            params: Value::Null,
+        }
+    );
+    let response = ClientMessage::Response {
+        request_id: Some("browser-1".to_owned()),
+        method: "browser.automation.execute.response".to_owned(),
+        params: serde_json::json!({"ok":true}),
+    };
+    assert_eq!(
+        serde_json::from_value::<ClientMessage>(serde_json::to_value(&response).unwrap()).unwrap(),
+        response
+    );
+    let code = ErrorCode::NotImplemented;
+    assert_eq!(serde_json::to_value(code).unwrap(), "not_implemented");
+    assert!(!code.retryable());
+    assert_eq!(code.message(), "Method is not implemented yet");
+}

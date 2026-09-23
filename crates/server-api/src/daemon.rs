@@ -39,7 +39,7 @@ pub(super) async fn dispatch(
         }
         _ => {
             let method = method.to_owned();
-            let capabilities = state.info.capabilities.clone();
+            let capabilities = state.info.implemented_capabilities.clone();
             let lifecycle = state.info().lifecycle;
             crate::jobs::run(
                 state,
