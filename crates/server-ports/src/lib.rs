@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod agent_runtime;
+pub mod agent_session;
 pub mod checkout;
 pub mod daemon;
 pub mod files;

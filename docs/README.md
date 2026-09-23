@@ -1,5 +1,9 @@
 # 概念与架构文档
 
+- [ADR-027：独立 AgentSession 与 AgentManager 生命周期边界](decisions/adr-027-independent-agent-session-manager.md)
+  （Accepted）：为新 server 建立 Provider session 创建、恢复、关闭与 durable snapshot 注册边界；
+  [实现报告](reports/independent-agent-session-manager.md)记录已验证行为及尚未接入的执行接口。
+
 - [ADR-026：规范化 Paseo WebSocket 接口并按能力分期接入](decisions/adr-026-canonical-paseo-websocket-surface.md)（Accepted）：
   登记 191 个 Paseo 入站名称并统一为 dotted method；188 个规范方法均可协商，真实实现与占位入口
   通过 `implemented_capabilities` 区分。[第一阶段报告](reports/paseo-websocket-surface-phase-1.md)
