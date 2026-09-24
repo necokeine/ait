@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-23",
+  "revision": {
+    "base": "d60e73c",
+    "state": "base plus GitHub Project provisioning working-tree changes on new"
+  },
+  "toolchain": {
+    "platform": "macOS-26.6.2-arm64 (Darwin 25.6.0)",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "cargo-llvm-cov 0.8.4"
+  },
+  "measurement": {
+    "command": "RUST_TEST_THREADS=1 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/ait-phase10-cov-target cargo llvm-cov --workspace --json --summary-only --output-path /tmp/ait-github-projects-coverage-raw.json --no-fail-fast -j1",
+    "htmlCommand": "CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/tmp/ait-phase10-cov-target cargo llvm-cov report --html",
+    "scope": "entire Cargo workspace, default features; production Rust sources; cargo-llvm-cov default filtering excludes test/build sources; coverage run excludes doctests",
+    "productionFiles": 234,
+    "explicitFileExclusions": [],
+    "unavailablePlatforms": [
+      "Linux",
+      "Windows"
+    ],
+    "tests": {
+      "targets": 72,
+      "passed": 819,
+      "failed": 0,
+      "ignored": 5
+    },
+    "localHtmlReport": "/tmp/ait-phase10-cov-target/llvm-cov/html/index.html",
+    "localRawReport": "/tmp/ait-github-projects-coverage-raw.json"
+  },
+  "coverage": {
+    "workspace": {
+      "files": 234,
+      "coveredLines": 38382,
+      "totalLines": 47438,
+      "linePercent": 80.90981913234117
+    },
+    "serverPackages": {
+      "files": 88,
+      "coveredLines": 14954,
+      "totalLines": 17307,
+      "linePercent": 86.4043450626914
+    },
+    "serverApplication": {
+      "files": 13,
+      "coveredLines": 3047,
+      "totalLines": 3463,
+      "linePercent": 87.9872942535374
+    },
+    "serverApi": {
+      "files": 20,
+      "coveredLines": 4402,
+      "totalLines": 5072,
+      "linePercent": 86.79022082018928
+    },
+    "serverWorkspace": {
+      "files": 14,
+      "coveredLines": 4546,
+      "totalLines": 5540,
+      "linePercent": 82.05776173285199
+    },
+    "githubProjectsAdapter": {
+      "files": 1,
+      "coveredLines": 214,
+      "totalLines": 245,
+      "linePercent": 87.34693877551021
+    }
+  },
+  "baseline": {
+    "artifact": "docs/reports/independent-agent-session-manager-coverage.json",
+    "workspace": {
+      "files": 233,
+      "coveredLines": 37995,
+      "totalLines": 47012,
+      "linePercent": 80.81979069173828
+    },
+    "serverPackages": {
+      "files": 87,
+      "coveredLines": 14567,
+      "totalLines": 16881,
+      "linePercent": 86.29228126295835
+    }
+  }
+}

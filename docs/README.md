@@ -1,5 +1,13 @@
 # 概念与架构文档
 
+- [ADR-028：GitHub 仓库发现与独立 Project 克隆注册](decisions/adr-028-github-project-provisioning.md)
+  （Accepted）：新 server 接通仓库搜索与克隆注册两个 Paseo WebSocket 方法；
+  [实现报告](reports/paseo-github-project-provisioning.md)记录测试、覆盖率及与 Paseo 的差异。
+
+- [ADR-027：独立 AgentSession 与 AgentManager 生命周期边界](decisions/adr-027-independent-agent-session-manager.md)
+  （Accepted）：为新 server 建立 Provider session 创建、恢复、关闭与 durable snapshot 注册边界；
+  [实现报告](reports/independent-agent-session-manager.md)记录已验证行为及尚未接入的执行接口。
+
 - [ADR-026：规范化 Paseo WebSocket 接口并按能力分期接入](decisions/adr-026-canonical-paseo-websocket-surface.md)（Accepted）：
   登记 191 个 Paseo 入站名称并统一为 dotted method；188 个规范方法均可协商，真实实现与占位入口
   通过 `implemented_capabilities` 区分。[第一阶段报告](reports/paseo-websocket-surface-phase-1.md)
@@ -23,7 +31,9 @@
   [第十一阶段报告](reports/paseo-websocket-surface-phase-11.md)记录 11 个文件/目录方法、revision 写入、
   文件订阅、二进制上传下载及一次性 HTTP 下载 token，并更正来源名与已发布方法的统计口径；
   [第十二阶段报告](reports/paseo-websocket-surface-phase-12.md)记录全部 188 个规范方法的占位入口、
-  已实现能力标记、请求分发整理及测试。
+  已实现能力标记、请求分发整理及测试；
+  [层级路由报告](reports/server-websocket-hierarchical-routing.md)记录按 dotted prefix 查找的只读路由树、
+  完整方法叶子的处理器归属与回归覆盖率。
 
 - [ADR-025：先移植 Paseo Project / Workspace 模型与 registry](decisions/adr-025-paseo-registry.md)（Accepted）：
   新 server 改为以 Paseo 类型与行为为基准；先移植记录、协议 DTO 和 registry，暂停 Session 切片。

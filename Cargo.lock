@@ -3479,6 +3479,7 @@ dependencies = [
  "server-domain",
  "server-ports",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

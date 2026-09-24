@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-09-23",
+  "revision": {
+    "base": "b262455",
+    "state": "base plus hierarchical-routing working-tree changes on new"
+  },
+  "toolchain": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargoLlvmCov": "cargo-llvm-cov 0.8.4"
+  },
+  "measurement": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-phase10-cov-target cargo llvm-cov --workspace --json --summary-only --output-path /tmp/ait-ws-hierarchy-coverage.json --no-fail-fast -j1",
+    "htmlCommand": "CARGO_TARGET_DIR=/tmp/ait-phase10-cov-target cargo llvm-cov report --html",
+    "scope": "entire Cargo workspace, default features; production Rust sources; cargo-llvm-cov default filtering excludes test/build sources; coverage run excludes doctests",
+    "productionFiles": 232,
+    "explicitFileExclusions": [],
+    "unavailablePlatforms": [
+      "Linux",
+      "Windows"
+    ],
+    "tests": {
+      "targets": 72,
+      "passed": 795,
+      "failed": 0,
+      "ignored": 5
+    },
+    "localHtmlReport": "/tmp/ait-phase10-cov-target/llvm-cov/html/index.html",
+    "localRawReport": "/tmp/ait-ws-hierarchy-coverage.json"
+  },
+  "coverage": {
+    "workspace": {
+      "coveredLines": 37787,
+      "totalLines": 46763,
+      "linePercent": 80.80533755319377
+    },
+    "serverPackages": {
+      "coveredLines": 14337,
+      "totalLines": 16632,
+      "linePercent": 86.2012987012987
+    },
+    "serverApi": {
+      "coveredLines": 4334,
+      "totalLines": 4994,
+      "linePercent": 86.78414096916299
+    },
+    "routeModule": {
+      "coveredLines": 248,
+      "totalLines": 271,
+      "linePercent": 91.5129151291513
+    },
+    "connectionModule": {
+      "coveredLines": 209,
+      "totalLines": 229,
+      "linePercent": 91.26637554585153
+    }
+  },
+  "baseline": {
+    "revision": "b262455",
+    "source": "docs/reports/paseo-websocket-surface-phase-12-coverage.json",
+    "workspace": {
+      "coveredLines": 37688,
+      "totalLines": 46682,
+      "linePercent": 80.73347328734845
+    },
+    "serverApi": {
+      "coveredLines": 4255,
+      "totalLines": 4913,
+      "linePercent": 86.60696112354977
+    },
+    "routeModule": {
+      "coveredLines": 168,
+      "totalLines": 190,
+      "linePercent": 88.42105263157895
+    }
+  }
+}

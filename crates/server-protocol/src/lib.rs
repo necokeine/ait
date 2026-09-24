@@ -11,6 +11,7 @@ pub mod directory;
 pub mod file_transfer;
 pub mod files;
 pub mod forge;
+pub mod github_projects;
 pub mod methods;
 pub mod project;
 pub mod project_config;

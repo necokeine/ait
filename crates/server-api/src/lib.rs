@@ -328,6 +328,10 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
         ),
         (
             services.directory.is_some(),
+            server_protocol::github_projects::CAPABILITIES,
+        ),
+        (
+            services.directory.is_some(),
             server_protocol::project_config::CAPABILITIES,
         ),
         (

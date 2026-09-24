@@ -612,6 +612,19 @@ fn run_command(
     run_command_with_codes(&mut command, timeout, family, &[0])
 }
 
+pub(crate) fn run_bounded_command(
+    command: Command,
+    timeout: Duration,
+    github_cli: bool,
+) -> Result<String, ForgeRuntimeError> {
+    let family = if github_cli {
+        CommandFamily::Forge
+    } else {
+        CommandFamily::Git
+    };
+    run_command(command, timeout, family).map(|output| output.stdout)
+}
+
 fn run_command_with_codes(
     command: &mut Command,
     timeout: Duration,

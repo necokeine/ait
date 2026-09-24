@@ -5,7 +5,9 @@ use base64::Engine;
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::Value;
-use server_application::directory::{Directory, DirectoryError};
+use server_application::directory::{
+    Directory, DirectoryError, GithubCloneProtocol, GithubProjectsError, GithubRepositoryVisibility,
+};
 use server_domain::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
 };
@@ -18,6 +20,12 @@ use server_protocol::directory::{
     WorkspaceCreateSource, WorkspaceListRequest, WorkspaceListResult, WorkspaceOpenRequest,
     WorkspaceOpenResult, WorkspacePageInfo, WorkspacePinSetRequest, WorkspacePinSetResult,
     WorkspaceSort, WorkspaceSortKey, WorkspaceTitleSetRequest, WorkspaceTitleSetResult,
+};
+use server_protocol::github_projects::{
+    GithubCloneProtocol as WireCloneProtocol, GithubRepositoryPayload,
+    GithubRepositorySearchRequest, GithubRepositorySearchResult, GithubRepositorySearchStatus,
+    GithubRepositoryVisibility as WireVisibility, ProjectGithubCloneRequest,
+    ProjectGithubCloneResult,
 };
 use server_protocol::project_config::{
     PaseoConfigRaw, PaseoConfigRevision, ProjectConfigReadRequest, ProjectConfigReadResult,
@@ -53,6 +61,7 @@ fn execute(directory: &mut Directory, method: &str, params: Value) -> Result<Val
     match method {
         "project.add.request" => project_add(directory, &decode(params)?),
         "project.create_directory.request" => project_create_directory(directory, &decode(params)?),
+        "project.github.clone.request" => project_github_clone(directory, &decode(params)?),
         "project.config.read.request" => project_config_read(directory, decode(params)?),
         "project.config.write.request" => project_config_write(directory, decode(params)?),
         "project.icon.set.request" => project_icon_set(directory, decode(params)?),
@@ -62,6 +71,9 @@ fn execute(directory: &mut Directory, method: &str, params: Value) -> Result<Val
         "project.remove.request" => project_remove(directory, decode(params)?),
         "workspace.open.request" => workspace_open(directory, &decode(params)?),
         "workspace.create.request" => workspace_create(directory, decode(params)?),
+        "workspace.github.search_repositories.request" => {
+            github_repository_search(directory, &decode(params)?)
+        }
         "workspace.list.request" => workspace_list(directory, &decode(params)?),
         "workspace.archive.request" => workspace_archive(directory, decode(params)?),
         "workspace.title.set.request" => workspace_title_set(directory, decode(params)?),
@@ -250,6 +262,89 @@ fn project_add(directory: &Directory, request: &ProjectAddRequest) -> Result<Val
             error_code: None,
         }),
     }
+}
+
+fn github_repository_search(
+    directory: &Directory,
+    request: &GithubRepositorySearchRequest,
+) -> Result<Value, ErrorCode> {
+    let limit = request.limit.unwrap_or(20);
+    if !(1..=50).contains(&limit) {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    match directory.search_github_repositories(&request.query, limit) {
+        Ok(repositories) => encode(GithubRepositorySearchResult {
+            status: GithubRepositorySearchStatus::Success,
+            repositories: repositories
+                .into_iter()
+                .map(|repository| GithubRepositoryPayload {
+                    id: repository.id,
+                    name: repository.name,
+                    name_with_owner: repository.name_with_owner,
+                    description: repository.description,
+                    visibility: match repository.visibility {
+                        GithubRepositoryVisibility::Public => WireVisibility::Public,
+                        GithubRepositoryVisibility::Private => WireVisibility::Private,
+                    },
+                    updated_at: repository.updated_at,
+                    clone_url: repository.clone_url,
+                })
+                .collect(),
+            available: true,
+            reason: None,
+            error: None,
+        }),
+        Err(error) => {
+            let (status, available, reason) = match error {
+                GithubProjectsError::CliMissing => (
+                    GithubRepositorySearchStatus::Unavailable,
+                    false,
+                    Some("gh_missing"),
+                ),
+                GithubProjectsError::Unauthenticated => {
+                    (GithubRepositorySearchStatus::Unauthenticated, false, None)
+                }
+                GithubProjectsError::SearchFailed
+                | GithubProjectsError::InvalidTarget
+                | GithubProjectsError::TargetExists
+                | GithubProjectsError::CloneFailed => {
+                    (GithubRepositorySearchStatus::Error, true, None)
+                }
+            };
+            encode(GithubRepositorySearchResult {
+                status,
+                repositories: Vec::new(),
+                available,
+                reason,
+                error: Some(error.to_string()),
+            })
+        }
+    }
+}
+
+fn project_github_clone(
+    directory: &Directory,
+    request: &ProjectGithubCloneRequest,
+) -> Result<Value, ErrorCode> {
+    if request.repo.trim().len() < 3 || request.target_directory.trim().is_empty() {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    let protocol = request.clone_protocol.map(|protocol| match protocol {
+        WireCloneProtocol::Https => GithubCloneProtocol::Https,
+        WireCloneProtocol::Ssh => GithubCloneProtocol::Ssh,
+    });
+    let outcome = directory.clone_github_project(
+        &request.repo,
+        protocol,
+        &request.target_directory,
+        &timestamp(),
+    );
+    encode(ProjectGithubCloneResult {
+        repo: outcome.repo,
+        checkout_path: outcome.checkout_path,
+        project: outcome.project.as_ref().map(project_descriptor),
+        error: outcome.error,
+    })
 }
 
 fn project_create_directory(
