@@ -9,6 +9,9 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
+server-provider = { version = "0.0.6", path = "../../crates/server-provider" }
+server-filesystem = { version = "0.0.6", path = "../../crates/server-filesystem" }
+server-metadata = { version = "0.0.6", path = "../../crates/server-metadata" }
 anyhow = "1.0.104"
 axum = "0.8.9"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
@@ -16,11 +19,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 server-api = { path = "../../crates/server-api" }
-server-application = { version = "0.0.6", path = "../../crates/server-application" }
 server-domain = { version = "0.0.6", path = "../../crates/server-domain" }
-server-ports = { version = "0.0.6", path = "../../crates/server-ports" }
-server-storage = { version = "0.0.6", path = "../../crates/server-storage" }
-server-workspace = { version = "0.0.6", path = "../../crates/server-workspace" }
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "sync", "time", "signal"] }
 toml = "1.1.6"

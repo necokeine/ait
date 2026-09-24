@@ -52,8 +52,11 @@ mod agents;
 #[path = "agent_runtime.rs"]
 mod agent_runtime;
 
-#[path = "projects.rs"]
-mod projects;
+#[path = "agent_execution.rs"]
+mod agent_execution;
+
+#[path = "metadata.rs"]
+mod metadata;
 
 #[path = "directory.rs"]
 mod directory;

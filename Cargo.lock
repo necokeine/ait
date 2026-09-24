@@ -3449,16 +3449,15 @@ name = "server-api"
 version = "0.0.6"
 dependencies = [
  "axum",
- "base64",
- "chrono",
  "futures-util",
  "reqwest 0.12.28",
  "secrecy",
  "serde",
  "serde_json",
- "server-application",
- "server-domain",
+ "server-filesystem",
+ "server-metadata",
  "server-protocol",
+ "server-provider",
  "subtle",
  "thiserror",
  "tokio",
@@ -3467,19 +3466,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "server-application"
-version = "0.0.6"
-dependencies = [
- "chrono",
- "getrandom 0.4.3",
- "serde_json",
- "server-domain",
- "server-ports",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -3496,12 +3482,11 @@ dependencies = [
  "serde",
  "serde_json",
  "server-api",
- "server-application",
  "server-domain",
- "server-ports",
+ "server-filesystem",
+ "server-metadata",
  "server-protocol",
- "server-storage",
- "server-workspace",
+ "server-provider",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -3522,12 +3507,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "server-ports"
+name = "server-filesystem"
 version = "0.0.6"
 dependencies = [
+ "base64",
+ "chrono",
+ "getrandom 0.4.3",
+ "libc",
+ "serde",
  "serde_json",
- "server-domain",
+ "server-metadata",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "server-metadata"
+version = "0.0.6"
+dependencies = [
+ "base64",
+ "chrono",
+ "getrandom 0.4.3",
+ "indexmap",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3536,35 +3547,25 @@ version = "0.0.6"
 dependencies = [
  "serde",
  "serde_json",
+ "server-filesystem",
+ "server-metadata",
+ "server-provider",
 ]
 
 [[package]]
-name = "server-storage"
+name = "server-provider"
 version = "0.0.6"
 dependencies = [
  "chrono",
- "getrandom 0.4.3",
- "indexmap",
  "rusqlite",
  "serde",
  "serde_json",
  "server-domain",
- "server-ports",
+ "server-metadata",
  "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "server-workspace"
-version = "0.0.6"
-dependencies = [
- "chrono",
- "libc",
- "serde_json",
- "server-domain",
- "server-ports",
- "sha2 0.10.9",
- "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

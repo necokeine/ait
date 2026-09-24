@@ -4,7 +4,7 @@ use serde_json::json;
 use server_domain::agent_runtime::{
     AgentAttentionReason, AgentRuntimeStatus, PersistedAgentRuntimeRecord,
 };
-use server_domain::registry::{
+use server_metadata::model::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
 };
 
@@ -21,7 +21,11 @@ async fn binary_serves_agent_runtime_directory_and_metadata_lifecycle() {
     let log = root.path().join("server.log");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let mut client = connect(&address, server_protocol::agent_lifecycle::CAPABILITIES).await;
+    let mut client = connect(
+        &address,
+        server_provider::protocol::agent_lifecycle::CAPABILITIES,
+    )
+    .await;
 
     assert_directory_reads(&mut client).await;
     assert_metadata_mutations(&mut client).await;

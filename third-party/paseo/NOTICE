@@ -2,8 +2,10 @@ Paseo
 Copyright (c) 2025-present Mohamed Boudra
 Licensed under the Apache License, Version 2.0; see LICENSE in this directory.
 
-Rust translations and modifications in server-domain/src/registry*,
-server-protocol/src/workspace*, and server-storage/src/registry* derive from:
+Rust translations and modifications in server-metadata/src/model/registry*,
+server-metadata/src/protocol/workspace*, server-filesystem/src/protocol/worktrees*,
+server-filesystem/src/protocol/workspace_recovery*, server-metadata/src/storage/registry*,
+and server-provider/src/storage/agent_runtime* derive from:
 getpaseo/paseo commit 2c8e8a826810337492cc5a38bb0bbd705b6fb632
 packages/server/src/server/workspace-registry.ts
 packages/server/src/server/workspace-registry-model.ts
@@ -13,3 +15,17 @@ packages/protocol/src/messages.ts
 Modifications: translated TypeScript/Zod records and schemas into Rust/Serde;
 blocking registry adapters use explicit errors and Rust ownership. Scope and
 intentional differences are documented in docs/decisions/adr-025-paseo-registry.md.
+Module ownership was consolidated by docs/decisions/adr-029-server-metadata.md.
+Filesystem and repository capability ownership was consolidated by
+docs/decisions/adr-030-server-filesystem.md.
+Agent protocol/session/runtime modules and Workspace automation ownership were
+consolidated by docs/decisions/adr-031-server-provider.md.
+
+Native session and text-turn adaptations in server-provider/src/local/codex*,
+server-provider/src/ports/agent_session*, server-provider/src/service/agent_manager*,
+server-provider/src/protocol/agent_execution* and server-provider/src/rpc/agent_execution*
+also reference the same pinned commit's packages/server/src/server/agent/agent-sdk-types.ts,
+agent-manager.ts, agent-loading.ts, providers/codex-app-server-agent.ts, and
+providers/codex/app-server-transport.ts. Rust changes use a bounded worker, read-only Codex
+sessions, explicit unsupported options, terminal-result polling and process-group cleanup.
+Scope and differences: docs/decisions/adr-032-server-native-provider-execution.md.

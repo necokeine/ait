@@ -12,50 +12,79 @@ fn request_capability(method: &str) -> Option<&'static str> {
         .map(|route| route.capability)
 }
 
-#[test]
-fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
-    let groups: &[(Handler, &[&str])] = &[
+fn implemented_groups() -> &'static [(Handler, &'static [&'static str])] {
+    &[
         (Handler::Base, server_protocol::CAPABILITIES),
         (
-            Handler::Projects,
-            server_protocol::project_lease::CAPABILITIES,
+            Handler::AgentExecution,
+            server_provider::protocol::agent_execution::CAPABILITIES,
         ),
-        (Handler::Agents, server_protocol::agent::CAPABILITIES),
+        (
+            Handler::Agents,
+            server_provider::protocol::agent::CAPABILITIES,
+        ),
         (
             Handler::AgentRuntime,
-            server_protocol::agent_lifecycle::CAPABILITIES,
-        ),
-        (Handler::Directory, server_protocol::directory::CAPABILITIES),
-        (
-            Handler::Directory,
-            server_protocol::github_projects::CAPABILITIES,
+            server_provider::protocol::agent_lifecycle::CAPABILITIES,
         ),
         (
             Handler::Directory,
-            server_protocol::project_config::CAPABILITIES,
+            server_metadata::protocol::directory::CAPABILITIES,
+        ),
+        (
+            Handler::GithubProjects,
+            server_filesystem::protocol::github_projects::CAPABILITIES,
         ),
         (
             Handler::Directory,
-            server_protocol::project_icon::CAPABILITIES,
+            server_metadata::protocol::project_config::CAPABILITIES,
         ),
-        (Handler::Daemon, server_protocol::daemon::CAPABILITIES),
+        (
+            Handler::Directory,
+            server_metadata::protocol::project_icon::CAPABILITIES,
+        ),
+        (
+            Handler::Daemon,
+            server_metadata::protocol::daemon::CAPABILITIES,
+        ),
         (
             Handler::Labels,
-            server_protocol::workspace_labels::CAPABILITIES,
+            server_metadata::protocol::workspace_labels::CAPABILITIES,
         ),
-        (Handler::Checkout, server_protocol::checkout::CAPABILITIES),
-        (Handler::Forge, server_protocol::forge::CAPABILITIES),
-        (Handler::Worktrees, server_protocol::worktrees::CAPABILITIES),
+        (
+            Handler::Checkout,
+            server_filesystem::protocol::checkout::CAPABILITIES,
+        ),
+        (
+            Handler::Forge,
+            server_filesystem::protocol::forge::CAPABILITIES,
+        ),
+        (
+            Handler::Worktrees,
+            server_filesystem::protocol::worktrees::CAPABILITIES,
+        ),
         (
             Handler::Automation,
-            server_protocol::workspace_automation::CAPABILITIES,
+            server_metadata::protocol::workspace_automation::CAPABILITIES,
+        ),
+        (
+            Handler::WorkspaceRecovery,
+            server_filesystem::protocol::workspace_recovery::CAPABILITIES,
         ),
         (
             Handler::WorkspaceState,
-            server_protocol::workspace_state::CAPABILITIES,
+            server_metadata::protocol::workspace_state::CAPABILITIES,
         ),
-        (Handler::Files, server_protocol::files::CAPABILITIES),
-    ];
+        (
+            Handler::Files,
+            server_filesystem::protocol::files::CAPABILITIES,
+        ),
+    ]
+}
+
+#[test]
+fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
+    let groups = implemented_groups();
     let mut implemented = BTreeSet::new();
     for &(expected, methods) in groups {
         for &method in methods {
@@ -69,7 +98,7 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
             assert_eq!(route.handler, Some(expected), "{method}");
         }
     }
-    assert_eq!(implemented.len(), 106);
+    assert_eq!(implemented.len(), 107);
 
     let advertised = crate::registered_capabilities(
         &implemented
@@ -77,7 +106,7 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
             .map(|method| (*method).to_owned())
             .collect::<Vec<_>>(),
     );
-    assert_eq!(advertised.len(), 199);
+    assert_eq!(advertised.len(), 195);
     for method in &advertised {
         let route = routes().find(method).expect("advertised route must exist");
         assert_eq!(
@@ -95,12 +124,12 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
 
 #[test]
 fn prefix_nodes_can_be_methods_and_have_children_with_different_owners() {
-    assert_eq!(handler("project.list"), Some(Handler::Projects));
+    assert_eq!(handler("project.list"), None);
     assert_eq!(handler("project.list.request"), Some(Handler::Directory));
     assert_eq!(handler("workspace.open.request"), Some(Handler::Directory));
     assert_eq!(
         handler("workspace.github.search_repositories.request"),
-        Some(Handler::Directory)
+        Some(Handler::GithubProjects)
     );
     assert_eq!(
         handler("workspace.label.list.request"),
@@ -131,7 +160,7 @@ fn catalog_placeholders_keep_direction_and_negotiation_checks() {
         Some("schedule.list.request")
     );
     assert_eq!(request_capability("terminal.input"), None);
-    assert_eq!(request_capability("project.open"), Some("project.open"));
+    assert_eq!(request_capability("project.open"), None);
     assert_eq!(
         request_capability("server.status.unsubscribe"),
         Some("server.status.subscribe")

@@ -154,3 +154,119 @@ fn placeholder_event_response_and_error_have_stable_wire_shapes() {
     assert!(!code.retryable());
     assert_eq!(code.message(), "Method is not implemented yet");
 }
+
+#[test]
+fn metadata_failures_keep_public_codes_and_retry_semantics() {
+    use server_metadata::rpc::ErrorCode as MetadataError;
+
+    for (business, code, retryable) in [
+        (MetadataError::InvalidMessage, "invalid_message", false),
+        (
+            MetadataError::UnsupportedCapability,
+            "unsupported_capability",
+            false,
+        ),
+        (MetadataError::MethodNotFound, "method_not_found", false),
+        (MetadataError::RegistryIo, "registry_io", true),
+        (
+            MetadataError::DaemonConfigInvalid,
+            "daemon_config_invalid",
+            false,
+        ),
+        (MetadataError::DaemonIo, "daemon_io", true),
+        (
+            MetadataError::WorkspaceNotFound,
+            "workspace_not_found",
+            false,
+        ),
+        (MetadataError::LabelNameEmpty, "label_name_empty", false),
+        (MetadataError::LabelNotFound, "label_not_found", false),
+        (MetadataError::LabelNameTaken, "label_name_taken", false),
+        (
+            MetadataError::WorkspaceLabelStorageUncertain,
+            "workspace_label_storage_uncertain",
+            true,
+        ),
+    ] {
+        let error = ErrorCode::from(business);
+        assert_eq!(serde_json::to_value(error).unwrap(), code);
+        assert_eq!(error.retryable(), retryable);
+    }
+}
+
+#[test]
+fn request_shapes_match_paseo_and_keep_only_dotted_methods() {
+    assert_eq!(server_filesystem::protocol::files::CAPABILITIES.len(), 11);
+    assert!(
+        server_filesystem::protocol::files::CAPABILITIES
+            .iter()
+            .all(|name| {
+                crate::methods::PASEO_METHODS
+                    .iter()
+                    .any(|method| method.canonical_name == *name)
+            })
+    );
+}
+
+#[test]
+fn skill_placeholders_are_owned_by_filesystem_and_remain_canonical_requests() {
+    for method in server_filesystem::protocol::skills::METHODS {
+        let spec = methods::PASEO_METHODS
+            .iter()
+            .find(|spec| spec.canonical_name == *method)
+            .unwrap();
+        assert_eq!(spec.group, methods::MethodGroup::Skills);
+        assert_eq!(spec.kind, methods::InboundKind::Request);
+    }
+}
+
+#[test]
+fn provider_failures_keep_public_codes_messages_and_retry_semantics() {
+    use server_provider::rpc::ErrorCode as ProviderError;
+
+    for (business, expected, retryable) in [
+        (ProviderError::InvalidMessage, "invalid_message", false),
+        (
+            ProviderError::UnsupportedCapability,
+            "unsupported_capability",
+            false,
+        ),
+        (ProviderError::MethodNotFound, "method_not_found", false),
+        (ProviderError::AgentIo, "agent_io", true),
+        (ProviderError::AgentNotFound, "agent_not_found", false),
+        (
+            ProviderError::AgentRevisionNotFound,
+            "agent_revision_not_found",
+            false,
+        ),
+        (
+            ProviderError::AgentRevisionConflict,
+            "agent_revision_conflict",
+            false,
+        ),
+        (
+            ProviderError::AgentDefaultConflict,
+            "agent_default_conflict",
+            false,
+        ),
+        (ProviderError::AgentDisabled, "agent_disabled", false),
+        (ProviderError::AgentIsDefault, "agent_is_default", false),
+        (
+            ProviderError::IdempotencyConflict,
+            "idempotency_conflict",
+            false,
+        ),
+        (ProviderError::CatalogBusy, "catalog_busy", true),
+        (
+            ProviderError::UnsupportedFormat,
+            "unsupported_format",
+            false,
+        ),
+        (ProviderError::RegistryIo, "registry_io", true),
+    ] {
+        let error = ErrorCode::from(business);
+        assert_eq!(serde_json::to_value(error).unwrap(), expected);
+        assert!(!error.message().is_empty());
+        assert_eq!(error.retryable(), retryable);
+    }
+}

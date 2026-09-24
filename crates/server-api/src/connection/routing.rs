@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
-use server_protocol::checkout::CheckoutDiffUnsubscribeRequest;
+use server_filesystem::protocol::checkout::CheckoutDiffUnsubscribeRequest;
 use server_protocol::methods::{InboundKind, PASEO_METHODS};
 use server_protocol::subscription::{SubscriptionReleaseRequest, SubscriptionReleaseResult};
 use server_protocol::{ErrorCode, valid_id};
@@ -15,10 +15,12 @@ use crate::outbound::Outbound;
 /// Business or connection-owned destination selected by a complete method name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Handler {
-    Projects,
     Agents,
     AgentRuntime,
+    AgentExecution,
     Directory,
+    GithubProjects,
+    WorkspaceRecovery,
     Daemon,
     Labels,
     Checkout,
@@ -84,82 +86,7 @@ fn build_routes() -> RouteNode {
             });
         }
     }
-    register_group(&mut root, Handler::Base, server_protocol::CAPABILITIES);
-    register_group(
-        &mut root,
-        Handler::Projects,
-        server_protocol::project_lease::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Agents,
-        server_protocol::agent::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::AgentRuntime,
-        server_protocol::agent_lifecycle::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Directory,
-        server_protocol::directory::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Directory,
-        server_protocol::github_projects::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Directory,
-        server_protocol::project_config::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Directory,
-        server_protocol::project_icon::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Daemon,
-        server_protocol::daemon::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Labels,
-        server_protocol::workspace_labels::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Checkout,
-        server_protocol::checkout::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Forge,
-        server_protocol::forge::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Worktrees,
-        server_protocol::worktrees::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Automation,
-        server_protocol::workspace_automation::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::WorkspaceState,
-        server_protocol::workspace_state::CAPABILITIES,
-    );
-    register_group(
-        &mut root,
-        Handler::Files,
-        server_protocol::files::CAPABILITIES,
-    );
+    register_business_routes(&mut root);
     let leaf = root.leaf_mut("server.status.unsubscribe");
     assert!(leaf.is_none(), "duplicate status unsubscribe route");
     *leaf = Some(Route {
@@ -168,6 +95,90 @@ fn build_routes() -> RouteNode {
         handler: Some(Handler::Base),
     });
     root
+}
+
+fn register_business_routes(root: &mut RouteNode) {
+    register_group(root, Handler::Base, server_protocol::CAPABILITIES);
+    register_group(
+        root,
+        Handler::Agents,
+        server_provider::protocol::agent::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::AgentRuntime,
+        server_provider::protocol::agent_lifecycle::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::AgentExecution,
+        server_provider::protocol::agent_execution::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Directory,
+        server_metadata::protocol::directory::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::GithubProjects,
+        server_filesystem::protocol::github_projects::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Directory,
+        server_metadata::protocol::project_config::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Directory,
+        server_metadata::protocol::project_icon::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Daemon,
+        server_metadata::protocol::daemon::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Labels,
+        server_metadata::protocol::workspace_labels::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Checkout,
+        server_filesystem::protocol::checkout::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Forge,
+        server_filesystem::protocol::forge::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Worktrees,
+        server_filesystem::protocol::worktrees::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Automation,
+        server_metadata::protocol::workspace_automation::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::WorkspaceRecovery,
+        server_filesystem::protocol::workspace_recovery::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::WorkspaceState,
+        server_metadata::protocol::workspace_state::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::Files,
+        server_filesystem::protocol::files::CAPABILITIES,
+    );
 }
 
 fn register_group(root: &mut RouteNode, handler: Handler, methods: &'static [&'static str]) {
@@ -273,12 +284,27 @@ pub(super) async fn route_request(
                 Err(error) => RouteResult::plain(Err(error)),
             }
         }
-        Handler::Projects => {
-            RouteResult::plain(crate::projects::dispatch(method, params, state).await)
+        Handler::WorkspaceRecovery => {
+            let result = crate::workspace_recovery::dispatch(method, params, state).await;
+            match result {
+                Ok(dispatched) => RouteResult {
+                    result: Ok(dispatched.value),
+                    label_subscription: None,
+                    diff_subscription: None,
+                    workspace_event: dispatched.event,
+                },
+                Err(error) => RouteResult::plain(Err(error)),
+            }
+        }
+        Handler::GithubProjects => {
+            RouteResult::plain(crate::github_projects::dispatch(method, params, state).await)
         }
         Handler::Agents => RouteResult::plain(crate::agents::dispatch(method, params, state).await),
         Handler::AgentRuntime => {
             RouteResult::plain(crate::agent_runtime::dispatch(method, params, state).await)
+        }
+        Handler::AgentExecution => {
+            RouteResult::plain(crate::agent_execution::dispatch(method, params, state).await)
         }
         Handler::Directory => {
             RouteResult::plain(crate::directory::dispatch(method, params, state).await)
@@ -369,14 +395,7 @@ fn dispatch_base(
 ) -> Result<Value, ErrorCode> {
     match method {
         "server.info" => serde_json::to_value(state.info()).map_err(|_| ErrorCode::InvalidMessage),
-        "connection.ping" => {
-            let nonce = params
-                .get("nonce")
-                .and_then(Value::as_str)
-                .filter(|nonce| valid_id(nonce))
-                .ok_or(ErrorCode::InvalidMessage)?;
-            Ok(json!({"nonce":nonce}))
-        }
+        "connection.ping" => server_metadata::rpc::server::ping(params.clone()).map_err(Into::into),
         "server.status.subscribe" => {
             if subscriptions.len() >= MAX_SUBSCRIPTIONS {
                 return Err(ErrorCode::ResourceExhausted);

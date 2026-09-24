@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Value, json};
-use server_application::files::{FileUpload, Files, UploadedFile};
-use server_protocol::{
-    ErrorCode, ServerMessage, file_transfer::FileFrame, files as wire, valid_id,
-};
+use server_filesystem::protocol::{file_transfer::FileFrame, files as wire};
+use server_filesystem::service::files::Files;
+use server_filesystem::service::uploads::{UploadStep, Uploads};
+use server_protocol::{ErrorCode, ServerMessage, valid_id};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -16,7 +16,7 @@ use crate::outbound::{Outbound, QueueError};
 #[derive(Default)]
 pub(crate) struct FileConnection {
     subscriptions: BTreeMap<String, Subscription>,
-    uploads: BTreeMap<String, Upload>,
+    uploads: Uploads,
 }
 
 struct Subscription {
@@ -34,12 +34,6 @@ impl Drop for Subscription {
     }
 }
 
-struct Upload {
-    metadata: UploadedFile,
-    writer: Option<Box<dyn FileUpload>>,
-    touched: Instant,
-}
-
 impl FileConnection {
     pub(crate) fn len(&self) -> usize {
         self.subscriptions.len()
@@ -50,8 +44,7 @@ impl FileConnection {
     }
 
     pub(crate) fn prune_uploads(&mut self) {
-        self.uploads
-            .retain(|_, upload| upload.touched.elapsed() < Duration::from_secs(600));
+        self.uploads.prune();
     }
 
     pub(crate) async fn request(
@@ -80,7 +73,7 @@ impl FileConnection {
                     self.release(&request.subscription_id);
                     Ok(json!({"subscriptionId":request.subscription_id}))
                 }),
-            "file.upload.request" => match self.begin_upload(&id, params) {
+            "file.upload.request" => match self.uploads.begin(&id, params).map_err(Into::into) {
                 Ok(()) => return Ok(()),
                 Err(error) => Err(error),
             },
@@ -156,37 +149,6 @@ impl FileConnection {
         Ok(())
     }
 
-    fn begin_upload(&mut self, id: &str, params: Value) -> Result<(), ErrorCode> {
-        let request: wire::UploadRequest = super::decode(params)?;
-        self.prune_uploads();
-        if request.file_name.is_empty()
-            || request.mime_type.is_empty()
-            || request.file_name.len() > 255
-        {
-            return Err(ErrorCode::InvalidMessage);
-        }
-        if request.size > 64 * 1024 * 1024
-            || (self.uploads.len() >= 8 && !self.uploads.contains_key(id))
-        {
-            return Err(ErrorCode::ResourceExhausted);
-        }
-        self.uploads.insert(
-            id.to_owned(),
-            Upload {
-                metadata: UploadedFile {
-                    id: format!("upload_{}", Uuid::new_v4()),
-                    file_name: request.file_name,
-                    mime_type: request.mime_type,
-                    size: request.size,
-                    path: String::new(),
-                },
-                writer: None,
-                touched: Instant::now(),
-            },
-        );
-        Ok(())
-    }
-
     pub(crate) async fn frame(
         &mut self,
         id: String,
@@ -195,20 +157,19 @@ impl FileConnection {
         outbound: &Outbound,
     ) -> Result<(), QueueError> {
         self.prune_uploads();
-        let Some(mut upload) = self.uploads.remove(&id) else {
+        let Some(upload) = self.uploads.take(&id) else {
             return respond(outbound, id, Err(ErrorCode::InvalidMessage));
         };
-        upload.touched = Instant::now();
         let result = crate::jobs::run(
             state,
             state.files.clone(),
             ErrorCode::ProjectIo,
-            move |files| Ok(apply_frame(upload, frame, files)),
+            move |files| Ok(upload.apply(frame, files)),
         )
         .await;
         match result {
             Ok(Ok(UploadStep::Pending(upload))) => {
-                self.uploads.insert(id, upload);
+                self.uploads.resume(id, upload);
                 Ok(())
             }
             Ok(Ok(UploadStep::Complete(file))) => respond(
@@ -236,40 +197,6 @@ impl FileConnection {
             Err(error) => respond(outbound, id, Err(error)),
         }
     }
-}
-
-enum UploadStep {
-    Pending(Upload),
-    Complete(UploadedFile),
-}
-
-fn apply_frame(
-    mut upload: Upload,
-    frame: FileFrame,
-    files: &Files,
-) -> Result<UploadStep, super::port::FileError> {
-    use std::io::Write;
-    match frame {
-        FileFrame::Begin(_) => {
-            if upload.writer.is_some() {
-                return Err(super::port::FileError("Upload already started".to_owned()));
-            }
-            upload.writer = Some(files.filesystem.upload(upload.metadata.clone())?);
-        }
-        FileFrame::Chunk(bytes) => {
-            let writer = upload.writer.as_mut().ok_or_else(|| {
-                super::port::FileError("Upload chunks arrived before file begin.".to_owned())
-            })?;
-            writer.write_all(&bytes)?;
-        }
-        FileFrame::End => {
-            let writer = upload.writer.take().ok_or_else(|| {
-                super::port::FileError("Upload ended before file begin.".to_owned())
-            })?;
-            return Ok(UploadStep::Complete(writer.finish()?));
-        }
-    }
-    Ok(UploadStep::Pending(upload))
 }
 
 pub(crate) struct FileRequest {
@@ -326,7 +253,8 @@ fn start_polling(observation: Observation, state: &Shared, outbound: &Outbound) 
     let tracker = state.tasks.clone();
     let jobs = state.jobs.clone();
     state.tasks.spawn(async move {
-        let mut previous = initial;
+        let mut observation =
+            server_filesystem::rpc::files::FileObservation::new(cwd.clone(), path.clone(), initial);
         let period = Duration::from_millis(200);
         let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -353,10 +281,9 @@ fn start_polling(observation: Observation, state: &Shared, outbound: &Outbound) 
             let Ok(Some(next)) = next else {
                 continue;
             };
-            if next == previous {
+            let Some(version) = observation.update(next) else {
                 continue;
-            }
-            previous = next.clone();
+            };
             let active = guard
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -365,7 +292,7 @@ fn start_polling(observation: Observation, state: &Shared, outbound: &Outbound) 
             }
             let Ok(params) = super::encode(wire::FileUpdate {
                 subscription_id: poll_id.clone(),
-                version: super::project_version(&cwd, &path, next),
+                version,
             }) else {
                 break;
             };
@@ -382,6 +309,3 @@ fn start_polling(observation: Observation, state: &Shared, outbound: &Outbound) 
     });
     subscription
 }
-
-#[cfg(test)]
-mod tests;

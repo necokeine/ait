@@ -1,5 +1,9 @@
 # ADR-027：独立 AgentSession 与 AgentManager 生命周期边界
 
+> 模块位置已由 [ADR-031](adr-031-server-provider.md) 更新：AgentClient/AgentSession 与
+> AgentManager 分别位于 server-provider 的 ports/service；本决策的行为边界保持不变。
+> [ADR-032](adr-032-server-native-provider-execution.md) 已接入 Codex adapter、宿主 worker 和五个文本执行入口。
+
 - 状态：Accepted。
 - 日期：2026-09-23。
 - 来源：`getpaseo/paseo@2c8e8a826810337492cc5a38bb0bbd705b6fb632` 的

@@ -19,24 +19,23 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
         let name = package["name"].as_str().unwrap();
         let allowed: &[&str] = match name {
             "server-bin" => &[
+                "server-metadata",
+                "server-filesystem",
+                "server-provider",
                 "server-api",
                 "server-protocol",
-                "server-application",
                 "server-domain",
-                "server-ports",
-                "server-storage",
-                "server-workspace",
-                "server-execution",
-                "server-providers",
             ],
-            "server-api" => &["server-application", "server-domain", "server-protocol"],
-            "server-application" => &["server-domain", "server-ports"],
-            "server-ports" => &["server-domain"],
-            "server-storage" | "server-workspace" | "server-providers" => {
-                &["server-domain", "server-ports"]
-            }
-            "server-execution" => &["server-domain", "server-ports", "server-protocol"],
-            "server-domain" | "server-protocol" => &[],
+            "server-api" => &[
+                "server-provider",
+                "server-protocol",
+                "server-metadata",
+                "server-filesystem",
+            ],
+            "server-provider" => &["server-domain", "server-metadata"],
+            "server-protocol" => &["server-metadata", "server-filesystem", "server-provider"],
+            "server-filesystem" => &["server-metadata"],
+            "server-domain" | "server-metadata" => &[],
             _ => {
                 violations.push(format!("unregistered server package: {name}"));
                 continue;
@@ -49,13 +48,15 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
             {
                 violations.push(format!("{name} -> {target}"));
             }
-            if matches!(name, "server-domain" | "server-protocol")
-                && [
-                    "tokio", "sqlx", "rusqlite", "axum", "hyper", "reqwest", "tonic", "tauri",
-                    "rig", "codex",
-                ]
-                .iter()
-                .any(|prefix| target == *prefix || target.starts_with(&format!("{prefix}-")))
+            if matches!(
+                name,
+                "server-domain" | "server-protocol" | "server-metadata" | "server-filesystem"
+            ) && [
+                "tokio", "sqlx", "rusqlite", "axum", "hyper", "reqwest", "tonic", "tauri", "rig",
+                "codex",
+            ]
+            .iter()
+            .any(|prefix| target == *prefix || target.starts_with(&format!("{prefix}-")))
             {
                 violations.push(format!("impure {name} -> {target}"));
             }
@@ -65,7 +66,7 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
 }
 
 #[test]
-fn all_server_dependency_edges_follow_adr_022() {
+fn all_server_dependency_edges_follow_adr_031() {
     let output = Command::new(env!("CARGO"))
         .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -116,4 +117,95 @@ fn guard_catches_indirect_renamed_optional_target_and_development_edges() {
         ),
         ["impure server-domain -> tokio"]
     );
+}
+
+#[test]
+fn metadata_cannot_depend_on_host_crates_or_runtime_adapters() {
+    for dependency in [
+        "server-protocol",
+        "server-provider",
+        "server-domain",
+        "server-ports",
+        "server-application",
+        "ait-domain",
+    ] {
+        let packages = [
+            json!({"id":"server-metadata", "name":"server-metadata", "dependencies":[{"name":dependency, "path":"../dependency"}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("server-metadata -> {dependency}")]
+        );
+    }
+    for dependency in ["tokio", "rusqlite", "axum", "reqwest"] {
+        let packages = [
+            json!({"id":"server-metadata", "name":"server-metadata", "dependencies":[{"name":dependency}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("impure server-metadata -> {dependency}")]
+        );
+    }
+}
+
+#[test]
+fn filesystem_cannot_depend_on_host_agent_or_transport_crates() {
+    for dependency in [
+        "server-api",
+        "server-protocol",
+        "server-application",
+        "server-ports",
+        "server-domain",
+        "server-workspace",
+        "server-provider",
+        "ait-domain",
+    ] {
+        let packages = [
+            json!({"id":"server-filesystem", "name":"server-filesystem", "dependencies":[{"name":dependency, "path":"../dependency"}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("server-filesystem -> {dependency}")]
+        );
+    }
+    for dependency in ["tokio", "axum", "reqwest", "rusqlite"] {
+        let packages = [
+            json!({"id":"server-filesystem", "name":"server-filesystem", "dependencies":[{"name":dependency}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("impure server-filesystem -> {dependency}")]
+        );
+    }
+}
+
+#[test]
+fn provider_depends_inward_and_retired_packages_cannot_return() {
+    for dependency in [
+        "server-api",
+        "server-protocol",
+        "server-filesystem",
+        "ait-domain",
+    ] {
+        let packages = [
+            json!({"id":"server-provider", "name":"server-provider", "dependencies":[{"name":dependency, "path":"../dependency"}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("server-provider -> {dependency}")]
+        );
+    }
+    for retired in [
+        "server-application",
+        "server-ports",
+        "server-storage",
+        "server-workspace",
+        "server-providers",
+    ] {
+        let packages = [json!({"id":retired, "name":retired, "dependencies":[]})];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("unregistered server package: {retired}")]
+        );
+    }
 }

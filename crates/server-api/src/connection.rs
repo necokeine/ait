@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use serde_json::Value;
-use server_application::workspace_labels::WorkspaceLabelSubscription;
+use server_metadata::service::workspace_labels::WorkspaceLabelSubscription;
 use server_protocol::methods::InboundKind;
 use server_protocol::{ClientMessage, ErrorCode, Lifecycle, ServerMessage, valid_id};
 use tokio::time::timeout;
@@ -83,6 +83,8 @@ pub(super) async fn serve(socket: WebSocket, state: Arc<Shared>) {
     };
     // Both halves are scoped to this tracked upgrade; neither can outlive its connection.
     tokio::join!(writer, reader);
+    // Release connection-owned observers, including pending Agent waits, on clean disconnect.
+    outbound_failure.cancel();
 }
 
 async fn read(
@@ -160,7 +162,8 @@ async fn read(
                     .iter()
                     .any(|method| method == "file.upload.request") =>
             {
-                let Some((id, frame)) = server_protocol::file_transfer::decode(&bytes) else {
+                let Some((id, frame)) = server_filesystem::protocol::file_transfer::decode(&bytes)
+                else {
                     return error(outbound, None, ErrorCode::InvalidMessage);
                 };
                 subscriptions
@@ -219,6 +222,9 @@ async fn process_request(
     let Some(handler) = route.handler else {
         return error(outbound, Some(request_id), ErrorCode::NotImplemented);
     };
+    if method == "agent.finish.wait.request" {
+        return crate::agent_execution::wait(request_id, params, state, outbound);
+    }
     if handler == routing::Handler::Files {
         let available_subscriptions = MAX_SUBSCRIPTIONS.saturating_sub(subscriptions.len());
         return subscriptions

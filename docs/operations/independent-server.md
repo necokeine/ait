@@ -4,11 +4,13 @@
 > Worktree、Workspace setup/script、Workspace attention/recovery、Git checkout 读取/订阅/变更与 Agent runtime
 > 目录/元数据生命周期 WebSocket 接口，详见
 > [ADR-026](../decisions/adr-026-canonical-paseo-websocket-surface.md)。下文的
-> `project.open/list/get/close` 仍是过渡租约接口，不是 Paseo descriptor。
+> 早期 `project.open/list/get/close` 已废除，Project/Workspace 统一由 `server-metadata` 管理，
+> 见 [ADR-029](../decisions/adr-029-server-metadata.md)。Git、Forge/PR、文件/目录、Worktree、
+> 恢复和 GitHub clone 由 `server-filesystem` 管理，见 [ADR-030](../decisions/adr-030-server-filesystem.md)。
 
 `server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目、Paseo Agent runtime
-snapshot 和版本化 Agent 配置。内部代码全部来自新建的八个 `server-*` package；Session、Run 和
-Provider 执行尚未实现。
+snapshot、版本化 Agent 配置和 Codex 原生纯文本执行。内部代码全部来自七个 `server-*` package；
+领域 Session ref、Message 树与 Run 尚未在独立 server 接通。
 项目必须使用独立 clone，不能与旧 daemon 共管同一目录或共享 Git worktree。
 
 ## 启动
@@ -84,8 +86,8 @@ Origin 可以缺省（本机原生客户端）；提供时必须是相同允许 
 
 major 必须为 1，minor 区间必须包含 0。未知 optional capability 被忽略，未知 required
 capability 拒绝握手。服务端返回 `type=server_info`，包含 `info`、新的 `connection_id` 与
-`negotiated_capabilities`。`info.capabilities` 列出 199 个可协商规范名称及独立方法，
-`info.implemented_capabilities` 列出当前 host 真正组装的 104 个方法。尚未实现的 95 个规范方法
+`negotiated_capabilities`。`info.capabilities` 列出 195 个可协商规范名称及独立方法，
+`info.implemented_capabilities` 列出当前 host 真正组装的 107 个方法。尚未实现的 88 个规范方法
 可协商，但调用后会返回 `not_implemented`；每次 hello 最多传 64 个 optional 和 64 个 required
 名称，请按需声明。能力必须协商后才能调用。`client_id` 仅用于诊断，不用于身份、
 接管、去重或订阅共享；即使重复，两个物理连接也拥有不同的 connection ID。
@@ -257,7 +259,7 @@ recovery inspect 的稳定 unavailable reason 为 `workspace_not_found`、`works
 branch 恢复到原 worktree root，并验证原 Workspace 相对目录仍存在。分支已在其他 checkout 使用时恢复失败，
 不会创建另一条带后缀的 branch。恢复成功会同时取消 owning Project 的 archive。
 
-当前 Agent 是 durable stored snapshot，没有 live Provider pending-permission 集合；clear-attention 以
+当前已接通 native turn，但尚无 Provider pending-permission 集合；clear-attention 以
 `attentionReason:"permission"` 作为 fail-safe 排除条件。attention 修改尚无 Agent/Workspace subscription
 event；recovery 只发布统一 envelope 的 `workspace.update`。恢复不会重新探测 Project kind/project key、
 merged change-request latch，不写 Paseo metadata，也不调用 plugin recovery hook。完整对齐范围和差异见
@@ -414,66 +416,48 @@ child；跨 Workspace 或带 open-tab label 的 child 会 detach。delegated Age
 `paseo.parent-agent-id` 和全部 `paseo.open-agent-tab.*` label，已经没有 parent label 时保持不变。delete
 是永久删除；close-items 独立处理每个 Agent，按 Paseo 行为只返回成功项。
 
-当前没有 Provider runtime，所有 stored Agent 都以 `providerUnavailable:true` 返回，`persistence` 为 null，
-没有 active turn、available modes 或 pending permissions。list 请求中的 `subscribe`/`sync` 和非空
-`terminalIds` 返回 `unsupported_capability`。Provider 创建、恢复、消息、取消、timeline 与真正 Terminal
-关闭等待后续切片。完整对齐范围和差异见第六阶段报告。
+未恢复的 stored Agent 保守返回 `providerUnavailable:true`、`persistence:null`；成功创建或恢复的
+live Agent 返回原生 handle 和可选 activeTurn。list 的 `subscribe`/`sync`、非空 `terminalIds`、
+timeline、流式事件与权限交互仍未接通。完整目录规则见第六阶段报告；原生执行见下节。
 
-## 项目操作（M1 首个切片）
+## Codex 原生纯文本执行
 
-在 hello 的 `capabilities` 或 `required_capabilities` 中加入所需的
-`project.open`、`project.list`、`project.get`、`project.close`。
+生产 host 默认从 PATH 启动 `codex app-server`，也可在启动 server 前通过 `AIT_SERVER_CODEX_BIN`
+指定可执行文件。Codex 自行管理认证；server 不读取或保存其 token。本轮只支持显式 read-only
+sandbox，其他 modeId 和尚未支持的参数会被拒绝。见 [ADR-032](../decisions/adr-032-server-native-provider-execution.md)。
 
-| Method | Params | Result |
+先用 `workspace.open.request` 打开目录，再在已协商相应 capability 的连接中调用：
+
+| 方法 | 参数 | 结果 |
 | --- | --- | --- |
-| `project.open` | `path`：绝对路径；`idempotency_key` | 稳定 `operation_id`、`project_id` |
-| `project.list` | `{}` 或 `after`、`limit`（1–50，默认 20） | `projects`、`next_after` |
-| `project.get` | `project_id` | 项目摘要及本进程的 `owner_epoch` |
-| `project.close` | `project_id`、`owner_epoch`、`idempotency_key` | 稳定 `operation_id`、`project_id` |
+| `agent.create.request` | `config:{provider:"codex",cwd:"/absolute/path",modeId:"read-only"}`；可选 `agentId` UUID、`workspaceId`、`labels`；config 可加 title/model/thinkingOptionId/systemPrompt | `status:"agent_created"`、agentId、agent snapshot |
+| `agent.resume.request` | `handle:{provider:"codex",sessionId:"..."}`，必须已登记在本 server | 同一个 Agent ID、`status:"agent_resumed"`、snapshot |
+| `agent.message.send.request` | `agentId`、非空 `text`，最多 64 KiB | accepted 与 inline error；忙时拒绝第二条消息 |
+| `agent.cancel.request` | `agentId` | 发送原生 interrupt 后的 snapshot；终态由 wait 确认 |
+| `agent.finish.wait.request` | `agentId`、可选 `timeoutMs`，1–30000，默认 30000 | idle/error/timeout、final snapshot、lastMessage、error |
 
-```json
-{"type":"request","request_id":"open-1","method":"project.open","params":{"path":"/absolute/path/to/independent-clone","idempotency_key":"open-project-1"}}
-```
+wait 不阻塞同一连接继续发 cancel；响应按 request_id 匹配，可能与其他响应交错。
+断开连接只停止等待，已接纳 turn 继续运行。超时也只结束观察。Agent 的原生 turn 没有固定运行时限。
+退出 server 会关闭并回收原生进程；重启后使用已保存的 handle 恢复，不创建替代 Agent。
 
-摘要包含规范路径、初始名称、冻结的 `base_commit`、`root_message_id`、`created_at`（Unix 毫秒）。
-`owner_epoch` 非空表示本进程持有项目；null 表示本进程没有持有，不能推断其他进程的状态。
-get/list 读取可重建 catalog，不隐式接管项目。`next_after` 作为下一页 `after`；完整末页后
-可能再返回一个空页。
+创建要求活动 Project/Workspace 与 cwd 匹配；未给 workspaceId 时复用该目录最早的活动 Workspace，
+本阶段不隐式创建 placement。归档恢复只读取原生身份，不能发送消息。lastMessage 只缓存本进程
+最近完成 turn 的最后 assistant 文本，重启后不会伪装成已加载的历史。原生历史仍由 Codex 保存。
 
-第一次打开要求该目录本身是具备 HEAD 的独立 Git 根；不自动 init 或创建 commit。
-所有 linked worktree、带额外 worktree 的主检出、旧 `.ait` 项目及其内部目录均被拒绝。
-初始根 system Message 快照来自本目录 `AGENTS.md`（最多 128 KiB，缺省为空，拒绝 symlink）；
-以后修改指令、目录名或 HEAD 都不会改写已保存的根 Message 和 Git 基线。
+本轮未接通 initialPrompt、附件/图片、messageId 去重、幂等键、排队/steer、创建时 Git/worktree/env/
+subscribe、resume overrides、providerOptions/MCP、权限交互及 timeline；带未支持字段会明确失败。
+最多 32 个 live session、64 个待处理 worker 命令、32 个并发 wait；native RPC 超时 10 秒，
+JSON 行上限 2 MiB。超过预算会返回错误或终止有问题的原生连接，不静默丢失数据。
 
-新增状态：
+## 早期 Project 接口已废除
 
-```text
-<data-dir>/catalog.sqlite3
-<project>/.ait-server/project.sqlite3
-<project>/.ait-server/project.lock
-HOME/.ait-server-project-locks/<project-id>.lock
-HOME/.ait-server-project-locks/<project-id>.epoch
-```
+`project.open`、`project.list`、`project.get`、`project.close` 已从路由与能力协商中移除，
+调用返回 `method_not_found`。使用上文的 `project.add.request`、`project.list.request`、
+`workspace.open.request` 等 Paseo 接口注册目录和管理 Workspace。
 
-server 会向项目 `.git/info/exclude` 追加 `/.ait-server/` 并验证忽略结果。已有 tracked
-runtime 文件或仓库规则覆盖排除时拒绝准入。项目数据库、sidecar 和锁路径不能是 symlink。
-失败后可能保留 runtime 目录、锁、排除规则或已提交的数据库，重试会继续处理，不自动清理。
-
-`idempotency_key` 为 1–128 字节无空白 ASCII，在一个 catalog 内按 method 去重。连接断开
-或结果不明时使用原 key 重试；不同规范参数复用同 key 会返回 `idempotency_conflict`。
-完成回执只说明该操作已经提交，当前是否打开必须用 get/list 查询。
-
-- 同 key 重放 open 不会重新打开已关闭项目；重新打开需新 key。
-- close 携带 get/list 返回的当前 epoch；新操作使用过期 epoch 返回 `stale_owner`。
-- 重放已完成 close 会直接返回旧回执，不会关闭后来重新打开的项目。
-- 重启后 catalog 项目默认未打开；未完成的打开意图通过原 key 显式重试恢复。
-- 不同 data-dir 的实例仍共用 HOME 下的 Project ID 锁；同一用户的实例必须保持一致 HOME。
-- `.epoch` 保存跨副本的本机代次上限，损坏时拒绝接管；保留它，不要当作临时文件清理。
-- 同时只接纳一个短项目操作，争用返回可重试的 `resource_exhausted`；客户端做退避重试。
-
-常见业务错误：`unsupported_workspace`、`legacy_project`、`project_busy`、`unsupported_format`、
-`identity_conflict`、`project_not_found`、`project_not_open`、`stale_owner`、`project_io`。
-错误只提供安全信息，既不输出数据库诊断，也不回显凭据或指令内容。
+新 Project 注册不创建根 Message、项目 SQLite、project.lock 或 Project ID/epoch 文件。
+既有 `.ait-server/project.sqlite3` 等历史文件不自动迁移或删除，也不被新接口读取。
+全局 `catalog.sqlite3` 继续保存 Agent presets；已有旧 Project 表保持不变且不再使用。
 
 ## Agent 配置（M1 第二个切片）
 
@@ -538,7 +522,7 @@ Linux/Windows 的平台验收以 CI/后续实测为准；本次本地报告记�
 ## 开发验证
 
 ```sh
-cargo test -p server-protocol -p server-api -p server-bin -p server-domain -p server-ports -p server-application -p server-storage -p server-workspace
+cargo test -p server-protocol -p server-api -p server-bin -p server-domain -p server-provider -p server-metadata -p server-filesystem
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

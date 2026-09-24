@@ -84,3 +84,14 @@ impl Outbound {
 
 #[cfg(test)]
 mod tests;
+
+impl From<server_metadata::rpc::workspace_labels::DeliveryError> for QueueError {
+    fn from(error: server_metadata::rpc::workspace_labels::DeliveryError) -> Self {
+        match error {
+            server_metadata::rpc::workspace_labels::DeliveryError::Encode(error) => {
+                Self::Encode(error)
+            }
+            server_metadata::rpc::workspace_labels::DeliveryError::Closed => Self::Full,
+        }
+    }
+}

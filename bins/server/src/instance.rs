@@ -1,5 +1,4 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -30,37 +29,8 @@ impl InstanceLease {
             .context("open server instance lock")?;
         lock.try_lock()
             .context("server data directory is already in use or cannot be locked")?;
-        let identity_path = directory.join("server-id");
-        reject_symlink(&identity_path)?;
-        let server_id = match std::fs::read_to_string(&identity_path) {
-            Ok(text) => {
-                let id =
-                    Uuid::parse_str(text.trim()).context("invalid persisted server identity")?;
-                if id.is_nil() {
-                    bail!("persisted server identity must not be nil");
-                }
-                id
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let id = Uuid::new_v4();
-                let mut temporary =
-                    tempfile::NamedTempFile::new_in(&directory).context("stage server identity")?;
-                writeln!(temporary, "{id}").context("write server identity")?;
-                temporary
-                    .as_file()
-                    .sync_all()
-                    .context("sync server identity")?;
-                temporary
-                    .persist_noclobber(identity_path)
-                    .context("publish server identity")?;
-                #[cfg(unix)]
-                File::open(&directory)?
-                    .sync_all()
-                    .context("sync server directory")?;
-                id
-            }
-            Err(error) => return Err(error).context("read server identity"),
-        };
+        let server_id = server_metadata::storage::server_identity::load_or_create(&directory)
+            .context("load stable server identity")?;
         Ok(Self {
             _lock: lock,
             server_id,

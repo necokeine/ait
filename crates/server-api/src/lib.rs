@@ -1,5 +1,6 @@
 //! Authenticated local HTTP and WebSocket transport for the independent server.
 
+mod agent_execution;
 mod agent_runtime;
 mod agents;
 mod auth;
@@ -9,11 +10,12 @@ mod daemon;
 mod directory;
 mod files;
 mod forge;
+mod github_projects;
 mod jobs;
 mod outbound;
-mod projects;
 mod workspace_automation;
 mod workspace_labels;
+mod workspace_recovery;
 mod workspace_state;
 mod worktrees;
 
@@ -28,19 +30,21 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use secrecy::SecretString;
-use server_application::Projects;
-use server_application::agent_runtime::AgentRuntimeDirectory;
-use server_application::agents::Agents;
-use server_application::checkout::Checkout;
-use server_application::daemon::Daemon;
-use server_application::directory::Directory;
-use server_application::files::Files;
-use server_application::forge::Forge;
-use server_application::workspace_automation::WorkspaceAutomation;
-use server_application::workspace_labels::WorkspaceLabels;
-use server_application::workspace_state::WorkspaceState;
-use server_application::worktrees::Worktrees;
+use server_filesystem::service::checkout::Checkout;
+use server_filesystem::service::files::Files;
+use server_filesystem::service::forge::Forge;
+use server_filesystem::service::github_projects::GithubProjects;
+use server_filesystem::service::workspace_recovery::WorkspaceRecovery;
+use server_filesystem::service::worktrees::Worktrees;
+use server_metadata::service::daemon::Daemon;
+use server_metadata::service::directory::Directory;
+use server_metadata::service::workspace_automation::WorkspaceAutomation;
+use server_metadata::service::workspace_labels::WorkspaceLabels;
+use server_metadata::service::workspace_state::WorkspaceState;
 use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
+use server_provider::service::agent_execution::AgentExecution;
+use server_provider::service::agent_runtime::AgentRuntimeDirectory;
+use server_provider::service::agents::Agents;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -71,10 +75,11 @@ struct Shared {
     // Serializes admission with closing the tracker, including pending HTTP upgrades.
     admission: Mutex<()>,
     lifecycle_intent: Mutex<Option<LifecycleIntent>>,
-    projects: Option<Arc<Mutex<Projects>>>,
     agents: Option<Arc<Mutex<Agents>>>,
     checkout: Option<Arc<Mutex<Checkout>>>,
     agent_runtime: Option<Arc<Mutex<AgentRuntimeDirectory>>>,
+    agent_execution: Option<AgentExecution>,
+    execution_waits: Arc<Semaphore>,
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     forge: Option<Arc<Mutex<Forge>>>,
@@ -83,14 +88,20 @@ struct Shared {
     workspace_automation: Option<Arc<Mutex<WorkspaceAutomation>>>,
     workspace_state: Option<Arc<Mutex<WorkspaceState>>>,
     worktrees: Option<Arc<Mutex<Worktrees>>>,
+    github_projects: Option<Arc<Mutex<GithubProjects>>>,
+    workspace_recovery: Option<Arc<Mutex<WorkspaceRecovery>>>,
     jobs: Arc<Semaphore>,
 }
 
 /// Optional independently composed business services; only installed methods are advertised.
 #[derive(Debug, Default)]
 pub struct Services {
-    /// Project ownership and registration use cases.
-    pub projects: Option<Projects>,
+    /// Native Provider execution and coordinated Agent runtime metadata.
+    pub agent_execution: Option<AgentExecution>,
+    /// Filesystem workspace recovery operations.
+    pub workspace_recovery: Option<WorkspaceRecovery>,
+    /// Filesystem github projects operations.
+    pub github_projects: Option<GithubProjects>,
     /// Versioned Agent presets and explicit default selection.
     pub agents: Option<Agents>,
     /// Git checkout status, diff, refresh, and history use cases.
@@ -115,17 +126,7 @@ pub struct Services {
     pub worktrees: Option<Worktrees>,
 }
 
-/// Process lifecycle action requested through the WebSocket API.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LifecycleIntent {
-    /// Stop the standalone server process.
-    Shutdown,
-    /// Rebuild the standalone server in-process.
-    Restart {
-        /// Normalized diagnostic reason.
-        reason: String,
-    },
-}
+pub use server_metadata::rpc::daemon::LifecycleIntent;
 
 impl Shared {
     fn info(&self) -> ServerInfo {
@@ -209,9 +210,6 @@ impl Api {
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
                 admission: Mutex::new(()),
                 lifecycle_intent: Mutex::new(None),
-                projects: services
-                    .projects
-                    .map(|projects| Arc::new(Mutex::new(projects))),
                 agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
                 checkout: services
                     .checkout
@@ -219,6 +217,8 @@ impl Api {
                 agent_runtime: services
                     .agent_runtime
                     .map(|directory| Arc::new(Mutex::new(directory))),
+                agent_execution: services.agent_execution,
+                execution_waits: Arc::new(Semaphore::new(32)),
                 daemon: services.daemon.map(|daemon| Arc::new(Mutex::new(daemon))),
                 directory: services
                     .directory
@@ -231,6 +231,12 @@ impl Api {
                 workspace_automation: services
                     .workspace_automation
                     .map(|automation| Arc::new(Mutex::new(automation))),
+                github_projects: services
+                    .github_projects
+                    .map(|service| Arc::new(Mutex::new(service))),
+                workspace_recovery: services
+                    .workspace_recovery
+                    .map(|service| Arc::new(Mutex::new(service))),
                 workspace_state: services
                     .workspace_state
                     .map(|workspace_state| Arc::new(Mutex::new(workspace_state))),
@@ -287,6 +293,11 @@ impl Api {
     /// The process host must bound this wait with its shutdown deadline.
     pub async fn wait_closed(&self) {
         self.shared.tasks.wait().await;
+        if let Some(execution) = &self.shared.agent_execution
+            && execution.shutdown().await.is_err()
+        {
+            tracing::error!("native Provider shutdown failed");
+        }
     }
 
     /// Wait until shutdown has closed admission; useful for bounding the host's drain phase.
@@ -300,63 +311,67 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
     let groups: &[(bool, &[&str])] = &[
         (
             services.files.is_some(),
-            server_protocol::files::CAPABILITIES,
-        ),
-        (
-            services.projects.is_some(),
-            server_protocol::project_lease::CAPABILITIES,
+            server_filesystem::protocol::files::CAPABILITIES,
         ),
         (
             services.agents.is_some(),
-            server_protocol::agent::CAPABILITIES,
+            server_provider::protocol::agent::CAPABILITIES,
         ),
         (
-            services.agent_runtime.is_some(),
-            server_protocol::agent_lifecycle::CAPABILITIES,
+            services.agent_runtime.is_some() || services.agent_execution.is_some(),
+            server_provider::protocol::agent_lifecycle::CAPABILITIES,
+        ),
+        (
+            services.agent_execution.is_some(),
+            server_provider::protocol::agent_execution::CAPABILITIES,
         ),
         (
             services.checkout.is_some(),
-            server_protocol::checkout::CAPABILITIES,
+            server_filesystem::protocol::checkout::CAPABILITIES,
         ),
         (
             services.daemon.is_some(),
-            server_protocol::daemon::CAPABILITIES,
+            server_metadata::protocol::daemon::CAPABILITIES,
         ),
         (
             services.directory.is_some(),
-            server_protocol::directory::CAPABILITIES,
+            server_metadata::protocol::directory::CAPABILITIES,
+        ),
+        (
+            services.github_projects.is_some(),
+            server_filesystem::protocol::github_projects::CAPABILITIES,
         ),
         (
             services.directory.is_some(),
-            server_protocol::github_projects::CAPABILITIES,
+            server_metadata::protocol::project_config::CAPABILITIES,
         ),
         (
             services.directory.is_some(),
-            server_protocol::project_config::CAPABILITIES,
-        ),
-        (
-            services.directory.is_some(),
-            server_protocol::project_icon::CAPABILITIES,
+            server_metadata::protocol::project_icon::CAPABILITIES,
         ),
         (
             services.forge.is_some(),
-            server_protocol::forge::CAPABILITIES,
+            server_filesystem::protocol::forge::CAPABILITIES,
         ),
         (
             services.workspace_labels.is_some(),
-            server_protocol::workspace_labels::CAPABILITIES,
+            server_metadata::protocol::workspace_labels::CAPABILITIES,
         ),
         (
             services.worktrees.is_some(),
-            server_protocol::worktrees::CAPABILITIES,
+            server_filesystem::protocol::worktrees::CAPABILITIES,
         ),
         (
             services.workspace_automation.is_some(),
-            server_protocol::workspace_automation::CAPABILITIES,
+            server_metadata::protocol::workspace_automation::CAPABILITIES,
+        ),
+        (
+            services.workspace_recovery.is_some(),
+            server_filesystem::protocol::workspace_recovery::CAPABILITIES,
         ),
         (
             services.workspace_state.is_some(),
-            server_protocol::workspace_state::CAPABILITIES,
+            server_metadata::protocol::workspace_state::CAPABILITIES,
         ),
     ];
     for (_, group) in groups.iter().filter(|(installed, _)| *installed) {

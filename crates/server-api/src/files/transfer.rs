@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -8,12 +7,13 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream;
 use serde_json::Value;
-use server_application::files::{FileError, FileKind, FileReader};
-use server_protocol::{
-    ErrorCode,
-    file_transfer::{self, FileBegin, FileFrame},
+use server_filesystem::protocol::{
+    file_transfer::{self, FileFrame},
     files as wire,
 };
+use server_filesystem::service::files::FileError;
+use server_filesystem::service::transfer::Cursor;
+use server_protocol::ErrorCode;
 use tokio_util::task::TaskTracker;
 
 use crate::{
@@ -38,46 +38,26 @@ pub(super) async fn stream_preview(
     let path = request.path.unwrap_or_else(|| ".".to_owned());
     let open_cwd = cwd.clone();
     let open_path = path.clone();
-    let reader = crate::jobs::run(
+    let preview = crate::jobs::run(
         state,
         state.files.clone(),
         ErrorCode::ProjectIo,
-        move |files| Ok(files.filesystem.open(&open_cwd, &open_path)),
+        move |files| {
+            Ok(server_filesystem::rpc::files::binary_preview(
+                files,
+                &open_cwd,
+                &open_path,
+                request.max_bytes,
+            ))
+        },
     )
     .await;
-    let reader = match reader {
-        Ok(Ok(reader)) => reader,
+    let (metadata, mut cursor) = match preview {
+        Ok(Ok(preview)) => preview,
         Ok(Err(error)) => return explorer_error(outbound, id, cwd, path, error.0),
         Err(error) => return super::connection::respond(outbound, id, Err(error)),
     };
-    let info = reader.info().clone();
-    if request.max_bytes.is_some_and(|limit| info.size > limit) {
-        return explorer_error(
-            outbound,
-            id,
-            cwd,
-            path,
-            "File is too large to display".to_owned(),
-        );
-    }
-    let metadata = FileBegin {
-        mime: info.mime_type,
-        size: info.size,
-        encoding: if info.kind == FileKind::Text {
-            "utf-8"
-        } else {
-            "binary"
-        }
-        .to_owned(),
-        modified_at: info.modified_at,
-        revision: Some(info.revision),
-        file_name: None,
-    };
     send_frame(outbound, &id, &FileFrame::Begin(metadata)).await?;
-    let mut cursor = Cursor {
-        reader,
-        remaining: info.size,
-    };
     loop {
         let result = chunk(cursor, &state.tasks).await;
         match result {
@@ -120,31 +100,14 @@ fn explorer_error(
     )
 }
 
-struct Cursor {
-    reader: Box<dyn FileReader>,
-    remaining: u64,
-}
-
 async fn chunk(
-    mut cursor: Cursor,
+    cursor: Cursor,
     tasks: &TaskTracker,
 ) -> Result<(Cursor, Option<Vec<u8>>), FileError> {
     let tracking = tasks.token();
     tokio::task::spawn_blocking(move || {
         let _tracking = tracking;
-        if cursor.remaining == 0 {
-            cursor.reader.verify()?;
-            return Ok((cursor, None));
-        }
-        let mut bytes = vec![
-            0;
-            usize::try_from(cursor.remaining)
-                .unwrap_or(usize::MAX)
-                .min(file_transfer::CHUNK_BYTES)
-        ];
-        cursor.reader.read_exact(&mut bytes)?;
-        cursor.remaining -= bytes.len() as u64;
-        Ok((cursor, Some(bytes)))
+        cursor.read_chunk()
     })
     .await
     .map_err(|_| FileError("File transfer task failed".to_owned()))?
@@ -179,10 +142,7 @@ pub(crate) async fn download(
         }
     };
     let info = reader.info().clone();
-    let cursor = Cursor {
-        reader,
-        remaining: info.size,
-    };
+    let cursor = Cursor::new(reader);
     let tasks = state.tasks.clone();
     let cancel = state.cancellation.clone();
     let body = stream::unfold(Some(cursor), move |cursor| {

@@ -3,54 +3,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub mod agent;
-pub mod agent_lifecycle;
-pub mod checkout;
-pub mod daemon;
-pub mod directory;
-pub mod file_transfer;
-pub mod files;
-pub mod forge;
-pub mod github_projects;
 pub mod methods;
-pub mod project;
-pub mod project_config;
-pub mod project_icon;
-pub mod project_lease;
 pub mod subscription;
-pub mod workspace;
-pub mod workspace_automation;
-pub mod workspace_labels;
-pub mod workspace_state;
-pub mod worktrees;
 
-/// Maximum incoming JSON message size, including fragmented messages.
-pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
-/// Maximum queued outgoing messages per connection.
-pub const MAX_QUEUE_MESSAGES: usize = 256;
-/// Maximum queued outgoing bytes per connection, including the active write.
-pub const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
-/// Maximum simultaneous upgraded connections.
-pub const MAX_CONNECTIONS: usize = 64;
-/// Capabilities implemented in the first server milestone.
-pub const CAPABILITIES: &[&str] = &[
-    "server.info",
-    "connection.ping",
-    "server.status.subscribe",
-    "subscription.release.request",
-];
-
-/// Supported protocol version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Version {
-    /// Incompatible protocol generation.
-    pub major: u16,
-    /// Backward-compatible revision.
-    pub minor: u16,
-}
-
-/// Current public protocol version.
-pub const VERSION: Version = Version { major: 1, minor: 0 };
+pub use server_metadata::protocol::server::{
+    CAPABILITIES, Lifecycle, Limits, MAX_CONNECTIONS, MAX_MESSAGE_BYTES, MAX_QUEUE_BYTES,
+    MAX_QUEUE_MESSAGES, ServerInfo, VERSION, Version,
+};
 
 /// Client's acceptable minor-version interval for one major version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,24 +156,10 @@ pub enum ErrorCode {
     ResourceExhausted,
     /// New work is no longer accepted.
     ServerDraining,
-    /// Only independent Git roots with an existing HEAD are supported.
-    UnsupportedWorkspace,
-    /// The path belongs to an old managed project.
-    LegacyProject,
-    /// Another process holds a path or project identity lease.
-    ProjectBusy,
     /// This is not a supported independent database schema.
     UnsupportedFormat,
     /// A durable key was reused for different parameters.
     IdempotencyConflict,
-    /// Project identity or path conflicts with the catalog.
-    IdentityConflict,
-    /// No such catalog project exists.
-    ProjectNotFound,
-    /// This process does not hold the project open.
-    ProjectNotOpen,
-    /// An ownership generation has expired.
-    StaleOwner,
     /// Project storage, filesystem, or Git failed.
     ProjectIo,
     /// No Agent has this ID.
@@ -264,15 +209,8 @@ impl ErrorCode {
             Self::SubscriptionNotFound => "Unknown connection subscription",
             Self::ResourceExhausted => "Resource budget exhausted",
             Self::ServerDraining => "Server is draining",
-            Self::UnsupportedWorkspace => "An independent Git root with HEAD is required",
-            Self::LegacyProject => "Legacy managed projects are unsupported",
-            Self::ProjectBusy => "Project is owned by another process",
             Self::UnsupportedFormat => "Unsupported independent database format",
             Self::IdempotencyConflict => "Key was already used with different parameters",
-            Self::IdentityConflict => "Project identity conflicts with its registration",
-            Self::ProjectNotFound => "Project is not registered",
-            Self::ProjectNotOpen => "Project is not open in this server",
-            Self::StaleOwner => "Project owner has changed",
             Self::ProjectIo => "Project I/O failed; retry with the same key",
             Self::AgentNotFound => "Agent was not found",
             Self::AgentRevisionNotFound => "Agent revision does not exist",
@@ -302,7 +240,6 @@ impl ErrorCode {
             self,
             Self::ResourceExhausted
                 | Self::ServerDraining
-                | Self::ProjectBusy
                 | Self::ProjectIo
                 | Self::CatalogBusy
                 | Self::AgentIo
@@ -311,62 +248,6 @@ impl ErrorCode {
                 | Self::WorkspaceLabelStorageUncertain
         )
     }
-}
-
-/// Admission state of the server process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Lifecycle {
-    /// New connections can be admitted.
-    Ready,
-    /// Shutdown has begun; new work is rejected.
-    Draining,
-}
-
-/// Enforced public transport budgets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Limits {
-    /// Maximum incoming JSON message bytes.
-    pub message_bytes: usize,
-    /// Maximum queued outgoing messages.
-    pub queue_messages: usize,
-    /// Maximum queued outgoing bytes.
-    pub queue_bytes: usize,
-    /// Maximum simultaneous connections.
-    pub connections: usize,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            message_bytes: MAX_MESSAGE_BYTES,
-            queue_messages: MAX_QUEUE_MESSAGES,
-            queue_bytes: MAX_QUEUE_BYTES,
-            connections: MAX_CONNECTIONS,
-        }
-    }
-}
-
-/// Non-secret server identity, registered methods, and implemented capabilities.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ServerInfo {
-    /// Stable UUID persisted in this server's data directory.
-    pub server_id: String,
-    /// UUID generated for this process start.
-    pub instance_id: String,
-    /// Actual bound socket address.
-    pub listen: String,
-    /// Current admission state.
-    pub lifecycle: Lifecycle,
-    /// Public wire version.
-    pub protocol: Version,
-    /// Methods admitted for negotiation, including explicit placeholders.
-    pub capabilities: Vec<String>,
-    /// Methods with real implementations installed by the host.
-    #[serde(default)]
-    pub implemented_capabilities: Vec<String>,
-    /// Enforced transport budgets.
-    pub limits: Limits,
 }
 
 /// Messages sent by the server.
@@ -420,3 +301,56 @@ pub enum ServerMessage {
 
 #[cfg(test)]
 mod tests;
+
+impl From<server_metadata::rpc::ErrorCode> for ErrorCode {
+    fn from(error: server_metadata::rpc::ErrorCode) -> Self {
+        match error {
+            server_metadata::rpc::ErrorCode::InvalidMessage => Self::InvalidMessage,
+            server_metadata::rpc::ErrorCode::UnsupportedCapability => Self::UnsupportedCapability,
+            server_metadata::rpc::ErrorCode::MethodNotFound => Self::MethodNotFound,
+            server_metadata::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+            server_metadata::rpc::ErrorCode::DaemonConfigInvalid => Self::DaemonConfigInvalid,
+            server_metadata::rpc::ErrorCode::DaemonIo => Self::DaemonIo,
+            server_metadata::rpc::ErrorCode::WorkspaceNotFound => Self::WorkspaceNotFound,
+            server_metadata::rpc::ErrorCode::LabelNameEmpty => Self::LabelNameEmpty,
+            server_metadata::rpc::ErrorCode::LabelNotFound => Self::LabelNotFound,
+            server_metadata::rpc::ErrorCode::LabelNameTaken => Self::LabelNameTaken,
+            server_metadata::rpc::ErrorCode::WorkspaceLabelStorageUncertain => {
+                Self::WorkspaceLabelStorageUncertain
+            }
+        }
+    }
+}
+
+impl From<server_filesystem::rpc::ErrorCode> for ErrorCode {
+    fn from(error: server_filesystem::rpc::ErrorCode) -> Self {
+        match error {
+            server_filesystem::rpc::ErrorCode::InvalidMessage => Self::InvalidMessage,
+            server_filesystem::rpc::ErrorCode::MethodNotFound => Self::MethodNotFound,
+            server_filesystem::rpc::ErrorCode::ProjectIo => Self::ProjectIo,
+            server_filesystem::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+            server_filesystem::rpc::ErrorCode::ResourceExhausted => Self::ResourceExhausted,
+        }
+    }
+}
+
+impl From<server_provider::rpc::ErrorCode> for ErrorCode {
+    fn from(error: server_provider::rpc::ErrorCode) -> Self {
+        match error {
+            server_provider::rpc::ErrorCode::InvalidMessage => Self::InvalidMessage,
+            server_provider::rpc::ErrorCode::UnsupportedCapability => Self::UnsupportedCapability,
+            server_provider::rpc::ErrorCode::MethodNotFound => Self::MethodNotFound,
+            server_provider::rpc::ErrorCode::AgentIo => Self::AgentIo,
+            server_provider::rpc::ErrorCode::AgentNotFound => Self::AgentNotFound,
+            server_provider::rpc::ErrorCode::AgentRevisionNotFound => Self::AgentRevisionNotFound,
+            server_provider::rpc::ErrorCode::AgentRevisionConflict => Self::AgentRevisionConflict,
+            server_provider::rpc::ErrorCode::AgentDefaultConflict => Self::AgentDefaultConflict,
+            server_provider::rpc::ErrorCode::AgentDisabled => Self::AgentDisabled,
+            server_provider::rpc::ErrorCode::AgentIsDefault => Self::AgentIsDefault,
+            server_provider::rpc::ErrorCode::IdempotencyConflict => Self::IdempotencyConflict,
+            server_provider::rpc::ErrorCode::CatalogBusy => Self::CatalogBusy,
+            server_provider::rpc::ErrorCode::UnsupportedFormat => Self::UnsupportedFormat,
+            server_provider::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+        }
+    }
+}
