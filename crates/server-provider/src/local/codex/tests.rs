@@ -1,6 +1,17 @@
 use super::*;
 use crate::test_support::Fixture;
 
+fn process_is_running(pid: u32) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .unwrap();
+    assert!(output.status.success() || output.status.code() == Some(1));
+    let state = String::from_utf8(output.stdout).unwrap();
+    // An orphan can remain a zombie until its new parent reaps it on Linux.
+    !state.trim().is_empty() && !state.trim().starts_with('Z')
+}
+
 async fn terminal(session: &mut dyn AgentSession) -> Result<AgentTurnEvent, AgentSessionError> {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -226,43 +237,41 @@ async fn completion_racing_interruption_keeps_the_native_connection_usable() {
 }
 
 #[tokio::test]
-async fn closing_a_session_terminates_its_tool_process_group() {
-    let fixture = Fixture::new();
-    let mut session = fixture
-        .client()
-        .create_session(&fixture.spec())
+async fn closing_or_dropping_a_session_terminates_its_tool_process_group() {
+    for close in [true, false] {
+        let fixture = Fixture::new();
+        let mut session = fixture
+            .client()
+            .create_session(&fixture.spec())
+            .await
+            .unwrap();
+        session
+            .start_turn("child", &fixture.spec().config)
+            .await
+            .unwrap();
+        let pid = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(fixture.cwd.join("child.pid"))
+                    && let Ok(pid) = pid.trim().parse::<u32>()
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
         .await
         .unwrap();
-    session
-        .start_turn("child", &fixture.spec().config)
+        assert!(process_is_running(pid));
+        if close {
+            session.close().await.unwrap();
+        }
+        drop(session);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while process_is_running(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
         .await
-        .unwrap();
-    let pid = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Ok(pid) = std::fs::read_to_string(fixture.cwd.join("child.pid")) {
-                break pid;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
-    session.close().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap()
-                .success();
-            if !alive {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+        .expect("tool process is still running after session close");
+    }
 }

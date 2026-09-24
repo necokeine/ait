@@ -653,7 +653,7 @@ fn terminate_child(child: &mut Child) -> std::io::Result<ExitStatus> {
     {
         let process_group = format!("-{}", child.id());
         let _ = Command::new("/bin/kill")
-            .args(["-TERM", &process_group])
+            .args(["-TERM", "--", &process_group])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -665,7 +665,7 @@ fn terminate_child(child: &mut Child) -> std::io::Result<ExitStatus> {
             }
             if Instant::now() >= deadline {
                 let _ = Command::new("/bin/kill")
-                    .args(["-KILL", &process_group])
+                    .args(["-KILL", "--", &process_group])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())

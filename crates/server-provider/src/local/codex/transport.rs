@@ -189,7 +189,7 @@ impl Transport {
         if let Some(id) = self.child.id() {
             let mut signal = Command::new("/bin/kill");
             signal
-                .args(["-KILL", &format!("-{id}")])
+                .args(["-KILL", "--", &format!("-{id}")])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .kill_on_drop(true);
@@ -211,7 +211,7 @@ impl Drop for Transport {
         #[cfg(unix)]
         if let Some(id) = self.child.id() {
             let _ = std::process::Command::new("/bin/kill")
-                .args(["-KILL", &format!("-{id}")])
+                .args(["-KILL", "--", &format!("-{id}")])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
