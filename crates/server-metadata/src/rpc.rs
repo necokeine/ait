@@ -44,3 +44,23 @@ pub enum ErrorCode {
 }
 pub mod workspace_automation;
 pub mod workspace_state;
+
+impl From<crate::rpc::ErrorCode> for server_model::ErrorCode {
+    fn from(error: crate::rpc::ErrorCode) -> Self {
+        match error {
+            crate::rpc::ErrorCode::InvalidMessage => Self::InvalidMessage,
+            crate::rpc::ErrorCode::UnsupportedCapability => Self::UnsupportedCapability,
+            crate::rpc::ErrorCode::MethodNotFound => Self::MethodNotFound,
+            crate::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+            crate::rpc::ErrorCode::DaemonConfigInvalid => Self::DaemonConfigInvalid,
+            crate::rpc::ErrorCode::DaemonIo => Self::DaemonIo,
+            crate::rpc::ErrorCode::WorkspaceNotFound => Self::WorkspaceNotFound,
+            crate::rpc::ErrorCode::LabelNameEmpty => Self::LabelNameEmpty,
+            crate::rpc::ErrorCode::LabelNotFound => Self::LabelNotFound,
+            crate::rpc::ErrorCode::LabelNameTaken => Self::LabelNameTaken,
+            crate::rpc::ErrorCode::WorkspaceLabelStorageUncertain => {
+                Self::WorkspaceLabelStorageUncertain
+            }
+        }
+    }
+}

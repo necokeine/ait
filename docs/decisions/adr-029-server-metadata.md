@@ -1,5 +1,7 @@
 # ADR-029：统一 Paseo Project 并纵向拆出 server-metadata
 
+> Tokio 依赖限制已由 [ADR-037](adr-037-server-model-context.md) 修订；metadata 可按需要使用 Tokio。
+
 - 状态：Accepted。
 - 日期：2026-09-24。
 - 授权：废除独立 server 早期 Project，全部使用新的 Project/Workspace，并开始完整拆分。

@@ -26,3 +26,15 @@ pub enum ErrorCode {
     #[error("Resource budget exhausted")]
     ResourceExhausted,
 }
+
+impl From<crate::rpc::ErrorCode> for server_model::ErrorCode {
+    fn from(error: crate::rpc::ErrorCode) -> Self {
+        match error {
+            crate::rpc::ErrorCode::InvalidMessage => Self::InvalidMessage,
+            crate::rpc::ErrorCode::MethodNotFound => Self::MethodNotFound,
+            crate::rpc::ErrorCode::ProjectIo => Self::ProjectIo,
+            crate::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+            crate::rpc::ErrorCode::ResourceExhausted => Self::ResourceExhausted,
+        }
+    }
+}

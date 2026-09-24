@@ -1,5 +1,7 @@
 # ADR-031：拆出 server-provider 并统一 Workspace 自动化与 state 入口
 
+> metadata 的 Tokio 依赖限制已由 [ADR-037](adr-037-server-model-context.md) 修订。
+
 > 后续 [ADR-032](adr-032-server-native-provider-execution.md) 已组装原生 Provider worker；
 > 本文 14 个 Agent 方法与 102 个已实现 capability 是拆包完成时的计数。
 

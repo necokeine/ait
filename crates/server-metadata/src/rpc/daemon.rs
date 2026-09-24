@@ -10,17 +10,7 @@ use crate::rpc::ErrorCode;
 use crate::service::daemon::{Daemon, DaemonError};
 use serde_json::Value;
 
-/// Process lifecycle action executed by the host after request admission.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LifecycleIntent {
-    /// Stop the standalone server process.
-    Shutdown,
-    /// Rebuild the standalone server in-process.
-    Restart {
-        /// Normalized diagnostic reason.
-        reason: String,
-    },
-}
+pub use server_model::LifecycleIntent;
 
 /// Response and associated host lifecycle intent.
 pub struct LifecycleRequest {

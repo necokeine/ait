@@ -4,6 +4,7 @@ mod session;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use server_protocol::CAPABILITIES;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};

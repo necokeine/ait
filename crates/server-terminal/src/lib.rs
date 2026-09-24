@@ -1,5 +1,7 @@
 //! Independent PTY terminal protocol, application service, and local process adapter.
 
+pub mod capabilities;
+pub mod dispatch;
 pub mod local;
 pub mod ports;
 pub mod protocol;
@@ -35,3 +37,20 @@ pub enum Error {
 
 #[cfg(test)]
 mod test_support;
+
+impl From<crate::Error> for server_model::ErrorCode {
+    fn from(error: crate::Error) -> Self {
+        match error {
+            crate::Error::Invalid => Self::InvalidMessage,
+            crate::Error::NotFound => Self::TerminalNotFound,
+            crate::Error::WorkspaceNotFound => Self::WorkspaceNotFound,
+            crate::Error::Registry => Self::RegistryIo,
+            crate::Error::Exhausted => Self::ResourceExhausted,
+            crate::Error::Io => Self::TerminalIo,
+            crate::Error::MethodNotFound => Self::MethodNotFound,
+        }
+    }
+}
+
+/// Connection-owned observers and request integration.
+pub mod connection;

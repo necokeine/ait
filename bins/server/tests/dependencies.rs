@@ -19,6 +19,7 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
         let name = package["name"].as_str().unwrap();
         let allowed: &[&str] = match name {
             "server-bin" => &[
+                "server-model",
                 "server-metadata",
                 "server-filesystem",
                 "server-provider",
@@ -28,21 +29,24 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
                 "server-domain",
             ],
             "server-api" => &[
+                "server-model",
                 "server-terminal",
                 "server-provider",
                 "server-protocol",
                 "server-metadata",
                 "server-filesystem",
             ],
-            "server-provider" => &["server-domain", "server-metadata"],
+            "server-provider" => &["server-domain", "server-metadata", "server-model"],
             "server-protocol" => &[
+                "server-model",
                 "server-metadata",
                 "server-filesystem",
                 "server-provider",
                 "server-terminal",
             ],
-            "server-filesystem" | "server-terminal" => &["server-metadata"],
-            "server-domain" | "server-metadata" => &[],
+            "server-filesystem" | "server-terminal" => &["server-metadata", "server-model"],
+            "server-metadata" => &["server-model"],
+            "server-domain" | "server-model" => &[],
             _ => {
                 violations.push(format!("unregistered server package: {name}"));
                 continue;
@@ -58,16 +62,21 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
             if matches!(
                 name,
                 "server-domain"
+                    | "server-model"
                     | "server-protocol"
                     | "server-metadata"
                     | "server-filesystem"
                     | "server-terminal"
             ) && [
-                "tokio", "sqlx", "rusqlite", "axum", "hyper", "reqwest", "tonic", "tauri", "rig",
-                "codex",
+                "sqlx", "rusqlite", "axum", "hyper", "reqwest", "tonic", "tauri", "rig", "codex",
             ]
             .iter()
             .any(|prefix| target == *prefix || target.starts_with(&format!("{prefix}-")))
+            {
+                violations.push(format!("impure {name} -> {target}"));
+            }
+            if matches!(name, "server-domain" | "server-protocol")
+                && (target == "tokio" || target.starts_with("tokio-"))
             {
                 violations.push(format!("impure {name} -> {target}"));
             }
@@ -77,7 +86,7 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
 }
 
 #[test]
-fn all_server_dependency_edges_follow_adr_031() {
+fn all_server_dependency_edges_follow_current_adrs() {
     let output = Command::new(env!("CARGO"))
         .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -131,7 +140,7 @@ fn guard_catches_indirect_renamed_optional_target_and_development_edges() {
 }
 
 #[test]
-fn metadata_cannot_depend_on_host_crates_or_runtime_adapters() {
+fn metadata_cannot_depend_on_host_crates_or_transport_adapters() {
     for dependency in [
         "server-protocol",
         "server-provider",
@@ -148,7 +157,7 @@ fn metadata_cannot_depend_on_host_crates_or_runtime_adapters() {
             [format!("server-metadata -> {dependency}")]
         );
     }
-    for dependency in ["tokio", "rusqlite", "axum", "reqwest"] {
+    for dependency in ["rusqlite", "axum", "reqwest"] {
         let packages = [
             json!({"id":"server-metadata", "name":"server-metadata", "dependencies":[{"name":dependency}]}),
         ];
@@ -179,7 +188,7 @@ fn filesystem_cannot_depend_on_host_agent_or_transport_crates() {
             [format!("server-filesystem -> {dependency}")]
         );
     }
-    for dependency in ["tokio", "axum", "reqwest", "rusqlite"] {
+    for dependency in ["axum", "reqwest", "rusqlite"] {
         let packages = [
             json!({"id":"server-filesystem", "name":"server-filesystem", "dependencies":[{"name":dependency}]}),
         ];
@@ -239,13 +248,62 @@ fn terminal_cannot_depend_on_provider_transport_or_old_workspace_packages() {
             [format!("server-terminal -> {dependency}")]
         );
     }
-    for dependency in ["tokio", "axum", "rusqlite", "reqwest"] {
+    for dependency in ["axum", "rusqlite", "reqwest"] {
         let packages = [
             json!({"id":"server-terminal", "name":"server-terminal", "dependencies":[{"name":dependency}]}),
         ];
         assert_eq!(
             violations(&packages, &BTreeSet::new()),
             [format!("impure server-terminal -> {dependency}")]
+        );
+    }
+}
+
+#[test]
+fn tokio_is_allowed_in_capability_crates_but_not_domain_or_protocol() {
+    for name in [
+        "server-model",
+        "server-metadata",
+        "server-filesystem",
+        "server-provider",
+        "server-terminal",
+        "server-domain",
+        "server-protocol",
+    ] {
+        for dependency in ["tokio", "tokio-util"] {
+            for kind in [Value::Null, json!("dev"), json!("build")] {
+                let packages = [
+                    json!({"id":name, "name":name, "dependencies":[{"name":dependency,"kind":kind,"optional":true,"target":"cfg(windows)"}]}),
+                ];
+                let expected = if matches!(name, "server-domain" | "server-protocol") {
+                    vec![format!("impure {name} -> {dependency}")]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(violations(&packages, &BTreeSet::new()), expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_context_cannot_depend_on_capability_or_transport_packages() {
+    for dependency in [
+        "server-api",
+        "server-protocol",
+        "server-metadata",
+        "server-filesystem",
+        "server-provider",
+        "server-terminal",
+        "server-domain",
+        "ait-domain",
+    ] {
+        let packages = [
+            json!({"id":"server-model", "name":"server-model", "dependencies":[{"name":dependency,"path":"../dependency"}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("server-model -> {dependency}")]
         );
     }
 }

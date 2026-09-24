@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+server-model = { version = "0.0.6", path = "../server-model" }
 server-terminal = { version = "0.0.6", path = "../server-terminal" }
 server-provider = { version = "0.0.6", path = "../server-provider" }
 server-filesystem = { version = "0.0.6", path = "../server-filesystem" }

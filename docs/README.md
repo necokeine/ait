@@ -1,5 +1,20 @@
 # 概念与架构文档
 
+- [ADR-037：公共 Context 与具体 crate 分发](decisions/adr-037-server-model-context.md)
+  （Accepted）：server-model 提供公共请求、队列与 Tokio 运行资源；各能力 crate 直接接收
+  Context 和具体服务/连接状态，删除 Host 回调接口，API 负责组装与跨能力收尾。
+  [实施报告](reports/server-model-context.md)记录回归与覆盖率。
+
+- [ADR-036：请求先进入所属 crate 再分发到能力组](decisions/adr-036-server-crate-dispatch.md)
+  （Accepted）：API 顶层仅按四个能力 crate 分流；crate 选择业务处理器，Host 端口保留 API
+  调度和连接所有权，并统一普通响应与响应后的动作。
+  [实施报告](reports/server-crate-dispatch.md)记录回归与覆盖率。
+
+- [ADR-035：能力分组与安装规则归所属 server crate](decisions/adr-035-server-capability-groups.md)
+  （Accepted）：metadata/filesystem/provider/terminal 自行声明方法分组并计算已安装能力，
+  server-api 合并并连接处理器；名称、安装条件与消息方向保持兼容。
+  [实施报告](reports/server-capability-groups.md)记录验证与覆盖率。
+
 - [ADR-033：独立 server-terminal 与完整 Terminal 方法分组](decisions/adr-033-server-terminal.md)
   （Accepted）：10 个 Terminal 方法、真实 PTY、binary input/output/resize/snapshot/restore、连接级
   订阅和 resize 所有权；批量关闭、归档清理与 shutdown 接入。限制与覆盖率见[实施报告](reports/server-terminal.md)。

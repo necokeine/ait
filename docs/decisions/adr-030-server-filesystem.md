@@ -1,5 +1,7 @@
 # ADR-030：纵向拆出 server-filesystem
 
+> Tokio 依赖限制已由 [ADR-037](adr-037-server-model-context.md) 修订；filesystem 可按需要使用 Tokio。
+
 > 后续边界更新：[ADR-031](adr-031-server-provider.md) 将 Workspace 自动化迁入 metadata，
 > Agent 能力迁入 provider，并删除四个空横向 crate；当前依赖表以 ADR-031 为准。
 

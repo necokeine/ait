@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+server-model = { version = "0.0.6", path = "../server-model" }
 server-domain = { version = "0.0.6", path = "../server-domain" }
 server-metadata = { version = "0.0.6", path = "../server-metadata" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }

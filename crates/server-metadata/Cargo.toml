@@ -5,6 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+server-model = { version = "0.0.6", path = "../server-model" }
 base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 getrandom = "0.4.3"
@@ -22,3 +25,5 @@ workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]

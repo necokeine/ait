@@ -3535,6 +3535,7 @@ dependencies = [
  "serde_json",
  "server-filesystem",
  "server-metadata",
+ "server-model",
  "server-protocol",
  "server-provider",
  "server-terminal",
@@ -3598,9 +3599,13 @@ dependencies = [
  "serde",
  "serde_json",
  "server-metadata",
+ "server-model",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
  "uuid",
 ]
 
@@ -3615,11 +3620,25 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "server-model",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "server-model"
+version = "0.0.6"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -3630,6 +3649,7 @@ dependencies = [
  "serde_json",
  "server-filesystem",
  "server-metadata",
+ "server-model",
  "server-provider",
  "server-terminal",
 ]
@@ -3644,6 +3664,7 @@ dependencies = [
  "serde_json",
  "server-domain",
  "server-metadata",
+ "server-model",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -3659,8 +3680,12 @@ dependencies = [
  "serde",
  "serde_json",
  "server-metadata",
+ "server-model",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
  "uuid",
  "vt100",
 ]

@@ -50,3 +50,24 @@ pub enum ErrorCode {
     #[error("RegistryIo")]
     RegistryIo,
 }
+
+impl From<crate::rpc::ErrorCode> for server_model::ErrorCode {
+    fn from(error: crate::rpc::ErrorCode) -> Self {
+        match error {
+            crate::rpc::ErrorCode::InvalidMessage => Self::InvalidMessage,
+            crate::rpc::ErrorCode::UnsupportedCapability => Self::UnsupportedCapability,
+            crate::rpc::ErrorCode::MethodNotFound => Self::MethodNotFound,
+            crate::rpc::ErrorCode::AgentIo => Self::AgentIo,
+            crate::rpc::ErrorCode::AgentNotFound => Self::AgentNotFound,
+            crate::rpc::ErrorCode::AgentRevisionNotFound => Self::AgentRevisionNotFound,
+            crate::rpc::ErrorCode::AgentRevisionConflict => Self::AgentRevisionConflict,
+            crate::rpc::ErrorCode::AgentDefaultConflict => Self::AgentDefaultConflict,
+            crate::rpc::ErrorCode::AgentDisabled => Self::AgentDisabled,
+            crate::rpc::ErrorCode::AgentIsDefault => Self::AgentIsDefault,
+            crate::rpc::ErrorCode::IdempotencyConflict => Self::IdempotencyConflict,
+            crate::rpc::ErrorCode::CatalogBusy => Self::CatalogBusy,
+            crate::rpc::ErrorCode::UnsupportedFormat => Self::UnsupportedFormat,
+            crate::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+        }
+    }
+}

@@ -2,6 +2,8 @@
 //!
 //! Pure Agent values remain in `server-domain`; HTTP/WS transports belong to the host. This crate owns the bounded native Provider worker.
 
+pub mod capabilities;
+pub mod dispatch;
 pub mod local;
 pub mod ports;
 pub mod protocol;
