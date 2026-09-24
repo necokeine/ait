@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use server_domain::agent_runtime::{AgentPersistenceHandle, StoredAgentRuntimeInfo};
+use server_domain::agent_runtime::{
+    AgentPersistenceHandle, StoredAgentConfig, StoredAgentRuntimeInfo,
+};
 
 use crate::ports::agent_session::{
     AgentClient, AgentResumePurpose, AgentSession, AgentSessionError, AgentSessionFuture,
@@ -124,6 +126,10 @@ impl AgentClient for CodexClient {
         "codex"
     }
 
+    fn validate_config(&self, config: &StoredAgentConfig) -> Result<(), AgentSessionError> {
+        validate_config(config)
+    }
+
     fn is_available(&self) -> AgentSessionFuture<'_, bool> {
         Box::pin(async {
             Ok(if self.program.components().count() > 1 {
@@ -181,8 +187,13 @@ impl AgentSession for CodexSession {
         })
     }
 
-    fn start_turn<'a>(&'a mut self, text: &'a str) -> AgentSessionFuture<'a, String> {
+    fn start_turn<'a>(
+        &'a mut self,
+        text: &'a str,
+        config: &'a StoredAgentConfig,
+    ) -> AgentSessionFuture<'a, String> {
         Box::pin(async move {
+            validate_config(config)?;
             if self.history
                 || self.active_turn.is_some()
                 || text.trim().is_empty()
@@ -198,7 +209,7 @@ impl AgentSession for CodexSession {
                     "turn/start",
                     json!({"threadId":self.id,
                     "input":[{"type":"text","text":text,"text_elements":[]}],
-                    "effort":self.info.thinking_option_id}),
+                    "model":config.model,"effort":config.thinking_option_id}),
                 )
                 .await?;
             let id = response
@@ -208,6 +219,10 @@ impl AgentSession for CodexSession {
                 .ok_or(AgentSessionError::Failed)?
                 .to_owned();
             self.active_turn = Some(id.clone());
+            self.info.model.clone_from(&config.model);
+            self.info
+                .thinking_option_id
+                .clone_from(&config.thinking_option_id);
             self.last_message = None;
             Ok(id)
         })
@@ -292,14 +307,27 @@ impl AgentSession for CodexSession {
 }
 
 fn validate(spec: &AgentSessionSpec) -> Result<(), AgentSessionError> {
-    let config = &spec.config;
     if spec.provider != "codex"
         || !Path::new(&spec.cwd).is_absolute()
         || !Path::new(&spec.cwd).is_dir()
-        || config
-            .mode_id
-            .as_deref()
-            .is_some_and(|mode| mode != "read-only")
+    {
+        return Err(AgentSessionError::Unavailable);
+    }
+    validate_config(&spec.config)
+}
+
+fn validate_config(config: &StoredAgentConfig) -> Result<(), AgentSessionError> {
+    if config.model.as_ref().is_some_and(|model| {
+        model.trim().is_empty() || model.len() > 256 || model.chars().any(char::is_control)
+    }) || config.thinking_option_id.as_deref().is_some_and(|effort| {
+        !matches!(
+            effort,
+            "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+        )
+    }) || config
+        .mode_id
+        .as_deref()
+        .is_some_and(|mode| mode != "read-only")
         || config
             .feature_values
             .as_ref()

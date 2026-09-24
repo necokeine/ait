@@ -3,15 +3,19 @@
 use std::collections::BTreeMap;
 
 use chrono::{SecondsFormat, Utc};
+use serde_json::json;
 use server_domain::agent_runtime::{
-    AgentRuntimeStatus, PersistedAgentRuntimeRecord, StoredAgentRuntimeInfo,
+    AgentRuntimeStatus, PersistedAgentRuntimeRecord, StoredAgentConfig, StoredAgentRuntimeInfo,
 };
+use server_metadata::protocol::session::SessionEventKind;
+use server_metadata::service::session::SessionEvents;
 
 use crate::ports::agent_runtime::AgentRuntimeRegistry;
 use crate::ports::agent_session::{
     AgentClient, AgentResumePurpose, AgentSession, AgentSessionError, AgentSessionSpec,
     AgentTurnEvent,
 };
+use crate::protocol::agent_config::ConfigPatch;
 
 /// Application failure while managing a live Agent session.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -63,6 +67,7 @@ struct LiveAgent {
     turn: Option<String>,
     last_message: Option<String>,
     pending: Option<AgentTurnEvent>,
+    pending_runtime: Option<StoredAgentRuntimeInfo>,
 }
 
 /// Owns live provider sessions and their durable Paseo-compatible snapshots.
@@ -74,6 +79,7 @@ pub struct AgentManager {
     registry: Box<dyn AgentRuntimeRegistry>,
     clients: BTreeMap<String, Box<dyn AgentClient>>,
     live: BTreeMap<String, LiveAgent>,
+    events: SessionEvents,
 }
 
 impl AgentManager {
@@ -84,7 +90,14 @@ impl AgentManager {
             registry,
             clients: BTreeMap::new(),
             live: BTreeMap::new(),
+            events: SessionEvents::default(),
         }
+    }
+
+    /// Return the shared connection event service used for committed attention notifications.
+    #[must_use]
+    pub fn events(&self) -> SessionEvents {
+        self.events.clone()
     }
 
     /// Register one provider client. A provider identity can only be registered once.
@@ -129,6 +142,51 @@ impl AgentManager {
         self.live
             .get(agent_id)
             .and_then(|agent| agent.last_message.as_deref())
+    }
+
+    /// Persist a validated patch for subsequent turns without altering an accepted turn.
+    ///
+    /// # Errors
+    /// Returns validation, unavailable-provider, archived-Agent, or registry errors. All supplied
+    /// fields commit together; failed writes leave the running session and durable config intact.
+    pub fn configure(&self, agent_id: &str, patch: &ConfigPatch) -> Result<(), AgentManagerError> {
+        let record = self
+            .registry
+            .get(agent_id)
+            .map_err(map_registry)?
+            .ok_or_else(|| AgentManagerError::NotFound(agent_id.to_owned()))?;
+        if record.archived_at.is_some() {
+            return Err(AgentManagerError::Busy);
+        }
+        let config = patch.apply(
+            record
+                .config
+                .as_ref()
+                .unwrap_or(&StoredAgentConfig::default()),
+        );
+        self.clients
+            .get(&record.provider)
+            .ok_or_else(|| AgentManagerError::ProviderUnavailable(record.provider.clone()))?
+            .validate_config(&config)
+            .map_err(|_| AgentManagerError::InvalidRequest)?;
+        let now = now_timestamp();
+        self.registry
+            .update(agent_id, &|current| {
+                let mut next = current.clone();
+                next.config = Some(
+                    patch.apply(
+                        current
+                            .config
+                            .as_ref()
+                            .unwrap_or(&StoredAgentConfig::default()),
+                    ),
+                );
+                next.updated_at.clone_from(&now);
+                next
+            })
+            .map_err(map_registry)?
+            .ok_or_else(|| AgentManagerError::NotFound(agent_id.to_owned()))?;
+        Ok(())
     }
 
     /// Create a native session and persist its initial Agent snapshot.
@@ -300,8 +358,13 @@ impl AgentManager {
             .get_mut(agent_id)
             .ok_or(AgentManagerError::Session)?;
         agent.last_message = None;
-        if let Ok(turn) = agent.session.start_turn(text).await {
+        let config = record.config.unwrap_or_default();
+        if let Ok(turn) = agent.session.start_turn(text, &config).await {
             agent.turn = Some(turn);
+            match agent.session.runtime_info().await {
+                Ok(info) => agent.pending_runtime = Some(info),
+                Err(_) => agent.pending = Some(AgentTurnEvent::Failed),
+            }
             Ok(())
         } else {
             agent.pending = Some(AgentTurnEvent::Failed);
@@ -340,6 +403,16 @@ impl AgentManager {
             if !agent.registered {
                 continue;
             }
+            if let Some(info) = &agent.pending_runtime {
+                self.registry
+                    .update(&id, &|current| {
+                        let mut next = current.clone();
+                        next.runtime_info = Some(info.clone());
+                        next
+                    })
+                    .map_err(map_registry)?;
+                agent.pending_runtime = None;
+            }
             if agent.pending.is_none() {
                 agent.pending = match agent.session.poll_turn() {
                     Ok(event) => event,
@@ -355,7 +428,8 @@ impl AgentManager {
             let failed = matches!(event, AgentTurnEvent::Failed);
             let cancelled = matches!(event, AgentTurnEvent::Cancelled);
             let now = now_timestamp();
-            self.registry
+            let committed = self
+                .registry
                 .update(&id, &|current| {
                     let mut next = current.clone();
                     next.last_status = if failed {
@@ -381,6 +455,18 @@ impl AgentManager {
             }
             agent.turn = None;
             agent.pending = None;
+            if !cancelled
+                && committed
+                    .as_ref()
+                    .is_some_and(|record| record.archived_at.is_none() && !record.internal)
+            {
+                self.events.publish(
+                    SessionEventKind::AgentAttention,
+                    &json!({
+                        "agentId":id,"reason":if failed {"error"} else {"finished"},"timestamp":now,
+                    }),
+                );
+            }
             if failed {
                 self.live.remove(&id);
             }
@@ -494,6 +580,7 @@ impl AgentManager {
                         turn: None,
                         last_message: None,
                         pending: None,
+                        pending_runtime: None,
                     },
                 );
                 return Err(AgentManagerError::Session);
@@ -509,6 +596,7 @@ impl AgentManager {
                 turn: None,
                 last_message: None,
                 pending: None,
+                pending_runtime: None,
             },
         );
         Ok(record)
@@ -530,6 +618,7 @@ impl AgentManager {
                     turn: None,
                     last_message: None,
                     pending: None,
+                    pending_runtime: None,
                 },
             );
         }

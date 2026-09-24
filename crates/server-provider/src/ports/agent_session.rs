@@ -78,7 +78,11 @@ pub trait AgentSession: Debug + Send {
     ///
     /// # Errors
     /// Returns an error for a busy, history-only, or unsupported session.
-    fn start_turn<'a>(&'a mut self, _text: &'a str) -> AgentSessionFuture<'a, String> {
+    fn start_turn<'a>(
+        &'a mut self,
+        _text: &'a str,
+        _config: &'a StoredAgentConfig,
+    ) -> AgentSessionFuture<'a, String> {
         Box::pin(async { Err(AgentSessionError::Unavailable) })
     }
 
@@ -109,6 +113,14 @@ pub trait AgentSession: Debug + Send {
 pub trait AgentClient: Debug + Send + Sync {
     /// Return the provider identity served by this client.
     fn provider(&self) -> &str;
+
+    /// Validate persisted next-turn configuration without launching or mutating a session.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported settings. Validation does not verify model availability.
+    fn validate_config(&self, _config: &StoredAgentConfig) -> Result<(), AgentSessionError> {
+        Err(AgentSessionError::Unavailable)
+    }
 
     /// Check whether the provider can launch sessions now.
     ///

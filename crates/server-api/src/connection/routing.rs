@@ -18,6 +18,7 @@ pub(super) enum Handler {
     Agents,
     AgentRuntime,
     AgentExecution,
+    Session,
     Directory,
     GithubProjects,
     WorkspaceRecovery,
@@ -29,6 +30,7 @@ pub(super) enum Handler {
     Automation,
     WorkspaceState,
     Files,
+    Terminal,
     Base,
 }
 
@@ -87,6 +89,20 @@ fn build_routes() -> RouteNode {
         }
     }
     register_business_routes(&mut root);
+    for &method in server_terminal::protocol::CAPABILITIES {
+        let route = root
+            .leaf_mut(method)
+            .as_mut()
+            .expect("terminal catalog method exists");
+        assert!(route.handler.is_none(), "duplicate terminal route");
+        route.handler = Some(Handler::Terminal);
+    }
+    let heartbeat = root
+        .leaf_mut(server_metadata::protocol::server::HEARTBEAT_METHOD)
+        .as_mut()
+        .expect("heartbeat exists in the Paseo catalog");
+    assert_eq!(heartbeat.kind, InboundKind::Event);
+    heartbeat.handler = Some(Handler::Session);
     let leaf = root.leaf_mut("server.status.unsubscribe");
     assert!(leaf.is_none(), "duplicate status unsubscribe route");
     *leaf = Some(Route {
@@ -99,6 +115,16 @@ fn build_routes() -> RouteNode {
 
 fn register_business_routes(root: &mut RouteNode) {
     register_group(root, Handler::Base, server_protocol::CAPABILITIES);
+    register_group(
+        root,
+        Handler::Session,
+        server_metadata::protocol::session::CAPABILITIES,
+    );
+    register_group(
+        root,
+        Handler::AgentExecution,
+        server_provider::protocol::agent_config::CAPABILITIES,
+    );
     register_group(
         root,
         Handler::Agents,
@@ -315,7 +341,9 @@ pub(super) async fn route_request(
             RouteResult::plain(crate::workspace_automation::dispatch(method, params, state).await)
         }
         Handler::Base => RouteResult::plain(dispatch_base(method, &params, state, subscriptions)),
-        Handler::Files => RouteResult::plain(Err(ErrorCode::MethodNotFound)),
+        Handler::Files | Handler::Terminal | Handler::Session => {
+            RouteResult::plain(Err(ErrorCode::MethodNotFound))
+        }
     }
 }
 
@@ -424,6 +452,8 @@ fn dispatch_base(
             subscriptions.labels.remove(&request.subscription_id);
             subscriptions.diffs.remove(&request.subscription_id);
             subscriptions.files.release(&request.subscription_id);
+            subscriptions.terminals.release(&request.subscription_id);
+            subscriptions.events.remove(&request.subscription_id);
             serde_json::to_value(SubscriptionReleaseResult {
                 subscription_id: request.subscription_id,
             })

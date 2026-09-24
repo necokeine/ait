@@ -5,6 +5,182 @@ use crate::test_support::Fixture;
 use server_metadata::ports::registry::{ProjectRegistry, WorkspaceRegistry};
 use server_metadata::storage::registry::{FileBackedProjectRegistry, FileBackedWorkspaceRegistry};
 
+#[tokio::test]
+async fn configuration_commits_atomically_applies_next_turn_and_survives_restart() {
+    let fixture = Fixture::new();
+    let (execution, registry) = worker(&fixture);
+    let created = create(&execution, &fixture).await;
+    let id = created["agentId"].as_str().unwrap();
+    let configured = execution
+        .execute(
+            "agent.config.apply.request",
+            json!({"agentId":id,
+        "config":{"modelId":"changed-model","thinkingOptionId":"high"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(configured["accepted"], true);
+    assert_invalid_configurations(&execution, &registry, id).await;
+    execution
+        .execute(
+            "agent.message.send.request",
+            json!({"agentId":id,"text":"hang"}),
+        )
+        .await
+        .unwrap();
+    let first = fixture
+        .requests()
+        .into_iter()
+        .rev()
+        .find(|request| request["method"] == "turn/start")
+        .unwrap();
+    assert_eq!(first["params"]["model"], "changed-model");
+    assert_eq!(first["params"]["effort"], "high");
+    let changed = execution
+        .execute(
+            "agent.model.set.request",
+            json!({"agentId":id,"modelId":"next-model"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed["accepted"], true);
+    assert_eq!(
+        changed["notice"]["message"],
+        "Configuration applies next turn"
+    );
+    execution
+        .execute(
+            "agent.thinking.set.request",
+            json!({"agentId":id,"thinkingOptionId":null}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        execution
+            .execute(
+                "agent.finish.wait.request",
+                json!({"agentId":id,"timeoutMs":1})
+            )
+            .await
+            .unwrap()["status"],
+        "timeout"
+    );
+    execution
+        .execute("agent.cancel.request", json!({"agentId":id}))
+        .await
+        .unwrap();
+    execution
+        .execute("agent.finish.wait.request", json!({"agentId":id}))
+        .await
+        .unwrap();
+    execution.shutdown().await.unwrap();
+    assert_configuration_after_restart(&fixture, id).await;
+}
+
+async fn assert_invalid_configurations(
+    execution: &AgentExecution,
+    registry: &FileBackedAgentRuntimeRegistry,
+    id: &str,
+) {
+    let original = registry.get(id).unwrap().unwrap();
+    for config in [
+        json!({"modelId":"","thinkingOptionId":"low"}),
+        json!({"modelId":"a\nb"}),
+        json!({"modelId":"x".repeat(257)}),
+        json!({"modelId":"other","thinkingOptionId":"imaginary"}),
+    ] {
+        let result = execution
+            .execute(
+                "agent.config.apply.request",
+                json!({"agentId":id,"config":config}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["accepted"], false);
+        assert_eq!(registry.get(id).unwrap().unwrap(), original);
+    }
+    assert_eq!(
+        execution
+            .execute(
+                "agent.config.apply.request",
+                json!({"agentId":id,
+        "config":{"modeId":"danger-full-access"}})
+            )
+            .await,
+        Err(ErrorCode::UnsupportedCapability)
+    );
+    assert_eq!(
+        execution
+            .execute("agent.model.set.request", json!({"agentId":id}))
+            .await,
+        Err(ErrorCode::InvalidMessage)
+    );
+    assert_eq!(
+        execution
+            .execute(
+                "agent.model.set.request",
+                json!({"agentId":id,"modelId":true})
+            )
+            .await,
+        Err(ErrorCode::InvalidMessage)
+    );
+}
+
+async fn assert_configuration_after_restart(fixture: &Fixture, id: &str) {
+    let (restarted, reopened) = worker(fixture);
+    restarted
+        .execute(
+            "agent.message.send.request",
+            json!({"agentId":id,"text":"next"}),
+        )
+        .await
+        .unwrap();
+    restarted
+        .execute("agent.finish.wait.request", json!({"agentId":id}))
+        .await
+        .unwrap();
+    let second = fixture
+        .requests()
+        .into_iter()
+        .rev()
+        .find(|request| request["method"] == "turn/start")
+        .unwrap();
+    assert_eq!(second["params"]["model"], "next-model");
+    assert_eq!(second["params"]["effort"], Value::Null);
+    restarted
+        .execute(
+            "agent.model.set.request",
+            json!({"agentId":id,"modelId":null}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        reopened
+            .get(id)
+            .unwrap()
+            .unwrap()
+            .config
+            .unwrap()
+            .model
+            .is_none()
+    );
+    restarted
+        .execute("agent.archive.request", json!({"agentId":id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted
+            .execute(
+                "agent.thinking.set.request",
+                json!({"agentId":id,"thinkingOptionId":"low"})
+            )
+            .await
+            .unwrap()["accepted"],
+        false
+    );
+    restarted.shutdown().await.unwrap();
+}
+
 fn worker(fixture: &Fixture) -> (AgentExecution, FileBackedAgentRuntimeRegistry) {
     let registry = FileBackedAgentRuntimeRegistry::new(fixture.root.path().join("agents.json"));
     registry.initialize().unwrap();

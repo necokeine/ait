@@ -74,7 +74,8 @@ Git/worktree/Forge/shell/文件传输/Agent session 的实际执行继续留在�
 ## 心跳与兼容性
 
 `connection.ping` 的 DTO、校验与 echo 处理迁入 metadata，行为保持不变。
-`session.heartbeat` 保持已登记但未实现，不加入 implemented capabilities，也不新增心跳文件。
+`session.heartbeat` 在本次拆分时保持占位；后续已按 [ADR-034](adr-034-agent-config-session-events.md)
+接入进程内 presence 与通知策略，不新增心跳文件。
 WebSocket Ping/Pong 控制帧、HTTP health/readiness 和物理连接存活由 transport 拥有。
 
 原有 188 个 Paseo canonical methods 不变；删除四个额外的旧 Project 方法后，生产服务

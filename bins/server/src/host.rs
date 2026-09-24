@@ -206,6 +206,11 @@ fn compose_services(
         instance,
     )?;
     Ok(Services {
+        terminals: Some(server_terminal::service::Terminals::new(
+            Box::new(workspace_registry.clone()),
+            Box::new(project_registry.clone()),
+            Box::new(server_terminal::local::LocalRuntime),
+        )),
         agent_execution: Some(agent_execution),
         agents: Some(agents),
         checkout: Some(Checkout::new(Box::new(LocalCheckout::new(

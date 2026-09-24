@@ -77,3 +77,6 @@ wait 回收直接子进程；异常析构保留兜底终止。Windows 仅直接�
 不宣称所有工作已完成。强制进程退出、跨进程 writer 争用与原生历史对账不在本阶段的恢复保证内。
 
 实现与测试证据见 [报告](../reports/server-native-provider-execution.md)。
+
+后续 [ADR-034](adr-034-agent-config-session-events.md) 已接通模型/推理配置和 Session 事件/心跳；
+本文 107 个已实现 capability 及不支持动态配置的描述是原生文本执行首片的历史状态。

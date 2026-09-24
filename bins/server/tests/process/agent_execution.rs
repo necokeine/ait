@@ -1,5 +1,3 @@
-use std::os::unix::fs::PermissionsExt;
-
 use futures_util::SinkExt;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
@@ -21,19 +19,7 @@ const METHODS: &[&str] = &[
 
 #[tokio::test]
 async fn websocket_executes_native_turns_waits_concurrently_and_resumes_after_restart() {
-    let root = tempfile::tempdir().unwrap();
-    let native = root.path().join("codex");
-    std::fs::write(
-        &native,
-        include_str!("../../../../crates/server-provider/tests/fixtures/codex_app_server.py"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let cwd = root.path().join("work");
-    std::fs::create_dir(&cwd).unwrap();
-    let mut paths = vec![root.path().to_path_buf()];
-    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let path = std::env::join_paths(paths).unwrap();
+    let super::native::NativeFixture { root, cwd, path } = super::native::NativeFixture::new();
     let state = root.path().join("state");
     let log = root.path().join("server.log");
     let mut process = start_with_path(&state, &log, Some(&path));

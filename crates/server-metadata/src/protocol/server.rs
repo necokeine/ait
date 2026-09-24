@@ -93,5 +93,5 @@ pub struct Ping {
     pub nonce: String,
 }
 
-/// Canonical client heartbeat event, currently registered but not implemented.
+/// Canonical client activity heartbeat event owned by metadata.
 pub const HEARTBEAT_METHOD: &str = "session.heartbeat";

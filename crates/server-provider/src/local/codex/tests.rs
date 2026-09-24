@@ -30,13 +30,24 @@ async fn native_create_text_turn_cancel_resume_and_history_are_distinct() {
         session.runtime_info().await.unwrap().model.as_deref(),
         Some("offline-model")
     );
-    session.start_turn("hello").await.unwrap();
-    assert!(session.start_turn("busy").await.is_err());
+    session
+        .start_turn("hello", &fixture.spec().config)
+        .await
+        .unwrap();
+    assert!(
+        session
+            .start_turn("busy", &fixture.spec().config)
+            .await
+            .is_err()
+    );
     assert_eq!(
         terminal(session.as_mut()).await.unwrap(),
         AgentTurnEvent::Completed(Some("Echo: hello".to_owned()))
     );
-    let turn = session.start_turn("hang").await.unwrap();
+    let turn = session
+        .start_turn("hang", &fixture.spec().config)
+        .await
+        .unwrap();
     assert!(session.cancel_turn("wrong").await.is_err());
     session.cancel_turn(&turn).await.unwrap();
     assert_eq!(
@@ -50,7 +61,10 @@ async fn native_create_text_turn_cancel_resume_and_history_are_distinct() {
         .await
         .unwrap();
     assert_eq!(resumed.persistence(), Some(handle.clone()));
-    resumed.start_turn("again").await.unwrap();
+    resumed
+        .start_turn("again", &fixture.spec().config)
+        .await
+        .unwrap();
     assert!(matches!(
         terminal(resumed.as_mut()).await.unwrap(),
         AgentTurnEvent::Completed(_)
@@ -60,7 +74,12 @@ async fn native_create_text_turn_cancel_resume_and_history_are_distinct() {
         .resume_session(&handle, &spec, AgentResumePurpose::History)
         .await
         .unwrap();
-    assert!(history.start_turn("forbidden").await.is_err());
+    assert!(
+        history
+            .start_turn("forbidden", &fixture.spec().config)
+            .await
+            .is_err()
+    );
     assert_eq!(history.poll_turn().unwrap(), None);
     history.close().await.unwrap();
     let requests = fixture.requests();
@@ -118,7 +137,10 @@ async fn failed_turn_exit_and_permission_requests_have_explicit_terminal_outcome
         let fixture = Fixture::new();
         let client = fixture.client();
         let mut session = client.create_session(&fixture.spec()).await.unwrap();
-        session.start_turn(text).await.unwrap();
+        session
+            .start_turn(text, &fixture.spec().config)
+            .await
+            .unwrap();
         let outcome = terminal(session.as_mut()).await;
         if text == "fail" {
             assert_eq!(outcome.unwrap(), AgentTurnEvent::Failed);
@@ -180,7 +202,10 @@ async fn completion_racing_interruption_keeps_the_native_connection_usable() {
     fixture.mode("interrupt-completed");
     let client = fixture.client();
     let mut session = client.create_session(&fixture.spec()).await.unwrap();
-    let turn = session.start_turn("hang").await.unwrap();
+    let turn = session
+        .start_turn("hang", &fixture.spec().config)
+        .await
+        .unwrap();
     assert_eq!(
         session.cancel_turn(&turn).await,
         Err(AgentSessionError::Rejected)
@@ -189,7 +214,10 @@ async fn completion_racing_interruption_keeps_the_native_connection_usable() {
         terminal(session.as_mut()).await.unwrap(),
         AgentTurnEvent::Completed(Some("Echo: raced".to_owned()))
     );
-    session.start_turn("next").await.unwrap();
+    session
+        .start_turn("next", &fixture.spec().config)
+        .await
+        .unwrap();
     assert_eq!(
         terminal(session.as_mut()).await.unwrap(),
         AgentTurnEvent::Completed(Some("Echo: next".to_owned()))
@@ -205,7 +233,10 @@ async fn closing_a_session_terminates_its_tool_process_group() {
         .create_session(&fixture.spec())
         .await
         .unwrap();
-    session.start_turn("child").await.unwrap();
+    session
+        .start_turn("child", &fixture.spec().config)
+        .await
+        .unwrap();
     let pid = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let Ok(pid) = std::fs::read_to_string(fixture.cwd.join("child.pid")) {

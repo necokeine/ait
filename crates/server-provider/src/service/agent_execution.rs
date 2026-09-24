@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use server_metadata::ports::registry::{ProjectRegistry, WorkspaceRegistry};
+use server_metadata::service::session::SessionEvents;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ports::agent_runtime::AgentRuntimeRegistry;
@@ -44,6 +45,7 @@ enum Command {
 struct Worker {
     sender: mpsc::Sender<Command>,
     thread: Mutex<Option<JoinHandle<()>>>,
+    events: SessionEvents,
 }
 
 // Field drop order keeps the instance lease until the runtime has reaped its children,
@@ -71,6 +73,7 @@ impl AgentExecution {
     /// # Errors
     /// Returns an I/O error if a runtime or worker thread cannot be created.
     pub fn spawn(dependencies: ExecutionDependencies) -> Result<Self, std::io::Error> {
+        let events = dependencies.manager.events();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -94,7 +97,14 @@ impl AgentExecution {
         Ok(Self(Arc::new(Worker {
             sender,
             thread: Mutex::new(Some(thread)),
+            events,
         })))
+    }
+
+    /// Return connection events shared with this worker's Agent manager.
+    #[must_use]
+    pub fn events(&self) -> SessionEvents {
+        self.0.events.clone()
     }
 
     /// Execute a canonical execution or Agent metadata request.

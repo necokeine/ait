@@ -1,5 +1,13 @@
 # 概念与架构文档
 
+- [ADR-033：独立 server-terminal 与完整 Terminal 方法分组](decisions/adr-033-server-terminal.md)
+  （Accepted）：10 个 Terminal 方法、真实 PTY、binary input/output/resize/snapshot/restore、连接级
+  订阅和 resize 所有权；批量关闭、归档清理与 shutdown 接入。限制与覆盖率见[实施报告](reports/server-terminal.md)。
+
+- [ADR-034：Agent 后续 turn 配置与 Session 事件/心跳](decisions/adr-034-agent-config-session-events.md)
+  （Accepted）：模型/推理等级与批量配置原子保存；连接事件订阅、心跳、焦点抑制和断线释放归 metadata。
+  [实施报告](reports/server-agent-session.md)记录五个新接口及验证范围。
+
 - [ADR-032：独立 server 接通 Codex 原生文本执行](decisions/adr-032-server-native-provider-execution.md)
   （Accepted）：Provider worker 接通创建、恢复、发送、取消和等待结果；read-only Codex 首片，
   保留 native 历史边界，已实现 capability 增至 107。

@@ -29,3 +29,19 @@ agent-manager.ts, agent-loading.ts, providers/codex-app-server-agent.ts, and
 providers/codex/app-server-transport.ts. Rust changes use a bounded worker, read-only Codex
 sessions, explicit unsupported options, terminal-result polling and process-group cleanup.
 Scope and differences: docs/decisions/adr-032-server-native-provider-execution.md.
+
+Agent next-turn configuration and connection session event/presence behavior also reference
+getpaseo/paseo commit 2c8e8a826810337492cc5a38bb0bbd705b6fb632:
+packages/server/src/server/session/agent-config/agent-config-session.ts
+packages/server/src/server/agent-attention-policy.ts
+packages/server/src/server/session.ts
+Modifications: atomic nullable model/thinking patches; runtime-free bounded observers;
+connection-owned subscriptions and notification selection; unsupported topics rejected.
+
+Terminal payload/binary-frame translations and terminal lifecycle adaptations in
+server-terminal and server-api/src/terminal.rs reference the same pinned commit's
+packages/protocol/src/messages.ts, binary-frames/terminal.ts, terminal-snapshot.ts,
+packages/server/src/terminal/terminal-session-controller.ts, terminal-manager.ts,
+terminal-capture.ts, terminal-restore.ts, and terminal-size-ownership.ts.
+Rust changes use portable-pty, vt100, bounded screen/output retention and polling
+observers. Scope and differences: docs/decisions/adr-033-server-terminal.md.

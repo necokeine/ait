@@ -140,6 +140,10 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// Terminal native process or screen I/O failed.
+    TerminalIo,
+    /// Terminal no longer exists.
+    TerminalNotFound,
     /// Invalid JSON, envelope, parameter, or message order.
     InvalidMessage,
     /// The offered protocol range cannot be served.
@@ -201,6 +205,8 @@ impl ErrorCode {
     #[must_use]
     pub fn message(self) -> &'static str {
         match self {
+            Self::TerminalIo => "Terminal I/O failed",
+            Self::TerminalNotFound => "Terminal not found",
             Self::InvalidMessage => "Invalid message or parameters",
             Self::IncompatibleVersion => "Incompatible protocol version",
             Self::UnsupportedCapability => "Capability was not negotiated",
@@ -351,6 +357,20 @@ impl From<server_provider::rpc::ErrorCode> for ErrorCode {
             server_provider::rpc::ErrorCode::CatalogBusy => Self::CatalogBusy,
             server_provider::rpc::ErrorCode::UnsupportedFormat => Self::UnsupportedFormat,
             server_provider::rpc::ErrorCode::RegistryIo => Self::RegistryIo,
+        }
+    }
+}
+
+impl From<server_terminal::Error> for ErrorCode {
+    fn from(error: server_terminal::Error) -> Self {
+        match error {
+            server_terminal::Error::Invalid => Self::InvalidMessage,
+            server_terminal::Error::NotFound => Self::TerminalNotFound,
+            server_terminal::Error::WorkspaceNotFound => Self::WorkspaceNotFound,
+            server_terminal::Error::Registry => Self::RegistryIo,
+            server_terminal::Error::Exhausted => Self::ResourceExhausted,
+            server_terminal::Error::Io => Self::TerminalIo,
+            server_terminal::Error::MethodNotFound => Self::MethodNotFound,
         }
     }
 }

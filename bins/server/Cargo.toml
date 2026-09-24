@@ -9,6 +9,7 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
+server-terminal = { version = "0.0.6", path = "../../crates/server-terminal" }
 server-provider = { version = "0.0.6", path = "../../crates/server-provider" }
 server-filesystem = { version = "0.0.6", path = "../../crates/server-filesystem" }
 server-metadata = { version = "0.0.6", path = "../../crates/server-metadata" }

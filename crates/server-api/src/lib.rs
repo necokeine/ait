@@ -13,6 +13,8 @@ mod forge;
 mod github_projects;
 mod jobs;
 mod outbound;
+mod session;
+mod terminal;
 mod workspace_automation;
 mod workspace_labels;
 mod workspace_recovery;
@@ -80,6 +82,7 @@ struct Shared {
     agent_runtime: Option<Arc<Mutex<AgentRuntimeDirectory>>>,
     agent_execution: Option<AgentExecution>,
     execution_waits: Arc<Semaphore>,
+    session_events: server_metadata::service::session::SessionEvents,
     daemon: Option<Arc<Mutex<Daemon>>>,
     directory: Option<Arc<Mutex<Directory>>>,
     forge: Option<Arc<Mutex<Forge>>>,
@@ -90,12 +93,16 @@ struct Shared {
     worktrees: Option<Arc<Mutex<Worktrees>>>,
     github_projects: Option<Arc<Mutex<GithubProjects>>>,
     workspace_recovery: Option<Arc<Mutex<WorkspaceRecovery>>>,
+    terminals: Option<Arc<Mutex<server_terminal::service::Terminals>>>,
+    terminal_jobs: Arc<Semaphore>,
     jobs: Arc<Semaphore>,
 }
 
 /// Optional independently composed business services; only installed methods are advertised.
 #[derive(Debug, Default)]
 pub struct Services {
+    /// Local PTY terminal lifecycle, input, capture, and streaming.
+    pub terminals: Option<server_terminal::service::Terminals>,
     /// Native Provider execution and coordinated Agent runtime metadata.
     pub agent_execution: Option<AgentExecution>,
     /// Filesystem workspace recovery operations.
@@ -149,10 +156,22 @@ impl Shared {
         if requested.is_none() {
             *requested = Some(intent);
         }
-        self.cancellation.cancel();
-        self.tasks.close();
+        self.start_draining();
         drop(requested);
         drop(admission);
+    }
+
+    fn start_draining(&self) {
+        if !self.cancellation.is_cancelled() {
+            let mut info = self.info();
+            info.lifecycle = Lifecycle::Draining;
+            self.session_events.publish(
+                server_metadata::protocol::session::SessionEventKind::ServerInfo,
+                &serde_json::json!({"status":"server_info","info":info}),
+            );
+        }
+        self.cancellation.cancel();
+        self.tasks.close();
     }
 }
 
@@ -191,7 +210,12 @@ impl Api {
         }
         let implemented_capabilities = installed_capabilities(&services);
         let capabilities = registered_capabilities(&implemented_capabilities);
-        Ok(Self {
+        let session_events = services
+            .agent_execution
+            .as_ref()
+            .map(AgentExecution::events)
+            .unwrap_or_default();
+        let api = Self {
             shared: Arc::new(Shared {
                 info: ServerInfo {
                     server_id,
@@ -219,6 +243,7 @@ impl Api {
                     .map(|directory| Arc::new(Mutex::new(directory))),
                 agent_execution: services.agent_execution,
                 execution_waits: Arc::new(Semaphore::new(32)),
+                session_events,
                 daemon: services.daemon.map(|daemon| Arc::new(Mutex::new(daemon))),
                 directory: services
                     .directory
@@ -243,9 +268,15 @@ impl Api {
                 worktrees: services
                     .worktrees
                     .map(|worktrees| Arc::new(Mutex::new(worktrees))),
+                terminals: services
+                    .terminals
+                    .map(|service| Arc::new(Mutex::new(service))),
+                terminal_jobs: Arc::new(Semaphore::new(4)),
                 jobs: Arc::new(Semaphore::new(1)),
             }),
-        })
+        };
+        terminal::maintain(&api.shared);
+        Ok(api)
     }
 
     /// Build routes with origin checks, bounded HTTP handling, and metadata-only tracing.
@@ -275,8 +306,7 @@ impl Api {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.shared.cancellation.cancel();
-        self.shared.tasks.close();
+        self.shared.start_draining();
     }
 
     /// Return the first WebSocket lifecycle request accepted during this run.
@@ -293,6 +323,18 @@ impl Api {
     /// The process host must bound this wait with its shutdown deadline.
     pub async fn wait_closed(&self) {
         self.shared.tasks.wait().await;
+        if let Some(terminals) = self.shared.terminals.clone() {
+            let result = tokio::task::spawn_blocking(move || {
+                terminals
+                    .lock()
+                    .map_err(|_| server_terminal::Error::Io)?
+                    .shutdown()
+            })
+            .await;
+            if !matches!(result, Ok(Ok(()))) {
+                tracing::error!("terminal shutdown failed");
+            }
+        }
         if let Some(execution) = &self.shared.agent_execution
             && execution.shutdown().await.is_err()
         {
@@ -308,7 +350,17 @@ impl Api {
 
 fn installed_capabilities(services: &Services) -> Vec<String> {
     let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
+    capabilities.push(server_metadata::protocol::server::HEARTBEAT_METHOD.to_owned());
+    capabilities.extend(
+        server_metadata::protocol::session::CAPABILITIES
+            .iter()
+            .map(|method| (*method).to_owned()),
+    );
     let groups: &[(bool, &[&str])] = &[
+        (
+            services.terminals.is_some(),
+            server_terminal::protocol::CAPABILITIES,
+        ),
         (
             services.files.is_some(),
             server_filesystem::protocol::files::CAPABILITIES,
@@ -324,6 +376,10 @@ fn installed_capabilities(services: &Services) -> Vec<String> {
         (
             services.agent_execution.is_some(),
             server_provider::protocol::agent_execution::CAPABILITIES,
+        ),
+        (
+            services.agent_execution.is_some(),
+            server_provider::protocol::agent_config::CAPABILITIES,
         ),
         (
             services.checkout.is_some(),

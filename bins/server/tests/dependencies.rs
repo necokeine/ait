@@ -23,18 +23,25 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
                 "server-filesystem",
                 "server-provider",
                 "server-api",
+                "server-terminal",
                 "server-protocol",
                 "server-domain",
             ],
             "server-api" => &[
+                "server-terminal",
                 "server-provider",
                 "server-protocol",
                 "server-metadata",
                 "server-filesystem",
             ],
             "server-provider" => &["server-domain", "server-metadata"],
-            "server-protocol" => &["server-metadata", "server-filesystem", "server-provider"],
-            "server-filesystem" => &["server-metadata"],
+            "server-protocol" => &[
+                "server-metadata",
+                "server-filesystem",
+                "server-provider",
+                "server-terminal",
+            ],
+            "server-filesystem" | "server-terminal" => &["server-metadata"],
             "server-domain" | "server-metadata" => &[],
             _ => {
                 violations.push(format!("unregistered server package: {name}"));
@@ -50,7 +57,11 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
             }
             if matches!(
                 name,
-                "server-domain" | "server-protocol" | "server-metadata" | "server-filesystem"
+                "server-domain"
+                    | "server-protocol"
+                    | "server-metadata"
+                    | "server-filesystem"
+                    | "server-terminal"
             ) && [
                 "tokio", "sqlx", "rusqlite", "axum", "hyper", "reqwest", "tonic", "tauri", "rig",
                 "codex",
@@ -206,6 +217,35 @@ fn provider_depends_inward_and_retired_packages_cannot_return() {
         assert_eq!(
             violations(&packages, &BTreeSet::new()),
             [format!("unregistered server package: {retired}")]
+        );
+    }
+}
+
+#[test]
+fn terminal_cannot_depend_on_provider_transport_or_old_workspace_packages() {
+    for dependency in [
+        "server-api",
+        "server-protocol",
+        "server-provider",
+        "server-domain",
+        "server-filesystem",
+        "ait-domain",
+    ] {
+        let packages = [
+            json!({"id":"server-terminal", "name":"server-terminal", "dependencies":[{"name":dependency,"path":"../dependency"}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("server-terminal -> {dependency}")]
+        );
+    }
+    for dependency in ["tokio", "axum", "rusqlite", "reqwest"] {
+        let packages = [
+            json!({"id":"server-terminal", "name":"server-terminal", "dependencies":[{"name":dependency}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("impure server-terminal -> {dependency}")]
         );
     }
 }

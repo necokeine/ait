@@ -31,7 +31,7 @@ async fn production_registers_every_canonical_method_and_routes_each_placeholder
         .into_iter()
         .collect::<BTreeSet<_>>();
     assert_eq!(published.len(), 195);
-    assert_eq!(implemented.len(), 107);
+    assert_eq!(implemented.len(), 122);
     assert!(implemented.is_subset(&published));
     for retired in [
         "project.open",
@@ -52,7 +52,7 @@ async fn production_registers_every_canonical_method_and_routes_each_placeholder
         .into_iter()
         .filter(|(method, _)| !implemented.contains(*method))
         .collect::<Vec<_>>();
-    assert_eq!(placeholders.len(), 88);
+    assert_eq!(placeholders.len(), 73);
     for batch in placeholders.chunks(64) {
         let methods = batch.iter().map(|(method, _)| *method).collect::<Vec<_>>();
         let mut socket = transport::connect(&address, &methods).await;

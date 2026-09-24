@@ -16,6 +16,14 @@ fn implemented_groups() -> &'static [(Handler, &'static [&'static str])] {
     &[
         (Handler::Base, server_protocol::CAPABILITIES),
         (
+            Handler::Session,
+            server_metadata::protocol::session::CAPABILITIES,
+        ),
+        (
+            Handler::AgentExecution,
+            server_provider::protocol::agent_config::CAPABILITIES,
+        ),
+        (
             Handler::AgentExecution,
             server_provider::protocol::agent_execution::CAPABILITIES,
         ),
@@ -98,7 +106,23 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
             assert_eq!(route.handler, Some(expected), "{method}");
         }
     }
-    assert_eq!(implemented.len(), 107);
+    let heartbeat = server_metadata::protocol::server::HEARTBEAT_METHOD;
+    implemented.insert(heartbeat);
+    assert_eq!(lookup(heartbeat).unwrap().kind, InboundKind::Event);
+    assert_eq!(handler(heartbeat), Some(Handler::Session));
+    for &method in server_terminal::protocol::CAPABILITIES {
+        assert!(implemented.insert(method));
+        assert_eq!(handler(method), Some(Handler::Terminal));
+        assert_eq!(
+            lookup(method).unwrap().kind,
+            if method == "terminal.input" {
+                InboundKind::Event
+            } else {
+                InboundKind::Request
+            }
+        );
+    }
+    assert_eq!(implemented.len(), 122);
 
     let advertised = crate::registered_capabilities(
         &implemented

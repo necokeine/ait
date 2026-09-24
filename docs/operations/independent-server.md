@@ -9,7 +9,7 @@
 > 恢复和 GitHub clone 由 `server-filesystem` 管理，见 [ADR-030](../decisions/adr-030-server-filesystem.md)。
 
 `server` 与现有 daemon 并存，当前支持本机服务、WebSocket、独立 Git 项目、Paseo Agent runtime
-snapshot、版本化 Agent 配置和 Codex 原生纯文本执行。内部代码全部来自七个 `server-*` package；
+snapshot、版本化 Agent 配置、Codex 原生纯文本执行、Session 事件与 Terminal。内部代码全部来自八个 `server-*` package；
 领域 Session ref、Message 树与 Run 尚未在独立 server 接通。
 项目必须使用独立 clone，不能与旧 daemon 共管同一目录或共享 Git worktree。
 
@@ -87,7 +87,7 @@ Origin 可以缺省（本机原生客户端）；提供时必须是相同允许 
 major 必须为 1，minor 区间必须包含 0。未知 optional capability 被忽略，未知 required
 capability 拒绝握手。服务端返回 `type=server_info`，包含 `info`、新的 `connection_id` 与
 `negotiated_capabilities`。`info.capabilities` 列出 195 个可协商规范名称及独立方法，
-`info.implemented_capabilities` 列出当前 host 真正组装的 107 个方法。尚未实现的 88 个规范方法
+`info.implemented_capabilities` 列出当前 host 真正组装的 122 个方法。尚未实现的 73 个规范方法
 可协商，但调用后会返回 `not_implemented`；每次 hello 最多传 64 个 optional 和 64 个 required
 名称，请按需声明。能力必须协商后才能调用。`client_id` 仅用于诊断，不用于身份、
 接管、去重或订阅共享；即使重复，两个物理连接也拥有不同的 connection ID。
@@ -199,7 +199,8 @@ ownership 共同决定。成功创建后，响应之后会收到
 `{"type":"event","method":"workspace.update",...}` upsert event。
 
 当前 create 会在 registry 提交后异步执行 `paseo.json` setup，但不创建 PTY setup terminal；archive
-不执行 teardown、Agent/terminal 清理，因此 `removedAgents` 为空。`checkoutSource` 与
+不执行 teardown 或 Agent 清理，因此 `removedAgents` 为空；真实 PTY 由 Terminal reconciliation
+在 Workspace/Project 归档或移除后关闭。`checkoutSource` 与
 `githubPrNumber` 在 Forge 服务接通前返回明确失败。这些限制不会返回伪成功，完整差异见第四、
 第五阶段报告。
 
@@ -404,7 +405,7 @@ JSON preview 上限 512 KiB，图片用 base64，其他二进制只返回 metada
 | `agent.delete.request` | `agentId` | 已永久删除的 `agentId` |
 | `agent.detach.request` | `agentId` | `agentId`、`accepted` 与 inline `error` |
 | `agent.attention.clear.request` | 一个 `agentId` 或 Agent ID 数组 | 原 selection 与更新后的 `agents` |
-| `agent.items.close.request` | `agentIds`；当前 `terminalIds` 必须为空 | 成功归档的 `agents` 与空 `terminals` |
+| `agent.items.close.request` | `agentIds`、`terminalIds` | 成功归档的 `agents` 与逐项 `terminalId/success` |
 
 runtime snapshot 保存于 `<data-dir>/agents/agents.json`，shape 来自 Paseo `StoredAgentRecord`，与下文
 ADR-024 Agent preset catalog 是两类数据。list/history 会用 Workspace/Project registry 生成 placement，
@@ -417,7 +418,7 @@ child；跨 Workspace 或带 open-tab label 的 child 会 detach。delegated Age
 是永久删除；close-items 独立处理每个 Agent，按 Paseo 行为只返回成功项。
 
 未恢复的 stored Agent 保守返回 `providerUnavailable:true`、`persistence:null`；成功创建或恢复的
-live Agent 返回原生 handle 和可选 activeTurn。list 的 `subscribe`/`sync`、非空 `terminalIds`、
+live Agent 返回原生 handle 和可选 activeTurn。list 的 `subscribe`/`sync`、
 timeline、流式事件与权限交互仍未接通。完整目录规则见第六阶段报告；原生执行见下节。
 
 ## Codex 原生纯文本执行
@@ -522,7 +523,7 @@ Linux/Windows 的平台验收以 CI/后续实测为准；本次本地报告记�
 ## 开发验证
 
 ```sh
-cargo test -p server-protocol -p server-api -p server-bin -p server-domain -p server-provider -p server-metadata -p server-filesystem
+cargo test -p server-protocol -p server-api -p server-bin -p server-domain -p server-provider -p server-metadata -p server-filesystem -p server-terminal
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -535,3 +536,76 @@ cargo llvm-cov --workspace --html
 
 设计与后续工作见 [ADR-022](../decisions/adr-022-independent-server.md) 和
 [实施计划](../plans/independent-server.md)。
+
+## Agent 后续 turn 配置与 Session 事件
+
+按 [ADR-034](../decisions/adr-034-agent-config-session-events.md)，新增以下已实现方法：
+
+| 方法 | params | 行为 |
+| --- | --- | --- |
+| `agent.model.set.request` | `{agentId, modelId: string \| null}` | 保存后续 turn 的模型覆盖 |
+| `agent.thinking.set.request` | `{agentId, thinkingOptionId: string \| null}` | 保存后续 turn 的推理等级覆盖 |
+| `agent.config.apply.request` | `{agentId, config: {modelId?, thinkingOptionId?}}` | 一次落盘整个配置补丁 |
+| `session.events.set_subscription.request` | `{events: string[], notifications?: boolean}` | 创建独立连接订阅，返回 subscriptionId |
+| `session.heartbeat` | 下文客户端 event | 更新进程内活动与焦点，不返回响应 |
+
+三个配置方法返回 `{agentId, accepted, error, notice}`。省略字段保持原值，null 清除宿主覆盖并
+交给原生 Provider 继承；它不保证回到创建时的模型。修改不打断正在执行的 turn；活动期间成功
+修改会返回下一轮生效的 notice。accepted 只表示保存成功，真实模型可用性仍在执行时验证。
+Codex thinking 支持 none/minimal/low/medium/high/xhigh；模型非空、无控制字符且最多 256 字节。
+归档 Agent 拒绝修改。批量 config 暂不接受 modeId 或 featureValues；sandbox 仍是只读。
+
+Session 事件支持 `agent_attention_required`、`status.daemon_config_changed`、
+`status.server_info`。未实现的事件类别明确返回 unsupported_capability。事件沿用通用信封：
+
+```json
+{"type":"event","method":"agent_attention_required","params":{"subscriptionId":"...","agentId":"...","reason":"finished","timestamp":"2026-09-24T00:00:00.000Z","shouldNotify":false}}
+```
+
+订阅无初始快照、无持久化重放；订阅响应在事件之前入队。每次调用创建独立 owner，
+`subscription.release.request` 的 `{subscriptionId}` 仅释放本连接订阅；断连全部释放。
+与其他业务订阅共享每连接 16 个配额。Agent 完成/失败事件在终态落盘后发布，取消不触发提醒。
+配置变更事件的 params 包含 status、config、subscriptionId；服务关闭事件包含 status、info、
+subscriptionId，info.lifecycle 为 draining。可通过 server.info 主动读取初始服务状态。
+
+心跳需要协商 `session.heartbeat`，使用 event 信封：
+
+```json
+{"type":"event","method":"session.heartbeat","params":{"deviceType":"web","focusedAgentId":null,"focusedTerminalId":null,"lastActivityAt":"2026-09-24T00:00:00.000Z","appVisible":true}}
+```
+
+时间使用 RFC3339；可选 appVisibilityChangedAt 也需合法。未来 lastActivityAt 在接收时截断，
+活动有效期 180 秒。新鲜、可见且聚焦目标 Agent 的连接会抑制所有提醒；其他情况下只让最近
+活动、启用 notifications 的订阅连接得到一次 shouldNotify=true。其余订阅仍收到状态事件。
+无心跳或过期连接的 shouldNotify=false；不投递 push，不自动清除 Agent attention，
+focusedTerminalId 仅兼容解析。这里的 Session 表示连接协议，不是领域 Message 引用。
+
+
+## Terminal PTY
+
+Terminal 分组全部 10 个方法由 `server-terminal` 实现。创建前先打开 Workspace：
+
+```json
+{"type":"request","request_id":"open","method":"workspace.open.request","params":{"cwd":"/absolute/project"}}
+{"type":"request","request_id":"create","method":"terminal.create.request","params":{"cwd":"/absolute/project","size":{"rows":24,"cols":80}}}
+{"type":"request","request_id":"stream","method":"terminal.subscribe.request","params":{"terminalId":"<returned-id>","restore":{"mode":"visible-snapshot","scrollbackLines":200}}}
+{"type":"event","method":"terminal.input","params":{"terminalId":"<returned-id>","message":{"type":"input","data":"pwd\r"}}}
+```
+
+hello 需逐项协商相应 capability；输入使用 event，其他九项为 request。订阅响应返回
+`subscriptionId` 和 0–255 的连接内 `slot`。二进制消息以 opcode/slot 两字节开头：0x01 output、
+0x02 input、0x03 resize JSON、0x04 legacy state JSON、0x05 ANSI restore。
+仅协商 `terminal.input` 且持有该 slot 的连接可发送 binary input/resize。
+
+`terminal.list.subscribe.request` 要求 cwd，可加 workspaceId；返回初始列表及 subscriptionId，
+后续事件为 `terminal.list.changed`。退出事件为 `terminal.stream.exit`。通用 subscription release
+和专用 unsubscribe 都释放本连接订阅，断线不会杀终端。重连后重新 subscribe；重启 server 会杀掉
+并清空终端。`terminal.capture.request` 的 start/end 是闭区间，负数从尾部计算。
+
+resize `{type:"resize",rows,cols,intent:"claim"}` 获取尺寸控制；`intent:"update"` 仅更新该连接
+拥有的尺寸。终端最多 32 个，输入每次不超过 64 KiB；尺寸不超过 100×200 且总 visible cells
+不超过 10,000。屏幕/滚动历史有界；慢 observer 会收到新快照，超时连接关闭。
+
+`agent.items.close.request` 支持 terminalIds；Workspace/Project archive/remove 后最多约 250 ms
+开始清理所属 PTY。setup/script executor 的逻辑 terminalId 暂不对应此处的真实 PTY；activity hooks
+和代理健康检查仍保持原边界。详细语义及仿真差异见 [ADR-033](../decisions/adr-033-server-terminal.md)。

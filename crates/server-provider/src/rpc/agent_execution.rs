@@ -37,6 +37,9 @@ impl ExecutionState {
             "agent.create.request" => self.create(params).await,
             "agent.resume.request" => self.resume(params).await,
             "agent.message.send.request" => self.send(params).await,
+            "agent.model.set.request"
+            | "agent.thinking.set.request"
+            | "agent.config.apply.request" => self.configure(method, &params),
             "agent.cancel.request" => {
                 only(&params, &["agentId"])?;
                 let request: AgentIdRequest = decode(params)?;
@@ -74,6 +77,34 @@ impl ExecutionState {
                 Ok(value)
             }
         }
+    }
+
+    fn configure(&self, method: &str, params: &Value) -> Result<Value, ErrorCode> {
+        use crate::protocol::agent_config::ConfigPatch;
+
+        let field = match method {
+            "agent.model.set.request" => "modelId",
+            "agent.thinking.set.request" => "thinkingOptionId",
+            _ => "config",
+        };
+        only(params, &["agentId", field])?;
+        let identifier = params["agentId"]
+            .as_str()
+            .ok_or(ErrorCode::InvalidMessage)?;
+        let id = self.resolve(identifier)?;
+        let value = params.get(field).ok_or(ErrorCode::InvalidMessage)?;
+        let patch = if field == "config" {
+            only(value, &["modelId", "thinkingOptionId"])?;
+            value.clone()
+        } else {
+            json!({(field): value})
+        };
+        let patch: ConfigPatch = decode(patch)?;
+        let result = self.manager.configure(&id, &patch);
+        let notice = (result.is_ok() && self.manager.active_turn(&id).is_some())
+            .then(|| json!({"type":"warning","message":"Configuration applies next turn"}));
+        Ok(json!({"agentId":id,"accepted":result.is_ok(),
+            "error":result.err().map(|error|error.to_string()),"notice":notice}))
     }
 
     async fn create(&mut self, params: Value) -> Result<Value, ErrorCode> {

@@ -122,6 +122,10 @@ impl AgentClient for FakeClient {
         "codex"
     }
 
+    fn validate_config(&self, _: &StoredAgentConfig) -> Result<(), AgentSessionError> {
+        Ok(())
+    }
+
     fn is_available(&self) -> AgentSessionFuture<'_, bool> {
         Box::pin(async move { Ok(self.0.lock().expect("state").available) })
     }
@@ -160,7 +164,11 @@ impl AgentClient for FakeClient {
 }
 
 impl AgentSession for FakeSession {
-    fn start_turn<'a>(&'a mut self, _text: &'a str) -> AgentSessionFuture<'a, String> {
+    fn start_turn<'a>(
+        &'a mut self,
+        _text: &'a str,
+        _config: &'a server_domain::agent_runtime::StoredAgentConfig,
+    ) -> AgentSessionFuture<'a, String> {
         Box::pin(async move {
             self.0.lock().unwrap().start_result?;
             Ok("native-turn".to_owned())
@@ -530,11 +538,28 @@ async fn close_all_attempts_every_live_session() {
 #[tokio::test]
 async fn terminal_write_failures_retain_work_and_close_preserves_concurrent_metadata() {
     let (mut manager, registry, client) = make_manager();
+    let connection = manager.events().connect();
+    let notifications = Arc::new(Mutex::new(Vec::new()));
+    let sink = notifications.clone();
+    let subscription = connection
+        .subscribe(
+            server_metadata::protocol::session::EventsRequest {
+                events: vec!["agent_attention_required".to_owned()],
+                notifications: false,
+            },
+            Arc::new(move |_, payload| {
+                sink.lock().unwrap().push(payload);
+                Ok(())
+            }),
+        )
+        .unwrap();
+    subscription.activate().unwrap();
     manager
         .create("agent-1", &spec(), AgentRegistration::default())
         .await
         .unwrap();
     manager.send("agent-1", "hello").await.unwrap();
+    manager.poll().await.unwrap();
     client
         .0
         .lock()
@@ -543,6 +568,7 @@ async fn terminal_write_failures_retain_work_and_close_preserves_concurrent_meta
         .push_back(AgentTurnEvent::Completed(Some("answer".to_owned())));
     registry.0.lock().unwrap().fail_update = true;
     assert_eq!(manager.poll().await, Err(AgentManagerError::Registry));
+    assert!(notifications.lock().unwrap().is_empty());
     assert_eq!(manager.active_turn("agent-1"), Some("native-turn"));
     assert_eq!(manager.last_message("agent-1"), None);
     registry.0.lock().unwrap().fail_update = false;
@@ -555,6 +581,9 @@ async fn terminal_write_failures_retain_work_and_close_preserves_concurrent_meta
         })
         .unwrap();
     manager.poll().await.unwrap();
+    manager.poll().await.unwrap();
+    assert_eq!(notifications.lock().unwrap().len(), 1);
+    assert_eq!(notifications.lock().unwrap()[0]["reason"], "finished");
     assert_eq!(manager.last_message("agent-1"), Some("answer"));
     assert_eq!(manager.active_turn("agent-1"), None);
     registry.0.lock().unwrap().fail_update = true;
@@ -568,6 +597,136 @@ async fn terminal_write_failures_retain_work_and_close_preserves_concurrent_meta
     let latest = registry.get("agent-1").unwrap().unwrap();
     assert_eq!(latest.title.as_deref(), Some("Newest title"));
     assert_eq!(latest.labels["new"], "label");
+}
+
+#[tokio::test]
+async fn accepted_turn_survives_runtime_write_failure_and_reports_inspection_failure() {
+    let (mut manager, registry, client) = make_manager();
+    manager
+        .create("agent-1", &spec(), AgentRegistration::default())
+        .await
+        .unwrap();
+    manager.send("agent-1", "hello").await.unwrap();
+    registry.0.lock().unwrap().fail_update = true;
+    assert_eq!(manager.poll().await, Err(AgentManagerError::Registry));
+    assert_eq!(manager.active_turn("agent-1"), Some("native-turn"));
+    registry.0.lock().unwrap().fail_update = false;
+    manager.poll().await.unwrap();
+    assert_eq!(manager.active_turn("agent-1"), Some("native-turn"));
+    assert!(manager.live["agent-1"].pending_runtime.is_none());
+    manager.cancel("agent-1").await.unwrap();
+    manager.poll().await.unwrap();
+    client.0.lock().unwrap().fail_info = true;
+    manager
+        .send("agent-1", "second accepted turn")
+        .await
+        .unwrap();
+    assert_eq!(manager.active_turn("agent-1"), Some("native-turn"));
+    manager.poll().await.unwrap();
+    assert!(manager.live_snapshot("agent-1").is_none());
+    assert_eq!(
+        registry.get("agent-1").unwrap().unwrap().last_status,
+        AgentRuntimeStatus::Error
+    );
+    assert_eq!(client.0.lock().unwrap().close_calls, 1);
+}
+
+#[tokio::test]
+async fn cancelled_internal_archived_and_deleted_agents_do_not_publish_attention() {
+    for outcome in ["cancelled", "internal", "archived", "deleted"] {
+        let (mut manager, registry, client) = make_manager();
+        manager
+            .create(
+                "agent-1",
+                &spec(),
+                AgentRegistration {
+                    internal: outcome == "internal",
+                    ..AgentRegistration::default()
+                },
+            )
+            .await
+            .unwrap();
+        manager.send("agent-1", "hello").await.unwrap();
+        manager.poll().await.unwrap();
+        let connection = manager.events().connect();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let subscription = connection
+            .subscribe(
+                server_metadata::protocol::session::EventsRequest {
+                    events: vec!["agent_attention_required".to_owned()],
+                    notifications: false,
+                },
+                Arc::new(move |_, payload| {
+                    captured.lock().unwrap().push(payload);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        subscription.activate().unwrap();
+        if outcome == "archived" {
+            registry
+                .update("agent-1", &|record| {
+                    let mut next = record.clone();
+                    next.archived_at = Some("2026-09-24T00:00:00Z".to_owned());
+                    next
+                })
+                .unwrap();
+        } else if outcome == "deleted" {
+            registry.remove("agent-1").unwrap();
+        }
+        client
+            .0
+            .lock()
+            .unwrap()
+            .events
+            .push_back(if outcome == "cancelled" {
+                AgentTurnEvent::Cancelled
+            } else {
+                AgentTurnEvent::Completed(None)
+            });
+        manager.poll().await.unwrap();
+        assert!(events.lock().unwrap().is_empty(), "{outcome}");
+        assert_eq!(manager.active_turn("agent-1"), None);
+        if outcome == "deleted" {
+            assert!(registry.get("agent-1").unwrap().is_none());
+        }
+        manager.close_all().await.unwrap();
+    }
+}
+
+#[test]
+fn configuration_write_failure_preserves_the_previous_bundle_and_unrelated_metadata() {
+    let (manager, registry, _) = make_manager();
+    registry.upsert(&stored_record()).unwrap();
+    let original = registry.get("agent-1").unwrap().unwrap();
+    let patch = ConfigPatch {
+        model_id: crate::protocol::agent_config::NullableSetting::Set("new".to_owned()),
+        thinking_option_id: crate::protocol::agent_config::NullableSetting::Set("high".to_owned()),
+    };
+    registry.0.lock().unwrap().fail_update = true;
+    assert_eq!(
+        manager.configure("agent-1", &patch),
+        Err(AgentManagerError::Registry)
+    );
+    assert_eq!(registry.get("agent-1").unwrap().unwrap(), original);
+    registry.0.lock().unwrap().fail_update = false;
+    manager.configure("agent-1", &patch).unwrap();
+    let updated = registry.get("agent-1").unwrap().unwrap();
+    assert_eq!(updated.config.unwrap().model.as_deref(), Some("new"));
+    assert_eq!(updated.title, original.title);
+    assert_eq!(updated.persistence, original.persistence);
+    assert!(matches!(
+        manager.configure("missing", &patch),
+        Err(AgentManagerError::NotFound(_))
+    ));
+    let mut unsupported = original;
+    unsupported.provider = "unknown".to_owned();
+    registry.upsert(&unsupported).unwrap();
+    assert!(matches!(
+        manager.configure("agent-1", &patch),
+        Err(AgentManagerError::ProviderUnavailable(_))
+    ));
 }
 
 #[tokio::test]
