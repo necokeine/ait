@@ -15,7 +15,7 @@ async fn every_catalog_placeholder_uses_its_canonical_envelope_and_explicit_erro
         .into_iter()
         .filter(|(method, _)| !implemented.iter().any(|ready| ready == method))
         .collect::<Vec<_>>();
-    assert_eq!(placeholders.len(), 184);
+    assert_eq!(placeholders.len(), 161);
     for batch in placeholders.chunks(64) {
         let mut socket = fixture.socket().await;
         let mut offer = hello();
@@ -102,6 +102,51 @@ async fn placeholder_negotiation_wrong_kind_and_legacy_names_are_distinct() {
         )
         .await["result"]["nonce"],
         "still-open"
+    );
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn removed_groups_are_not_negotiable_and_requests_are_unknown() {
+    let fixture = Fixture::start().await;
+    let names = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../server-protocol/src/methods/fixtures/excluded-inbound.txt"
+    ))
+    .lines()
+    .filter(|line| !line.starts_with('#') && !line.is_empty())
+    .flat_map(|name| {
+        let canonical = if name.starts_with("hub.") || name.starts_with("plugin.") {
+            name.to_owned()
+        } else {
+            format!("{}.request", name.replace('/', "."))
+        };
+        [name.to_owned(), canonical]
+    })
+    .collect::<std::collections::BTreeSet<_>>();
+    let mut socket = fixture.socket().await;
+    let mut offer = hello();
+    offer["capabilities"] = json!(names);
+    send(&mut socket, offer).await;
+    assert_eq!(
+        receive(&mut socket).await["negotiated_capabilities"],
+        json!([])
+    );
+    for name in &names {
+        assert!(!fixture.api.shared.info.capabilities.contains(name));
+        assert_eq!(
+            request(&mut socket, name, json!({})).await["code"],
+            "method_not_found",
+            "{name}"
+        );
+    }
+    let mut required = fixture.socket().await;
+    let mut offer = hello();
+    offer["required_capabilities"] = json!(names);
+    send(&mut required, offer).await;
+    assert_eq!(
+        receive(&mut required).await["code"],
+        "unsupported_capability"
     );
     fixture.stop().await;
 }

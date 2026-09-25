@@ -6,7 +6,7 @@ use serde_json::Value;
 pub mod methods;
 pub mod subscription;
 
-pub use server_metadata::protocol::server::{
+pub use server_model::server::{
     CAPABILITIES, Lifecycle, Limits, MAX_CONNECTIONS, MAX_MESSAGE_BYTES, MAX_QUEUE_BYTES,
     MAX_QUEUE_MESSAGES, ServerInfo, VERSION, Version,
 };

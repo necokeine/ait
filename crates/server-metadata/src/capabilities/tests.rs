@@ -4,8 +4,9 @@ use super::*;
 
 #[test]
 fn every_installation_combination_advertises_only_available_services() {
-    for mask in 0..32 {
+    for mask in 0..64 {
         let services = InstalledServices {
+            push_tokens: mask & 32 != 0,
             directory: mask & 1 != 0,
             daemon: mask & 2 != 0,
             workspace_labels: mask & 4 != 0,
@@ -14,7 +15,8 @@ fn every_installation_combination_advertises_only_available_services() {
         };
         let capabilities: Vec<_> = installed_capabilities(services).collect();
         let methods: BTreeSet<_> = capabilities.iter().copied().collect();
-        let expected_count = 6
+        let expected_count = 9
+            + 2 * usize::from(services.push_tokens)
             + 15 * usize::from(services.directory)
             + 9 * usize::from(services.daemon)
             + 5 * usize::from(services.workspace_labels)
@@ -67,8 +69,9 @@ fn implemented_groups_are_unique_and_match_a_full_installation() {
         .collect();
     let unique: BTreeSet<_> = declared.iter().copied().collect();
     assert_eq!(declared.len(), unique.len());
-    assert_eq!(declared.len(), 42);
+    assert_eq!(declared.len(), 47);
     let installed: Vec<_> = installed_capabilities(InstalledServices {
+        push_tokens: true,
         directory: true,
         daemon: true,
         workspace_labels: true,

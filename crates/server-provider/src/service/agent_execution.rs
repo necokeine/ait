@@ -9,6 +9,9 @@ use serde_json::{Value, json};
 use server_metadata::ports::registry::{ProjectRegistry, WorkspaceRegistry};
 use server_metadata::service::session::SessionEvents;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
+
+mod voice;
 
 use crate::ports::agent_runtime::AgentRuntimeRegistry;
 use crate::protocol::agent_execution::WaitRequest;
@@ -29,6 +32,8 @@ pub struct ExecutionDependencies {
     pub workspaces: Box<dyn WorkspaceRegistry>,
     /// Shared Project records for active placement validation.
     pub projects: Box<dyn ProjectRegistry>,
+    /// Optional metadata coordinator for opening imported session Workspaces.
+    pub import_directory: Option<server_metadata::service::directory::Directory>,
     /// Host resource guard, such as the data-directory lease.
     pub lifetime: Arc<dyn Send + Sync>,
 }
@@ -38,6 +43,7 @@ enum Command {
         method: String,
         params: Value,
         reply: oneshot::Sender<Result<Value, ErrorCode>>,
+        cancel: Option<CancellationToken>,
     },
     Shutdown(oneshot::Sender<Result<(), ErrorCode>>),
 }
@@ -46,6 +52,8 @@ struct Worker {
     sender: mpsc::Sender<Command>,
     thread: Mutex<Option<JoinHandle<()>>>,
     events: SessionEvents,
+    timeline: crate::storage::timeline::Timeline,
+    creations: server_metadata::service::creation::Creations,
 }
 
 // Field drop order keeps the instance lease until the runtime has reaped its children,
@@ -72,7 +80,18 @@ impl AgentExecution {
     ///
     /// # Errors
     /// Returns an I/O error if a runtime or worker thread cannot be created.
-    pub fn spawn(dependencies: ExecutionDependencies) -> Result<Self, std::io::Error> {
+    pub fn spawn(mut dependencies: ExecutionDependencies) -> Result<Self, std::io::Error> {
+        dependencies
+            .manager
+            .recover_permissions()
+            .map_err(std::io::Error::other)?;
+        let timeline = match dependencies.manager.timeline() {
+            Some(timeline) => timeline,
+            None => crate::storage::timeline::Timeline::memory()
+                .map_err(|_| std::io::Error::other("initialize timeline"))?,
+        };
+        dependencies.manager = dependencies.manager.with_timeline(timeline.clone());
+        let creations = dependencies.manager.creations();
         let events = dependencies.manager.events();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -91,6 +110,7 @@ impl AgentExecution {
                     registry: dependencies.registry,
                     workspaces: dependencies.workspaces,
                     projects: dependencies.projects,
+                    import_directory: dependencies.import_directory,
                 };
                 owned.runtime.block_on(serve(state, receiver));
             })?;
@@ -98,7 +118,21 @@ impl AgentExecution {
             sender,
             thread: Mutex::new(Some(thread)),
             events,
+            timeline,
+            creations,
         })))
+    }
+
+    /// Return the installed durable timeline projection and its observers.
+    #[must_use]
+    pub fn timeline(&self) -> crate::storage::timeline::Timeline {
+        self.0.timeline.clone()
+    }
+
+    /// Return shared metadata-owned creation receipts.
+    #[must_use]
+    pub fn creations(&self) -> server_metadata::service::creation::Creations {
+        self.0.creations.clone()
     }
 
     /// Return connection events shared with this worker's Agent manager.
@@ -165,6 +199,15 @@ impl AgentExecution {
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, ErrorCode> {
+        self.call_cancellable(method, params, None).await
+    }
+
+    async fn call_cancellable(
+        &self,
+        method: &str,
+        params: Value,
+        cancel: Option<CancellationToken>,
+    ) -> Result<Value, ErrorCode> {
         let (reply, receiver) = oneshot::channel();
         self.0
             .sender
@@ -172,6 +215,7 @@ impl AgentExecution {
                 method: method.to_owned(),
                 params,
                 reply,
+                cancel,
             })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => ErrorCode::CatalogBusy,
@@ -187,9 +231,8 @@ async fn serve(mut state: ExecutionState, mut commands: mpsc::Receiver<Command>)
     loop {
         tokio::select! {
             command = commands.recv() => match command {
-                Some(Command::Request { method, params, reply }) => {
-                    let result = state.execute(&method, params).await;
-                    let _ = reply.send(result);
+                Some(Command::Request { method, params, reply, cancel }) => {
+                    voice::dispatch(&mut state, &method, params, (reply, cancel)).await;
                 }
                 Some(Command::Shutdown(reply)) => {
                     commands.close();

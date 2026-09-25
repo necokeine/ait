@@ -14,7 +14,7 @@ fn every_installation_combination_advertises_only_available_services() {
         let methods: BTreeSet<_> = capabilities.iter().copied().collect();
         let expected_count = 5 * usize::from(services.agents)
             + 9 * usize::from(services.agent_runtime || services.agent_execution)
-            + 8 * usize::from(services.agent_execution);
+            + 32 * usize::from(services.agent_execution);
         assert_eq!(
             capabilities.len(),
             methods.len(),
@@ -54,7 +54,7 @@ fn implemented_groups_are_unique_and_match_a_full_installation() {
         .collect();
     let unique: BTreeSet<_> = declared.iter().copied().collect();
     assert_eq!(declared.len(), unique.len());
-    assert_eq!(declared.len(), 22);
+    assert_eq!(declared.len(), 46);
     let installed: Vec<_> = installed_capabilities(InstalledServices {
         agents: true,
         agent_runtime: true,

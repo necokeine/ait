@@ -49,9 +49,20 @@ pub enum AgentResumePurpose {
     History,
 }
 
-/// Final native foreground-turn result. This is not a host Run or Message tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Native foreground-turn progress or result. This is not a host Run or Message tree.
+#[derive(Debug, Clone, PartialEq)]
 pub enum AgentTurnEvent {
+    /// One incremental display event with a retry-stable observation identity.
+    Progress {
+        /// Unique identity for this observation, distinct from the native item identity.
+        observation: String,
+        /// Text delta or tool snapshot, keyed by the eventual completed native item.
+        entry: crate::protocol::timeline::NativeItem,
+    },
+    /// A live native approval; the request payload is never written to display history.
+    PermissionRequested(serde_json::Value),
+    /// One immutable normalized item completed by the native provider.
+    Timeline(crate::protocol::timeline::NativeItem),
     /// The native provider drained its turn successfully.
     Completed(Option<String>),
     /// The native provider acknowledged interruption.
@@ -62,6 +73,21 @@ pub enum AgentTurnEvent {
 
 /// Live provider session. Closing releases resources without deleting native history.
 pub trait AgentSession: Debug + Send {
+    /// Inspect pending approvals for reconnecting clients; IDs expire with this native session.
+    fn pending_permissions(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+
+    /// Answer one pending approval without extending its authority to later calls.
+    /// # Errors
+    /// Returns rejected for stale/invalid answers, or a native transport failure.
+    fn respond_permission<'a>(
+        &'a mut self,
+        _id: &'a str,
+        _response: &'a serde_json::Value,
+    ) -> AgentSessionFuture<'a, ()> {
+        Box::pin(async { Err(AgentSessionError::Rejected) })
+    }
     /// Return the provider that owns this session.
     fn provider(&self) -> &str;
 
@@ -86,6 +112,18 @@ pub trait AgentSession: Debug + Send {
         Box::pin(async { Err(AgentSessionError::Unavailable) })
     }
 
+    /// Append text to exactly `turn_id`; success means the provider acknowledged admission.
+    /// # Errors
+    /// Returns rejected for unsupported or definitively refused input. Other errors leave
+    /// admission uncertain and must never trigger an automatic resubmission.
+    fn steer_turn<'a>(
+        &'a mut self,
+        _turn_id: &'a str,
+        _text: &'a str,
+    ) -> AgentSessionFuture<'a, ()> {
+        Box::pin(async { Err(AgentSessionError::Rejected) })
+    }
+
     /// Interrupt the identified native turn without deleting session history.
     ///
     /// # Errors
@@ -94,7 +132,7 @@ pub trait AgentSession: Debug + Send {
         Box::pin(async { Err(AgentSessionError::Unavailable) })
     }
 
-    /// Read a queued terminal event without waiting for new provider output.
+    /// Read a queued progress or terminal event without waiting for new provider output.
     ///
     /// # Errors
     /// Returns an error if the provider connection has failed.
@@ -111,6 +149,62 @@ pub trait AgentSession: Debug + Send {
 
 /// Factory and availability boundary for one independent provider adapter.
 pub trait AgentClient: Debug + Send + Sync {
+    /// Describe selectable modes/features and implemented native control flags without I/O.
+    fn settings(&self, _config: &StoredAgentConfig) -> serde_json::Value {
+        serde_json::json!({"availableModes":[],"features":[],"capabilities":{}})
+    }
+    /// Validate dynamic selections before committing configuration.
+    /// # Errors
+    /// Returns unsupported settings or unavailable native discovery.
+    fn validate_selection<'a>(&'a self, spec: &'a AgentSessionSpec) -> AgentSessionFuture<'a, ()> {
+        Box::pin(async move { self.validate_config(&spec.config) })
+    }
+
+    /// Inspect launch and authentication availability without exposing credentials.
+    /// # Errors
+    /// Returns unsupported diagnostics or an inspection failure.
+    fn diagnostic(&self) -> AgentSessionFuture<'_, String> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Read native account quota facts, not local estimates of token consumption.
+    /// # Errors
+    /// Returns unsupported accounting or a native query failure.
+    fn usage(&self) -> AgentSessionFuture<'_, serde_json::Value> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// List commands and skills available in a validated working directory.
+    /// # Errors
+    /// Returns malformed discovery or unavailable native support.
+    fn commands<'a>(
+        &'a self,
+        _spec: &'a AgentSessionSpec,
+    ) -> AgentSessionFuture<'a, Vec<serde_json::Value>> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Discover native child-parent links without registering host Agents.
+    /// # Errors
+    /// Returns unavailable or incomplete native discovery.
+    fn subagents<'a>(
+        &'a self,
+        _cwd: &'a str,
+    ) -> AgentSessionFuture<'a, Vec<super::controls::NativeSubagent>> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Derive a new native history before the selected user message, preserving the old thread.
+    /// # Errors
+    /// Returns an invalid target, active history, or native fork/rollback failure.
+    fn rewind<'a>(
+        &'a self,
+        _handle: &'a AgentPersistenceHandle,
+        _spec: &'a AgentSessionSpec,
+        _message_id: &'a str,
+    ) -> AgentSessionFuture<'a, super::native_history::SessionHistory> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
     /// Return the provider identity served by this client.
     fn provider(&self) -> &str;
 
@@ -127,6 +221,48 @@ pub trait AgentClient: Debug + Send + Sync {
     /// # Errors
     /// Returns a provider error if availability cannot be determined.
     fn is_available(&self) -> AgentSessionFuture<'_, bool>;
+
+    /// Discover native models and the modes/features supported by this adapter in `cwd`.
+    /// # Errors
+    /// Returns unavailable or safe native discovery failures.
+    fn discover<'a>(
+        &'a self,
+        _cwd: &'a str,
+    ) -> AgentSessionFuture<'a, crate::protocol::provider::Details> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Read existing native history without resuming or claiming an interactive writer.
+    /// # Errors
+    /// Returns unavailable, missing-history or malformed-provider errors.
+    fn history<'a>(
+        &'a self,
+        _handle: &'a AgentPersistenceHandle,
+        _cwd: &'a str,
+    ) -> AgentSessionFuture<'a, Vec<crate::protocol::timeline::NativeItem>> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Discover existing sessions without resuming a writer or submitting input.
+    /// # Errors
+    /// Returns unsupported discovery, malformed native responses or transport failures.
+    fn list_sessions<'a>(
+        &'a self,
+        _options: &'a super::native_history::ListOptions,
+    ) -> AgentSessionFuture<'a, Vec<super::native_history::SessionDescriptor>> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Inspect one complete native history and configuration without claiming a writer.
+    /// # Errors
+    /// Returns unavailable history, mismatched identity, partial history or transport failures.
+    fn inspect_session<'a>(
+        &'a self,
+        _handle: &'a AgentPersistenceHandle,
+        _cwd: &'a str,
+    ) -> AgentSessionFuture<'a, super::native_history::SessionHistory> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
 
     /// Create a new native session using `spec`.
     ///

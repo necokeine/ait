@@ -1,0 +1,68 @@
+{
+  "base_revision": "97f1372",
+  "working_tree": "uncommitted; concurrent Provider edits prevent final workspace build",
+  "platform": "macOS aarch64",
+  "features": "default",
+  "workspace_line_coverage": null,
+  "workspace_coverage_status": "not measured: first attempt stopped on daemon readiness failure (isolated retry passed); second attempt failed compiling concurrent server-provider changes",
+  "command": "cargo llvm-cov --offline -p server-protocol --no-clean --html",
+  "scope": "server-protocol only",
+  "line_totals": {
+    "count": 57,
+    "covered": 57,
+    "percent": 100
+  },
+  "files": [
+    {
+      "path": "crates/server-protocol/src/lib.rs",
+      "lines": {
+        "count": 45,
+        "covered": 45,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/server-protocol/src/methods.rs",
+      "lines": {
+        "count": 12,
+        "covered": 12,
+        "percent": 100.0
+      }
+    }
+  ],
+  "validation": {
+    "protocol_tests": {
+      "passed": 9,
+      "failed": 0
+    },
+    "api_tests_first_successful_build": {
+      "passed": 23,
+      "failed": 0
+    },
+    "production_catalog_test_first_successful_build": {
+      "passed": 1,
+      "failed": 0
+    },
+    "frontend_transport_tests": {
+      "passed": 12,
+      "failed": 0
+    },
+    "daemon_isolated_recheck": {
+      "passed": 1,
+      "failed": 0
+    },
+    "frontend_mapping": {
+      "source_names": 186,
+      "canonical_methods": 183
+    },
+    "production_catalog": {
+      "advertised": 190,
+      "implemented": 164,
+      "placeholders": 26
+    }
+  },
+  "workspace_build_errors": [
+    "server-provider/src/local/codex/streaming.rs:132: missing child tests module",
+    "server-provider/src/service/agent_manager.rs:588: Timeline::progress not found"
+  ]
+}

@@ -24,17 +24,16 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
                 "duplicate implementation: {method}"
             );
             let route = routes().find(method).expect("implemented route must exist");
-            let kind = if matches!(method, "session.heartbeat" | "terminal.input") {
-                InboundKind::Event
-            } else {
-                InboundKind::Request
-            };
+            let kind = PASEO_METHODS
+                .iter()
+                .find(|spec| spec.canonical_name == method)
+                .map_or(InboundKind::Request, |spec| spec.kind);
             assert_eq!(route.kind, kind, "{method}");
             assert_eq!(route.capability, method, "{method}");
             assert_eq!(route.handler, Some(expected), "{method}");
         }
     }
-    assert_eq!(implemented.len(), 122);
+    assert_eq!(implemented.len(), 175);
 
     let advertised = crate::registered_capabilities(
         &implemented
@@ -42,7 +41,7 @@ fn hierarchy_routes_every_implemented_method_to_exactly_one_handler() {
             .map(|method| (*method).to_owned())
             .collect::<Vec<_>>(),
     );
-    assert_eq!(advertised.len(), 195);
+    assert_eq!(advertised.len(), 175);
     for method in &advertised {
         let route = routes().find(method).expect("advertised route must exist");
         assert_eq!(
@@ -93,7 +92,12 @@ fn prefix_nodes_can_be_methods_and_have_children_with_different_owners() {
         handler("file.upload.request"),
         Some(Handler::Filesystem(Filesystem::Files))
     );
-    assert_eq!(handler("schedule.list.request"), None);
+    assert_eq!(
+        handler("schedule.list.request"),
+        Some(Handler::Schedule(
+            server_schedule::capabilities::Group::Schedule
+        ))
+    );
     assert_eq!(routes().find("project.list.unknown"), None);
 }
 

@@ -1,6 +1,7 @@
 //! Concrete request context and shared Tokio runtime resources for server capability crates.
 
 mod context;
+pub mod events;
 mod message;
 pub mod outbound;
 pub mod runtime;

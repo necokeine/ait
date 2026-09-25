@@ -19,6 +19,9 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
         let name = package["name"].as_str().unwrap();
         let allowed: &[&str] = match name {
             "server-bin" => &[
+                "server-voice",
+                "server-schedule",
+                "server-browser",
                 "server-model",
                 "server-metadata",
                 "server-filesystem",
@@ -29,6 +32,9 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
                 "server-domain",
             ],
             "server-api" => &[
+                "server-voice",
+                "server-schedule",
+                "server-browser",
                 "server-model",
                 "server-terminal",
                 "server-provider",
@@ -37,15 +43,9 @@ fn violations(packages: &[Value], members: &BTreeSet<String>) -> Vec<String> {
                 "server-filesystem",
             ],
             "server-provider" => &["server-domain", "server-metadata", "server-model"],
-            "server-protocol" => &[
-                "server-model",
-                "server-metadata",
-                "server-filesystem",
-                "server-provider",
-                "server-terminal",
-            ],
+            "server-protocol" | "server-metadata" | "server-voice" | "server-schedule"
+            | "server-browser" => &["server-model"],
             "server-filesystem" | "server-terminal" => &["server-metadata", "server-model"],
-            "server-metadata" => &["server-model"],
             "server-domain" | "server-model" => &[],
             _ => {
                 violations.push(format!("unregistered server package: {name}"));
@@ -306,4 +306,54 @@ fn shared_context_cannot_depend_on_capability_or_transport_packages() {
             [format!("server-model -> {dependency}")]
         );
     }
+}
+
+#[test]
+fn protocol_cannot_depend_on_business_crates_even_through_test_or_optional_edges() {
+    for dependency in [
+        "server-metadata",
+        "server-filesystem",
+        "server-provider",
+        "server-terminal",
+        "server-voice",
+        "server-domain",
+        "server-api",
+        "ait-domain",
+    ] {
+        for kind in [Value::Null, json!("dev"), json!("build")] {
+            let packages = [
+                json!({"id":"server-protocol", "name":"server-protocol", "dependencies":[{
+                    "name":dependency, "path":"../dependency", "rename":"renamed",
+                    "kind":kind, "optional":true, "target":"cfg(windows)"
+                }]}),
+            ];
+            assert_eq!(
+                violations(&packages, &BTreeSet::new()),
+                [format!("server-protocol -> {dependency}")]
+            );
+        }
+    }
+}
+
+#[test]
+fn voice_keeps_speech_io_but_cannot_depend_on_transport_or_agent_implementation() {
+    for dependency in [
+        "server-api",
+        "server-protocol",
+        "server-provider",
+        "server-metadata",
+        "ait-domain",
+    ] {
+        let packages = [
+            json!({"id":"server-voice", "name":"server-voice", "dependencies":[{"name":dependency,"path":"../dependency"}]}),
+        ];
+        assert_eq!(
+            violations(&packages, &BTreeSet::new()),
+            [format!("server-voice -> {dependency}")]
+        );
+    }
+    let packages = [
+        json!({"id":"server-voice", "name":"server-voice", "dependencies":[{"name":"server-model","path":"../server-model"},{"name":"reqwest"},{"name":"tokio"}]}),
+    ];
+    assert!(violations(&packages, &BTreeSet::new()).is_empty());
 }

@@ -25,6 +25,9 @@ pub(super) struct ConnectionSubscriptions {
     metadata: server_metadata::connection::Connection,
     filesystem: server_filesystem::connection::Connection,
     terminals: server_terminal::connection::TerminalConnection,
+    provider: server_provider::connection::Connection,
+    voice: server_voice::connection::Connection,
+    browser: server_browser::connection::Connection,
 }
 
 impl ConnectionSubscriptions {
@@ -33,12 +36,16 @@ impl ConnectionSubscriptions {
             .len()
             .saturating_add(self.filesystem.len())
             .saturating_add(self.terminals.len())
+            .saturating_add(self.provider.len())
+            .saturating_add(self.browser.len())
     }
 
     fn release(&mut self, id: &str) {
         self.metadata.release(id);
         self.filesystem.release(id);
         self.terminals.release(id);
+        self.provider.release(id);
+        self.browser.release(id);
     }
 }
 
@@ -120,6 +127,7 @@ async fn read(
     })?;
     let mut subscriptions = ConnectionSubscriptions {
         metadata: server_metadata::connection::Connection::new(session),
+        provider: server_provider::connection::Connection::new(&hello.client_id),
         ..Default::default()
     };
     let mut terminal_poll = tokio::time::interval(Duration::from_millis(40));
@@ -133,8 +141,11 @@ async fn read(
                 subscriptions.metadata.draining(outbound)?;
                 return Ok(());
             },
-            _ = terminal_poll.tick(), if !subscriptions.terminals.is_empty() => {
+            _ = terminal_poll.tick(), if !subscriptions.terminals.is_empty() || !subscriptions.voice.is_empty() => {
                 subscriptions.terminals.poll(&state.terminal, outbound).await?;
+                if let Some(speech) = &state.voice.speech {
+                    subscriptions.voice.poll(speech, &state.runtime, outbound)?;
+                }
                 continue;
             },
             message = receive(&mut stream) => message,
@@ -179,33 +190,33 @@ async fn process_message(
             .await?;
         }
         Some(Ok(Incoming::Text(ClientMessage::Event { method, params }))) if valid_id(&method) => {
-            if method == server_metadata::protocol::server::HEARTBEAT_METHOD
-                && capabilities.iter().any(|capability| capability == &method)
-            {
-                if let Err(code) =
-                    server_metadata::connection::session::heartbeat(params, &subscriptions.metadata)
-                {
-                    error(outbound, None, code)?;
-                }
-                return Ok(ControlFlow::Continue(()));
-            }
-            if method == "terminal.input"
-                && state.terminal.terminals.is_some()
-                && capabilities.iter().any(|capability| capability == &method)
-            {
-                if let Err(code) = subscriptions.terminals.event(params, &state.terminal).await {
-                    error(outbound, None, code)?;
-                }
-                return Ok(ControlFlow::Continue(()));
-            }
-            let code = routing::placeholder(&method, InboundKind::Event, capabilities);
-            error(outbound, None, code)?;
+            process_event(
+                (method, params),
+                state,
+                outbound,
+                capabilities,
+                subscriptions,
+            )
+            .await?;
         }
         Some(Ok(Incoming::Text(ClientMessage::Response {
-            request_id, method, ..
+            request_id,
+            method,
+            params,
         }))) if valid_id(&method) && request_id.as_deref().is_none_or(valid_id) => {
-            let code = routing::placeholder(&method, InboundKind::Response, capabilities);
-            error(outbound, request_id, code)?;
+            if method == "browser.automation.execute.response"
+                && capabilities.iter().any(|name| name == &method)
+                && let Some(broker) = &state.browser.broker
+            {
+                if let Some(id) = request_id {
+                    subscriptions.browser.receive(broker, &id, params);
+                } else {
+                    error(outbound, None, ErrorCode::InvalidMessage)?;
+                }
+            } else {
+                let code = routing::placeholder(&method, InboundKind::Response, capabilities);
+                error(outbound, request_id, code)?;
+            }
         }
         None => return Ok(ControlFlow::Break(())),
         Some(Ok(Incoming::Binary(bytes))) if bytes.first().is_some_and(|opcode| *opcode < 0x10) => {
@@ -256,6 +267,69 @@ async fn process_message(
         }
     }
     Ok(ControlFlow::Continue(()))
+}
+
+async fn process_event(
+    input: (String, serde_json::Value),
+    state: &Shared,
+    outbound: &Outbound,
+    capabilities: &[String],
+    subscriptions: &mut ConnectionSubscriptions,
+) -> Result<(), QueueError> {
+    let (method, params) = input;
+    if routing::lookup(&method).is_some_and(|route| {
+        route.kind == InboundKind::Event
+            && matches!(route.handler, Some(crate::capabilities::Group::Voice(_)))
+    }) && capabilities.iter().any(|capability| capability == &method)
+        && state.voice.speech.is_some()
+    {
+        subscriptions
+            .voice
+            .event(&method, params, &state.voice, outbound)?;
+        return Ok(());
+    }
+    if method == "push.register"
+        && state.metadata.push_tokens.is_some()
+        && capabilities.iter().any(|capability| capability == &method)
+    {
+        if let Err(code) = server_metadata::connection::push::register(
+            params,
+            &state.metadata,
+            &mut subscriptions.metadata,
+        )
+        .await
+        {
+            error(outbound, None, code)?;
+        }
+        return Ok(());
+    }
+    if method == server_metadata::protocol::server::HEARTBEAT_METHOD
+        && capabilities.iter().any(|capability| capability == &method)
+    {
+        if let Err(code) =
+            server_metadata::connection::session::heartbeat(params, &subscriptions.metadata)
+        {
+            error(outbound, None, code)?;
+        } else if let Err(code) =
+            server_metadata::connection::push::heartbeat(&state.metadata, &subscriptions.metadata)
+                .await
+        {
+            error(outbound, None, code)?;
+        }
+        return Ok(());
+    }
+    if method == "terminal.input"
+        && state.terminal.terminals.is_some()
+        && capabilities.iter().any(|capability| capability == &method)
+    {
+        if let Err(code) = subscriptions.terminals.event(params, &state.terminal).await {
+            error(outbound, None, code)?;
+        }
+        return Ok(());
+    }
+    let code = routing::placeholder(&method, InboundKind::Event, capabilities);
+    error(outbound, None, code)?;
+    Ok(())
 }
 
 async fn process_request(

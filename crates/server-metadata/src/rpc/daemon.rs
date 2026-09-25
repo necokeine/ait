@@ -2,7 +2,7 @@
 
 use crate::protocol::daemon::{
     ConfigReloadResult, DaemonConfig, DaemonConfigResult, DaemonConfigSetRequest, DaemonStatus,
-    DaemonUpdateResult, DiagnosticsResult, EmptyRequest, LifecycleResult, PairingOffer,
+    DaemonUpdateResult, DiagnosticsResult, EmptyRequest, LifecycleResult, ProviderAvailability,
     RestartRequest,
 };
 use crate::protocol::server::Lifecycle;
@@ -72,27 +72,12 @@ pub fn execute(
     lifecycle: Lifecycle,
 ) -> Result<Value, ErrorCode> {
     match method {
-        "daemon.get_status.request" => {
-            let _: EmptyRequest = decode(params)?;
-            let runtime = daemon.runtime();
-            encode(DaemonStatus {
-                server_id: runtime.server_id.clone(),
-                version: runtime.version.clone(),
-                pid: runtime.pid,
-                node_path: runtime.executable.clone(),
-                started_at: runtime.started_at.clone(),
-                listen: Some(runtime.listen.clone()),
-                relay: None,
-                providers: Vec::new(),
-            })
+        "daemon.get_status.request" | "diagnostics.request" => {
+            snapshot(daemon, method, params, &[], (capabilities, lifecycle))
         }
         "daemon.get_pairing_offer.request" => {
             let _: EmptyRequest = decode(params)?;
-            encode(PairingOffer {
-                url: String::new(),
-                qr: None,
-                relay_enabled: false,
-            })
+            Err(ErrorCode::UnsupportedCapability)
         }
         "daemon.config.get.request" => {
             let _: EmptyRequest = decode(params)?;
@@ -122,16 +107,6 @@ pub fn execute(
                 override_controlled_paths: reload.override_controlled_paths,
             })
         }
-        "diagnostics.request" => {
-            let _: EmptyRequest = decode(params)?;
-            let lifecycle = match lifecycle {
-                Lifecycle::Ready => "ready",
-                Lifecycle::Draining => "draining",
-            };
-            encode(DiagnosticsResult {
-                diagnostic: daemon.diagnostics(capabilities, lifecycle),
-            })
-        }
         "daemon.update.request" => {
             let _: EmptyRequest = decode(params)?;
             let result = daemon.update_result();
@@ -140,6 +115,45 @@ pub fn execute(
                 error: result.error,
                 previous_version: result.previous_version,
                 new_version: result.new_version,
+            })
+        }
+        _ => Err(ErrorCode::MethodNotFound),
+    }
+}
+
+/// Build status or diagnostics from the availability supplied by the Provider owner.
+/// # Errors
+/// Rejects malformed parameters or methods outside the two snapshot operations.
+pub fn snapshot(
+    daemon: &Daemon,
+    method: &str,
+    params: Value,
+    providers: &[ProviderAvailability],
+    facts: (&[String], Lifecycle),
+) -> Result<Value, ErrorCode> {
+    let _: EmptyRequest = decode(params)?;
+    let (capabilities, lifecycle) = facts;
+    match method {
+        "daemon.get_status.request" => {
+            let runtime = daemon.runtime();
+            encode(DaemonStatus {
+                server_id: runtime.server_id.clone(),
+                version: runtime.version.clone(),
+                pid: runtime.pid,
+                node_path: runtime.executable.clone(),
+                started_at: runtime.started_at.clone(),
+                listen: Some(runtime.listen.clone()),
+                relay: None,
+                providers: providers.to_vec(),
+            })
+        }
+        "diagnostics.request" => {
+            let lifecycle = match lifecycle {
+                Lifecycle::Ready => "ready",
+                Lifecycle::Draining => "draining",
+            };
+            encode(DiagnosticsResult {
+                diagnostic: daemon.diagnostics(capabilities, lifecycle, providers),
             })
         }
         _ => Err(ErrorCode::MethodNotFound),

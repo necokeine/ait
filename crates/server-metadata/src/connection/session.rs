@@ -47,7 +47,10 @@ pub(crate) fn subscribe(
             return Err(ErrorCode::ServerDraining);
         }
         if request.events.iter().any(|event| {
-            (event == "agent_attention_required" && !state.has_agent_execution)
+            (matches!(
+                event.as_str(),
+                "agent_attention_required" | "providers_snapshot_update"
+            ) && !state.has_agent_execution)
                 || (event == "status.daemon_config_changed" && state.daemon.is_none())
         }) {
             return Err(ErrorCode::UnsupportedCapability);

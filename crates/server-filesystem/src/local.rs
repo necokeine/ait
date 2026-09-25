@@ -7,3 +7,6 @@ pub(crate) mod git;
 pub mod github_projects;
 pub mod provisioning;
 pub mod worktrees;
+
+/// Orchestration skill installation and selection.
+pub mod skills;

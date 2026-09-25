@@ -695,36 +695,37 @@ async fn cancelled_internal_archived_and_deleted_agents_do_not_publish_attention
     }
 }
 
-#[test]
-fn configuration_write_failure_preserves_the_previous_bundle_and_unrelated_metadata() {
+#[tokio::test]
+async fn configuration_write_failure_preserves_the_previous_bundle_and_unrelated_metadata() {
     let (manager, registry, _) = make_manager();
     registry.upsert(&stored_record()).unwrap();
     let original = registry.get("agent-1").unwrap().unwrap();
     let patch = ConfigPatch {
         model_id: crate::protocol::agent_config::NullableSetting::Set("new".to_owned()),
         thinking_option_id: crate::protocol::agent_config::NullableSetting::Set("high".to_owned()),
+        ..ConfigPatch::default()
     };
     registry.0.lock().unwrap().fail_update = true;
     assert_eq!(
-        manager.configure("agent-1", &patch),
+        manager.configure("agent-1", &patch).await,
         Err(AgentManagerError::Registry)
     );
     assert_eq!(registry.get("agent-1").unwrap().unwrap(), original);
     registry.0.lock().unwrap().fail_update = false;
-    manager.configure("agent-1", &patch).unwrap();
+    manager.configure("agent-1", &patch).await.unwrap();
     let updated = registry.get("agent-1").unwrap().unwrap();
     assert_eq!(updated.config.unwrap().model.as_deref(), Some("new"));
     assert_eq!(updated.title, original.title);
     assert_eq!(updated.persistence, original.persistence);
     assert!(matches!(
-        manager.configure("missing", &patch),
+        manager.configure("missing", &patch).await,
         Err(AgentManagerError::NotFound(_))
     ));
     let mut unsupported = original;
     unsupported.provider = "unknown".to_owned();
     registry.upsert(&unsupported).unwrap();
     assert!(matches!(
-        manager.configure("agent-1", &patch),
+        manager.configure("agent-1", &patch).await,
         Err(AgentManagerError::ProviderUnavailable(_))
     ));
 }

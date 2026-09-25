@@ -43,6 +43,11 @@ impl NullableSetting {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigPatch {
+    /// Explicit workflow mode; null is rejected by the service.
+    #[serde(default)]
+    pub mode_id: NullableSetting,
+    /// Feature values merged into existing selections, validated by the native adapter.
+    pub feature_values: Option<std::collections::BTreeMap<String, serde_json::Value>>,
     /// Selected model, or explicit null for the provider's inherited model.
     #[serde(default)]
     pub model_id: NullableSetting,
@@ -56,6 +61,12 @@ impl ConfigPatch {
     #[must_use]
     pub fn apply(&self, current: &StoredAgentConfig) -> StoredAgentConfig {
         let mut next = current.clone();
+        self.mode_id.apply(&mut next.mode_id);
+        if let Some(features) = &self.feature_values {
+            next.feature_values
+                .get_or_insert_with(std::collections::BTreeMap::new)
+                .extend(features.clone());
+        }
         self.model_id.apply(&mut next.model);
         self.thinking_option_id.apply(&mut next.thinking_option_id);
         next

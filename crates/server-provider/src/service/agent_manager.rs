@@ -1,5 +1,9 @@
 //! Provider session registration and recovery for the independent server.
 
+mod controls;
+pub(crate) mod native_sessions;
+mod streaming;
+
 use std::collections::BTreeMap;
 
 use chrono::{SecondsFormat, Utc};
@@ -66,8 +70,10 @@ struct LiveAgent {
     registered: bool,
     turn: Option<String>,
     last_message: Option<String>,
+    latest_turn: Option<String>,
     pending: Option<AgentTurnEvent>,
     pending_runtime: Option<StoredAgentRuntimeInfo>,
+    pending_input_at: Option<String>,
 }
 
 /// Owns live provider sessions and their durable Paseo-compatible snapshots.
@@ -80,6 +86,10 @@ pub struct AgentManager {
     clients: BTreeMap<String, Box<dyn AgentClient>>,
     live: BTreeMap<String, LiveAgent>,
     events: SessionEvents,
+    timeline: Option<crate::storage::timeline::Timeline>,
+    catalog: super::provider_catalog::Catalog,
+    creations: server_metadata::service::creation::Creations,
+    loaded_timelines: std::collections::BTreeSet<String>,
 }
 
 impl AgentManager {
@@ -91,7 +101,98 @@ impl AgentManager {
             clients: BTreeMap::new(),
             live: BTreeMap::new(),
             events: SessionEvents::default(),
+            timeline: None,
+            catalog: super::provider_catalog::Catalog::default(),
+            creations: server_metadata::service::creation::Creations::default(),
+            loaded_timelines: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Install the same creation receipt service used by Workspace metadata.
+    #[must_use]
+    pub fn with_creations(
+        mut self,
+        creations: server_metadata::service::creation::Creations,
+    ) -> Self {
+        self.creations = creations;
+        self
+    }
+
+    /// Return the metadata-owned creation coordinator shared with this manager.
+    #[must_use]
+    pub fn creations(&self) -> server_metadata::service::creation::Creations {
+        self.creations.clone()
+    }
+
+    /// Install durable display history before admitting requests or creating native sessions.
+    #[must_use]
+    pub fn with_timeline(mut self, timeline: crate::storage::timeline::Timeline) -> Self {
+        self.timeline = Some(timeline);
+        self
+    }
+
+    /// Return the installed display projection, independent of live session ownership.
+    #[must_use]
+    pub fn timeline(&self) -> Option<crate::storage::timeline::Timeline> {
+        self.timeline.clone()
+    }
+
+    /// Discover models and capabilities through the registered native adapters.
+    /// # Errors
+    /// Returns invalid requests, unavailable adapter or safe discovery/cache errors.
+    pub async fn providers(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, server_model::ErrorCode> {
+        self.catalog
+            .execute(&self.clients, &self.events, method, params)
+            .await
+    }
+
+    /// Load native history without claiming a writer, once per Agent in this process.
+    /// # Errors
+    /// Returns unavailable history, missing Agent, or durable projection failures.
+    pub async fn load_timeline(&mut self, agent_id: &str) -> Result<(), server_model::ErrorCode> {
+        use server_model::ErrorCode;
+        if self.loaded_timelines.contains(agent_id) {
+            return Ok(());
+        }
+        let timeline = self
+            .timeline
+            .as_ref()
+            .ok_or(ErrorCode::UnsupportedCapability)?;
+        let record = self
+            .registry
+            .get(agent_id)
+            .map_err(|_| ErrorCode::AgentIo)?
+            .ok_or(ErrorCode::AgentNotFound)?;
+        let handle = record
+            .persistence
+            .as_ref()
+            .ok_or(ErrorCode::UnsupportedCapability)?;
+        if handle
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(controls::REPLACEMENT_MARKER))
+            == Some(&json!(true))
+        {
+            let history = self.inspect_native(handle, &record.cwd).await?;
+            self.finish_replacement(agent_id, &history)?;
+            self.loaded_timelines.insert(agent_id.to_owned());
+            return Ok(());
+        }
+        let client = self
+            .clients
+            .get(&record.provider)
+            .ok_or(ErrorCode::UnsupportedCapability)?;
+        let entries = client
+            .history(handle, &record.cwd)
+            .await
+            .map_err(|_| ErrorCode::AgentIo)?;
+        timeline.append(agent_id, &record.provider, &entries)?;
+        self.loaded_timelines.insert(agent_id.to_owned());
+        Ok(())
     }
 
     /// Return the shared connection event service used for committed attention notifications.
@@ -136,6 +237,15 @@ impl AgentManager {
             .and_then(|agent| agent.turn.as_deref())
     }
 
+    /// Return the most recently accepted native turn, including after it finishes.
+    /// Used to fence connection-owned cancellation and completion reads against later turns.
+    #[must_use]
+    pub fn latest_turn(&self, agent_id: &str) -> Option<&str> {
+        self.live
+            .get(agent_id)
+            .and_then(|agent| agent.latest_turn.as_deref())
+    }
+
     /// Return the final assistant text from this process's latest completed turn.
     #[must_use]
     pub fn last_message(&self, agent_id: &str) -> Option<&str> {
@@ -149,7 +259,11 @@ impl AgentManager {
     /// # Errors
     /// Returns validation, unavailable-provider, archived-Agent, or registry errors. All supplied
     /// fields commit together; failed writes leave the running session and durable config intact.
-    pub fn configure(&self, agent_id: &str, patch: &ConfigPatch) -> Result<(), AgentManagerError> {
+    pub async fn configure(
+        &self,
+        agent_id: &str,
+        patch: &ConfigPatch,
+    ) -> Result<(), AgentManagerError> {
         let record = self
             .registry
             .get(agent_id)
@@ -157,6 +271,12 @@ impl AgentManager {
             .ok_or_else(|| AgentManagerError::NotFound(agent_id.to_owned()))?;
         if record.archived_at.is_some() {
             return Err(AgentManagerError::Busy);
+        }
+        if matches!(
+            patch.mode_id,
+            crate::protocol::agent_config::NullableSetting::Clear
+        ) {
+            return Err(AgentManagerError::InvalidRequest);
         }
         let config = patch.apply(
             record
@@ -167,7 +287,12 @@ impl AgentManager {
         self.clients
             .get(&record.provider)
             .ok_or_else(|| AgentManagerError::ProviderUnavailable(record.provider.clone()))?
-            .validate_config(&config)
+            .validate_selection(&AgentSessionSpec {
+                provider: record.provider.clone(),
+                cwd: record.cwd.clone(),
+                config,
+            })
+            .await
             .map_err(|_| AgentManagerError::InvalidRequest)?;
         let now = now_timestamp();
         self.registry
@@ -181,6 +306,10 @@ impl AgentManager {
                             .unwrap_or(&StoredAgentConfig::default()),
                     ),
                 );
+                next.last_mode_id = next
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.mode_id.clone());
                 next.updated_at.clone_from(&now);
                 next
             })
@@ -237,7 +366,11 @@ impl AgentManager {
             archived_at: None,
             owner: None,
         };
-        self.register_session(agent_id, session, record, true).await
+        let record = self
+            .register_session(agent_id, session, record, true)
+            .await?;
+        self.loaded_timelines.insert(agent_id.to_owned());
+        Ok(record)
     }
 
     /// Resume a persisted provider session, using history-only mode for archived Agents.
@@ -264,11 +397,27 @@ impl AgentManager {
         if self.live.len() >= 32 {
             return Err(AgentManagerError::Busy);
         }
-        let record = self
+        let mut record = self
             .registry
             .get(agent_id)
             .map_err(map_registry)?
             .ok_or_else(|| AgentManagerError::NotFound(agent_id.to_owned()))?;
+        if record
+            .persistence
+            .as_ref()
+            .and_then(|handle| handle.metadata.as_ref())
+            .and_then(|metadata| metadata.get(controls::REPLACEMENT_MARKER))
+            == Some(&json!(true))
+        {
+            self.load_timeline(agent_id)
+                .await
+                .map_err(|_| AgentManagerError::Registry)?;
+            record = self
+                .registry
+                .get(agent_id)
+                .map_err(map_registry)?
+                .ok_or_else(|| AgentManagerError::NotFound(agent_id.to_owned()))?;
+        }
         let handle = record
             .persistence
             .as_ref()
@@ -318,6 +467,13 @@ impl AgentManager {
             .update(agent_id, &|current| {
                 let mut next = current.clone();
                 next.last_status = AgentRuntimeStatus::Closed;
+                if next.attention_reason
+                    == Some(server_domain::agent_runtime::AgentAttentionReason::Permission)
+                {
+                    next.requires_attention = false;
+                    next.attention_reason = None;
+                    next.attention_timestamp = None;
+                }
                 next
             })
             .map_err(map_registry)?;
@@ -332,6 +488,11 @@ impl AgentManager {
     pub async fn send(&mut self, agent_id: &str, text: &str) -> Result<(), AgentManagerError> {
         if text.trim().is_empty() || text.len() > 65536 {
             return Err(AgentManagerError::InvalidRequest);
+        }
+        if self.timeline.is_some() && !self.loaded_timelines.contains(agent_id) {
+            self.load_timeline(agent_id)
+                .await
+                .map_err(|_| AgentManagerError::Registry)?;
         }
         let record = self.resume(agent_id).await?;
         if record.archived_at.is_some() || self.active_turn(agent_id).is_some() {
@@ -360,6 +521,7 @@ impl AgentManager {
         agent.last_message = None;
         let config = record.config.unwrap_or_default();
         if let Ok(turn) = agent.session.start_turn(text, &config).await {
+            agent.latest_turn = Some(turn.clone());
             agent.turn = Some(turn);
             match agent.session.runtime_info().await {
                 Ok(info) => agent.pending_runtime = Some(info),
@@ -403,22 +565,15 @@ impl AgentManager {
             if !agent.registered {
                 continue;
             }
-            if let Some(info) = &agent.pending_runtime {
-                self.registry
-                    .update(&id, &|current| {
-                        let mut next = current.clone();
-                        next.runtime_info = Some(info.clone());
-                        next
-                    })
-                    .map_err(map_registry)?;
-                agent.pending_runtime = None;
-            }
-            if agent.pending.is_none() {
-                agent.pending = match agent.session.poll_turn() {
-                    Ok(event) => event,
-                    Err(_) => Some(AgentTurnEvent::Failed),
-                };
-            }
+            persist_runtime(self.registry.as_ref(), &id, agent)?;
+            streaming::persist_input(self.registry.as_ref(), &id, agent)?;
+            streaming::drain(
+                self.registry.as_ref(),
+                self.timeline.as_ref(),
+                &self.events,
+                &id,
+                agent,
+            )?;
             let Some(event) = &agent.pending else {
                 continue;
             };
@@ -452,6 +607,25 @@ impl AgentManager {
                 .map_err(map_registry)?;
             if let AgentTurnEvent::Completed(message) = event {
                 agent.last_message.clone_from(message);
+            }
+            if let Some(timeline) = &self.timeline {
+                let mut event = json!({"type":if failed {"turn_failed"} else if cancelled {
+                    "turn_canceled"} else {"turn_completed"}, "provider":agent.record.provider});
+                if let Some(turn) = &agent.turn {
+                    event["turnId"] = json!(turn);
+                }
+                if failed {
+                    event["error"] = json!("Provider execution failed");
+                }
+                if cancelled {
+                    event["reason"] = json!("interrupted");
+                }
+                timeline.events().publish(
+                    &id,
+                    "agent_stream",
+                    &json!({"agentId":id,
+                    "event":event,"timestamp":now}),
+                );
             }
             agent.turn = None;
             agent.pending = None;
@@ -579,8 +753,10 @@ impl AgentManager {
                         registered: false,
                         turn: None,
                         last_message: None,
+                        latest_turn: None,
                         pending: None,
                         pending_runtime: None,
+                        pending_input_at: None,
                     },
                 );
                 return Err(AgentManagerError::Session);
@@ -595,8 +771,10 @@ impl AgentManager {
                 registered: true,
                 turn: None,
                 last_message: None,
+                latest_turn: None,
                 pending: None,
                 pending_runtime: None,
+                pending_input_at: None,
             },
         );
         Ok(record)
@@ -617,8 +795,10 @@ impl AgentManager {
                     registered: false,
                     turn: None,
                     last_message: None,
+                    latest_turn: None,
                     pending: None,
                     pending_runtime: None,
+                    pending_input_at: None,
                 },
             );
         }
@@ -662,3 +842,21 @@ const fn map_session(_: AgentSessionError) -> AgentManagerError {
 
 #[cfg(test)]
 mod tests;
+
+fn persist_runtime(
+    registry: &dyn AgentRuntimeRegistry,
+    id: &str,
+    agent: &mut LiveAgent,
+) -> Result<(), AgentManagerError> {
+    if let Some(info) = &agent.pending_runtime {
+        registry
+            .update(id, &|current| {
+                let mut next = current.clone();
+                next.runtime_info = Some(info.clone());
+                next
+            })
+            .map_err(map_registry)?;
+        agent.pending_runtime = None;
+    }
+    Ok(())
+}

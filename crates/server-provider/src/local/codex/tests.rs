@@ -15,7 +15,9 @@ fn process_is_running(pid: u32) -> bool {
 async fn terminal(session: &mut dyn AgentSession) -> Result<AgentTurnEvent, AgentSessionError> {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Some(event) = session.poll_turn()? {
+            if let Some(event) = session.poll_turn()?
+                && !matches!(event, AgentTurnEvent::Timeline(_))
+            {
                 return Ok(event);
             }
             tokio::time::sleep(Duration::from_millis(5)).await;

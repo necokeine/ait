@@ -33,6 +33,12 @@ pub struct SessionConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRequest {
+    /// Durable key for retries and creation observers.
+    pub idempotency_key: Option<String>,
+    /// Attach progress observation to this connection.
+    pub subscribe: Option<bool>,
+    /// Optional first text turn, submitted after native registration commits.
+    pub initial_prompt: Option<String>,
     /// Optional caller-selected UUID.
     pub agent_id: Option<String>,
     /// Native configuration.
@@ -51,7 +57,15 @@ pub struct ResumeRequest {
     pub handle: AgentPersistenceHandle,
 }
 
-/// Submit a single text turn. Additional work is rejected while a turn is active.
+/// Explicit delivery policy for an already active native turn.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActiveTurnBehavior {
+    /// Ask the provider to admit text into the current turn, without interrupting it.
+    Steer,
+}
+
+/// Submit text, optionally steering the active native turn.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendRequest {
@@ -59,6 +73,8 @@ pub struct SendRequest {
     pub agent_id: String,
     /// Nonempty text, at most 64 KiB.
     pub text: String,
+    /// Omission preserves busy rejection, including connection-owned voice turns.
+    pub active_turn_behavior: Option<ActiveTurnBehavior>,
 }
 
 /// Await native completion without occupying the Provider command lane.

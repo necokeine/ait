@@ -24,12 +24,10 @@ pub enum MethodGroup {
     Files,
     /// Terminal creation, streams, and workspace scripts.
     Terminal,
+    /// Legacy desktop editor compatibility.
+    Editor,
     /// Scheduled work.
     Schedule,
-    /// Plugin catalog, installation, lifecycle, and RPC.
-    Plugin,
-    /// Hub relationship management and remote execution.
-    Hub,
     /// Voice audio and dictation streams.
     Voice,
     /// Connection subscriptions, creation subscriptions, and heartbeats.
@@ -433,27 +431,27 @@ pub const PASEO_METHODS: &[MethodSpec] = &[
     request!(
         Skills,
         "agent.skills.get_status.request",
-        server_filesystem::protocol::skills::GET_STATUS
+        "agent.skills.get_status.request"
     ),
     request!(
         Skills,
         "agent.skills.reconcile.request",
-        server_filesystem::protocol::skills::RECONCILE
+        "agent.skills.reconcile.request"
     ),
     request!(
         Skills,
         "agent.skills.uninstall.request",
-        server_filesystem::protocol::skills::UNINSTALL
+        "agent.skills.uninstall.request"
     ),
     request!(
         Skills,
         "agent.skills.save_selection.request",
-        server_filesystem::protocol::skills::SAVE_SELECTION
+        "agent.skills.save_selection.request"
     ),
     request!(
         Skills,
         "agent.skills.import_legacy_selection.request",
-        server_filesystem::protocol::skills::IMPORT_LEGACY_SELECTION
+        "agent.skills.import_legacy_selection.request"
     ),
     request!(
         Git,
@@ -643,92 +641,6 @@ pub const PASEO_METHODS: &[MethodSpec] = &[
     request!(Schedule, "schedule/resume", "schedule.resume.request"),
     request!(Schedule, "schedule/delete", "schedule.delete.request"),
     request!(Schedule, "schedule/run-once", "schedule.run_once.request"),
-    request!(
-        Plugin,
-        "plugin.catalog.get.request",
-        "plugin.catalog.get.request"
-    ),
-    request!(Plugin, "plugin.list.request", "plugin.list.request"),
-    request!(Plugin, "plugin.logs.get.request", "plugin.logs.get.request"),
-    request!(
-        Plugin,
-        "plugin.directory.inspect.request",
-        "plugin.directory.inspect.request"
-    ),
-    request!(
-        Plugin,
-        "plugin.directory.install.request",
-        "plugin.directory.install.request"
-    ),
-    request!(
-        Plugin,
-        "plugin.source.install.request",
-        "plugin.source.install.request"
-    ),
-    request!(
-        Plugin,
-        "plugin.source.status.request",
-        "plugin.source.status.request"
-    ),
-    request!(
-        Plugin,
-        "plugin.source.update.request",
-        "plugin.source.update.request"
-    ),
-    request!(
-        Plugin,
-        "plugin.source.update.preview.request",
-        "plugin.source.update.preview.request"
-    ),
-    request!(
-        Plugin,
-        "plugin.source.update.apply.request",
-        "plugin.source.update.apply.request"
-    ),
-    request!(Plugin, "plugin.reload.request", "plugin.reload.request"),
-    request!(Plugin, "plugin.enable.request", "plugin.enable.request"),
-    request!(Plugin, "plugin.disable.request", "plugin.disable.request"),
-    request!(Plugin, "plugin.remove.request", "plugin.remove.request"),
-    request!(
-        Plugin,
-        "plugin.rpc.invoke.request",
-        "plugin.rpc.invoke.request"
-    ),
-    request!(
-        Hub,
-        "hub.management.daemon.connect.request",
-        "hub.management.daemon.connect.request"
-    ),
-    request!(
-        Hub,
-        "hub.management.daemon.get_status.request",
-        "hub.management.daemon.get_status.request"
-    ),
-    request!(
-        Hub,
-        "hub.management.daemon.disconnect.request",
-        "hub.management.daemon.disconnect.request"
-    ),
-    request!(
-        Hub,
-        "hub.management.daemon.permissions.update.request",
-        "hub.management.daemon.permissions.update.request"
-    ),
-    request!(
-        Hub,
-        "hub.execution.agent.create.request",
-        "hub.execution.agent.create.request"
-    ),
-    request!(
-        Hub,
-        "hub.execution.agent.validate.request",
-        "hub.execution.agent.validate.request"
-    ),
-    request!(
-        Hub,
-        "hub.execution.control.request",
-        "hub.execution.control.request"
-    ),
     request!(Voice, "set_voice_mode", "voice.mode.set.request"),
     event!(Voice, "voice_audio_chunk", "voice.audio.chunk"),
     request!(Voice, "abort_request", "voice.abort.request"),
@@ -752,11 +664,7 @@ pub const PASEO_METHODS: &[MethodSpec] = &[
         "creation.subscribe.request",
         "creation.subscribe.request"
     ),
-    event!(
-        Session,
-        "client_heartbeat",
-        server_metadata::protocol::server::HEARTBEAT_METHOD
-    ),
+    event!(Session, "client_heartbeat", "session.heartbeat"),
     request!(Session, "ping", "connection.ping"),
     event!(Push, "register_push_token", "push.register"),
     request!(Push, "push.unregister.request", "push.unregister.request"),
@@ -770,6 +678,12 @@ pub const PASEO_METHODS: &[MethodSpec] = &[
         "browser.automation.execute.response",
         "browser.automation.execute.response"
     ),
+    request!(
+        Editor,
+        "list_available_editors_request",
+        "editor.available.list.request"
+    ),
+    request!(Editor, "open_in_editor_request", "editor.open.request"),
 ];
 
 /// Find the requested interface entry by its pinned Paseo name.

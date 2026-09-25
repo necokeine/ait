@@ -1,5 +1,9 @@
 //! Provider worker request decoding and response projections.
 
+mod controls;
+mod native_sessions;
+mod voice;
+
 use std::path::Path;
 
 use serde_json::{Value, json};
@@ -21,6 +25,7 @@ pub(crate) struct ExecutionState {
     pub(crate) registry: Box<dyn AgentRuntimeRegistry>,
     pub(crate) workspaces: Box<dyn WorkspaceRegistry>,
     pub(crate) projects: Box<dyn ProjectRegistry>,
+    pub(crate) import_directory: Option<server_metadata::service::directory::Directory>,
 }
 
 impl ExecutionState {
@@ -34,12 +39,42 @@ impl ExecutionState {
             .await
             .map_err(|error| map_manager(&error))?;
         match method {
+            "internal.voice.send" | "internal.voice.status" | "internal.voice.cancel" => {
+                self.voice(method, params).await
+            }
+            "agent.rewind.request"
+            | "agent.commands.list.request"
+            | "agent.permission.resolve.request"
+            | "agent.provider_subagents.list.request"
+            | "agent.provider_subagents.timeline.get.request"
+            | "provider.diagnostic.request"
+            | "provider.usage.list.request" => self.controls(method, params).await,
+            "provider.sessions.recent.list.request"
+            | "agent.import.request"
+            | "agent.refresh.request"
+            | "agent.fork_context.request" => self.native_sessions(method, params).await,
             "agent.create.request" => self.create(params).await,
+            "provider.available.list.request"
+            | "provider.models.list.request"
+            | "provider.modes.list.request"
+            | "provider.features.list.request"
+            | "provider.snapshot.get.request"
+            | "provider.snapshot.refresh.request" => self
+                .manager
+                .providers(method, params)
+                .await
+                .map_err(Into::into),
+            "agent.timeline.get.request"
+            | "agent.timeline.search.request"
+            | "agent.timeline.list_prompts.request"
+            | "internal.timeline.append" => self.timeline(method, params).await,
             "agent.resume.request" => self.resume(params).await,
             "agent.message.send.request" => self.send(params).await,
             "agent.model.set.request"
             | "agent.thinking.set.request"
-            | "agent.config.apply.request" => self.configure(method, &params),
+            | "agent.config.apply.request"
+            | "agent.mode.set.request"
+            | "agent.feature.set.request" => self.configure(method, &params).await,
             "agent.cancel.request" => {
                 only(&params, &["agentId"])?;
                 let request: AgentIdRequest = decode(params)?;
@@ -79,81 +114,111 @@ impl ExecutionState {
         }
     }
 
-    fn configure(&self, method: &str, params: &Value) -> Result<Value, ErrorCode> {
-        use crate::protocol::agent_config::ConfigPatch;
-
-        let field = match method {
-            "agent.model.set.request" => "modelId",
-            "agent.thinking.set.request" => "thinkingOptionId",
-            _ => "config",
+    async fn timeline(&mut self, method: &str, params: Value) -> Result<Value, ErrorCode> {
+        use crate::protocol::timeline::{AppendRequest, FetchRequest, SearchRequest};
+        let plugin = params
+            .get("plugin")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let params = if method == "internal.timeline.append" {
+            params["request"].clone()
+        } else {
+            params
         };
-        only(params, &["agentId", field])?;
         let identifier = params["agentId"]
             .as_str()
             .ok_or(ErrorCode::InvalidMessage)?;
         let id = self.resolve(identifier)?;
-        let value = params.get(field).ok_or(ErrorCode::InvalidMessage)?;
-        let patch = if field == "config" {
-            only(value, &["modelId", "thinkingOptionId"])?;
-            value.clone()
-        } else {
-            json!({(field): value})
-        };
-        let patch: ConfigPatch = decode(patch)?;
-        let result = self.manager.configure(&id, &patch);
-        let notice = (result.is_ok() && self.manager.active_turn(&id).is_some())
-            .then(|| json!({"type":"warning","message":"Configuration applies next turn"}));
-        Ok(json!({"agentId":id,"accepted":result.is_ok(),
-            "error":result.err().map(|error|error.to_string()),"notice":notice}))
+        self.manager.load_timeline(&id).await?;
+        let timeline = self
+            .manager
+            .timeline()
+            .ok_or(ErrorCode::UnsupportedCapability)?;
+        match method {
+            "agent.timeline.get.request" => {
+                let mut request: FetchRequest = decode(params)?;
+                request.agent_id.clone_from(&id);
+                let (epoch, rows) = timeline.read(&id)?;
+                super::timeline::fetch(&request, &epoch, &rows, &self.snapshot(&id)?)
+                    .map_err(Into::into)
+            }
+            "agent.timeline.search.request" => {
+                let mut request: SearchRequest = decode(params)?;
+                request.agent_id = id;
+                let (epoch, rows) = timeline.read(&request.agent_id)?;
+                super::timeline::search(&request, &epoch, &rows).map_err(Into::into)
+            }
+            "agent.timeline.list_prompts.request" => {
+                only(&params, &["agentId"])?;
+                let (epoch, rows) = timeline.read(&id)?;
+                super::timeline::prompts(&id, &epoch, &rows).map_err(Into::into)
+            }
+            "internal.timeline.append" => {
+                let plugin = plugin.ok_or(ErrorCode::UnsupportedCapability)?;
+                let request: AppendRequest = decode(params)?;
+                if request.item.r#type != "plugin"
+                    || request.item.version == 0
+                    || !server_model::valid_id(&request.item.id)
+                    || !server_model::valid_id(&request.item.kind)
+                    || serde_json::to_vec(&request.item.data)
+                        .map_err(|_| ErrorCode::InvalidMessage)?
+                        .len()
+                        > 65536
+                {
+                    return Err(ErrorCode::InvalidMessage);
+                }
+                let key = format!("plugin:{plugin}:{}", request.item.id);
+                let mut item =
+                    serde_json::to_value(request.item).map_err(|_| ErrorCode::InvalidMessage)?;
+                item["pluginId"] = json!(plugin);
+                let entry = crate::protocol::timeline::NativeItem {
+                    key,
+                    turn_id: None,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    item,
+                };
+                let provider = self
+                    .registry
+                    .get(&id)
+                    .map_err(|_| ErrorCode::AgentIo)?
+                    .ok_or(ErrorCode::AgentNotFound)?
+                    .provider;
+                let (epoch, positions) = timeline.append(&id, &provider, &[entry])?;
+                Ok(json!({"epoch":epoch,"seq":positions.first()}))
+            }
+            _ => Err(ErrorCode::MethodNotFound),
+        }
     }
 
     async fn create(&mut self, params: Value) -> Result<Value, ErrorCode> {
-        only(&params, &["agentId", "config", "workspaceId", "labels"])?;
-        only(
-            &params["config"],
-            &[
-                "provider",
-                "cwd",
-                "title",
-                "modeId",
-                "model",
-                "thinkingOptionId",
-                "systemPrompt",
-            ],
-        )?;
-        let request: CreateRequest = decode(params)?;
-        if request.config.provider != "codex"
-            || request
-                .config
-                .stored
-                .mode_id
-                .as_deref()
-                .is_some_and(|mode| mode != "read-only")
-        {
-            return Err(ErrorCode::UnsupportedCapability);
-        }
-        if !Path::new(&request.config.cwd).is_absolute()
-            || !Path::new(&request.config.cwd).is_dir()
-            || request.config.title.as_ref().is_some_and(|title| {
-                title.trim().is_empty() || title.trim().encode_utf16().count() > 200
-            })
-            || request.labels.len() > 100
-            || request
-                .labels
-                .iter()
-                .any(|(key, value)| key.len() > 256 || value.len() > 4096)
-        {
-            return Err(ErrorCode::InvalidMessage);
-        }
+        let (request, intent) = parse_creation(params)?;
         let workspace_id = self.workspace(request.workspace_id.as_deref(), &request.config.cwd)?;
-        let id = match request.agent_id {
+        if let Some(id) = &request.agent_id {
+            Uuid::parse_str(id).map_err(|_| ErrorCode::InvalidMessage)?;
+        }
+        let key = request
+            .idempotency_key
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let creations = self.manager.creations();
+        let admission = creations.begin(
+            server_metadata::protocol::creation::Kind::Agent,
+            &key,
+            intent,
+        )?;
+        if !admission.execute {
+            return Ok(
+                json!({"agentId":admission.snapshot.agent_id,"agent":admission.snapshot.agent,"error":admission.snapshot.error,"creation":admission.snapshot}),
+            );
+        }
+        let id = match admission.snapshot.agent_id.clone() {
             Some(id) => {
                 Uuid::parse_str(&id).map_err(|_| ErrorCode::InvalidMessage)?;
                 id
             }
             None => Uuid::new_v4().to_string(),
         };
-        self.manager
+        let created = self
+            .manager
             .create(
                 &id,
                 &AgentSessionSpec {
@@ -168,9 +233,31 @@ impl ExecutionState {
                     internal: false,
                 },
             )
-            .await
-            .map_err(|error| map_manager(&error))?;
-        Ok(json!({"status":"agent_created","agentId":id,"agent":self.snapshot(&id)?}))
+            .await;
+        if let Err(error) = created {
+            creations.advance(&admission.snapshot, "failed", None, Some(error.to_string()))?;
+            return Err(map_manager(&error));
+        }
+        let result = json!({"agent":self.snapshot(&id)?});
+        let mut progress =
+            creations.advance(&admission.snapshot, "agent_ready", Some(result), None)?;
+        if let Some(prompt) = request.initial_prompt {
+            if let Err(error) = self.manager.send(&id, &prompt).await {
+                creations.advance(&progress, "failed", None, Some(error.to_string()))?;
+                return Err(map_manager(&error));
+            }
+            progress = creations.advance(&progress, "prompt_started", None, None)?;
+        }
+        let snapshot = self.snapshot(&id)?;
+        progress = creations.advance(
+            &progress,
+            "completed",
+            Some(json!({"agent":snapshot})),
+            None,
+        )?;
+        Ok(
+            json!({"status":"agent_created","agentId":id,"agent":snapshot,"error":null,"creation":progress}),
+        )
     }
 
     async fn resume(&mut self, params: Value) -> Result<Value, ErrorCode> {
@@ -198,7 +285,7 @@ impl ExecutionState {
     }
 
     async fn send(&mut self, params: Value) -> Result<Value, ErrorCode> {
-        only(&params, &["agentId", "text"])?;
+        only(&params, &["agentId", "text", "activeTurnBehavior"])?;
         let request: SendRequest = decode(params)?;
         let id = self.resolve(&request.agent_id)?;
         let record = self
@@ -207,7 +294,11 @@ impl ExecutionState {
             .map_err(|_| ErrorCode::AgentIo)?
             .ok_or(ErrorCode::AgentNotFound)?;
         self.workspace(record.workspace_id.as_deref(), &record.cwd)?;
-        let result = self.manager.send(&id, &request.text).await;
+        let result = if request.active_turn_behavior.is_some() {
+            self.manager.send_steering(&id, &request.text).await
+        } else {
+            self.manager.send(&id, &request.text).await
+        };
         Ok(
             json!({"agentId":id,"accepted":result.is_ok(),"error":result.err().map(|error| error.to_string())}),
         )
@@ -295,6 +386,7 @@ impl ExecutionState {
                     json!({"turnId":turn,"startedAt":record.last_user_message_at});
             }
         }
+        self.manager.control_snapshot(record, &mut snapshot);
         Ok(snapshot)
     }
 
@@ -344,4 +436,62 @@ const fn map_manager(error: &AgentManagerError) -> ErrorCode {
         }
         AgentManagerError::Session | AgentManagerError::Registry => ErrorCode::AgentIo,
     }
+}
+
+fn parse_creation(params: Value) -> Result<(CreateRequest, Value), ErrorCode> {
+    only(
+        &params,
+        &[
+            "agentId",
+            "config",
+            "workspaceId",
+            "labels",
+            "idempotencyKey",
+            "subscribe",
+            "initialPrompt",
+        ],
+    )?;
+    only(
+        &params["config"],
+        &[
+            "provider",
+            "cwd",
+            "title",
+            "modeId",
+            "model",
+            "thinkingOptionId",
+            "systemPrompt",
+            "featureValues",
+        ],
+    )?;
+    let mut intent = params.clone();
+    if let Some(object) = intent.as_object_mut() {
+        object.remove("idempotencyKey");
+        object.remove("subscribe");
+    }
+    let request: CreateRequest = decode(params)?;
+    if request
+        .initial_prompt
+        .as_ref()
+        .is_some_and(|text| text.trim().is_empty() || text.len() > 65536)
+    {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    if request.config.provider != "codex" {
+        return Err(ErrorCode::UnsupportedCapability);
+    }
+    if !Path::new(&request.config.cwd).is_absolute()
+        || !Path::new(&request.config.cwd).is_dir()
+        || request.config.title.as_ref().is_some_and(|title| {
+            title.trim().is_empty() || title.trim().encode_utf16().count() > 200
+        })
+        || request.labels.len() > 100
+        || request
+            .labels
+            .iter()
+            .any(|(key, value)| key.len() > 256 || value.len() > 4096)
+    {
+        return Err(ErrorCode::InvalidMessage);
+    }
+    Ok((request, intent))
 }

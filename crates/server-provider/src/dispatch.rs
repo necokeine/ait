@@ -30,7 +30,7 @@ impl std::ops::Deref for State {
     }
 }
 
-mod agent_execution;
+pub(crate) mod agent_execution;
 mod agent_runtime;
 
 /// Remaining composition work after provider dispatch has completed.
@@ -55,6 +55,7 @@ pub async fn dispatch(
     group: Group,
     mut context: Context<'_>,
     state: &State,
+    connection: &mut crate::connection::Connection,
 ) -> Result<Completion, QueueError> {
     match group {
         Group::Agents => {
@@ -80,6 +81,9 @@ pub async fn dispatch(
                 Err(error) => context.respond(Err(error)),
             }
         }
+        Group::AgentExecution if context.request.method == "agent.create.request" => {
+            connection.create(context, state).await
+        }
         Group::AgentExecution if context.request.method == "agent.finish.wait.request" => {
             agent_execution::wait(
                 context.request.id,
@@ -88,7 +92,20 @@ pub async fn dispatch(
                 context.outbound,
             )
         }
-        Group::AgentExecution => {
+        Group::Timeline if context.request.method == "agent.timeline.set_subscription.request" => {
+            connection.subscribe(context, state).await
+        }
+        Group::Timeline if context.request.method == "agent.timeline.append.request" => {
+            let Some(plugin) = connection.plugin() else {
+                context.respond(Err(ErrorCode::UnsupportedCapability))?;
+                return Ok(Completion::Complete);
+            };
+            let payload = serde_json::json!({"request":context.request.params,"plugin":plugin});
+            let result =
+                agent_execution::dispatch("internal.timeline.append", payload, state).await;
+            context.respond(result)
+        }
+        Group::AgentExecution | Group::Timeline | Group::ProviderCatalog => {
             let params = std::mem::take(&mut context.request.params);
             let result = agent_execution::dispatch(&context.request.method, params, state).await;
             context.respond(result)

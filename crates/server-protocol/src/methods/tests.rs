@@ -3,6 +3,50 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{InboundKind, PASEO_METHODS, by_canonical_name, by_paseo_name};
 
 #[test]
+fn catalog_covers_the_scoped_pinned_upstream_inbound_union() {
+    // Independently extracted by scripts/check-paseo-protocol.py, never from PASEO_METHODS.
+    let upstream: BTreeSet<_> = include_str!("fixtures/paseo-inbound.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .collect();
+    let registered: BTreeSet<_> = PASEO_METHODS
+        .iter()
+        .map(|method| method.paseo_name)
+        .collect();
+    assert_eq!(upstream.len(), 205);
+    let excluded: BTreeSet<_> = include_str!("fixtures/excluded-inbound.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.is_empty())
+        .collect();
+    assert_eq!(excluded.len(), 34);
+    assert!(excluded.is_subset(&upstream));
+    assert!(registered.is_disjoint(&excluded));
+    for name in &excluded {
+        assert_eq!(by_paseo_name(name), None);
+        let canonical = if name.starts_with("hub.") || name.starts_with("plugin.") {
+            (*name).to_owned()
+        } else {
+            format!("{}.request", name.replace('/', "."))
+        };
+        assert_eq!(by_canonical_name(&canonical), None);
+    }
+    let scoped = upstream
+        .difference(&excluded)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(registered.len(), 171);
+    assert_eq!(
+        registered, scoped,
+        "missing or unexpected upstream operations"
+    );
+    let canonical: BTreeSet<_> = PASEO_METHODS
+        .iter()
+        .map(|method| method.canonical_name)
+        .collect();
+    assert_eq!(canonical.len(), 168);
+}
+
+#[test]
 fn source_names_are_unique_and_canonical_names_are_well_formed() {
     let mut sources = BTreeSet::new();
     for method in PASEO_METHODS {

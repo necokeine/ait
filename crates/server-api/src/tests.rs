@@ -1,6 +1,7 @@
 use super::*;
 
 mod session;
+mod voice;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -21,6 +22,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> Self {
+        Self::with_services(crate::Services::default()).await
+    }
+
+    async fn with_services(services: crate::Services) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let api = Api::new(
@@ -28,7 +33,7 @@ impl Fixture {
             "stable".to_owned(),
             "instance".to_owned(),
             TOKEN.into(),
-            crate::Services::default(),
+            services,
         )
         .unwrap();
         let shutdown = api.clone();
@@ -209,12 +214,15 @@ async fn http_authentication_origins_and_readiness() {
         .iter()
         .copied()
         .chain([
+            "editor.available.list.request",
+            "editor.open.request",
             "session.heartbeat",
             "session.events.set_subscription.request",
+            "creation.subscribe.request",
         ])
         .collect();
     assert_eq!(info.implemented_capabilities, expected);
-    assert_eq!(info.capabilities.len(), 190);
+    assert_eq!(info.capabilities.len(), 170);
     assert!(
         info.capabilities
             .contains(&"schedule.list.request".to_owned())
@@ -430,3 +438,5 @@ async fn hello_has_a_deadline_and_idle_connections_drain() {
     let _idle = fixture.socket().await;
     fixture.stop().await;
 }
+
+mod browser;

@@ -1,0 +1,309 @@
+{
+  "date": "2026-09-25",
+  "repositoryHead": "97f13722f2f17ca298074d9bdbd101562ac3a2ba",
+  "workingTree": "Contains pre-existing uncommitted Rust implementation and imported clients; this adaptation changes frontend, validation scripts and documentation only.",
+  "upstreamRevision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+  "tools": {
+    "vitest": "4.1.11",
+    "zod": "4.6.5",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3"
+  },
+  "frontend": {
+    "unit": {
+      "status": "passed",
+      "files": 4,
+      "passed": 36,
+      "failed": 0
+    },
+    "methodCatalog": {
+      "status": "passed",
+      "sourceNames": 205,
+      "canonicalMethods": 202,
+      "command": "python3 scripts/check-paseo-client-methods.py"
+    },
+    "strictTypeChecks": {
+      "status": "passed",
+      "scope": [
+        "types.ts, methods.ts, messages.ts, transport.ts",
+        "apps/paseo/src/daemon/local-transport.ts with actual Electron, ws and upstream SSH transport declarations"
+      ],
+      "fullAppTypecheck": false
+    },
+    "format": {
+      "status": "passed",
+      "formatter": "Prettier",
+      "importedFilesStyle": "Upstream tabWidth=2 and printWidth=100; verified original source already matches these settings",
+      "addedFilesStyle": "Repository .editorconfig"
+    },
+    "integration": {
+      "checks": [
+        {
+          "name": "connect",
+          "status": "passed",
+          "keys": []
+        },
+        {
+          "name": "projects",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "projects"
+          ]
+        },
+        {
+          "name": "workspaces",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "entries",
+            "emptyProjects",
+            "pageInfo"
+          ]
+        },
+        {
+          "name": "agents",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "entries",
+            "pageInfo"
+          ]
+        },
+        {
+          "name": "daemon status",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "serverId",
+            "version",
+            "pid",
+            "nodePath",
+            "startedAt",
+            "listen",
+            "relay",
+            "providers"
+          ]
+        },
+        {
+          "name": "daemon config",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "config"
+          ]
+        },
+        {
+          "name": "providers",
+          "status": "passed",
+          "keys": [
+            "providers",
+            "error",
+            "fetchedAt",
+            "requestId"
+          ]
+        },
+        {
+          "name": "provider snapshot",
+          "status": "passed",
+          "keys": [
+            "cwd",
+            "entries",
+            "snapshotHash",
+            "notModified",
+            "generatedAt",
+            "requestId"
+          ]
+        },
+        {
+          "name": "workspace labels",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "labels",
+            "sync"
+          ]
+        },
+        {
+          "name": "voice mode off",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "enabled",
+            "agentId",
+            "accepted",
+            "error"
+          ]
+        },
+        {
+          "name": "liveness ping",
+          "status": "passed",
+          "keys": []
+        },
+        {
+          "name": "unsupported schedules",
+          "status": "expected_gap",
+          "error": "Rust server does not implement schedule.list.request requestType=schedule/list code=not_implemented",
+          "code": "not_implemented"
+        },
+        {
+          "name": "agents subscribe",
+          "status": "expected_gap",
+          "error": "Capability was not negotiated requestType=fetch_agents_request code=unsupported_capability",
+          "code": "unsupported_capability"
+        },
+        {
+          "name": "workspace labels subscribe/release",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "subscriptionId",
+            "labels",
+            "sync"
+          ]
+        },
+        {
+          "name": "add project",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "project",
+            "error"
+          ]
+        },
+        {
+          "name": "open workspace",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "workspace",
+            "error"
+          ]
+        },
+        {
+          "name": "nonempty workspaces",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "entries",
+            "emptyProjects",
+            "pageInfo"
+          ]
+        },
+        {
+          "name": "list files",
+          "status": "passed",
+          "keys": [
+            "path",
+            "entries"
+          ]
+        },
+        {
+          "name": "list terminals",
+          "status": "passed",
+          "keys": [
+            "cwd",
+            "terminals",
+            "requestId"
+          ]
+        },
+        {
+          "name": "assign workspace label",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "label",
+            "workspaceLabels"
+          ]
+        },
+        {
+          "name": "workspace subscribe",
+          "status": "expected_gap",
+          "error": "Capability was not negotiated requestType=fetch_workspaces_request code=unsupported_capability",
+          "code": "unsupported_capability"
+        },
+        {
+          "name": "supported session events",
+          "status": "passed",
+          "keys": [
+            "requestId",
+            "subscriptionId"
+          ]
+        },
+        {
+          "name": "unsupported session events",
+          "status": "expected_gap",
+          "error": "Capability was not negotiated requestType=session.events.set_subscription.request code=unsupported_capability",
+          "code": "unsupported_capability"
+        },
+        {
+          "name": "send message with SDK messageId",
+          "status": "expected_gap",
+          "error": "Capability was not negotiated requestType=send_agent_message_request code=unsupported_capability",
+          "code": "unsupported_capability"
+        },
+        {
+          "name": "label update event",
+          "status": "passed",
+          "keys": [
+            "type",
+            "payload"
+          ]
+        }
+      ],
+      "invalidMessages": [],
+      "upstreamRevision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+      "schema": "Pinned upstream original Zod WSOutboundMessageSchema (AOT build output not imported)",
+      "scope": "Real SDK, renderer transport, process-local RPC bridge harness, main-process transport manager and isolated Rust server; no Electron preload/window/UI"
+    },
+    "integrationSummary": {
+      "passed": 20,
+      "expectedGaps": 5,
+      "schemaErrors": 0
+    },
+    "reproduce": "PASEO_SOURCE_ROOT=/path/to/pinned/paseo PASEO_TEST_DEPS=/path/to/test/node_modules AIT_SERVER_BIN=/path/to/server node scripts/validate-paseo-rust-client.cjs"
+  },
+  "rust": {
+    "format": {
+      "status": "passed"
+    },
+    "clippy": {
+      "status": "passed"
+    },
+    "workspaceTests": {
+      "status": "passed",
+      "exitCode": 0,
+      "targets": 99,
+      "passed": 1004,
+      "failed": 0,
+      "ignored": 5,
+      "command": "CARGO_TARGET_DIR=/tmp/ait-agent-interface-target cargo test --workspace --offline --no-fail-fast -j2 -- --test-threads=1",
+      "sandboxNote": "Initial sandbox execution encountered OS permission errors for local sockets/processes; rerun outside the sandbox with the same test arguments completed successfully."
+    }
+  },
+  "coverage": {
+    "rustLineCoverage": "Not measured; no Rust behavior changed in this frontend adaptation.",
+    "frontendLineCoverage": "Not measured; targeted protocol and bridge tests only."
+  },
+  "limitations": [
+    "No Electron window, preload or full UI end-to-end run; renderer-to-main IPC is connected by a process-local test harness.",
+    "Shared npm packages, root build scripts and Rust daemon process management still need integration.",
+    "No real provider execution, audio recognition/synthesis or exhaustive business-parameter coverage.",
+    "Five expected-gap assertions verify explicit rejection, not implemented functionality."
+  ],
+  "isolation": "Integration used a random loopback port, temporary project/data directories and in-memory random Bearer token; server was stopped and temporary state removed.",
+  "validationLogDigests": {
+    "frontend": {
+      "sha256": "8ee09d31a68f5811e16d08e808c24e317a810dbcd215ae3533d9fc474c8c952f"
+    },
+    "rustFormat": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rustClippy": {
+      "sha256": "34ef44e8f98399a15134b411e4be6cb6412a2bc3c8462de5ecb92596b6e02a9c"
+    },
+    "rustWorkspaceTests": {
+      "sha256": "e9f973478f4a83d1be6a37fb7db9074475928a6f48635cebea3d6519398742fb"
+    }
+  }
+}

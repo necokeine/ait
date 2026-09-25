@@ -8,6 +8,9 @@ pub const CAPABILITIES: &[&str] = &["session.events.set_subscription.request"];
 /// Event streams with installed producers in the independent server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SessionEventKind {
+    /// Provider discovery cache changed after an explicit refresh.
+    #[serde(rename = "providers_snapshot_update")]
+    ProvidersSnapshot,
     /// Committed Agent completion or failure attention.
     #[serde(rename = "agent_attention_required")]
     AgentAttention,
@@ -24,6 +27,7 @@ impl SessionEventKind {
     #[must_use]
     pub const fn method(self) -> &'static str {
         match self {
+            Self::ProvidersSnapshot => "providers_snapshot_update",
             Self::AgentAttention => "agent_attention_required",
             Self::ServerInfo => "status.server_info",
             Self::DaemonConfig => "status.daemon_config_changed",

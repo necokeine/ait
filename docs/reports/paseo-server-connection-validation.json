@@ -1,0 +1,250 @@
+{
+  "scope": "Real Rust server; upstream WebSocket transport, endpoint builder and extracted sendHelloMessage method; no Electron UI or complete DaemonClient",
+  "checks": [
+    {
+      "name": "/healthz",
+      "status": 200,
+      "body": {
+        "status": "alive"
+      }
+    },
+    {
+      "name": "/readyz",
+      "status": 200,
+      "body": {
+        "status": "ready"
+      }
+    },
+    {
+      "name": "/v1/server/info",
+      "status": 200,
+      "capabilityCount": 209,
+      "implementedCapabilityCount": 164
+    },
+    {
+      "name": "Paseo /ws without credentials",
+      "path": "/ws",
+      "opened": false,
+      "messages": [],
+      "httpStatus": 401,
+      "closeCode": 1006
+    },
+    {
+      "name": "Paseo /ws with valid Authorization",
+      "path": "/ws",
+      "opened": false,
+      "messages": [],
+      "httpStatus": 404,
+      "closeCode": 1006
+    },
+    {
+      "name": "/v1/ws with Paseo browser password subprotocol only",
+      "path": "/v1/ws",
+      "opened": false,
+      "messages": [],
+      "httpStatus": 401,
+      "closeCode": 1006
+    },
+    {
+      "name": "/v1/ws with valid Authorization and Metro Origin",
+      "path": "/v1/ws",
+      "opened": false,
+      "messages": [],
+      "httpStatus": 403,
+      "closeCode": 1006
+    },
+    {
+      "name": "/v1/ws with valid Authorization and actual Paseo hello",
+      "path": "/v1/ws",
+      "opened": true,
+      "messages": [
+        {
+          "type": "error",
+          "request_id": null,
+          "code": "invalid_message",
+          "message": "Invalid message or parameters",
+          "retryable": false
+        }
+      ],
+      "httpStatus": 101,
+      "closeCode": 1001
+    },
+    {
+      "name": "Rust native hello and five basic RPCs",
+      "path": "/v1/ws",
+      "opened": true,
+      "messages": [
+        {
+          "type": "server_info",
+          "infoKeys": [
+            "server_id",
+            "instance_id",
+            "listen",
+            "lifecycle",
+            "protocol",
+            "capabilities",
+            "implemented_capabilities",
+            "limits"
+          ],
+          "negotiated_capabilities": [
+            "server.info",
+            "connection.ping",
+            "project.list.request",
+            "workspace.list.request",
+            "daemon.get_status.request"
+          ]
+        },
+        {
+          "type": "response",
+          "request_id": "1",
+          "result": {
+            "nonce": "connection-probe"
+          }
+        },
+        {
+          "type": "response",
+          "request_id": "2",
+          "resultKeys": [
+            "capabilities",
+            "implemented_capabilities",
+            "instance_id",
+            "lifecycle",
+            "limits",
+            "listen",
+            "protocol",
+            "server_id"
+          ]
+        },
+        {
+          "type": "response",
+          "request_id": "3",
+          "result": {
+            "projects": []
+          }
+        },
+        {
+          "type": "response",
+          "request_id": "4",
+          "result": {
+            "emptyProjects": [],
+            "entries": [],
+            "pageInfo": {
+              "hasMore": false,
+              "nextCursor": null,
+              "prevCursor": null
+            }
+          }
+        },
+        {
+          "type": "response",
+          "request_id": "5",
+          "resultKeys": [
+            "listen",
+            "nodePath",
+            "pid",
+            "providers",
+            "relay",
+            "serverId",
+            "startedAt",
+            "version"
+          ]
+        }
+      ],
+      "httpStatus": 101,
+      "closeCode": 1006
+    },
+    {
+      "name": "Paseo session envelope after successful native hello",
+      "path": "/v1/ws",
+      "opened": true,
+      "messages": [
+        {
+          "type": "server_info",
+          "infoKeys": [
+            "server_id",
+            "instance_id",
+            "listen",
+            "lifecycle",
+            "protocol",
+            "capabilities",
+            "implemented_capabilities",
+            "limits"
+          ],
+          "negotiated_capabilities": [
+            "server.info",
+            "connection.ping",
+            "project.list.request",
+            "workspace.list.request",
+            "daemon.get_status.request"
+          ]
+        },
+        {
+          "type": "error",
+          "request_id": null,
+          "code": "invalid_message",
+          "message": "Invalid message or parameters",
+          "retryable": false
+        }
+      ],
+      "httpStatus": 101,
+      "closeCode": 1001
+    }
+  ],
+  "paseoHello": {
+    "type": "hello",
+    "clientId": "paseo-compatibility-probe",
+    "clientType": "mobile",
+    "protocolVersion": 1,
+    "capabilities": {
+      "owned_subscriptions": true,
+      "all_providers": true,
+      "selective_agent_timeline": true,
+      "reasoning_merge_enum": true,
+      "custom_mode_icons": true,
+      "terminal_reflowable_snapshot": true,
+      "provider_subagents": true,
+      "projected_subagent_timeline": true,
+      "project_updates": true,
+      "compact_provider_snapshots": true,
+      "provider_snapshot_references": true,
+      "timeline_replacement_invalidation": true,
+      "timeline_notifications": true,
+      "plugin_timeline_items": true,
+      "workspace_setup_blocked": true,
+      "explicit_event_subscriptions": true
+    },
+    "appVersion": "0.9.0-beta.2"
+  },
+  "conclusion": "not directly compatible",
+  "assertions": "passed",
+  "serverExit": [
+    0,
+    null
+  ],
+  "date": "2026-09-25",
+  "upstreamRevision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+  "desktopStartup": {
+    "command": "npm --prefix apps/paseo run dev",
+    "exitCode": 1,
+    "error": "scripts/dev-home.sh: No such file or directory"
+  },
+  "desktopBuild": {
+    "command": "npm --prefix apps/paseo run build:main",
+    "exitCode": 127,
+    "error": "tsc: command not found"
+  },
+  "serverBuild": {
+    "command": "CARGO_TARGET_DIR=/tmp/ait-agent-interface-target cargo build -p server-bin --bin server --offline -j2",
+    "exitCode": 0
+  },
+  "cleanup": {
+    "temporaryDataRemoved": true,
+    "serverExitedNormally": true
+  },
+  "limitations": [
+    "Electron UI and complete DaemonClient not run",
+    "Some connections deliberately terminated by probe after receiving expected responses; close code 1006 may be probe-generated",
+    "Negative compatibility assertions passed; this is not a successful desktop connection",
+    "No line coverage or full workspace regression measured in this probe"
+  ]
+}
