@@ -65,7 +65,7 @@ pub struct MethodSpec {
 }
 
 macro_rules! request {
-    ($group:ident, $source:literal, $canonical:literal) => {
+    ($group:ident, $source:literal, $canonical:expr) => {
         MethodSpec {
             paseo_name: $source,
             canonical_name: $canonical,
@@ -76,7 +76,7 @@ macro_rules! request {
 }
 
 macro_rules! event {
-    ($group:ident, $source:literal, $canonical:literal) => {
+    ($group:ident, $source:literal, $canonical:expr) => {
         MethodSpec {
             paseo_name: $source,
             canonical_name: $canonical,
@@ -87,7 +87,7 @@ macro_rules! event {
 }
 
 macro_rules! response {
-    ($group:ident, $source:literal, $canonical:literal) => {
+    ($group:ident, $source:literal, $canonical:expr) => {
         MethodSpec {
             paseo_name: $source,
             canonical_name: $canonical,
@@ -433,27 +433,27 @@ pub const PASEO_METHODS: &[MethodSpec] = &[
     request!(
         Skills,
         "agent.skills.get_status.request",
-        "agent.skills.get_status.request"
+        server_filesystem::protocol::skills::GET_STATUS
     ),
     request!(
         Skills,
         "agent.skills.reconcile.request",
-        "agent.skills.reconcile.request"
+        server_filesystem::protocol::skills::RECONCILE
     ),
     request!(
         Skills,
         "agent.skills.uninstall.request",
-        "agent.skills.uninstall.request"
+        server_filesystem::protocol::skills::UNINSTALL
     ),
     request!(
         Skills,
         "agent.skills.save_selection.request",
-        "agent.skills.save_selection.request"
+        server_filesystem::protocol::skills::SAVE_SELECTION
     ),
     request!(
         Skills,
         "agent.skills.import_legacy_selection.request",
-        "agent.skills.import_legacy_selection.request"
+        server_filesystem::protocol::skills::IMPORT_LEGACY_SELECTION
     ),
     request!(
         Git,
@@ -752,7 +752,11 @@ pub const PASEO_METHODS: &[MethodSpec] = &[
         "creation.subscribe.request",
         "creation.subscribe.request"
     ),
-    event!(Session, "client_heartbeat", "session.heartbeat"),
+    event!(
+        Session,
+        "client_heartbeat",
+        server_metadata::protocol::server::HEARTBEAT_METHOD
+    ),
     request!(Session, "ping", "connection.ping"),
     event!(Push, "register_push_token", "push.register"),
     request!(Push, "push.unregister.request", "push.unregister.request"),

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use server_protocol::file_transfer::{self, FileBegin, FileFrame};
+use server_filesystem::protocol::file_transfer::{self, FileBegin, FileFrame};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::transport::{Socket, connect, receive, request};
@@ -17,7 +17,7 @@ async fn filesystem_requests_preserve_edits_and_connection_owned_versions() {
     let log = temp.path().join("log");
     let mut process = start(&temp.path().join("state"), &log);
     let address = ready(&mut process, &log).await;
-    let mut methods = server_protocol::files::CAPABILITIES.to_vec();
+    let mut methods = server_filesystem::protocol::files::CAPABILITIES.to_vec();
     methods.push("subscription.release.request");
     let mut socket = connect(&address, &methods).await;
     let created = request(
@@ -102,7 +102,7 @@ async fn binary_preview_streams_bounded_chunks_and_honors_max_bytes() {
     let log = temp.path().join("log");
     let mut process = start(&temp.path().join("state"), &log);
     let address = ready(&mut process, &log).await;
-    let mut socket = connect(&address, server_protocol::files::CAPABILITIES).await;
+    let mut socket = connect(&address, server_filesystem::protocol::files::CAPABILITIES).await;
     send_request(
         &mut socket,
         "preview",
@@ -162,8 +162,8 @@ async fn upload_frames_are_connection_owned_and_failures_remove_partial_files() 
     let state = temp.path().join("state");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let mut first = connect(&address, server_protocol::files::CAPABILITIES).await;
-    let mut other = connect(&address, server_protocol::files::CAPABILITIES).await;
+    let mut first = connect(&address, server_filesystem::protocol::files::CAPABILITIES).await;
+    let mut other = connect(&address, server_filesystem::protocol::files::CAPABILITIES).await;
     let request_params =
         json!({"fileName":"../file?.txt","mimeType":"text/plain","size":3,"modifiedAt":"now"});
     send_request(
@@ -345,7 +345,7 @@ async fn file_errors_and_inline_content_preserve_paseo_shapes() {
     let log = temp.path().join("log");
     let mut process = start(&temp.path().join("state"), &log);
     let address = ready(&mut process, &log).await;
-    let mut socket = connect(&address, server_protocol::files::CAPABILITIES).await;
+    let mut socket = connect(&address, server_filesystem::protocol::files::CAPABILITIES).await;
     let image = request(
         &mut socket,
         "fs.explorer.request",

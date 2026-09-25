@@ -1,5 +1,48 @@
 # 概念与架构文档
 
+- [ADR-037：公共 Context 与具体 crate 分发](decisions/adr-037-server-model-context.md)
+  （Accepted）：server-model 提供公共请求、队列与 Tokio 运行资源；各能力 crate 直接接收
+  Context 和具体服务/连接状态，删除 Host 回调接口，API 负责组装与跨能力收尾。
+  [实施报告](reports/server-model-context.md)记录回归与覆盖率。
+
+- [ADR-036：请求先进入所属 crate 再分发到能力组](decisions/adr-036-server-crate-dispatch.md)
+  （Accepted）：API 顶层仅按四个能力 crate 分流；crate 选择业务处理器，Host 端口保留 API
+  调度和连接所有权，并统一普通响应与响应后的动作。
+  [实施报告](reports/server-crate-dispatch.md)记录回归与覆盖率。
+
+- [ADR-035：能力分组与安装规则归所属 server crate](decisions/adr-035-server-capability-groups.md)
+  （Accepted）：metadata/filesystem/provider/terminal 自行声明方法分组并计算已安装能力，
+  server-api 合并并连接处理器；名称、安装条件与消息方向保持兼容。
+  [实施报告](reports/server-capability-groups.md)记录验证与覆盖率。
+
+- [ADR-033：独立 server-terminal 与完整 Terminal 方法分组](decisions/adr-033-server-terminal.md)
+  （Accepted）：10 个 Terminal 方法、真实 PTY、binary input/output/resize/snapshot/restore、连接级
+  订阅和 resize 所有权；批量关闭、归档清理与 shutdown 接入。限制与覆盖率见[实施报告](reports/server-terminal.md)。
+
+- [ADR-034：Agent 后续 turn 配置与 Session 事件/心跳](decisions/adr-034-agent-config-session-events.md)
+  （Accepted）：模型/推理等级与批量配置原子保存；连接事件订阅、心跳、焦点抑制和断线释放归 metadata。
+  [实施报告](reports/server-agent-session.md)记录五个新接口及验证范围。
+
+- [ADR-032：独立 server 接通 Codex 原生文本执行](decisions/adr-032-server-native-provider-execution.md)
+  （Accepted）：Provider worker 接通创建、恢复、发送、取消和等待结果；read-only Codex 首片，
+  保留 native 历史边界，已实现 capability 增至 107。
+  [实施报告](reports/server-native-provider-execution.md)记录并发取消、重启恢复、进程回收和覆盖率。
+
+- [ADR-031：拆出 server-provider 并统一 Workspace 自动化与 state 入口](decisions/adr-031-server-provider.md)
+  （Accepted）：14 个 Agent 方法归 provider，7 个 Workspace 方法归 metadata；
+  attention 通过窄端口委托 Agent 更新，删除四个空横向 crate，domain 保持纯依赖。
+  [实施报告](reports/server-provider-extraction.md)记录验证与覆盖率，
+  [可行性分析](reports/server-provider-feasibility.md)保留拆分前的调研。
+
+- [ADR-030：纵向拆出 server-filesystem](decisions/adr-030-server-filesystem.md)
+  （Accepted）：集中 Git、Forge/PR、文件/目录、Worktree、恢复和 GitHub clone；skill 保留占位。
+  [实施报告](reports/server-filesystem-extraction.md)记录边界、回归与本轮测试覆盖率。
+
+- [ADR-029：统一 Paseo Project 并纵向拆出 server-metadata](decisions/adr-029-server-metadata.md)
+  （Accepted）：废除独立 server 早期 Project 租约体系，将 Project/Workspace 业务协议、记录、
+  用例、文件存储及 server metadata 归入独立 crate。
+  [实施报告](reports/server-metadata-extraction.md)记录回归、依赖约束和测试覆盖率。
+
 - [ADR-028：GitHub 仓库发现与独立 Project 克隆注册](decisions/adr-028-github-project-provisioning.md)
   （Accepted）：新 server 接通仓库搜索与克隆注册两个 Paseo WebSocket 方法；
   [实现报告](reports/paseo-github-project-provisioning.md)记录测试、覆盖率及与 Paseo 的差异。
@@ -43,9 +86,9 @@
   新 Agent 配置、历史 revision、显式默认选择、凭据引用与 catalog v1 → v2 备份升级。
   [验证报告](reports/independent-server-m1-agents.md)记录 CAS、回执、重启、秘密隔离与覆盖率。
 
-- [ADR-023：独立 server 的项目打开与所有权](decisions/adr-023-server-project-opening.md)（Accepted）：
-  M1 首个纵向切片新增五个独立内部 crate，贯通 Project Git 准入、根 Message、SQLite、
-  catalog 回执与本机所有权，以及 `project.open/list/get/close`。
+- [ADR-023：独立 server 的项目打开与所有权](decisions/adr-023-server-project-opening.md)（Superseded by ADR-029）：
+  历史 M1 切片定义 Project Git 准入、根 Message、SQLite、catalog 回执、本机所有权
+  及 `project.open/list/get/close`；该切片现已移除。
   [验证报告](reports/independent-server-m1-projects.md)记录恢复、隔离、WS 与覆盖率验证。
 
 - [ADR-022：独立 server 与全新内部 crate](decisions/adr-022-independent-server.md)（Accepted）：

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::json;
+use server_filesystem::protocol::worktrees::CAPABILITIES;
 
 use super::transport::{Socket, connect, receive, request};
 use super::{ready, start, terminate};
@@ -18,7 +19,7 @@ async fn binary_creates_lists_and_archives_canonical_worktrees() {
     let log = root.path().join("server.log");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let mut client = connect(&address, server_protocol::worktrees::CAPABILITIES).await;
+    let mut client = connect(&address, CAPABILITIES).await;
 
     assert_empty_list_and_required_location(&mut client, &repository).await;
 

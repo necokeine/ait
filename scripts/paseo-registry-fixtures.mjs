@@ -84,7 +84,7 @@ for (const isGit of [true,false]) for (const owned of [true,false]) for (const m
 }
 const sourceFiles=Object.fromEntries([[recordPath,records],[messagePath,messages]].map(([name,text])=>[name,crypto.createHash('sha256').update(text).digest('hex')]));
 const meta={revision,zod:require(path.join(path.resolve(zodPath),'package.json')).version,sourceFiles};
-for (const [destination,isRecord] of [['crates/server-domain/tests/fixtures/paseo-registry.json',true],['crates/server-protocol/tests/fixtures/paseo-workspace.json',false]]) {
+for (const [destination,isRecord] of [['crates/server-metadata/tests/fixtures/paseo-registry.json',true],['crates/server-metadata/tests/fixtures/paseo-workspace.json',false]]) {
  fs.writeFileSync(destination,JSON.stringify({source:meta,cases:cases.filter(c=>c.schema.startsWith('Persisted')===isRecord)},null,2)+'\n');
 }
 console.log(JSON.stringify({source:meta,cases:cases.length}));

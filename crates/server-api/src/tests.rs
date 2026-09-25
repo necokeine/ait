@@ -1,7 +1,10 @@
 use super::*;
 
+mod session;
+
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use server_protocol::CAPABILITIES;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
@@ -202,7 +205,15 @@ async fn http_authentication_origins_and_readiness() {
         .unwrap();
     assert_eq!(info.server_id, "stable");
     assert_eq!(info.lifecycle, Lifecycle::Ready);
-    assert_eq!(info.implemented_capabilities, CAPABILITIES);
+    let expected: Vec<_> = CAPABILITIES
+        .iter()
+        .copied()
+        .chain([
+            "session.heartbeat",
+            "session.events.set_subscription.request",
+        ])
+        .collect();
+    assert_eq!(info.implemented_capabilities, expected);
     assert_eq!(info.capabilities.len(), 190);
     assert!(
         info.capabilities

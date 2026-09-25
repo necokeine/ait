@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use server_domain::AgentId;
 use server_domain::agent::{AgentSnapshot, Revision};
-use server_ports::agent::{
+use server_provider::ports::agent::{
     AgentCatalog, AgentError, AgentReceipt, ConfigureAgent, DefaultReceipt, DefaultSelection,
     SelectDefault,
 };
-use server_storage::SqliteCatalog;
+use server_provider::storage::SqliteCatalog;
 
 use crate::instance::InstanceLease;
 

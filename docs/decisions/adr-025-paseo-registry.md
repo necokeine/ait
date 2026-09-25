@@ -1,5 +1,9 @@
 # ADR-025：先移植 Paseo Project / Workspace 模型与 registry
 
+> [ADR-029](adr-029-server-metadata.md) 延续本决策的 Paseo 模型，
+> 将协议、记录、端口、用例和文件存储统一迁入 `server-metadata`，并废除早期 Project 租约服务。
+> 下文的旧模块位置和过渡共存安排已被该决策替代。
+
 - 状态：Accepted，落实用户对“复刻 Paseo server”的方向纠正。
 - 日期：2026-09-22。
 - 来源：`getpaseo/paseo@2c8e8a826810337492cc5a38bb0bbd705b6fb632`。

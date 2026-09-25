@@ -1,0 +1,27 @@
+[package]
+name = "server-terminal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing = "0.1.44"
+tokio = { version = "1.53.1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+server-model = { version = "0.0.6", path = "../server-model" }
+server-metadata = { version = "0.0.6", path = "../server-metadata" }
+portable-pty = "0.9.0"
+vt100 = "0.16.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+uuid = { version = "1.26.0", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

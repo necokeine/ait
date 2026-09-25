@@ -4,7 +4,7 @@ use serde_json::json;
 use server_domain::agent_runtime::{
     AgentAttentionReason, AgentRuntimeStatus, PersistedAgentRuntimeRecord,
 };
-use server_domain::registry::{
+use server_metadata::model::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
 };
 
@@ -25,7 +25,12 @@ async fn binary_serves_workspace_attention_and_recovery_methods() {
     let log = root.path().join("server.log");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let mut client = connect(&address, server_protocol::workspace_state::CAPABILITIES).await;
+    let capabilities = [
+        server_metadata::protocol::workspace_state::CAPABILITIES,
+        server_filesystem::protocol::workspace_recovery::CAPABILITIES,
+    ]
+    .concat();
+    let mut client = connect(&address, &capabilities).await;
 
     let cleared = request(
         &mut client,

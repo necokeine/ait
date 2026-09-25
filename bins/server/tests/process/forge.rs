@@ -23,7 +23,7 @@ async fn binary_serves_all_forge_and_pull_request_methods() {
     let log = root.path().join("server.log");
     let mut process = start_with_path(&state, &log, Some(&path));
     let address = ready(&mut process, &log).await;
-    let mut client = connect(&address, server_protocol::forge::CAPABILITIES).await;
+    let mut client = connect(&address, server_filesystem::protocol::forge::CAPABILITIES).await;
 
     let search = request(
         &mut client,

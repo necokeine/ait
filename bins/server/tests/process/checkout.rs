@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::json;
+use server_filesystem::protocol::checkout::CAPABILITIES;
 
 use super::transport::{Socket, connect, receive, request};
 use super::{ready, start, terminate};
@@ -15,7 +16,7 @@ async fn binary_serves_checkout_reads_and_connection_owned_diff_updates() {
     let log = root.path().join("server.log");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let mut client = connect(&address, server_protocol::checkout::CAPABILITIES).await;
+    let mut client = connect(&address, CAPABILITIES).await;
 
     let status = request(
         &mut client,
@@ -135,7 +136,7 @@ async fn binary_serves_checkout_branch_and_mutation_methods() {
     let log = root.path().join("server.log");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let mut client = connect(&address, server_protocol::checkout::CAPABILITIES).await;
+    let mut client = connect(&address, CAPABILITIES).await;
 
     assert_branch_methods(&mut client, &repository).await;
     assert_mutation_methods(&mut client, &repository).await;

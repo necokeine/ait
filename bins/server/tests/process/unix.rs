@@ -52,8 +52,17 @@ mod agents;
 #[path = "agent_runtime.rs"]
 mod agent_runtime;
 
-#[path = "projects.rs"]
-mod projects;
+#[path = "agent_execution.rs"]
+mod agent_execution;
+
+#[path = "native.rs"]
+mod native;
+
+#[path = "session.rs"]
+mod session;
+
+#[path = "metadata.rs"]
+mod metadata;
 
 #[path = "directory.rs"]
 mod directory;
@@ -176,3 +185,6 @@ async fn signal_shutdown_releases_process_lock_and_preserves_identity() {
     assert_ne!(info["instance_id"], next["instance_id"]);
     terminate(&mut restarted).await;
 }
+
+#[path = "terminal.rs"]
+mod terminal;

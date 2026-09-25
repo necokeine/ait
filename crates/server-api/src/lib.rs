@@ -1,24 +1,15 @@
 //! Authenticated local HTTP and WebSocket transport for the independent server.
 
-mod agent_runtime;
-mod agents;
 mod auth;
-mod checkout;
+mod capabilities;
 mod connection;
-mod daemon;
-mod directory;
 mod files;
-mod forge;
-mod jobs;
 mod outbound;
-mod projects;
-mod workspace_automation;
-mod workspace_labels;
-mod workspace_state;
-mod worktrees;
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+
+use server_model::Runtime;
 use std::time::Duration;
 
 use axum::extract::{Request, State, WebSocketUpgrade};
@@ -28,26 +19,27 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use secrecy::SecretString;
-use server_application::Projects;
-use server_application::agent_runtime::AgentRuntimeDirectory;
-use server_application::agents::Agents;
-use server_application::checkout::Checkout;
-use server_application::daemon::Daemon;
-use server_application::directory::Directory;
-use server_application::files::Files;
-use server_application::forge::Forge;
-use server_application::workspace_automation::WorkspaceAutomation;
-use server_application::workspace_labels::WorkspaceLabels;
-use server_application::workspace_state::WorkspaceState;
-use server_application::worktrees::Worktrees;
-use server_protocol::{CAPABILITIES, Lifecycle, Limits, ServerInfo, VERSION};
+use server_filesystem::service::checkout::Checkout;
+use server_filesystem::service::files::Files;
+use server_filesystem::service::forge::Forge;
+use server_filesystem::service::github_projects::GithubProjects;
+use server_filesystem::service::workspace_recovery::WorkspaceRecovery;
+use server_filesystem::service::worktrees::Worktrees;
+use server_metadata::service::daemon::Daemon;
+use server_metadata::service::directory::Directory;
+use server_metadata::service::workspace_automation::WorkspaceAutomation;
+use server_metadata::service::workspace_labels::WorkspaceLabels;
+use server_metadata::service::workspace_state::WorkspaceState;
+use server_protocol::{Lifecycle, Limits, ServerInfo, VERSION};
+use server_provider::service::agent_execution::AgentExecution;
+use server_provider::service::agent_runtime::AgentRuntimeDirectory;
+use server_provider::service::agents::Agents;
 use tokio::sync::Semaphore;
-use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 pub use auth::validate_token;
+use capabilities::installed_capabilities;
 
 /// Invalid startup configuration for the transport.
 #[derive(Debug, thiserror::Error)]
@@ -62,35 +54,35 @@ pub enum ConfigError {
 
 #[derive(Debug)]
 struct Shared {
-    info: ServerInfo,
+    runtime: Arc<Runtime>,
     token: SecretString,
     authorities: Vec<String>,
-    cancellation: CancellationToken,
-    tasks: TaskTracker,
     connections: Arc<Semaphore>,
-    // Serializes admission with closing the tracker, including pending HTTP upgrades.
-    admission: Mutex<()>,
-    lifecycle_intent: Mutex<Option<LifecycleIntent>>,
-    projects: Option<Arc<Mutex<Projects>>>,
-    agents: Option<Arc<Mutex<Agents>>>,
-    checkout: Option<Arc<Mutex<Checkout>>>,
-    agent_runtime: Option<Arc<Mutex<AgentRuntimeDirectory>>>,
-    daemon: Option<Arc<Mutex<Daemon>>>,
-    directory: Option<Arc<Mutex<Directory>>>,
-    forge: Option<Arc<Mutex<Forge>>>,
-    files: Option<Arc<Mutex<Files>>>,
-    workspace_labels: Option<Arc<Mutex<WorkspaceLabels>>>,
-    workspace_automation: Option<Arc<Mutex<WorkspaceAutomation>>>,
-    workspace_state: Option<Arc<Mutex<WorkspaceState>>>,
-    worktrees: Option<Arc<Mutex<Worktrees>>>,
-    jobs: Arc<Semaphore>,
+    metadata: Arc<server_metadata::dispatch::State>,
+    filesystem: Arc<server_filesystem::dispatch::State>,
+    provider: Arc<server_provider::dispatch::State>,
+    terminal: Arc<server_terminal::dispatch::State>,
+}
+
+impl std::ops::Deref for Shared {
+    type Target = Runtime;
+
+    fn deref(&self) -> &Runtime {
+        &self.runtime
+    }
 }
 
 /// Optional independently composed business services; only installed methods are advertised.
 #[derive(Debug, Default)]
 pub struct Services {
-    /// Project ownership and registration use cases.
-    pub projects: Option<Projects>,
+    /// Local PTY terminal lifecycle, input, capture, and streaming.
+    pub terminals: Option<server_terminal::service::Terminals>,
+    /// Native Provider execution and coordinated Agent runtime metadata.
+    pub agent_execution: Option<AgentExecution>,
+    /// Filesystem workspace recovery operations.
+    pub workspace_recovery: Option<WorkspaceRecovery>,
+    /// Filesystem github projects operations.
+    pub github_projects: Option<GithubProjects>,
     /// Versioned Agent presets and explicit default selection.
     pub agents: Option<Agents>,
     /// Git checkout status, diff, refresh, and history use cases.
@@ -115,43 +107,11 @@ pub struct Services {
     pub worktrees: Option<Worktrees>,
 }
 
-/// Process lifecycle action requested through the WebSocket API.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LifecycleIntent {
-    /// Stop the standalone server process.
-    Shutdown,
-    /// Rebuild the standalone server in-process.
-    Restart {
-        /// Normalized diagnostic reason.
-        reason: String,
-    },
-}
+pub use server_metadata::rpc::daemon::LifecycleIntent;
 
 impl Shared {
-    fn info(&self) -> ServerInfo {
-        let mut info = self.info.clone();
-        if self.cancellation.is_cancelled() {
-            info.lifecycle = Lifecycle::Draining;
-        }
-        info
-    }
-
-    fn request_lifecycle(&self, intent: LifecycleIntent) {
-        let admission = self
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut requested = self
-            .lifecycle_intent
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if requested.is_none() {
-            *requested = Some(intent);
-        }
-        self.cancellation.cancel();
-        self.tasks.close();
-        drop(requested);
-        drop(admission);
+    fn start_draining(&self) {
+        self.metadata.start_draining();
     }
 }
 
@@ -190,56 +150,86 @@ impl Api {
         }
         let implemented_capabilities = installed_capabilities(&services);
         let capabilities = registered_capabilities(&implemented_capabilities);
-        Ok(Self {
+        let session_events = services
+            .agent_execution
+            .as_ref()
+            .map(AgentExecution::events)
+            .unwrap_or_default();
+        let runtime = Arc::new(Runtime::new(ServerInfo {
+            server_id,
+            instance_id,
+            listen: address.to_string(),
+            lifecycle: Lifecycle::Ready,
+            protocol: VERSION,
+            capabilities,
+            implemented_capabilities,
+            limits: Limits::default(),
+        }));
+        let metadata = Arc::new(server_metadata::dispatch::State {
+            runtime: runtime.clone(),
+            daemon: services.daemon.map(|service| Arc::new(Mutex::new(service))),
+            directory: services
+                .directory
+                .map(|service| Arc::new(Mutex::new(service))),
+            workspace_labels: services
+                .workspace_labels
+                .map(|service| Arc::new(Mutex::new(service))),
+            workspace_automation: services
+                .workspace_automation
+                .map(|service| Arc::new(Mutex::new(service))),
+            workspace_state: services
+                .workspace_state
+                .map(|service| Arc::new(Mutex::new(service))),
+            session_events,
+            has_agent_execution: services.agent_execution.is_some(),
+        });
+        let filesystem = Arc::new(server_filesystem::dispatch::State {
+            runtime: runtime.clone(),
+            checkout: services
+                .checkout
+                .map(|service| Arc::new(Mutex::new(service))),
+            forge: services.forge.map(|service| Arc::new(Mutex::new(service))),
+            files: services.files.map(|service| Arc::new(Mutex::new(service))),
+            github_projects: services
+                .github_projects
+                .map(|service| Arc::new(Mutex::new(service))),
+            worktrees: services
+                .worktrees
+                .map(|service| Arc::new(Mutex::new(service))),
+            workspace_recovery: services
+                .workspace_recovery
+                .map(|service| Arc::new(Mutex::new(service))),
+            workspace_automation: metadata.workspace_automation.clone(),
+        });
+        let provider = Arc::new(server_provider::dispatch::State {
+            runtime: runtime.clone(),
+            agents: services.agents.map(|service| Arc::new(Mutex::new(service))),
+            agent_runtime: services
+                .agent_runtime
+                .map(|service| Arc::new(Mutex::new(service))),
+            agent_execution: services.agent_execution,
+            has_terminals: services.terminals.is_some(),
+        });
+        let terminal = Arc::new(server_terminal::dispatch::State {
+            runtime: runtime.clone(),
+            terminals: services
+                .terminals
+                .map(|service| Arc::new(Mutex::new(service))),
+        });
+        let api = Self {
             shared: Arc::new(Shared {
-                info: ServerInfo {
-                    server_id,
-                    instance_id,
-                    listen: address.to_string(),
-                    lifecycle: Lifecycle::Ready,
-                    protocol: VERSION,
-                    capabilities,
-                    implemented_capabilities,
-                    limits: Limits::default(),
-                },
+                runtime,
+                metadata,
+                filesystem,
+                provider,
+                terminal,
                 token,
                 authorities,
-                cancellation: CancellationToken::new(),
-                tasks: TaskTracker::new(),
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
-                admission: Mutex::new(()),
-                lifecycle_intent: Mutex::new(None),
-                projects: services
-                    .projects
-                    .map(|projects| Arc::new(Mutex::new(projects))),
-                agents: services.agents.map(|agents| Arc::new(Mutex::new(agents))),
-                checkout: services
-                    .checkout
-                    .map(|checkout| Arc::new(Mutex::new(checkout))),
-                agent_runtime: services
-                    .agent_runtime
-                    .map(|directory| Arc::new(Mutex::new(directory))),
-                daemon: services.daemon.map(|daemon| Arc::new(Mutex::new(daemon))),
-                directory: services
-                    .directory
-                    .map(|directory| Arc::new(Mutex::new(directory))),
-                forge: services.forge.map(|forge| Arc::new(Mutex::new(forge))),
-                files: services.files.map(|files| Arc::new(Mutex::new(files))),
-                workspace_labels: services
-                    .workspace_labels
-                    .map(|labels| Arc::new(Mutex::new(labels))),
-                workspace_automation: services
-                    .workspace_automation
-                    .map(|automation| Arc::new(Mutex::new(automation))),
-                workspace_state: services
-                    .workspace_state
-                    .map(|workspace_state| Arc::new(Mutex::new(workspace_state))),
-                worktrees: services
-                    .worktrees
-                    .map(|worktrees| Arc::new(Mutex::new(worktrees))),
-                jobs: Arc::new(Semaphore::new(1)),
             }),
-        })
+        };
+        server_terminal::connection::maintain(&api.shared.terminal);
+        Ok(api)
     }
 
     /// Build routes with origin checks, bounded HTTP handling, and metadata-only tracing.
@@ -269,8 +259,7 @@ impl Api {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.shared.cancellation.cancel();
-        self.shared.tasks.close();
+        self.shared.start_draining();
     }
 
     /// Return the first WebSocket lifecycle request accepted during this run.
@@ -287,82 +276,29 @@ impl Api {
     /// The process host must bound this wait with its shutdown deadline.
     pub async fn wait_closed(&self) {
         self.shared.tasks.wait().await;
+        if let Some(terminals) = self.shared.terminal.terminals.clone() {
+            let result = tokio::task::spawn_blocking(move || {
+                terminals
+                    .lock()
+                    .map_err(|_| server_terminal::Error::Io)?
+                    .shutdown()
+            })
+            .await;
+            if !matches!(result, Ok(Ok(()))) {
+                tracing::error!("terminal shutdown failed");
+            }
+        }
+        if let Some(execution) = &self.shared.provider.agent_execution
+            && execution.shutdown().await.is_err()
+        {
+            tracing::error!("native Provider shutdown failed");
+        }
     }
 
     /// Wait until shutdown has closed admission; useful for bounding the host's drain phase.
     pub async fn wait_draining(&self) {
         self.shared.cancellation.cancelled().await;
     }
-}
-
-fn installed_capabilities(services: &Services) -> Vec<String> {
-    let mut capabilities: Vec<String> = CAPABILITIES.iter().map(|s| (*s).to_owned()).collect();
-    let groups: &[(bool, &[&str])] = &[
-        (
-            services.files.is_some(),
-            server_protocol::files::CAPABILITIES,
-        ),
-        (
-            services.projects.is_some(),
-            server_protocol::project_lease::CAPABILITIES,
-        ),
-        (
-            services.agents.is_some(),
-            server_protocol::agent::CAPABILITIES,
-        ),
-        (
-            services.agent_runtime.is_some(),
-            server_protocol::agent_lifecycle::CAPABILITIES,
-        ),
-        (
-            services.checkout.is_some(),
-            server_protocol::checkout::CAPABILITIES,
-        ),
-        (
-            services.daemon.is_some(),
-            server_protocol::daemon::CAPABILITIES,
-        ),
-        (
-            services.directory.is_some(),
-            server_protocol::directory::CAPABILITIES,
-        ),
-        (
-            services.directory.is_some(),
-            server_protocol::github_projects::CAPABILITIES,
-        ),
-        (
-            services.directory.is_some(),
-            server_protocol::project_config::CAPABILITIES,
-        ),
-        (
-            services.directory.is_some(),
-            server_protocol::project_icon::CAPABILITIES,
-        ),
-        (
-            services.forge.is_some(),
-            server_protocol::forge::CAPABILITIES,
-        ),
-        (
-            services.workspace_labels.is_some(),
-            server_protocol::workspace_labels::CAPABILITIES,
-        ),
-        (
-            services.worktrees.is_some(),
-            server_protocol::worktrees::CAPABILITIES,
-        ),
-        (
-            services.workspace_automation.is_some(),
-            server_protocol::workspace_automation::CAPABILITIES,
-        ),
-        (
-            services.workspace_state.is_some(),
-            server_protocol::workspace_state::CAPABILITIES,
-        ),
-    ];
-    for (_, group) in groups.iter().filter(|(installed, _)| *installed) {
-        capabilities.extend(group.iter().map(|method| (*method).to_owned()));
-    }
-    capabilities
 }
 
 fn registered_capabilities(implemented: &[String]) -> Vec<String> {

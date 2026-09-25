@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use serde_json::json;
-use server_domain::registry::{
+use server_metadata::model::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
 };
 
@@ -31,10 +31,10 @@ async fn binary_serves_canonical_project_workspace_directory_methods() {
     let log = root.path().join("server.log");
     let mut process = start(&state, &log);
     let address = ready(&mut process, &log).await;
-    let capabilities = server_protocol::directory::CAPABILITIES
+    let capabilities = server_metadata::protocol::directory::CAPABILITIES
         .iter()
-        .chain(server_protocol::project_config::CAPABILITIES)
-        .chain(server_protocol::project_icon::CAPABILITIES)
+        .chain(server_metadata::protocol::project_config::CAPABILITIES)
+        .chain(server_metadata::protocol::project_icon::CAPABILITIES)
         .copied()
         .collect::<Vec<_>>();
     let mut client = connect(&address, &capabilities).await;
