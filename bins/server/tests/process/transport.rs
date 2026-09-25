@@ -11,6 +11,10 @@ use super::TOKEN;
 pub(super) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub(super) async fn connect(address: &str, capabilities: &[&str]) -> Socket {
+    connect_as(address, capabilities, "process").await
+}
+
+pub(super) async fn connect_as(address: &str, capabilities: &[&str], client_id: &str) -> Socket {
     let mut request = format!("ws://{address}/v1/ws")
         .into_client_request()
         .unwrap();
@@ -18,7 +22,7 @@ pub(super) async fn connect(address: &str, capabilities: &[&str]) -> Socket {
         .headers_mut()
         .insert("authorization", format!("Bearer {TOKEN}").parse().unwrap());
     let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    socket.send(Message::Text(json!({"type":"hello","client_id":"process","protocol":{"major":1,"min_minor":0,"max_minor":0},"required_capabilities":capabilities}).to_string().into())).await.unwrap();
+    socket.send(Message::Text(json!({"type":"hello","client_id":client_id,"protocol":{"major":1,"min_minor":0,"max_minor":0},"required_capabilities":capabilities}).to_string().into())).await.unwrap();
     assert_eq!(receive(&mut socket).await["type"], "server_info");
     socket
 }

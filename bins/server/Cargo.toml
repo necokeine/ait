@@ -9,6 +9,11 @@ name = "server"
 path = "src/main.rs"
 
 [dependencies]
+server-schedule = { version = "0.0.6", path = "../../crates/server-schedule" }
+server-browser = { version = "0.0.6", path = "../../crates/server-browser" }
+server-voice = { version = "0.0.6", path = "../../crates/server-voice" }
+serde_json = "1.0.151"
+tokio-util = { version = "0.7.19", features = ["rt"] }
 server-terminal = { version = "0.0.6", path = "../../crates/server-terminal" }
 server-provider = { version = "0.0.6", path = "../../crates/server-provider" }
 server-filesystem = { version = "0.0.6", path = "../../crates/server-filesystem" }

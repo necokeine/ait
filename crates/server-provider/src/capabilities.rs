@@ -11,6 +11,10 @@ pub enum Group {
     AgentRuntime,
     /// Native Agent execution and turn configuration.
     AgentExecution,
+    /// Timeline queries and connection observers.
+    Timeline,
+    /// Provider model, mode and feature discovery.
+    ProviderCatalog,
 }
 
 /// Implemented method groups, including event methods; catalog placeholders are excluded.
@@ -22,6 +26,13 @@ pub const IMPLEMENTED_GROUPS: &[(Group, &[&str])] = &[
         protocol::agent_execution::CAPABILITIES,
     ),
     (Group::AgentExecution, protocol::agent_config::CAPABILITIES),
+    (
+        Group::AgentExecution,
+        protocol::native_sessions::CAPABILITIES,
+    ),
+    (Group::Timeline, protocol::timeline::CAPABILITIES),
+    (Group::ProviderCatalog, protocol::provider::CAPABILITIES),
+    (Group::AgentExecution, protocol::controls::CAPABILITIES),
 ];
 
 /// Presence of independently composed services, supplied by the host.
@@ -44,7 +55,9 @@ pub fn installed_capabilities(services: InstalledServices) -> impl Iterator<Item
         .filter(move |(group, _)| match group {
             Group::Agents => services.agents,
             Group::AgentRuntime => services.agent_runtime || services.agent_execution,
-            Group::AgentExecution => services.agent_execution,
+            Group::AgentExecution | Group::Timeline | Group::ProviderCatalog => {
+                services.agent_execution
+            }
         })
         .flat_map(|(_, methods)| methods.iter().copied())
 }

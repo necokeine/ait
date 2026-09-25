@@ -10,6 +10,8 @@ use crate::capabilities::Group;
 /// Services installed for this capability crate, sharing server-wide runtime resources.
 #[derive(Debug)]
 pub struct State {
+    /// Installed persistent push token leases.
+    pub push_tokens: Option<Arc<Mutex<crate::service::push::PushTokens>>>,
     /// Shared Tokio admission, cancellation and task tracking.
     pub runtime: Arc<Runtime>,
     /// Installed daemon service.
@@ -23,6 +25,8 @@ pub struct State {
         Option<Arc<Mutex<crate::service::workspace_automation::WorkspaceAutomation>>>,
     /// Installed workspace state service.
     pub workspace_state: Option<Arc<Mutex<crate::service::workspace_state::WorkspaceState>>>,
+    /// Durable progress of Workspace and native Agent creation.
+    pub creations: crate::service::creation::Creations,
     /// Shared ephemeral session event hub.
     pub session_events: crate::service::session::SessionEvents,
     /// Whether Agent attention event production is installed.
@@ -48,6 +52,15 @@ use crate::connection::Connection;
 pub enum Completion {
     /// The response has been delivered by metadata.
     Complete,
+    /// Ask the API composition layer for the Provider owner's availability snapshot.
+    DaemonSnapshot {
+        /// Original correlation identifier.
+        request_id: String,
+        /// Canonical status or diagnostics operation.
+        method: String,
+        /// Validated request parameters.
+        params: Value,
+    },
     /// Release this connection's matching observers in every capability crate, then acknowledge.
     Release {
         /// Correlation ID of the admitted release request.
@@ -102,6 +115,18 @@ pub async fn dispatch(
 ) -> Result<Completion, QueueError> {
     match group {
         Group::Base => return base(context, state, connection),
+        Group::Push => crate::connection::push::unregister(context, state, connection).await,
+        Group::Editor => {
+            let result = crate::rpc::editor::execute(
+                &context.request.method,
+                context.request.params.clone(),
+            );
+            context.respond(result)
+        }
+        Group::Creation => crate::connection::creation::dispatch(context, state, connection).await,
+        Group::Directory if context.request.method == "workspace.create.request" => {
+            crate::connection::creation::create(context, state, connection).await
+        }
         Group::Session => crate::connection::session::subscribe(context, state, connection),
         Group::Directory => {
             context
@@ -111,6 +136,22 @@ pub async fn dispatch(
                     crate::rpc::directory::execute,
                 )
                 .await
+        }
+        Group::Daemon
+            if matches!(
+                context.request.method.as_str(),
+                "daemon.get_status.request" | "diagnostics.request"
+            ) =>
+        {
+            if !context.request.params.is_object() {
+                context.respond(Err(ErrorCode::InvalidMessage))?;
+                return Ok(Completion::Complete);
+            }
+            return Ok(Completion::DaemonSnapshot {
+                request_id: context.request.id,
+                method: context.request.method,
+                params: context.request.params,
+            });
         }
         Group::Daemon => {
             let params = std::mem::take(&mut context.request.params);
@@ -247,4 +288,29 @@ fn base(
         })?;
     }
     Ok(Completion::Complete)
+}
+
+/// Finish a daemon snapshot using live availability obtained by the API from Provider.
+/// # Errors
+/// Returns admission, missing-service, validation or serialization errors.
+pub async fn daemon_snapshot(
+    state: &State,
+    method: String,
+    params: Value,
+    providers: Vec<crate::protocol::daemon::ProviderAvailability>,
+) -> Result<Value, ErrorCode> {
+    let capabilities = state.info.implemented_capabilities.clone();
+    let lifecycle = state.info().lifecycle;
+    state
+        .run(state.daemon.clone(), ErrorCode::DaemonIo, move |daemon| {
+            crate::rpc::daemon::snapshot(
+                daemon,
+                &method,
+                params,
+                &providers,
+                (&capabilities, lifecycle),
+            )
+            .map_err(Into::into)
+        })
+        .await
 }

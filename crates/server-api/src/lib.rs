@@ -62,6 +62,9 @@ struct Shared {
     filesystem: Arc<server_filesystem::dispatch::State>,
     provider: Arc<server_provider::dispatch::State>,
     terminal: Arc<server_terminal::dispatch::State>,
+    voice: Arc<server_voice::dispatch::State>,
+    schedule: server_schedule::dispatch::State,
+    browser: server_browser::dispatch::State,
 }
 
 impl std::ops::Deref for Shared {
@@ -75,6 +78,16 @@ impl std::ops::Deref for Shared {
 /// Optional independently composed business services; only installed methods are advertised.
 #[derive(Debug, Default)]
 pub struct Services {
+    /// Persistent timed Agent executions.
+    pub schedules: Option<server_schedule::service::Schedules>,
+    /// Connection-owned browser automation broker.
+    pub browser: Option<server_browser::broker::Broker>,
+    /// Orchestration skill selection and installation.
+    pub skills: Option<server_filesystem::service::skills::Skills>,
+    /// Durable push registration and lease renewal.
+    pub push_tokens: Option<server_metadata::service::push::PushTokens>,
+    /// Connection-owned voice and dictation with independently selected speech engines.
+    pub speech: Option<server_voice::service::Speech>,
     /// Local PTY terminal lifecycle, input, capture, and streaming.
     pub terminals: Option<server_terminal::service::Terminals>,
     /// Native Provider execution and coordinated Agent runtime metadata.
@@ -111,6 +124,9 @@ pub use server_metadata::rpc::daemon::LifecycleIntent;
 
 impl Shared {
     fn start_draining(&self) {
+        if let Some(schedules) = &self.schedule.schedules {
+            schedules.stop();
+        }
         self.metadata.start_draining();
     }
 }
@@ -142,18 +158,18 @@ impl Api {
             return Err(ConfigError::InvalidAddress);
         }
         validate_token(token.expose_secret())?;
-        let mut authorities = vec![address.to_string(), format!("localhost:{}", address.port())];
-        if address.port() == 80 {
-            // HTTP clients omit the default port in Host and Origin.
-            authorities.push(address.to_string().trim_end_matches(":80").to_owned());
-            authorities.push("localhost".to_owned());
-        }
         let implemented_capabilities = installed_capabilities(&services);
         let capabilities = registered_capabilities(&implemented_capabilities);
         let session_events = services
             .agent_execution
             .as_ref()
             .map(AgentExecution::events)
+            .unwrap_or_default();
+        let creations = services
+            .agent_execution
+            .as_ref()
+            .map(AgentExecution::creations)
+            .or_else(|| services.directory.as_ref().map(Directory::creations))
             .unwrap_or_default();
         let runtime = Arc::new(Runtime::new(ServerInfo {
             server_id,
@@ -166,70 +182,69 @@ impl Api {
             limits: Limits::default(),
         }));
         let metadata = Arc::new(server_metadata::dispatch::State {
+            push_tokens: services.push_tokens.map(shared_service),
             runtime: runtime.clone(),
-            daemon: services.daemon.map(|service| Arc::new(Mutex::new(service))),
-            directory: services
-                .directory
-                .map(|service| Arc::new(Mutex::new(service))),
-            workspace_labels: services
-                .workspace_labels
-                .map(|service| Arc::new(Mutex::new(service))),
-            workspace_automation: services
-                .workspace_automation
-                .map(|service| Arc::new(Mutex::new(service))),
-            workspace_state: services
-                .workspace_state
-                .map(|service| Arc::new(Mutex::new(service))),
+            daemon: services.daemon.map(shared_service),
+            directory: services.directory.map(shared_service),
+            workspace_labels: services.workspace_labels.map(shared_service),
+            workspace_automation: services.workspace_automation.map(shared_service),
+            workspace_state: services.workspace_state.map(shared_service),
             session_events,
+            creations,
             has_agent_execution: services.agent_execution.is_some(),
         });
         let filesystem = Arc::new(server_filesystem::dispatch::State {
             runtime: runtime.clone(),
-            checkout: services
-                .checkout
-                .map(|service| Arc::new(Mutex::new(service))),
-            forge: services.forge.map(|service| Arc::new(Mutex::new(service))),
-            files: services.files.map(|service| Arc::new(Mutex::new(service))),
-            github_projects: services
-                .github_projects
-                .map(|service| Arc::new(Mutex::new(service))),
-            worktrees: services
-                .worktrees
-                .map(|service| Arc::new(Mutex::new(service))),
-            workspace_recovery: services
-                .workspace_recovery
-                .map(|service| Arc::new(Mutex::new(service))),
+            checkout: services.checkout.map(shared_service),
+            forge: services.forge.map(shared_service),
+            files: services.files.map(shared_service),
+            github_projects: services.github_projects.map(shared_service),
+            worktrees: services.worktrees.map(shared_service),
+            workspace_recovery: services.workspace_recovery.map(shared_service),
+            skills: services.skills.map(shared_service),
             workspace_automation: metadata.workspace_automation.clone(),
         });
         let provider = Arc::new(server_provider::dispatch::State {
             runtime: runtime.clone(),
-            agents: services.agents.map(|service| Arc::new(Mutex::new(service))),
-            agent_runtime: services
-                .agent_runtime
-                .map(|service| Arc::new(Mutex::new(service))),
+            agents: services.agents.map(shared_service),
+            agent_runtime: services.agent_runtime.map(shared_service),
             agent_execution: services.agent_execution,
             has_terminals: services.terminals.is_some(),
         });
         let terminal = Arc::new(server_terminal::dispatch::State {
             runtime: runtime.clone(),
-            terminals: services
-                .terminals
-                .map(|service| Arc::new(Mutex::new(service))),
+            terminals: services.terminals.map(shared_service),
         });
         let api = Self {
             shared: Arc::new(Shared {
+                schedule: server_schedule::dispatch::State {
+                    schedules: services.schedules,
+                },
+                browser: server_browser::dispatch::State {
+                    broker: services.browser,
+                },
+                voice: Arc::new(server_voice::dispatch::State {
+                    runtime: runtime.clone(),
+                    speech: services.speech,
+                }),
                 runtime,
                 metadata,
                 filesystem,
                 provider,
                 terminal,
                 token,
-                authorities,
+                authorities: allowed_authorities(address),
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
             }),
         };
         server_terminal::connection::maintain(&api.shared.terminal);
         Ok(api)
+    }
+
+    /// Return the composed broker for host-side browser tool execution.
+    #[must_use]
+    pub fn browser(&self) -> Option<server_browser::broker::Broker> {
+        self.shared.browser.broker.clone()
     }
 
     /// Build routes with origin checks, bounded HTTP handling, and metadata-only tracing.
@@ -276,6 +291,11 @@ impl Api {
     /// The process host must bound this wait with its shutdown deadline.
     pub async fn wait_closed(&self) {
         self.shared.tasks.wait().await;
+        if let Some(schedules) = &self.shared.schedule.schedules
+            && schedules.shutdown().await.is_err()
+        {
+            tracing::error!("schedule shutdown failed");
+        }
         if let Some(terminals) = self.shared.terminal.terminals.clone() {
             let result = tokio::task::spawn_blocking(move || {
                 terminals
@@ -299,6 +319,16 @@ impl Api {
     pub async fn wait_draining(&self) {
         self.shared.cancellation.cancelled().await;
     }
+}
+
+fn allowed_authorities(address: SocketAddr) -> Vec<String> {
+    let mut authorities = vec![address.to_string(), format!("localhost:{}", address.port())];
+    if address.port() == 80 {
+        // HTTP clients omit the default port in Host and Origin.
+        authorities.push(address.to_string().trim_end_matches(":80").to_owned());
+        authorities.push("localhost".to_owned());
+    }
+    authorities
 }
 
 fn registered_capabilities(implemented: &[String]) -> Vec<String> {
@@ -392,3 +422,7 @@ async fn upgrade(
 
 #[cfg(test)]
 mod tests;
+
+fn shared_service<S>(service: S) -> Arc<Mutex<S>> {
+    Arc::new(Mutex::new(service))
+}

@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::service::session::{SessionConnection, SessionSubscription};
 use crate::service::workspace_labels::WorkspaceLabelSubscription;
 
+pub(crate) mod creation;
 pub(crate) mod daemon;
+/// Persistent push registration and heartbeat renewal.
+pub mod push;
 /// Session presence and event subscription handling.
 pub mod session;
 pub(crate) mod workspace_labels;
@@ -13,6 +16,8 @@ pub(crate) mod workspace_labels;
 /// Metadata subscriptions belonging to one physical connection.
 #[derive(Default)]
 pub struct Connection {
+    pub(crate) push_token: Option<String>,
+    pub(crate) creations: BTreeMap<String, server_model::events::Subscription>,
     pub(crate) status: BTreeSet<String>,
     pub(crate) labels: BTreeMap<String, WorkspaceLabelSubscription>,
     pub(crate) events: BTreeMap<String, SessionSubscription>,
@@ -37,6 +42,7 @@ impl Connection {
             .len()
             .saturating_add(self.labels.len())
             .saturating_add(self.events.len())
+            .saturating_add(self.creations.len())
     }
 
     /// Whether this connection has no metadata subscriptions.
@@ -50,6 +56,7 @@ impl Connection {
         self.status.remove(id);
         self.labels.remove(id);
         self.events.remove(id);
+        self.creations.remove(id);
     }
 
     /// Notify status observers that admission is draining.

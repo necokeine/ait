@@ -943,6 +943,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -3048,6 +3049,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -3533,12 +3535,15 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "server-browser",
  "server-filesystem",
  "server-metadata",
  "server-model",
  "server-protocol",
  "server-provider",
+ "server-schedule",
  "server-terminal",
+ "server-voice",
  "subtle",
  "thiserror 2.0.20",
  "tokio",
@@ -3563,18 +3568,35 @@ dependencies = [
  "serde",
  "serde_json",
  "server-api",
+ "server-browser",
  "server-domain",
  "server-filesystem",
  "server-metadata",
  "server-protocol",
  "server-provider",
+ "server-schedule",
  "server-terminal",
+ "server-voice",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "server-browser"
+version = "0.0.6"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "server-model",
+ "tokio",
+ "url",
  "uuid",
 ]
 
@@ -3647,11 +3669,7 @@ version = "0.0.6"
 dependencies = [
  "serde",
  "serde_json",
- "server-filesystem",
- "server-metadata",
  "server-model",
- "server-provider",
- "server-terminal",
 ]
 
 [[package]]
@@ -3665,9 +3683,27 @@ dependencies = [
  "server-domain",
  "server-metadata",
  "server-model",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "server-schedule"
+version = "0.0.6"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+ "server-model",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
  "uuid",
 ]
 
@@ -3688,6 +3724,24 @@ dependencies = [
  "tracing",
  "uuid",
  "vt100",
+]
+
+[[package]]
+name = "server-voice"
+version = "0.0.6"
+dependencies = [
+ "axum",
+ "base64",
+ "reqwest 0.12.28",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "server-model",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

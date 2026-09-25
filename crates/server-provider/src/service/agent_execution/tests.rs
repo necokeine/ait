@@ -104,7 +104,7 @@ async fn assert_invalid_configurations(
             .execute(
                 "agent.config.apply.request",
                 json!({"agentId":id,
-        "config":{"modeId":"danger-full-access"}})
+        "config":{"unsupported":true}})
             )
             .await,
         Err(ErrorCode::UnsupportedCapability)
@@ -203,7 +203,10 @@ fn worker(fixture: &Fixture) -> (AgentExecution, FileBackedAgentRuntimeRegistry)
             server_metadata::ports::registry::WorkspaceMutationContext::default(),
         )
         .unwrap();
-    let mut manager = AgentManager::new(Box::new(registry.clone()));
+    let mut manager = AgentManager::new(Box::new(registry.clone())).with_timeline(
+        crate::storage::timeline::Timeline::open(&fixture.root.path().join("timeline.sqlite"))
+            .unwrap(),
+    );
     manager.register_client(Box::new(fixture.client())).unwrap();
     let worker = AgentExecution::spawn(ExecutionDependencies {
         manager,
@@ -215,6 +218,7 @@ fn worker(fixture: &Fixture) -> (AgentExecution, FileBackedAgentRuntimeRegistry)
         registry: Box::new(registry.clone()),
         workspaces: Box::new(workspaces),
         lifetime: Arc::new(()),
+        import_directory: None,
         projects: Box::new(projects),
     })
     .unwrap();
@@ -424,8 +428,8 @@ async fn request_validation_rejects_unimplemented_creation_and_message_semantics
     let (execution, registry) = worker(&fixture);
     for params in [
         json!({"config":{"provider":"other","cwd":fixture.cwd}}),
-        json!({"config":{"provider":"codex","cwd":fixture.cwd,"modeId":"auto"}}),
-        json!({"config":{"provider":"codex","cwd":fixture.cwd},"initialPrompt":"not silently lost"}),
+        json!({"config":{"provider":"codex","cwd":fixture.cwd,"modeId":"invalid"}}),
+        json!({"config":{"provider":"codex","cwd":fixture.cwd},"initialPrompt":" "}),
         json!({"config":{"provider":"codex","cwd":fixture.cwd},"workspaceId":"missing"}),
         json!({"config":{"provider":"codex","cwd":"relative"}}),
         json!({"config":{"provider":"codex","cwd":fixture.cwd,"title":"x".repeat(201)}}),
@@ -446,7 +450,6 @@ async fn request_validation_rejects_unimplemented_creation_and_message_semantics
     for params in [
         json!({"agentId":id,"text":"x","messageId":"dedupe"}),
         json!({"agentId":id,"text":"x","attachments":[]}),
-        json!({"agentId":id,"text":"x","activeTurnBehavior":"queue"}),
     ] {
         assert_eq!(
             execution
@@ -515,3 +518,7 @@ async fn request_validation_rejects_unimplemented_creation_and_message_semantics
             .is_err()
     );
 }
+
+mod controls;
+mod streaming;
+mod voice;

@@ -110,3 +110,5 @@ fn parse<T: std::str::FromStr>(row: &rusqlite::Row<'_>, index: usize) -> rusqlit
 
 #[cfg(test)]
 mod tests;
+
+pub mod timeline;

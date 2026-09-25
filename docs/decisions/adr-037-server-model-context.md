@@ -1,5 +1,8 @@
 # ADR-037：公共 Context 与具体 crate 分发
 
+> 后续修订：[ADR-038](adr-038-server-protocol-dependencies.md) 将 server-protocol 的直接
+> workspace 依赖收敛为 server-model；下表已同步这一边界。
+
 - 状态：Accepted。
 - 日期：2026-09-25。
 - 授权：用户要求直接使用 Tokio 简化分发，随后明确要求把 Context 放入公共结构层，删除因
@@ -28,7 +31,7 @@ async-trait、boxed future、Any/TypeMap、动态 handler registry 或回调路�
 | server-metadata | server-model |
 | server-filesystem、server-terminal | server-model、server-metadata |
 | server-provider | server-model、server-domain、server-metadata |
-| server-protocol | server-model 与四个能力 crate |
+| server-protocol | server-model |
 | server-api | server-model、server-protocol 与四个能力 crate |
 | server-bin | 当前独立 server crates |
 
@@ -51,6 +54,9 @@ Terminal 连接逻辑迁入对应 crate。API 保留 HTTP/WS、认证、握手�
 状态后回应；provider 完成 Agent 关闭后返回 Terminal IDs，API 调用 terminal 完成关闭并发送
 合并响应。没有把宿主函数包装成 trait 或闭包传回能力 crate。provider 在执行 Agent 关闭前
 仍检查 Terminal 能力是否安装。
+
+daemon 状态与诊断同样通过明确的 `DaemonSnapshot` 收尾请求，由 API 调用 Provider 既有
+可用性接口，再将类型化快照交给 metadata 生成结果；metadata 不引入 provider 依赖。
 
 普通结果/错误发送由 Context/Outbound 统一处理；Workspace update、标签/checkout 订阅激活
 和初始 status 继续在响应成功入队后发生。连接剩余额度在 API 按全部订阅种类计算，具体 crate

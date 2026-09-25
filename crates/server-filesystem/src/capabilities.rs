@@ -5,6 +5,8 @@ use crate::protocol;
 /// Business method group selected by the transport after capability negotiation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
+    /// Orchestration skill installation.
+    Skills,
     /// Git checkout operations and diff subscriptions.
     Checkout,
     /// Forge and pull request operations.
@@ -21,6 +23,7 @@ pub enum Group {
 
 /// Implemented method groups, including event methods; catalog placeholders are excluded.
 pub const IMPLEMENTED_GROUPS: &[(Group, &[&str])] = &[
+    (Group::Skills, protocol::skills::CAPABILITIES),
     (Group::Checkout, protocol::checkout::CAPABILITIES),
     (Group::Forge, protocol::forge::CAPABILITIES),
     (Group::Files, protocol::files::CAPABILITIES),
@@ -40,6 +43,8 @@ pub const IMPLEMENTED_GROUPS: &[(Group, &[&str])] = &[
 // Services are independently optional; every combination is meaningful.
 #[allow(clippy::struct_excessive_bools)]
 pub struct InstalledServices {
+    /// Skill installation service.
+    pub skills: bool,
     /// Checkout service.
     pub checkout: bool,
     /// Forge service.
@@ -61,6 +66,7 @@ pub fn installed_capabilities(services: InstalledServices) -> impl Iterator<Item
     IMPLEMENTED_GROUPS
         .iter()
         .filter(move |(group, _)| match group {
+            Group::Skills => services.skills,
             Group::Checkout => services.checkout,
             Group::Forge => services.forge,
             Group::Files => services.files,

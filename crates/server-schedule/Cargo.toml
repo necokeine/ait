@@ -1,0 +1,24 @@
+[package]
+name = "server-schedule"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Shared independent-server envelopes only; business execution is supplied through ports.
+server-model = { version = "0.0.6", path = "../server-model" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt", "macros", "sync", "time"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+uuid = { version = "1.26.0", features = ["v4"] }
+chrono = { version = "0.4.44", features = ["serde"] }
+chrono-tz = "0.10.4"
+tempfile = "3.27.0"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util", "rt-multi-thread"] }

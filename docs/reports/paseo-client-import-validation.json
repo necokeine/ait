@@ -1,0 +1,73 @@
+{
+  "repositoryRevision": "97f13722f2f17ca298074d9bdbd101562ac3a2ba",
+  "scope": "Current working tree, including pre-existing Rust changes and the two imported client source trees; default workspace features on macOS arm64",
+  "source": {
+    "repository": "https://github.com/getpaseo/paseo",
+    "revision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+    "version": "0.9.0-beta.2",
+    "mode": "tracked-source-import",
+    "projects": [
+      {
+        "source": "packages/desktop",
+        "destination": "apps/paseo",
+        "trackedFiles": 205,
+        "bytes": 2249516,
+        "sourceSha256": "24362acb0d755f4d9259c29473cb851da689d545f2df05a17c8c1cf5214ddec7"
+      },
+      {
+        "source": "packages/app",
+        "destination": "apps/app",
+        "trackedFiles": 2564,
+        "bytes": 23944095,
+        "sourceSha256": "a1d91c406c23f517ad74df32a2c8dabf56f7817f31f55bcea50bda7878216d63"
+      }
+    ],
+    "digestAlgorithm": "git index order; relative path + NUL + git mode + NUL + file bytes + NUL; additional import metadata and copied root licenses excluded",
+    "additionalFiles": [
+      "apps/paseo/LICENSE",
+      "paseo/LICENSE"
+    ],
+    "excluded": "Untracked/ignored local files, dependencies, build outputs and Git repository metadata are not imported."
+  },
+  "integrity": {
+    "matchedUpstreamFiles": 2769,
+    "matchedExecutableModes": true,
+    "matchedCopiedLicenses": 2,
+    "accidentallyIgnoredImportFiles": 0
+  },
+  "syntax": {
+    "tool": "TypeScript createSourceFile",
+    "version": "5.9.3",
+    "checkedFiles": 2573,
+    "errors": 0,
+    "fullTypecheck": false
+  },
+  "rustChecks": {
+    "format": "passed",
+    "clippy": "passed",
+    "workspaceTests": {
+      "passed": 1004,
+      "failed": 0,
+      "ignored": 5,
+      "completedTargets": 99,
+      "logSha256": "ad9005085c2aff6847dff134e1103c583974f825a38d47d86b98e571a6cadd4c"
+    },
+    "commands": [
+      "cargo fmt --all --check",
+      "CARGO_TARGET_DIR=/tmp/ait-agent-interface-target cargo clippy --workspace --all-targets --offline -j2 -- -D warnings",
+      "CARGO_TARGET_DIR=/tmp/ait-agent-interface-target cargo test --workspace --offline --no-fail-fast -j2 -- --test-threads=1",
+      "git diff --check"
+    ]
+  },
+  "testCoverage": {
+    "rust": "not applicable — no Rust behavior changed in this import",
+    "frontend": "not measured — upstream npm workspace dependencies and root build configuration have not been imported",
+    "followUp": "Integrate the frontend workspace, adapt relocated paths and validate Electron/Web/iOS/Android builds and behavior."
+  },
+  "pathCorrection": {
+    "destination": "apps/app",
+    "verification": "File contents, executable modes, aggregate digest, ignore rules and documentation links rechecked after relocation",
+    "verifiedFiles": 2564,
+    "syntaxAndRustChecks": "Results retained from the initial import; not rerun for this directory-only correction"
+  }
+}

@@ -66,9 +66,13 @@ impl Transport {
                 let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
                     break;
                 };
-                if value.get("method").is_some() && value.get("id").is_some() {
-                    // Permissions and user-input interactions are not implemented. Never approve
-                    // them implicitly or leave a native turn waiting indefinitely.
+                if value.get("method").is_some()
+                    && value.get("id").is_some()
+                    && !value["method"]
+                        .as_str()
+                        .is_some_and(super::permissions::supported)
+                {
+                    // Unknown native interactions fail closed instead of becoming implicit approval.
                     let rejection = json!({"id":value["id"],"error":{
                         "code":-32601,"message":"Provider interaction is not supported"}});
                     let _ = tokio::time::timeout(deadline, write(&request_input, &rejection)).await;
@@ -77,12 +81,21 @@ impl Transport {
                         .await;
                     break;
                 }
-                // This phase publishes terminal text, not token or tool streams. Discard their
-                // intermediate notifications here instead of retaining an unbounded transcript.
+                // Retain the supported v2 stream in order; legacy mirror notifications must
+                // not duplicate the same native output. The bounded channel applies backpressure.
                 if value.get("id").is_none()
-                    && value["method"] != "turn/completed"
-                    && !(value["method"] == "item/completed"
-                        && value["params"]["item"]["type"] == "agentMessage")
+                    && !matches!(
+                        value["method"].as_str(),
+                        Some(
+                            "turn/completed"
+                                | "item/completed"
+                                | "item/started"
+                                | "item/agentMessage/delta"
+                                | "item/reasoning/summaryTextDelta"
+                                | "item/commandExecution/outputDelta"
+                                | "item/fileChange/outputDelta"
+                        )
+                    )
                 {
                     continue;
                 }
@@ -142,12 +155,20 @@ impl Transport {
                     .recv()
                     .await
                     .ok_or(AgentSessionError::Failed)?;
-                if let Some(id) = message.get("id") {
+                if let Some(id) = message.get("id")
+                    && message.get("method").is_none()
+                {
                     if id.as_u64() != Some(self.sequence) {
                         return Err(AgentSessionError::Failed);
                     }
-                    if message.get("error").is_some() {
-                        return Err(AgentSessionError::Rejected);
+                    if let Some(error) = message.get("error") {
+                        return Err(
+                            if method != "turn/steer" || super::streaming::steer_rejected(error) {
+                                AgentSessionError::Rejected
+                            } else {
+                                AgentSessionError::Failed
+                            },
+                        );
                     }
                     return message
                         .get("result")
@@ -171,12 +192,35 @@ impl Transport {
         }
     }
 
+    pub(super) async fn respond(
+        &mut self,
+        id: &Value,
+        result: Value,
+    ) -> Result<(), AgentSessionError> {
+        if self.closed {
+            return Err(AgentSessionError::Failed);
+        }
+        if matches!(
+            tokio::time::timeout(
+                self.deadline,
+                write(&self.input, &json!({"id":id,"result":result}))
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            Ok(())
+        } else {
+            let _ = self.close().await;
+            Err(AgentSessionError::Failed)
+        }
+    }
+
     pub(super) fn poll(&mut self) -> Result<Option<Value>, AgentSessionError> {
         if let Some(event) = self.events.pop_front() {
             return Ok(Some(event));
         }
         match self.messages.try_recv() {
-            Ok(message) if message.get("id").is_none() => Ok(Some(message)),
+            Ok(message) if message.get("method").is_some() => Ok(Some(message)),
             Err(mpsc::error::TryRecvError::Empty) if !self.closed => Ok(None),
             Ok(_) | Err(_) => Err(AgentSessionError::Failed),
         }

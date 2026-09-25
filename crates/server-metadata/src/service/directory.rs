@@ -134,6 +134,7 @@ pub struct WorkspaceCreation<'a> {
 /// Blocking project/workspace coordinator; clones share the same registries and adapters.
 #[derive(Debug, Clone)]
 pub struct Directory {
+    creations: super::creation::Creations,
     projects: Arc<dyn ProjectRegistry>,
     workspaces: Arc<dyn WorkspaceRegistry>,
     source: Arc<dyn DirectorySource>,
@@ -164,6 +165,7 @@ impl Directory {
     #[must_use]
     pub fn new(dependencies: DirectoryDependencies) -> Self {
         Self {
+            creations: super::creation::Creations::default(),
             projects: dependencies.projects.into(),
             workspaces: dependencies.workspaces.into(),
             source: dependencies.source.into(),
@@ -171,6 +173,19 @@ impl Directory {
             icon_store: dependencies.icon_store.into(),
             server_id: dependencies.server_id,
         }
+    }
+
+    /// Share durable creation receipts with the native Agent worker.
+    #[must_use]
+    pub fn with_creations(mut self, creations: super::creation::Creations) -> Self {
+        self.creations = creations;
+        self
+    }
+
+    /// Return the metadata-owned creation coordinator.
+    #[must_use]
+    pub fn creations(&self) -> super::creation::Creations {
+        self.creations.clone()
     }
 
     /// Register or refresh the oldest active project for a selected directory.

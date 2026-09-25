@@ -50,7 +50,7 @@ pub fn execute(directory: &mut Directory, method: &str, params: Value) -> Result
         "project.rename.request" => project_rename(directory, decode(params)?),
         "project.remove.request" => project_remove(directory, decode(params)?),
         "workspace.open.request" => workspace_open(directory, &decode(params)?),
-        "workspace.create.request" => workspace_create(directory, decode(params)?),
+        "workspace.create.request" => workspace_creation(directory, params),
         "workspace.list.request" => workspace_list(directory, &decode(params)?),
         "workspace.archive.request" => workspace_archive(directory, decode(params)?),
         "workspace.title.set.request" => workspace_title_set(directory, decode(params)?),
@@ -296,15 +296,69 @@ fn workspace_open(
     }
 }
 
+fn workspace_creation(directory: &Directory, mut params: Value) -> Result<Value, ErrorCode> {
+    use crate::protocol::creation::Kind;
+    let mut request: WorkspaceCreateRequest = decode(params.clone())?;
+    if request.agent.is_some()
+        || request.first_agent_context.is_some()
+        || !matches!(request.source, WorkspaceCreateSource::Directory { .. })
+    {
+        return Err(ErrorCode::UnsupportedCapability);
+    }
+    let key = request
+        .idempotency_key
+        .take()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Some(object) = params.as_object_mut() {
+        object.remove("idempotencyKey");
+        object.remove("subscribe");
+    }
+    let creations = directory.creations();
+    let admission = creations.begin(Kind::Workspace, &key, params)?;
+    if !admission.execute {
+        return Ok(
+            serde_json::json!({"workspace":admission.snapshot.workspace,"setupTerminalId":null,"error":admission.snapshot.error,"creation":admission.snapshot}),
+        );
+    }
+    request
+        .workspace_id
+        .clone_from(&admission.snapshot.workspace_id);
+    let result = workspace_create(directory, request);
+    match result {
+        Ok(mut value) => {
+            let error = value["error"].as_str().map(str::to_owned);
+            let progress = if error.is_some() {
+                creations.advance(&admission.snapshot, "failed", Some(value.clone()), error)?
+            } else {
+                let ready = creations.advance(
+                    &admission.snapshot,
+                    "workspace_ready",
+                    Some(value.clone()),
+                    None,
+                )?;
+                creations.advance(&ready, "completed", None, None)?
+            };
+            value["creation"] =
+                serde_json::to_value(progress).map_err(|_| ErrorCode::RegistryIo)?;
+            Ok(value)
+        }
+        Err(error) => {
+            creations.advance(
+                &admission.snapshot,
+                "failed",
+                None,
+                Some(server_model::ErrorCode::from(error).message().to_owned()),
+            )?;
+            Err(error)
+        }
+    }
+}
+
 fn workspace_create(
     directory: &Directory,
     request: WorkspaceCreateRequest,
 ) -> Result<Value, ErrorCode> {
-    if request.agent.is_some()
-        || request.subscribe == Some(true)
-        || request.idempotency_key.is_some()
-        || request.first_agent_context.is_some()
-    {
+    if request.agent.is_some() || request.first_agent_context.is_some() {
         return Err(ErrorCode::UnsupportedCapability);
     }
     let WorkspaceCreateSource::Directory { path, project_id } = request.source else {

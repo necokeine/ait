@@ -13,3 +13,6 @@ pub mod storage;
 
 #[cfg(all(test, unix))]
 mod test_support;
+
+/// Provider-owned physical connection observers.
+pub mod connection;

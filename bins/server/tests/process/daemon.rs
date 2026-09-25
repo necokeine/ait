@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::transport::{connect, request};
-use super::{Process, TOKEN, ready, start, terminate};
+use super::{Process, TOKEN, ready, start, start_with_path, terminate};
 
 const READ_CAPABILITIES: &[&str] = &[
     "daemon.get_status.request",
@@ -15,6 +15,53 @@ const READ_CAPABILITIES: &[&str] = &[
     "daemon.config.get.request",
     "daemon.config.set.request",
 ];
+
+#[tokio::test]
+async fn missing_provider_is_reported_and_editors_return_migration_responses() {
+    let root = tempfile::tempdir().unwrap();
+    let log = root.path().join("server.log");
+    let mut process = start_with_path(
+        &root.path().join("state"),
+        &log,
+        Some(root.path().as_os_str()),
+    );
+    let address = ready(&mut process, &log).await;
+    let mut socket = connect(
+        &address,
+        &[
+            "daemon.get_status.request",
+            "diagnostics.request",
+            "editor.available.list.request",
+            "editor.open.request",
+        ],
+    )
+    .await;
+    let status = request(&mut socket, "daemon.get_status.request", json!({})).await;
+    assert_eq!(status["result"]["providers"][0]["provider"], "codex");
+    assert_eq!(status["result"]["providers"][0]["available"], false);
+    let diagnostic = request(&mut socket, "diagnostics.request", json!({})).await;
+    let report = diagnostic["result"]["diagnostic"].as_str().unwrap();
+    assert!(report.contains("Total: 1"));
+    assert!(report.contains("Available: 0"));
+    assert!(report.contains("codex: unavailable"));
+    let editors = request(&mut socket, "editor.available.list.request", json!({})).await;
+    assert_eq!(editors["result"]["editors"], json!([]));
+    let opened = request(
+        &mut socket,
+        "editor.open.request",
+        json!({"path":"/missing","editorId":"code"}),
+    )
+    .await;
+    assert_eq!(opened["result"]["error"], editors["result"]["error"]);
+    assert!(
+        opened["result"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("desktop app")
+    );
+    drop(socket);
+    terminate(&mut process).await;
+}
 
 async fn info(address: &str) -> Value {
     reqwest::Client::builder()
@@ -62,10 +109,11 @@ async fn wait_for_exit(process: &mut Process) {
 
 #[tokio::test]
 async fn daemon_status_config_diagnostics_and_update_match_canonical_contract() {
-    let root = tempfile::tempdir().unwrap();
+    let fixture = super::native::NativeFixture::new();
+    let root = &fixture.root;
     let directory = root.path().join("server");
     let log = root.path().join("server.log");
-    let mut process = start(&directory, &log);
+    let mut process = start_with_path(&directory, &log, Some(&fixture.path));
     let address = ready(&mut process, &log).await;
     let mut socket = connect(&address, READ_CAPABILITIES).await;
 
@@ -75,13 +123,13 @@ async fn daemon_status_config_diagnostics_and_update_match_canonical_contract() 
     assert!(status["result"]["serverId"].as_str().is_some());
     assert_eq!(status["result"]["pid"], process.0.id());
     assert_eq!(status["result"]["relay"], Value::Null);
-    assert_eq!(status["result"]["providers"], json!([]));
+    assert_eq!(
+        status["result"]["providers"],
+        json!([{ "provider":"codex", "available":true, "error":null }])
+    );
 
     let pairing = request(&mut socket, "daemon.get_pairing_offer.request", json!({})).await;
-    assert_eq!(
-        pairing["result"],
-        json!({"url":"","qr":null,"relayEnabled":false})
-    );
+    assert_eq!(pairing["code"], "unsupported_capability");
     let config = request(&mut socket, "daemon.config.get.request", json!({})).await;
     assert_eq!(config["result"]["config"]["relay"]["enabled"], false);
     assert_eq!(config["result"]["config"]["mcp"]["injectIntoAgents"], false);
@@ -122,6 +170,8 @@ async fn daemon_status_config_diagnostics_and_update_match_canonical_contract() 
     assert!(diagnostic.contains("Paseo diagnostics"));
     assert!(diagnostic.contains("daemon.get_status.request"));
     assert!(!diagnostic.contains(TOKEN));
+    assert!(diagnostic.contains("Total: 1"));
+    assert!(diagnostic.contains("codex: available"));
 
     let update = request(&mut socket, "daemon.update.request", json!({})).await;
     assert_eq!(update["result"]["success"], false);

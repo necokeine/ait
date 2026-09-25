@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn every_installation_combination_advertises_only_available_services() {
-    for mask in 0..64 {
+    for mask in 0..128 {
         let services = InstalledServices {
             checkout: mask & 1 != 0,
             forge: mask & 2 != 0,
@@ -12,6 +12,7 @@ fn every_installation_combination_advertises_only_available_services() {
             github_projects: mask & 8 != 0,
             worktrees: mask & 16 != 0,
             workspace_recovery: mask & 32 != 0,
+            skills: mask & 64 != 0,
         };
         let capabilities: Vec<_> = installed_capabilities(services).collect();
         let methods: BTreeSet<_> = capabilities.iter().copied().collect();
@@ -20,7 +21,8 @@ fn every_installation_combination_advertises_only_available_services() {
             + 11 * usize::from(services.files)
             + 2 * usize::from(services.github_projects)
             + 3 * usize::from(services.worktrees)
-            + 2 * usize::from(services.workspace_recovery);
+            + 2 * usize::from(services.workspace_recovery)
+            + 5 * usize::from(services.skills);
         assert_eq!(
             capabilities.len(),
             methods.len(),
@@ -49,7 +51,10 @@ fn every_installation_combination_advertises_only_available_services() {
             methods.contains("workspace.recovery.inspect.request"),
             services.workspace_recovery
         );
-        assert!(!methods.iter().any(|method| method.starts_with("skills.")));
+        assert_eq!(
+            methods.contains("agent.skills.get_status.request"),
+            services.skills
+        );
     }
 }
 
@@ -61,7 +66,7 @@ fn implemented_groups_are_unique_and_match_a_full_installation() {
         .collect();
     let unique: BTreeSet<_> = declared.iter().copied().collect();
     assert_eq!(declared.len(), unique.len());
-    assert_eq!(declared.len(), 48);
+    assert_eq!(declared.len(), 53);
     let installed: Vec<_> = installed_capabilities(InstalledServices {
         checkout: true,
         forge: true,
@@ -69,6 +74,7 @@ fn implemented_groups_are_unique_and_match_a_full_installation() {
         github_projects: true,
         worktrees: true,
         workspace_recovery: true,
+        skills: true,
     })
     .collect();
     assert_eq!(installed, declared);

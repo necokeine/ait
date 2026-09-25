@@ -10,6 +10,15 @@ pub const MAX_QUEUE_MESSAGES: usize = 256;
 pub const MAX_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum simultaneous upgraded connections.
 pub const MAX_CONNECTIONS: usize = 64;
+
+/// Baseline connection methods available before optional business services are installed.
+pub const CAPABILITIES: &[&str] = &[
+    "server.info",
+    "connection.ping",
+    "server.status.subscribe",
+    "subscription.release.request",
+];
+
 /// Supported protocol version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {

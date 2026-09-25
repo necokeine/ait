@@ -1,14 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use futures_util::SinkExt;
-use serde_json::json;
-use server_protocol::methods::{InboundKind, PASEO_METHODS};
-use tokio_tungstenite::tungstenite::Message;
+use server_protocol::methods::PASEO_METHODS;
 
-use super::{TOKEN, ready, start, transport};
+use super::{TOKEN, ready, start};
 
 #[tokio::test]
-async fn production_registers_every_canonical_method_and_routes_each_placeholder() {
+async fn production_installs_every_in_scope_method_without_placeholders() {
     let root = tempfile::tempdir().unwrap();
     let log = root.path().join("server.log");
     let mut server = start(&root.path().join("state"), &log);
@@ -30,9 +27,14 @@ async fn production_registers_every_canonical_method_and_routes_each_placeholder
         .implemented_capabilities
         .into_iter()
         .collect::<BTreeSet<_>>();
-    assert_eq!(published.len(), 195);
-    assert_eq!(implemented.len(), 122);
+    assert_eq!(published.len(), 175);
+    assert_eq!(implemented.len(), 175);
     assert!(implemented.is_subset(&published));
+    assert!(!published.iter().any(|name| {
+        ["hub.", "chat.", "loop.", "plugin."]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    }));
     for retired in [
         "project.open",
         "project.list",
@@ -46,51 +48,12 @@ async fn production_registers_every_canonical_method_and_routes_each_placeholder
         .iter()
         .map(|spec| (spec.canonical_name, spec.kind))
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(catalog.len(), 188);
+    assert_eq!(catalog.len(), 168);
     assert!(catalog.keys().all(|method| published.contains(*method)));
     let placeholders = catalog
         .into_iter()
         .filter(|(method, _)| !implemented.contains(*method))
         .collect::<Vec<_>>();
-    assert_eq!(placeholders.len(), 73);
-    for batch in placeholders.chunks(64) {
-        let methods = batch.iter().map(|(method, _)| *method).collect::<Vec<_>>();
-        let mut socket = transport::connect(&address, &methods).await;
-        for (method, kind) in batch {
-            let reply = match kind {
-                InboundKind::Request => {
-                    transport::request(&mut socket, method, serde_json::Value::Null).await
-                }
-                InboundKind::Event => {
-                    socket
-                        .send(Message::Text(
-                            json!({"type":"event","method":method,"params":{}})
-                                .to_string()
-                                .into(),
-                        ))
-                        .await
-                        .unwrap();
-                    transport::receive(&mut socket).await
-                }
-                InboundKind::Response => {
-                    socket
-                        .send(Message::Text(
-                            json!({
-                                "type":"response",
-                                "request_id":"browser-1",
-                                "method":method,
-                                "params":{},
-                            })
-                            .to_string()
-                            .into(),
-                        ))
-                        .await
-                        .unwrap();
-                    transport::receive(&mut socket).await
-                }
-            };
-            assert_eq!(reply["code"], "not_implemented", "{method}");
-            assert_eq!(reply["retryable"], false, "{method}");
-        }
-    }
+    assert_eq!(placeholders.len(), 0);
+    assert_eq!(published, implemented);
 }

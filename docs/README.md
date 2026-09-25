@@ -1,5 +1,49 @@
 # 概念与架构文档
 
+- [ADR-047：移除 Plugin 并独立实现 Schedule / Browser](decisions/adr-047-server-schedule-browser.md)（Accepted）：两个新能力 crate，生产 175 项均安装；[实施报告](reports/server-schedule-browser.md)区分接口接通、上游差异与 Test coverage。
+
+- [ADR-046：Codex 流式输出与运行中追加输入](decisions/adr-046-codex-streaming-and-steering.md)
+  （Accepted）：持久增量游标、完整原生项去重投影、显式 `turn/steer` 与接收失败语义；
+  [实施报告](reports/server-codex-streaming.md)记录剩余差异和 Test coverage。
+
+- [ADR-045：移除 Hub、Chat 与 Loop 接口](decisions/adr-045-remove-hub-chat-loop.md)（Accepted）：按用户范围删除 19 个接口及前端映射；[报告](reports/server-removed-groups.md)记录当前 183 项范围与验证。
+
+- [ADR-044：Paseo 前端适配 Rust transport](decisions/adr-044-paseo-client-rust-transport.md)
+  （Accepted）：桌面 Bearer bridge、方法映射（现按 ADR-047 缩减为 171 项）、分连接能力协商与订阅所有权；
+  [实施报告](reports/paseo-client-rust-adapter.md)记录真实 SDK 联调和 Rust 剩余缺口。
+
+- [ADR-043：Skills 选择与文件安装](decisions/adr-043-server-skills.md)（Accepted）：五个 Skills 接口、三目标同步、删除确认与事务恢复；[实施报告](reports/server-skills.md)记录配置、上游差异和测试。
+
+- [Paseo 客户端源码导入](reports/paseo-client-import.md)：上游 desktop 导入 `apps/paseo`，
+  app 导入 `apps/app`；保留来源版本、许可证和完整性校验，记录后续构建整合范围。
+  [连接实测](reports/paseo-server-connection.md)：桌面启动依赖未齐，原版协议不能直接连接 Rust server；记录真实握手与基础 RPC 对照结果。
+
+- [Push Token 管理实施报告](reports/server-push-tokens.md)：持久租约、连接级登记与心跳续租、上游测试对应及投递限制。
+
+- [独立 server 完整 WebSocket 接口差异](reports/server-interface-gaps.md)：固定 Paseo 完整入站基线、占位清单、已接通接口限制与本轮验证。
+
+- [ADR-042：连接级语音、听写与双后端](decisions/adr-042-server-voice.md)
+  （Accepted）：独立 server-voice 实现八个语音/听写方法、连接取消和播放确认；
+  支持 OpenAI 兼容服务及本地 whisper.cpp/Piper。
+  [操作说明](operations/server-voice.md)记录配置与协议，
+  [实施报告](reports/server-voice.md)记录回归、覆盖率和后端差异。
+
+- [ADR-041：Agent 原生控制与 Provider 诊断、用量](decisions/adr-041-agent-controls-provider-inspection.md)
+  （Accepted）：补齐七个 Agent 和两个 Provider 方法，原生审批、模式/feature、回退恢复和子 Agent 展示。
+  [实施报告](reports/server-agent-controls.md)记录行为边界、回归与覆盖率。
+
+- [ADR-040：原生 Session 发现、导入、刷新与上下文导出](decisions/adr-040-native-session-import-refresh-context.md)
+  （Accepted）：新增四个接口；provider 复用 metadata 目录服务，Timeline 原子分代并保留旧历史。
+  [实施报告](reports/server-native-sessions.md)记录原生协议、回归与覆盖率。
+
+- [ADR-039：Agent Timeline、Provider 发现与创建过程订阅](decisions/adr-039-agent-timeline-provider-creation.md)
+  （Accepted）：新增十二个接口，原生历史的持久化展示投影、Provider 模型发现与缓存、
+  metadata 创建回执及连接级观察者。[实施报告](reports/server-agent-timeline-provider-creation.md)记录验证与覆盖率。
+
+- [ADR-038：server-protocol 仅依赖公共 server-model](decisions/adr-038-server-protocol-dependencies.md)
+  （Accepted）：删除协议对四个能力包的依赖，迁移错误转换与目录一致性测试，收紧依赖守卫；
+  包含当前九个 server crate 的完整依赖图。[实施报告](reports/server-protocol-dependencies.md)记录验证与覆盖率。
+
 - [ADR-037：公共 Context 与具体 crate 分发](decisions/adr-037-server-model-context.md)
   （Accepted）：server-model 提供公共请求、队列与 Tokio 运行资源；各能力 crate 直接接收
   Context 和具体服务/连接状态，删除 Host 回调接口，API 负责组装与跨能力收尾。

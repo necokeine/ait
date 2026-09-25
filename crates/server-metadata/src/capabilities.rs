@@ -7,8 +7,14 @@ use crate::protocol;
 pub enum Group {
     /// Connection metadata and shared subscription controls.
     Base,
+    /// Persistent push token leases.
+    Push,
+    /// Compatibility responses for editor operations now owned by desktop.
+    Editor,
     /// Connection events and activity heartbeats.
     Session,
+    /// Shared creation receipts and observers.
+    Creation,
     /// Project and Workspace records, configuration, and icons.
     Directory,
     /// Daemon configuration and lifecycle.
@@ -24,8 +30,11 @@ pub enum Group {
 /// Implemented method groups, including event methods; catalog placeholders are excluded.
 pub const IMPLEMENTED_GROUPS: &[(Group, &[&str])] = &[
     (Group::Base, protocol::server::CAPABILITIES),
+    (Group::Push, protocol::push::CAPABILITIES),
+    (Group::Editor, protocol::editor::CAPABILITIES),
     (Group::Session, &[protocol::server::HEARTBEAT_METHOD]),
     (Group::Session, protocol::session::CAPABILITIES),
+    (Group::Creation, protocol::creation::CAPABILITIES),
     (Group::Directory, protocol::directory::CAPABILITIES),
     (Group::Directory, protocol::project_config::CAPABILITIES),
     (Group::Directory, protocol::project_icon::CAPABILITIES),
@@ -46,6 +55,8 @@ pub const IMPLEMENTED_GROUPS: &[(Group, &[&str])] = &[
 // Services are independently optional; every combination is meaningful.
 #[allow(clippy::struct_excessive_bools)]
 pub struct InstalledServices {
+    /// Push token store.
+    pub push_tokens: bool,
     /// Directory service.
     pub directory: bool,
     /// Daemon service.
@@ -65,9 +76,10 @@ pub fn installed_capabilities(services: InstalledServices) -> impl Iterator<Item
     IMPLEMENTED_GROUPS
         .iter()
         .filter(move |(group, _)| match group {
-            Group::Base | Group::Session => true,
+            Group::Base | Group::Editor | Group::Session | Group::Creation => true,
             Group::Directory => services.directory,
             Group::Daemon => services.daemon,
+            Group::Push => services.push_tokens,
             Group::Labels => services.workspace_labels,
             Group::Automation => services.workspace_automation,
             Group::WorkspaceState => services.workspace_state,

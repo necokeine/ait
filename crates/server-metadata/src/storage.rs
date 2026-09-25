@@ -6,3 +6,6 @@ pub mod project_icon;
 pub mod registry;
 pub mod server_identity;
 pub mod workspace_labels;
+
+/// Leased push token management.
+pub mod push;

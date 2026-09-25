@@ -79,7 +79,12 @@ impl Daemon {
 
     /// Build a credential-free diagnostic report from process facts and installed surfaces.
     #[must_use]
-    pub fn diagnostics(&self, capabilities: &[String], lifecycle: &str) -> String {
+    pub fn diagnostics(
+        &self,
+        capabilities: &[String],
+        lifecycle: &str,
+        providers: &[crate::protocol::daemon::ProviderAvailability],
+    ) -> String {
         let mut report = String::from("Paseo diagnostics\n\nDaemon\n");
         line(&mut report, "Server ID", &self.runtime.server_id);
         line(
@@ -108,7 +113,29 @@ impl Daemon {
         report.push_str("\nCapabilities\n");
         line(&mut report, "Count", &capabilities.len().to_string());
         line(&mut report, "Methods", &capabilities.join(", "));
-        report.push_str("\nProviders\n  Total: 0\n  Available: 0\n  Unavailable: none\n");
+        report.push_str("\nProviders\n");
+        line(&mut report, "Total", &providers.len().to_string());
+        line(
+            &mut report,
+            "Available",
+            &providers
+                .iter()
+                .filter(|provider| provider.available)
+                .count()
+                .to_string(),
+        );
+        for provider in providers {
+            // Never include backend errors: those may contain paths, account data or credentials.
+            line(
+                &mut report,
+                &provider.provider,
+                if provider.available {
+                    "available"
+                } else {
+                    "unavailable"
+                },
+            );
+        }
         report
     }
 

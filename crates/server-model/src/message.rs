@@ -8,6 +8,10 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// Schedule request validation, persistence or execution failed.
+    ScheduleRequestFailed,
+    /// Speech backend configuration, processing or I/O failed.
+    SpeechIo,
     /// Terminal native process or screen I/O failed.
     TerminalIo,
     /// Terminal no longer exists.
@@ -73,6 +77,8 @@ impl ErrorCode {
     #[must_use]
     pub fn message(self) -> &'static str {
         match self {
+            Self::ScheduleRequestFailed => "Schedule request failed",
+            Self::SpeechIo => "Speech processing failed",
             Self::TerminalIo => "Terminal I/O failed",
             Self::TerminalNotFound => "Terminal not found",
             Self::InvalidMessage => "Invalid message or parameters",

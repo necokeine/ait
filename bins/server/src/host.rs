@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 mod catalog;
+mod schedule;
+mod voice;
 
 use chrono::{SecondsFormat, Utc};
 use server_api::{Api, LifecycleIntent, Services};
@@ -161,14 +163,7 @@ fn compose_services(
         _instance: instance.clone(),
     }));
     let server_id = instance.server_id.to_string();
-    let worktrees = Worktrees::new(
-        Box::new(project_registry.clone()),
-        Box::new(workspace_registry.clone()),
-        Box::new(LocalManagedWorktrees::new(
-            config.data_dir.join("worktrees"),
-        )),
-        server_id.clone(),
-    );
+    let worktrees = compose_worktrees(config, &project_registry, &workspace_registry, &server_id);
     let workspace_automation = WorkspaceAutomation::new(
         Box::new(workspace_registry.clone()),
         Box::new(LocalWorkspaceAutomation::default()),
@@ -187,25 +182,43 @@ fn compose_services(
         )),
     );
     let daemon = compose_daemon(config, address, &server_id)?;
-    let directory = Directory::new(DirectoryDependencies {
-        projects: Box::new(project_registry.clone()),
-        workspaces: Box::new(workspace_registry.clone()),
-        source: Box::new(LocalDirectorySource),
-        config_store: Box::new(LocalProjectConfigStore),
-        icon_store: Box::new(LocalProjectIconStore::new(
-            config.data_dir.join("projects/icons"),
-        )),
+    let creations = server_metadata::service::creation::Creations::open(
+        config.data_dir.join("creations/receipts.json"),
+    )
+    .map_err(|_| anyhow::anyhow!("initialize creation receipts"))?;
+    let directory = compose_directory(
+        config,
+        &project_registry,
+        &workspace_registry,
         server_id,
-    });
-    let github_projects =
-        GithubProjects::new(directory.clone(), Box::new(LocalGithubProjects::new()));
+        creations,
+    );
     let agent_execution = compose_provider(
         agent_runtime_registry,
-        &workspace_registry,
-        &project_registry,
+        (&workspace_registry, &project_registry),
         instance,
+        &config.data_dir,
+        directory.clone(),
     )?;
+    let schedules = schedule::compose(
+        &config.data_dir,
+        agent_execution.clone(),
+        directory.clone(),
+        compose_worktrees(
+            config,
+            &project_registry,
+            &workspace_registry,
+            &instance.server_id.to_string(),
+        ),
+    )?;
+    let github_projects =
+        GithubProjects::new(directory.clone(), Box::new(LocalGithubProjects::new()));
     Ok(Services {
+        schedules: Some(schedules),
+        browser: Some(server_browser::broker::Broker::default()),
+        skills: Some(compose_skills(&config.data_dir)?),
+        push_tokens: Some(compose_push(&config.data_dir)?),
+        speech: Some(voice::compose(agent_execution.clone())?),
         terminals: Some(server_terminal::service::Terminals::new(
             Box::new(workspace_registry.clone()),
             Box::new(project_registry.clone()),
@@ -222,18 +235,48 @@ fn compose_services(
         github_projects: Some(github_projects),
         workspace_recovery: Some(workspace_recovery),
         forge: Some(Forge::new(Box::new(LocalForge::new()))),
-        files: Some(Files::new(Box::new(
-            server_filesystem::local::files::LocalFiles::new(
-                std::env::var_os("HOME")
-                    .map_or_else(|| config.data_dir.clone(), std::path::PathBuf::from),
-                &config.data_dir,
-            ),
-        ))),
+        files: Some(compose_files(config)),
         workspace_labels: Some(workspace_labels),
         workspace_automation: Some(workspace_automation),
         workspace_state: Some(workspace_state),
         worktrees: Some(worktrees),
     })
+}
+
+fn compose_directory(
+    config: &Config,
+    project_registry: &FileBackedProjectRegistry,
+    workspace_registry: &FileBackedWorkspaceRegistry,
+    server_id: String,
+    creations: server_metadata::service::creation::Creations,
+) -> Directory {
+    Directory::new(DirectoryDependencies {
+        projects: Box::new(project_registry.clone()),
+        workspaces: Box::new(workspace_registry.clone()),
+        source: Box::new(LocalDirectorySource),
+        config_store: Box::new(LocalProjectConfigStore),
+        icon_store: Box::new(LocalProjectIconStore::new(
+            config.data_dir.join("projects/icons"),
+        )),
+        server_id,
+    })
+    .with_creations(creations)
+}
+
+fn compose_worktrees(
+    config: &Config,
+    projects: &FileBackedProjectRegistry,
+    workspaces: &FileBackedWorkspaceRegistry,
+    server_id: &str,
+) -> Worktrees {
+    Worktrees::new(
+        Box::new(projects.clone()),
+        Box::new(workspaces.clone()),
+        Box::new(LocalManagedWorktrees::new(
+            config.data_dir.join("worktrees"),
+        )),
+        server_id.to_owned(),
+    )
 }
 
 fn compose_daemon(config: &Config, address: SocketAddr, server_id: &str) -> anyhow::Result<Daemon> {
@@ -259,11 +302,19 @@ fn compose_daemon(config: &Config, address: SocketAddr, server_id: &str) -> anyh
 
 fn compose_provider(
     agent_runtime_registry: FileBackedAgentRuntimeRegistry,
-    workspace_registry: &FileBackedWorkspaceRegistry,
-    project_registry: &FileBackedProjectRegistry,
+    registries: (&FileBackedWorkspaceRegistry, &FileBackedProjectRegistry),
     instance: &Arc<InstanceLease>,
+    data_dir: &std::path::Path,
+    directory: Directory,
 ) -> anyhow::Result<AgentExecution> {
-    let mut manager = AgentManager::new(Box::new(agent_runtime_registry.clone()));
+    let (workspace_registry, project_registry) = registries;
+    let timeline = server_provider::storage::timeline::Timeline::open(
+        &data_dir.join("agents/timeline.sqlite3"),
+    )
+    .map_err(|_| anyhow::anyhow!("initialize Agent timeline"))?;
+    let mut manager = AgentManager::new(Box::new(agent_runtime_registry.clone()))
+        .with_timeline(timeline)
+        .with_creations(directory.creations());
     manager.register_client(Box::new(CodexClient::new(
         std::env::var_os("AIT_SERVER_CODEX_BIN").map_or_else(|| "codex".into(), Into::into),
     )))?;
@@ -277,6 +328,7 @@ fn compose_provider(
         registry: Box::new(agent_runtime_registry),
         workspaces: Box::new(workspace_registry.clone()),
         lifetime: instance.clone(),
+        import_directory: Some(directory),
         projects: Box::new(project_registry.clone()),
     })
     .context("start Provider worker")
@@ -284,3 +336,45 @@ fn compose_provider(
 
 #[cfg(test)]
 mod tests;
+
+fn compose_push(
+    data_dir: &std::path::Path,
+) -> anyhow::Result<server_metadata::service::push::PushTokens> {
+    server_metadata::service::push::PushTokens::open(
+        Box::new(server_metadata::storage::push::FileTokenStore::new(
+            data_dir.join("push-tokens.json"),
+        )),
+        chrono::Utc::now().timestamp_millis(),
+    )
+    .map_err(|_| anyhow::anyhow!("initialize push token leases"))
+}
+
+fn compose_skills(
+    data: &std::path::Path,
+) -> anyhow::Result<server_filesystem::service::skills::Skills> {
+    let data = data
+        .canonicalize()
+        .context("resolve skills data directory")?;
+    let home = std::env::var_os("AIT_SERVER_SKILLS_HOME")
+        .or_else(|| std::env::var_os("HOME"))
+        .map_or_else(|| data.join("agent-home"), std::path::PathBuf::from);
+    let source = std::env::var_os("AIT_SERVER_SKILLS_BUNDLE")
+        .map_or_else(|| data.join("skills-bundle"), std::path::PathBuf::from);
+    let targets = [".agents/skills", ".claude/skills", ".codex/skills"].map(|path| home.join(path));
+    let store = server_filesystem::local::skills::LocalSkills::new(
+        &source,
+        &targets,
+        &data.join("skills-state"),
+    )
+    .map_err(|error| anyhow::anyhow!("invalid skills configuration: {error:?}"))?;
+    Ok(server_filesystem::service::skills::Skills::new(Box::new(
+        store,
+    )))
+}
+
+fn compose_files(config: &Config) -> Files {
+    Files::new(Box::new(server_filesystem::local::files::LocalFiles::new(
+        std::env::var_os("HOME").map_or_else(|| config.data_dir.clone(), std::path::PathBuf::from),
+        &config.data_dir,
+    )))
+}

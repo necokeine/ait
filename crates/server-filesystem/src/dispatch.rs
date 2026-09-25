@@ -10,6 +10,8 @@ use crate::capabilities::Group;
 /// Services installed for this capability crate, sharing server-wide runtime resources.
 #[derive(Debug)]
 pub struct State {
+    /// Installed skills service.
+    pub skills: Option<Arc<Mutex<crate::service::skills::Skills>>>,
     /// Shared Tokio admission, cancellation and task tracking.
     pub runtime: Arc<Runtime>,
     /// Installed checkout service.
@@ -52,6 +54,15 @@ pub async fn dispatch(
     connection: &mut Connection,
 ) -> Result<(), QueueError> {
     match group {
+        Group::Skills => {
+            context
+                .rpc(
+                    state.skills.clone(),
+                    ErrorCode::RegistryIo,
+                    crate::service::skills::Skills::execute,
+                )
+                .await
+        }
         Group::Checkout => checkout(context, state, connection).await,
         Group::Forge => {
             context
