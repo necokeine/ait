@@ -1,0 +1,43 @@
+{
+  "repository": "https://github.com/getpaseo/paseo",
+  "revision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+  "version": "0.9.0-beta.2",
+  "mode": "tracked-source-import",
+  "projects": [
+    {
+      "source": "packages/desktop",
+      "destination": "apps/paseo",
+      "trackedFiles": 205,
+      "bytes": 2249516,
+      "sourceSha256": "24362acb0d755f4d9259c29473cb851da689d545f2df05a17c8c1cf5214ddec7"
+    },
+    {
+      "source": "packages/app",
+      "destination": "apps/app",
+      "trackedFiles": 2564,
+      "bytes": 23944095,
+      "sourceSha256": "a1d91c406c23f517ad74df32a2c8dabf56f7817f31f55bcea50bda7878216d63"
+    }
+  ],
+  "digestAlgorithm": "git index order; relative path + NUL + git mode + NUL + file bytes + NUL; additional import metadata and copied root licenses excluded",
+  "additionalFiles": [
+    "apps/paseo/LICENSE",
+    "paseo/LICENSE"
+  ],
+  "excluded": "Untracked/ignored local files, dependencies, build outputs and Git repository metadata are not imported.",
+  "localAdaptations": {
+    "report": "docs/reports/paseo-client-rust-adapter.md",
+    "modifiedImportedFiles": [
+      "apps/paseo/src/daemon/local-transport.test.ts",
+      "apps/paseo/src/daemon/local-transport.ts",
+      "apps/app/src/desktop/daemon/desktop-daemon-transport.test.ts",
+      "apps/app/src/desktop/daemon/desktop-daemon-transport.ts",
+      "apps/app/src/desktop/daemon/desktop-daemon.ts",
+      "apps/app/src/runtime/host-runtime.ts",
+      "apps/app/src/utils/test-daemon-connection.test.ts",
+      "apps/app/src/utils/test-daemon-connection.ts"
+    ],
+    "addedSourceDirectory": "apps/app/src/runtime/rust-server",
+    "sourceDigestScope": "sourceSha256 records the original upstream import, before these local adaptations"
+  }
+}
