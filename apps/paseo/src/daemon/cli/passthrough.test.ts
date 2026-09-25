@@ -92,6 +92,23 @@ describe("passthrough CLI", () => {
     ).toBeNull();
   });
 
+  it.each(["--inspect=0", "--inspect-brk=0"])(
+    "keeps packaged GUI startup when Node debugger flag %s is present",
+    (debugFlag) => {
+      expect(
+        parsePassthroughCliArgs({
+          argv: [
+            "/Applications/Paseo.app/Contents/MacOS/Paseo",
+            debugFlag,
+            "--remote-debugging-port=0",
+          ],
+          isDefaultApp: false,
+          forceCli: false,
+        }),
+      ).toBeNull();
+    },
+  );
+
   it("preserves CLI flags for direct app invocations", () => {
     expect(
       parsePassthroughCliArgs({

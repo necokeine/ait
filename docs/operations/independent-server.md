@@ -609,3 +609,12 @@ resize `{type:"resize",rows,cols,intent:"claim"}` 获取尺寸控制；`intent:"
 `agent.items.close.request` 支持 terminalIds；Workspace/Project archive/remove 后最多约 250 ms
 开始清理所属 PTY。setup/script executor 的逻辑 terminalId 暂不对应此处的真实 PTY；activity hooks
 和代理健康检查仍保持原边界。详细语义及仿真差异见 [ADR-033](../decisions/adr-033-server-terminal.md)。
+
+## App 浏览器接入
+
+`apps/app` 的浏览器连接使用 Bearer 换取短时一次性 WebSocket 票据。启动 server 时添加
+`--web-origin http://localhost:8081`（或 TOML `web_origins`），允许对应的本地页面来源。
+默认 listener 仍为 loopback；远端来源、任意端口通配和 URL 凭据不被接受。
+
+完整本地启动入口与原生端说明见 [App README](../../apps/app/README.md)，协议和边界见
+[ADR-049](../decisions/adr-049-app-rust-browser-transport.md)。

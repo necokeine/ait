@@ -1,4 +1,6 @@
 /target/
+*.profraw
+*.profdata
 node_modules/
 apps/desktop/dist/
 apps/desktop/release/
@@ -22,3 +24,15 @@ apps/desktop/release-resources/
 *.p8
 *.mobileprovision
 *.provisionprofile
+
+# Paseo workspace build outputs
+apps/paseo/dist/
+apps/paseo/release/
+apps/app/dist/
+apps/app/.expo/
+packages/*/dist/
+packages/expo-two-way-audio/build/
+*.tsbuildinfo
+.tmp/
+apps/paseo/release-resources/
+packages/protocol/src/generated/validation/*.ts

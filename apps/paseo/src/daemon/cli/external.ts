@@ -1,4 +1,4 @@
-import { spawnProcess } from "@getpaseo/server/process";
+import { spawn } from "node:child_process";
 import log from "electron-log/main";
 import type { NodeEntrypointInvocation } from "../node-entrypoint-launcher.js";
 import { createNodeEntrypointInvocation } from "../runtime-paths.js";
@@ -17,8 +17,7 @@ function spawnExternalCli(
   invocation: NodeEntrypointInvocation,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawnProcess(invocation.command, invocation.args, {
-      envMode: "internal",
+    const child = spawn(invocation.command, invocation.args, {
       env: invocation.env,
       stdio: ["ignore", "pipe", "pipe"],
     });

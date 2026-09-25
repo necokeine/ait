@@ -1,54 +1,71 @@
-# Welcome to your Expo app 👋
+# App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo / React Native 前端，直接 TCP 连接使用独立 Rust `server` 后端。浏览器、Electron 和
+原生客户端共享 Rust 协议适配器，开发依赖由仓库根 npm workspace 管理。
 
-## Get started
+## 本地 Web 开发
 
-1. Install dependencies
+从仓库根目录运行：
 
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```sh
+npm ci
+export AIT_SERVER_TOKEN="$(openssl rand -hex 32)"
+npm run dev:app
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+打开 `http://localhost:8081`，添加直接连接：Host `127.0.0.1`，端口 `7316`，访问令牌填写
+当前 `AIT_SERVER_TOKEN`。macOS 可在同一终端用 `printf %s "$AIT_SERVER_TOKEN" | pbcopy`
+复制令牌。不要把令牌放进 URL 或 `EXPO_PUBLIC_*` 环境变量。
 
-## Learn more
+入口先构建共享包与 Rust binary，再启动 server 和 Expo；Ctrl+C 同时停止两者。
+server 默认数据目录为 `.tmp/app/server`，可用 `AIT_SERVER_DATA_DIR` 覆盖。支持
+`AIT_SERVER_BIN`（已有 binary）、`AIT_SERVER_LISTEN` 和 `EXPO_PORT`。若修改服务端口，
+连接表单也须填写对应端口。`npm run web --workspace=@getpaseo/app` 是同一入口。
 
-To learn more about developing your project with Expo, look at the following resources:
+## 分别启动
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```sh
+cargo run -p server-bin --bin server -- \
+  --data-dir .tmp/app/server --listen 127.0.0.1:7316 \
+  --web-origin http://localhost:8081 --web-origin http://127.0.0.1:8081
+```
 
-## Join the community
+另一个终端：
 
-Join our community of developers creating universal apps.
+```sh
+npm run build:app-deps
+npm run web:expo --workspace=@getpaseo/app -- --localhost --port 8081
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+服务端从环境读取 `AIT_SERVER_TOKEN`。浏览器先用 Bearer 换取 30 秒有效的一次性连接票据；
+每次重连都会重新换票。页面来源必须匹配 `--web-origin`，原生客户端不需要这个参数。
+配置也可写入 server 的非秘密 TOML：`web_origins = ["http://localhost:8081"]`。
 
-## Dictation debugging
+## 原生与桌面
 
-Set `EXPO_PUBLIC_ENABLE_AUDIO_DEBUG=1` before running `npx expo start` to render the in-app audio debug card. Pair it with the server-side `STT_DEBUG_AUDIO_DIR` flag so every dictation includes a copyable path to the saved raw audio file.
+`npm run ios --workspace=@getpaseo/app` / `npm run android --workspace=@getpaseo/app` 构建
+共享依赖后启动对应原生工程。后端仍需单独启动。iOS simulator 可直接访问宿主 loopback；
+Android emulator/device 可先运行 `adb reverse tcp:7316 tcp:7316`，再连接 `127.0.0.1:7316`。
+当前没有加入 LAN、公网或 Rust relay 接入，也未在实体设备上验证。
+
+Electron 使用 `npm run dev:paseo`，由主进程负责 Rust 服务启动及 Bearer 注入。
+
+## 验证与构建
+
+iPhone 构建从仓库根运行 `npm run build:ios`（未签名真机归档）、
+`npm run build:ios:simulator`（Release 模拟器 App）或 `npm run build:ios:ipa`（签名 IPA）。
+证书、Bundle ID 和导出配置见 [Apple 构建说明](../../docs/operations/apple-builds.md)。
+
+```sh
+npm run typecheck --workspace=@getpaseo/app
+npm run test --workspace=@getpaseo/app -- --project unit
+npm run build:web --workspace=@getpaseo/app
+APP_BROWSER_UI=1 node scripts/validate-app-rust-browser.mjs
+```
+
+最后一条从仓库根运行，需要已编译的 `target/debug/server`、Web 导出和 Playwright Chromium；
+可用 `AIT_SERVER_BIN` 指定 binary。测试使用临时数据目录，覆盖实际浏览器鉴权、SDK RPC、
+重连、错误令牌、页面连接及刷新恢复，结束后清理。
+
+详细边界见 [ADR-049](../../docs/decisions/adr-049-app-rust-browser-transport.md) 和
+[实施报告](../../docs/reports/app-rust-server.md)。

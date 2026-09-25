@@ -402,7 +402,9 @@ function normalizeStoredConnection(connection: StoredHostConnection): HostConnec
     try {
       const endpoint = normalizeLoopbackToLocalhost(normalizeHostPort(connection.endpoint));
       return DirectTcpHostConnectionSchema.parse({
-        id: `direct:${endpoint}`,
+        id: /^desktop-managed-[a-zA-Z0-9_-]+$/.test(connection.id ?? "")
+          ? connection.id!
+          : `direct:${endpoint}`,
         type: "directTcp",
         endpoint,
         useTls: connection.useTls,

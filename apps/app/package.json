@@ -4,18 +4,18 @@
   "private": true,
   "main": "index.ts",
   "scripts": {
-    "start": "npm run start:expo",
+    "start": "npm --prefix ../.. run build:app-deps && npm run start:expo",
     "start:expo": "cross-env APP_VARIANT=development expo start",
     "reset-project": "node ./scripts/reset-project.js",
     "eas-build-post-install": "npm --prefix ../.. run build:app-deps && npm run build:terminal-webview",
     "android": "npm run android:development",
-    "android:development": "npm --prefix ../.. run build:client && cross-env APP_VARIANT=development expo prebuild --platform android --clean --non-interactive && cross-env APP_VARIANT=development expo run:android --variant=debug",
-    "android:production": "npm --prefix ../.. run build:client && cross-env APP_VARIANT=production expo prebuild --platform android --clean --non-interactive && cross-env APP_VARIANT=production expo run:android --variant=release",
+    "android:development": "npm --prefix ../.. run build:app-deps && cross-env APP_VARIANT=development expo prebuild --platform android --clean --non-interactive && cross-env APP_VARIANT=development expo run:android --variant=debug",
+    "android:production": "npm --prefix ../.. run build:app-deps && cross-env APP_VARIANT=production expo prebuild --platform android --clean --non-interactive && cross-env APP_VARIANT=production expo run:android --variant=release",
     "android:release": "npm run android:production",
     "android:clear": "node -e \"require('node:fs').rmSync('android', { recursive: true, force: true })\"",
-    "ios": "npm --prefix ../.. run build:client && expo run:ios",
-    "ios:release": "npm --prefix ../.. run build:client && expo run:ios --configuration Release",
-    "web": "npm --prefix ../.. run build:client && concurrently --kill-others --names protocol,client,expo --prefix-colors yellow,blue,magenta \"npm --prefix ../.. run watch:protocol\" \"npm --prefix ../.. run watch:client\" \"npm run web:expo\"",
+    "ios": "npm --prefix ../.. run build:app-deps && expo run:ios",
+    "ios:release": "npm --prefix ../.. run build:app-deps && expo run:ios --configuration Release",
+    "web": "npm --prefix ../.. run dev:app",
     "web:expo": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsgo --noEmit",
@@ -36,7 +36,10 @@
     "profile:workspace-tabs": "node ./scripts/profile-workspace-tabs.mjs",
     "deploy:web": "npm run build:web && wrangler pages deploy dist --project-name paseo-app --branch main",
     "build:terminal-webview": "node ./scripts/build-terminal-webview-html.mjs",
-    "build:mermaid-runtime": "node ./src/components/markdown/fence/mermaid/build-runtime.mjs"
+    "build:mermaid-runtime": "node ./src/components/markdown/fence/mermaid/build-runtime.mjs",
+    "build:ios": "node scripts/build-ios.mjs --unsigned",
+    "build:ios:simulator": "node scripts/build-ios.mjs --simulator",
+    "build:ios:ipa": "node scripts/build-ios.mjs --export"
   },
   "dependencies": {
     "@codemirror/commands": "6.10.4",
@@ -136,6 +139,7 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@playwright/test": "^1.56.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
@@ -143,6 +147,7 @@
     "@types/node": "~22.19.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "~19.2.0",
+    "@types/react-dom": "19.2.3",
     "@types/turndown": "^5.0.6",
     "@types/ws": "^8.18.1",
     "@vitest/browser": "^4.1.7",

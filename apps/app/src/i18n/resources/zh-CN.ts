@@ -1616,12 +1616,12 @@ export const zhCN: TranslationResources = {
     },
     direct: {
       title: "直接连接",
-      helper: "输入 Paseo server 的地址。",
+      helper: "输入 server 地址和访问令牌。",
       fields: {
         host: "Host",
         port: "端口",
-        password: "密码",
-        optional: "可选",
+        password: "访问令牌",
+        optional: "必填",
         useSsl: "使用 SSL",
         connectionUri: "连接 URI",
       },

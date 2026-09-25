@@ -26,6 +26,9 @@ pub(super) struct Cli {
     /// Logging threshold: error, warn, info, debug, trace, or off.
     #[arg(long)]
     log_level: Option<String>,
+    /// Allowed browser page origin; repeat for multiple local frontends.
+    #[arg(long)]
+    web_origin: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -33,6 +36,7 @@ pub(super) struct Cli {
 struct FileConfig {
     listen: Option<SocketAddr>,
     log_level: Option<String>,
+    web_origins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +45,7 @@ pub(super) struct Config {
     pub listen: SocketAddr,
     pub token: SecretString,
     pub log_level: tracing::level_filters::LevelFilter,
+    pub web_origins: Vec<String>,
 }
 
 impl Config {
@@ -67,7 +72,7 @@ impl Config {
                 // TOML diagnostics echo source lines, which may contain misplaced credentials.
                 toml::from_str::<FileConfig>(&text).map_err(|_| {
                     anyhow::anyhow!(
-                        "invalid server config; only listen and log_level are supported"
+                        "invalid server config; only listen, log_level and web_origins are supported"
                     )
                 })?
             }
@@ -98,11 +103,20 @@ impl Config {
             .unwrap_or_else(|| "info".to_owned())
             .parse()
             .context("parse log level")?;
+        let web_origins = if cli.web_origin.is_empty() {
+            file.web_origins.unwrap_or_default()
+        } else {
+            cli.web_origin
+        };
+        for origin in &web_origins {
+            server_api::validate_browser_origin(origin)?;
+        }
         Ok(Self {
             data_dir,
             listen,
             token,
             log_level,
+            web_origins,
         })
     }
 }

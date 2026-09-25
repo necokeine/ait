@@ -1,0 +1,89 @@
+{
+  "date": "2026-09-26",
+  "environment": {
+    "host": "macOS arm64",
+    "xcode": "26.6 (17F113)",
+    "iosSDK": "26.5",
+    "cocoaPods": "1.16.2"
+  },
+  "dmg": {
+    "artifact": "apps/paseo/release/Paseo-0.9.0-beta.2-local-arm64.dmg",
+    "bytes": 140508407,
+    "sha256": "ed2705f9e964a9787d782af1327ff0ec8a8c5175ae4b70ebdb7d7c30a01571f2",
+    "checks": [
+      "DMG verify",
+      "readonly mount",
+      "deep strict code signature",
+      "embedded server execution",
+      "web assets",
+      "no upstream updater feed"
+    ]
+  },
+  "iosSimulator": {
+    "artifact": "apps/app/release/ios/simulator/DerivedData/Build/Products/Release-iphonesimulator/Paseo.app",
+    "bundleIdentifier": "sh.paseo",
+    "version": "0.9.0",
+    "build": "9000002",
+    "minimumOSVersion": "16.0",
+    "platforms": ["iPhoneSimulator"],
+    "bundleBytes": 90400571,
+    "executableSha256": "9ce9457e2ebc3827e96a4e42c56bc1cad0dc81d04c64852949090be5b1f63e66",
+    "hermesBundleBytes": 39941165
+  },
+  "iosDevice": {
+    "artifact": "apps/app/release/ios/unsigned/Paseo.xcarchive",
+    "application": "apps/app/release/ios/unsigned/Paseo.xcarchive/Products/Applications/Paseo.app",
+    "bundleIdentifier": "sh.paseo",
+    "version": "0.9.0",
+    "build": "9000002",
+    "minimumOSVersion": "16.0",
+    "platforms": ["iPhoneOS"],
+    "bundleBytes": 76103619,
+    "executableSha256": "35d8c1f8d4d02638732ba41b45e6f2921739ecaf1967773e9013a643b2be93e4",
+    "hermesBundleBytes": 39941215,
+    "signedForDeviceInstallation": false,
+    "provisioningProfilePresent": false
+  },
+  "checks": {
+    "dmgRustStartup": "passed: packaged Rust startup, authenticated RPC, restart/reconnect, child cleanup; renderer errors 0",
+    "iosSimulatorStartup": "passed: iPhone 17 Pro / iOS 26.5, Release welcome page without Metro; temporary simulator deleted",
+    "typescript": ["app passed", "desktop passed"],
+    "formatAndLint": "Rust fmt, workspace Clippy -D warnings, scoped Oxfmt and Oxlint passed",
+    "desktopTests": {
+      "files": 2,
+      "passed": 24
+    },
+    "appTargetedTests": {
+      "files": 3,
+      "passed": 24
+    },
+    "appFullTests": {
+      "passedFiles": 602,
+      "failedFiles": 3,
+      "passed": 5267,
+      "failed": 2,
+      "skipped": 7,
+      "issues": [
+        "missing root CHANGELOG.md",
+        "live draft hook timeout / Node 26 localStorage unavailable",
+        "timestamp tests assume English locale"
+      ]
+    },
+    "rustWorkspace": {
+      "resultBlocks": 103,
+      "passed": 1054,
+      "failed": 3,
+      "ignored": 5,
+      "exitCode": 101,
+      "retryCodexProcess": "2 passed",
+      "retryCheckoutRefresh": "failed again: result.success Null, expected true at bins/server/tests/process/checkout.rs:113"
+    }
+  },
+  "notPerformed": [
+    "Apple notarization",
+    "signed IPA export",
+    "physical iPhone installation",
+    "physical iPhone server connectivity"
+  ],
+  "rustCoverage": "not applicable: no Rust behavior change in the Apple packaging task"
+}

@@ -123,7 +123,7 @@ function stopAll(signal) {
     for (const child of children.values()) {
       killChild(child, "SIGKILL");
     }
-  }, 2500);
+  }, 35_000);
   forceKill.unref();
 
   const finish = setInterval(() => {

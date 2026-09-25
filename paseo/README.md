@@ -12,20 +12,26 @@
 [import-manifest.json](import-manifest.json)。上游许可证保存在 [LICENSE](LICENSE)
 和 [apps/paseo/LICENSE](../apps/paseo/LICENSE)；项目内第三方许可证随原文件保留。
 
-## 构建整合范围
+## 构建与启动
 
-这次导入是两个客户端的原始源码快照，现有 `apps/desktop` 和 Rust Cargo workspace
-继续保持独立。上游 package.json、构建脚本及路径引用尚未完成 workspace 整合。
+根 npm workspace 已接入 `apps/app`、`apps/paseo` 及 protocol、client、relay、highlight、
+plugin、expo-two-way-audio 六个共享包；共享源码取自上述固定提交。Plugin 仅保留前端
+编译依赖，Rust 服务端没有恢复 Plugin API。Node server 和 Node CLI 不进入 workspace。
 
-2026-09-25 起，TCP 连接层已增加本地 Rust server 适配；源码不再是逐字不变的上游快照。
-新增和修改范围、测试及剩余后端差异见[前端适配报告](../docs/reports/paseo-client-rust-adapter.md)。
+```sh
+npm ci
+npm run dev:paseo
+```
 
-两个项目依赖上游 npm workspace，当前还不能作为独立项目直接构建或启动。后续整合需要：
+开发入口构建共享包、Electron 主进程及 `server-bin`，启动 Metro 和桌面。默认开发数据
+位于 `.tmp/paseo/server`，桌面配置位于 `.tmp/paseo/electron`。桌面主进程生成随机 token，
+启动 loopback Rust server，认证握手成功后自动登记主机；退出应用时停止自己启动的服务。
 
-- 提供共享包：app 使用 client、protocol、relay、highlight、plugin、expo-two-way-audio；
-  desktop 使用 CLI、server 和 protocol。
-- 接入上游根级构建脚本、TypeScript 配置、依赖补丁和锁文件。
-- 校正测试与打包配置里的其余 workspace 路径；desktop 的 `../app` 引用已对应 `apps/app`。
-- 将桌面内置 daemon 的启动和关闭改接 Rust binary，并使用已适配的 Rust TCP 连接层。
+可设置 `AIT_SERVER_BIN` 使用指定的已编译 binary；`AIT_SERVER_DATA_DIR`、
+`AIT_SERVER_LISTEN`、`EXPO_PORT` 可覆盖数据目录和端口。不要在环境中设置
+`ELECTRON_RUN_AS_NODE`。仅构建前端可运行 `npm run build:paseo`，打包入口为
+`npm run build:desktop`（默认构建当前平台的 release Rust binary）。
 
-导入校验和测试范围见[导入报告](../docs/reports/paseo-client-import.md)。
+完整实现边界和验证见[启动报告](../docs/reports/paseo-desktop-startup.md)与
+[ADR-048](../docs/decisions/adr-048-paseo-desktop-rust-launcher.md)。原始导入清单仅对应最初
+两个客户端目录；共享包为后续新增。

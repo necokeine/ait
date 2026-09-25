@@ -18,8 +18,38 @@ fn defaults_are_isolated_and_secrets_are_redacted() {
         PathBuf::from("/unused-home-for-config-test/.ait-server")
     );
     assert_eq!(config.listen, "127.0.0.1:7316".parse().unwrap());
+    assert!(config.web_origins.is_empty());
     assert!(!format!("{config:?}").contains(TOKEN));
     assert!(Config::load(Cli::parse_from(["server"]), |_| None).is_err());
+}
+
+#[test]
+fn browser_origins_are_opt_in_validated_and_cli_overrides_file() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("config.toml"),
+        "web_origins = ['http://localhost:8081']",
+    )
+    .unwrap();
+    let args = ["server", "--data-dir", directory.path().to_str().unwrap()];
+    assert_eq!(
+        Config::load(Cli::parse_from(args), environment)
+            .unwrap()
+            .web_origins,
+        ["http://localhost:8081"]
+    );
+    let cli = Cli::parse_from(args.into_iter().chain([
+        "--web-origin",
+        "http://127.0.0.1:8082",
+        "--web-origin",
+        "http://[::1]:8082",
+    ]));
+    assert_eq!(
+        Config::load(cli, environment).unwrap().web_origins,
+        ["http://127.0.0.1:8082", "http://[::1]:8082"]
+    );
+    let cli = Cli::parse_from(args.into_iter().chain(["--web-origin", "http://evil.test"]));
+    assert!(Config::load(cli, environment).is_err());
 }
 
 #[test]

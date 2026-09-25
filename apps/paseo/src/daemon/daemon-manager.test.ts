@@ -8,6 +8,12 @@ import { createDaemonCommandHandlers } from "./daemon-manager";
 
 const mocks = vi.hoisted(() => ({
   paseoHome: "",
+  start: vi.fn(),
+  stop: vi.fn(),
+  restart: vi.fn(),
+  status: vi.fn(() => ({ listen: "127.0.0.1:43210", ownedByDesktop: true })),
+  authorization: vi.fn(),
+  openTransport: vi.fn(),
   settings: {
     releaseChannel: "stable",
     daemon: {
@@ -33,7 +39,7 @@ vi.mock("electron", () => ({
   app: {
     getPath: vi.fn(() => mocks.paseoHome),
     getVersion: vi.fn(() => "1.2.3"),
-    isPackaged: true,
+    isPackaged: false,
   },
   ipcMain: { handle: vi.fn() },
   powerMonitor: { getSystemIdleTime: vi.fn(() => 0) },
@@ -51,9 +57,20 @@ vi.mock("electron-log/main", () => ({
   },
 }));
 
-vi.mock("@getpaseo/server/daemon-control", () => ({
-  resolvePaseoHome: vi.fn(() => mocks.paseoHome),
-  spawnProcess: mocks.spawnProcess,
+vi.mock("./rust-server.js", () => ({
+  resolveDesktopServerHome: () => mocks.paseoHome,
+  RustServerManager: class {
+    start = mocks.start;
+    stop = mocks.stop;
+    restart = mocks.restart;
+    status = mocks.status;
+    authorization = mocks.authorization;
+  },
+}));
+vi.mock("./local-transport.js", () => ({
+  openLocalTransportSession: mocks.openTransport,
+  sendLocalTransportMessage: vi.fn(),
+  closeLocalTransportSession: vi.fn(),
 }));
 
 vi.mock("../settings/desktop-settings-electron.js", () => ({
@@ -88,7 +105,11 @@ describe("daemon-manager commands", () => {
     mocks.runExternalCliJsonCommand.mockReset();
     mocks.runExternalCliTextCommand.mockReset();
     mocks.createNodeEntrypointInvocation.mockReset();
-    mocks.createNodeEntrypointInvocation.mockReturnValue({ command: "node", args: [], env: {} });
+    mocks.createNodeEntrypointInvocation.mockReturnValue({
+      command: "node",
+      args: [],
+      env: {},
+    });
     mocks.spawnProcess.mockReset();
     mocks.logInfo.mockReset();
     mocks.logError.mockReset();
@@ -98,6 +119,38 @@ describe("daemon-manager commands", () => {
 
   afterEach(() => {
     rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  it("starts the Rust owner and injects managed credentials only in the main process", async () => {
+    const handlers = createDaemonCommandHandlers();
+    mocks.start.mockResolvedValue({ status: "running" });
+    await expect(handlers.start_desktop_daemon()).resolves.toEqual({ status: "running" });
+    mocks.authorization.mockReturnValue("private-token");
+    await handlers.open_local_daemon_transport({
+      sessionId: "test",
+      target: { transportType: "rustTcp", url: "ws://localhost:43210/v1/ws" },
+    });
+    expect(mocks.openTransport).toHaveBeenLastCalledWith({
+      sessionId: "test",
+      bearerToken: "private-token",
+      target: { transportType: "rustTcp", url: "ws://127.0.0.1:43210/v1/ws" },
+    });
+    mocks.authorization.mockReturnValue(undefined);
+    const external = {
+      sessionId: "external",
+      target: { transportType: "rustTcp", url: "ws://localhost:43211/v1/ws" },
+      bearerToken: "external-token",
+    };
+    await handlers.open_local_daemon_transport(external);
+    expect(mocks.openTransport).toHaveBeenLastCalledWith(external);
+  });
+
+  it("honors the built-in management switch", async () => {
+    mocks.settings = {
+      ...DEFAULT_DESKTOP_SETTINGS,
+      daemon: { manageBuiltInDaemon: false, keepRunningAfterQuit: false },
+    };
+    await expect(createDaemonCommandHandlers().start_desktop_daemon()).rejects.toThrow("disabled");
   });
 
   it("returns the Electron main-process log tail from electron-log", () => {

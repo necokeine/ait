@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { app } from "electron";
 import {
@@ -8,24 +7,7 @@ import {
   type NodeEntrypointInvocation,
   type NodeEntrypointSpec,
 } from "./node-entrypoint-launcher.js";
-import {
-  assertPathExists,
-  findPackageRootFromResolvedPath,
-  resolvePackagedAsarPath,
-  type PackageInfo,
-} from "./package-paths.js";
-
-const SERVER_PACKAGE_NAME = "@getpaseo/server";
-
-const esmRequire = createRequire(__filename);
-
-function resolveServerPackageInfo(): PackageInfo {
-  const serverExportPath = esmRequire.resolve(SERVER_PACKAGE_NAME);
-  return findPackageRootFromResolvedPath({
-    resolvedPath: serverExportPath,
-    packageName: SERVER_PACKAGE_NAME,
-  });
-}
+import { assertPathExists } from "./package-paths.js";
 
 export function resolvePackagedNodeEntrypointRunnerPath(): string {
   return path.join(
@@ -35,43 +17,6 @@ export function resolvePackagedNodeEntrypointRunnerPath(): string {
     "daemon",
     "node-entrypoint-runner.js",
   );
-}
-
-export function resolveDaemonRunnerEntrypoint(): NodeEntrypointSpec {
-  if (app.isPackaged) {
-    return {
-      entryPath: assertPathExists({
-        label: "Bundled daemon runner",
-        filePath: path.join(
-          resolvePackagedAsarPath(),
-          "node_modules",
-          "@getpaseo",
-          "server",
-          "dist",
-          "scripts",
-          "supervisor-entrypoint.js",
-        ),
-      }),
-      execArgv: [],
-    };
-  }
-
-  const serverPackage = resolveServerPackageInfo();
-  const distRunner = path.join(serverPackage.root, "dist", "scripts", "supervisor-entrypoint.js");
-  if (existsSync(distRunner)) {
-    return {
-      entryPath: distRunner,
-      execArgv: [],
-    };
-  }
-
-  return {
-    entryPath: assertPathExists({
-      label: "Daemon runner source",
-      filePath: path.join(serverPackage.root, "scripts", "supervisor-entrypoint.ts"),
-    }),
-    execArgv: ["--import", "tsx"],
-  };
 }
 
 export function resolveNodeExecPath(): string {

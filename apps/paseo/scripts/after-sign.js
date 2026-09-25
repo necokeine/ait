@@ -1,6 +1,5 @@
 const path = require("node:path");
-
-const { smokePackagedDesktopApp } = require("../e2e/packaged-app-smoke.js");
+const { execFileSync } = require("node:child_process");
 
 const EXECUTABLE_NAME = "Paseo";
 
@@ -13,7 +12,11 @@ exports.default = async function afterSign(context) {
     return;
   }
 
-  await smokePackagedDesktopApp({
-    appPath: path.join(context.appOutDir, `${EXECUTABLE_NAME}.app`),
+  execFileSync(process.execPath, [path.join(__dirname, "../e2e/rust-startup.e2e.mjs")], {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      PASEO_PACKAGED_APP: path.join(context.appOutDir, `${EXECUTABLE_NAME}.app`),
+    },
   });
 };

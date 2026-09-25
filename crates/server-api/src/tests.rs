@@ -1,5 +1,6 @@
 use super::*;
 
+mod browser_auth;
 mod session;
 mod voice;
 
@@ -26,6 +27,10 @@ impl Fixture {
     }
 
     async fn with_services(services: crate::Services) -> Self {
+        Self::with_origins(services, Vec::new()).await
+    }
+
+    async fn with_origins(services: crate::Services, origins: Vec<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let api = Api::new(
@@ -36,6 +41,7 @@ impl Fixture {
             services,
         )
         .unwrap();
+        let api = api.with_browser_origins(origins).unwrap();
         let shutdown = api.clone();
         let router = api.router();
         let task = tokio::spawn(async move {
@@ -145,7 +151,14 @@ fn rejects_bad_config_and_redacts_debug() {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("host", "[::1]".parse().unwrap());
     headers.insert("origin", "http://localhost".parse().unwrap());
-    assert!(auth::validate_source(&headers, &default_port.shared.authorities).is_ok());
+    assert!(
+        auth::validate_source(
+            &headers,
+            &default_port.shared.authorities,
+            &default_port.shared.browser_auth
+        )
+        .is_ok()
+    );
 }
 
 #[tokio::test]

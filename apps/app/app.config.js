@@ -111,7 +111,8 @@ export default {
         NSMicrophoneUsageDescription: "This app needs access to the microphone for voice commands.",
         ITSAppUsesNonExemptEncryption: false,
       },
-      bundleIdentifier: variant.packageId,
+      bundleIdentifier: process.env.IOS_BUNDLE_IDENTIFIER || variant.packageId,
+      ...(process.env.APPLE_TEAM_ID ? { appleTeamId: process.env.APPLE_TEAM_ID } : {}),
       ...(variant.googleServiceInfoPlist
         ? { googleServicesFile: variant.googleServiceInfoPlist }
         : {}),
@@ -169,6 +170,10 @@ export default {
       [
         "expo-build-properties",
         {
+          ios: {
+            // The bundled Skia binaries require iOS 16 or newer.
+            deploymentTarget: "16.0",
+          },
           android: {
             minSdkVersion: 29,
             kotlinVersion: "2.1.20",
@@ -189,10 +194,8 @@ export default {
       fdroidBuild: isFdroidBuild,
       profileBuild: isProfileBuild,
       router: {},
-      eas: {
-        projectId: "0e7f65ce-0367-46c8-a238-2b65963d235a",
-      },
+      ...(process.env.EAS_PROJECT_ID ? { eas: { projectId: process.env.EAS_PROJECT_ID } } : {}),
     },
-    owner: "getpaseo",
+    ...(process.env.EXPO_OWNER ? { owner: process.env.EXPO_OWNER } : {}),
   },
 };

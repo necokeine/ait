@@ -1,5 +1,11 @@
 # 概念与架构文档
 
+- [Apple 构建说明](operations/apple-builds.md)：桌面 DMG、iOS 模拟器、iPhone 归档与签名 IPA；[实际构建报告](reports/apple-builds.md)。
+
+- [ADR-049：独立 App 的 Rust server 浏览器连接](decisions/adr-049-app-rust-browser-transport.md)：一次性 WebSocket 票据、显式页面来源和 `dev:app` 启动入口；[实施报告](reports/app-rust-server.md)。
+
+- [ADR-048：Paseo workspace 与 Rust 桌面服务启动](decisions/adr-048-paseo-desktop-rust-launcher.md)：前端构建依赖、主进程凭据与子进程所有权；[启动与验证报告](reports/paseo-desktop-startup.md)。
+
 - [ADR-047：移除 Plugin 并独立实现 Schedule / Browser](decisions/adr-047-server-schedule-browser.md)（Accepted）：两个新能力 crate，生产 175 项均安装；[实施报告](reports/server-schedule-browser.md)区分接口接通、上游差异与 Test coverage。
 
 - [ADR-046：Codex 流式输出与运行中追加输入](decisions/adr-046-codex-streaming-and-steering.md)

@@ -1,0 +1,94 @@
+{
+  "date": "2026-09-25",
+  "platform": "darwin-arm64",
+  "electron": "44.2.0",
+  "scope": "Paseo workspace build and Electron-owned Rust server lifecycle; no Rust source changes",
+  "upstreamRevision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
+  "checks": {
+    "workspaceBuild": {
+      "command": "npm run build:paseo",
+      "status": "passed"
+    },
+    "appTypecheck": {
+      "command": "npm run typecheck --workspace=@getpaseo/app",
+      "status": "passed"
+    },
+    "lockfile": {
+      "command": "npm ci --ignore-scripts --offline --dry-run --no-audit --no-fund",
+      "status": "passed"
+    },
+    "appTests": {
+      "files": 6,
+      "passed": 139,
+      "failed": 0
+    },
+    "desktopTests": {
+      "files": 8,
+      "passed": 43,
+      "failed": 0,
+      "includesRealRustProcessTests": true
+    },
+    "electronE2e": {
+      "status": "passed",
+      "automaticStartup": true,
+      "rendererConnection": "online",
+      "authenticatedRpc": "listProjects",
+      "restartReconnectRpc": true,
+      "rendererErrors": 0,
+      "childReapedOnQuit": true,
+      "temporaryDataRemoved": true
+    },
+    "resourceStaging": {
+      "status": "passed",
+      "binaryVersion": "server 0.0.6"
+    },
+    "rustFormat": {
+      "command": "cargo fmt --all -- --check",
+      "status": "passed"
+    },
+    "rustClippy": {
+      "command": "cargo clippy --offline --workspace --all-targets -- -D warnings",
+      "status": "passed"
+    },
+    "rustWorkspaceInitial": {
+      "status": "failed",
+      "passedBeforeAbort": 576,
+      "failed": 1,
+      "ignored": 5,
+      "test": "unix::terminal::terminal_reconnect_archive_batch_close_and_shutdown_cleanup_are_observable",
+      "error": "ParseIntError { kind: Empty } at bins/server/tests/process/terminal.rs:327; test waits for PID file existence before reading, not completion of write"
+    },
+    "rustWorkspaceSerialRerun": {
+      "status": "replaced",
+      "reason": "Stopped the broad repeat; independently rerun the failed test and all crates not executed after the initial failure."
+    },
+    "jsFormattingAndLint": {
+      "status": "passed",
+      "scope": "Changed startup, transport integration and test files; Oxfmt and Oxlint"
+    },
+    "rustWorkspaceCompletion": {
+      "status": "passed",
+      "commands": [
+        "cargo llvm-cov --offline --no-report -p server-bin --test process -- unix::terminal::terminal_reconnect_archive_batch_close_and_shutdown_cleanup_are_observable --exact --test-threads=1",
+        "cargo llvm-cov --offline --no-fail-fast --no-report -p server-browser -p server-model -p server-filesystem -p server-metadata -p server-protocol -p server-provider -p server-domain -p server-schedule -p server-terminal -p server-voice -- --test-threads=4"
+      ],
+      "terminalRetestPassed": 1,
+      "remainingCratesPassed": 472,
+      "remainingCratesFailed": 0,
+      "distinctTestsPassedAcrossInitialRunAndCompletion": 1049,
+      "ignored": 5
+    }
+  },
+  "coverage": {
+    "typescriptLineCoverage": null,
+    "rustLineCoverage": null,
+    "rustLineCoverageNote": "Not remeasured as a comparable full-workspace percentage: the initial coverage run failed on an existing PID-file race, and validation was completed with a targeted rerun plus all remaining crates. No Rust source changed."
+  },
+  "limits": [
+    "No Windows/Linux runtime validation",
+    "No signed installer/release validation",
+    "No orphan adoption after Electron SIGKILL",
+    "Agent/workspace subscriptions and SDK messageId backend gaps are unchanged",
+    "No full upstream end-to-end suite claim"
+  ]
+}

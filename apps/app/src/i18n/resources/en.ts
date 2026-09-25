@@ -1658,12 +1658,12 @@ export const en = {
     },
     direct: {
       title: "Direct connection",
-      helper: "Enter the address of a Paseo server.",
+      helper: "Enter your server address and access token.",
       fields: {
         host: "Host",
         port: "Port",
-        password: "Password",
-        optional: "Optional",
+        password: "Server token",
+        optional: "Required",
         useSsl: "Use SSL",
         connectionUri: "Connection URI",
       },

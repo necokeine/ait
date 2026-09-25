@@ -15,8 +15,8 @@ const mocks = vi.hoisted(() => ({
   spawnProcess: vi.fn(),
 }));
 
-vi.mock("@getpaseo/server/process", () => ({
-  spawnProcess: mocks.spawnProcess,
+vi.mock("node:child_process", () => ({
+  spawn: mocks.spawnProcess,
 }));
 
 vi.mock("electron-log/main", () => ({
@@ -74,7 +74,6 @@ describe("external CLI", () => {
       "node",
       ["runner.js", "node-script", "cli.js"],
       {
-        envMode: "internal",
         env: { PASEO_NODE_ENV: "production" },
         stdio: ["ignore", "pipe", "pipe"],
       },

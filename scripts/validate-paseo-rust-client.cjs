@@ -252,9 +252,8 @@ async function runIntegration() {
             ["voice mode off", () => client.setVoiceMode(false)],
             ["liveness ping", () => client.livenessPing({ timeoutMs: 2000 })],
             [
-                "unsupported schedules",
+                "schedules",
                 () => client.scheduleList(),
-                "not_implemented",
             ],
             [
                 "agents subscribe",
