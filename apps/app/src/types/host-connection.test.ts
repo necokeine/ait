@@ -323,3 +323,26 @@ describe("resolveActiveHostServerId", () => {
     ).toBe("srv_local");
   });
 });
+
+// Desktop server ports may change, but its saved connection identity must not.
+it("preserves the managed connection id across storage and replaces its endpoint", () => {
+  const connection = {
+    id: "desktop-managed-srv_local",
+    type: "directTcp" as const,
+    endpoint: "localhost:49123",
+  };
+  const profile = {
+    ...makeHost("srv_local"),
+    connections: [connection],
+    preferredConnectionId: connection.id,
+  };
+  const restored = normalizeStoredHostProfile(profile);
+  expect(restored?.connections[0].id).toBe(connection.id);
+  const next = upsertHostConnectionInProfiles({
+    profiles: [restored!],
+    serverId: "srv_local",
+    connection: { ...connection, endpoint: "localhost:49124" },
+  });
+  expect(next[0].connections).toEqual([{ ...connection, endpoint: "localhost:49124" }]);
+  expect(next[0].preferredConnectionId).toBe(connection.id);
+});

@@ -30,13 +30,22 @@
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease -x lint -x lintVitalAnalyzeRelease -x lintVitalRelease -x generateReleaseLintModel -x generateReleaseLintVitalModel"
       }
+    },
+    "simulator": {
+      "extends": "production",
+      "distribution": "internal",
+      "ios": {
+        "simulator": true
+      }
+    },
+    "preview": {
+      "extends": "production",
+      "distribution": "internal"
     }
   },
   "submit": {
     "production": {
-      "ios": {
-        "ascAppId": "6758887924"
-      },
+      "ios": {},
       "android": {
         "track": "production",
         "releaseStatus": "completed"

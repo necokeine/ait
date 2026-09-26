@@ -75,7 +75,12 @@ describe("DaemonStartService", () => {
 
     expect(result).toEqual({ ok: true });
     expect(fake.upserts).toEqual([
-      { listenAddress: "127.0.0.1:6767", serverId: "srv_desktop", hostname: "desktop" },
+      {
+        listenAddress: "127.0.0.1:6767",
+        serverId: "srv_desktop",
+        hostname: "desktop",
+        desktopManaged: true,
+      },
     ]);
     expect(service.getLastError()).toBeNull();
     expect(service.isRunning()).toBe(false);
@@ -312,17 +317,38 @@ describe("upsertDesktopDaemonConnection", () => {
 
     expect(result).toEqual({ ok: true });
     expect(fake.upserts).toEqual([
-      { listenAddress: "127.0.0.1:6767", serverId: "srv_desktop", hostname: "desktop" },
+      {
+        listenAddress: "127.0.0.1:6767",
+        serverId: "srv_desktop",
+        hostname: "desktop",
+        desktopManaged: true,
+      },
     ]);
   });
 
   it("does not add localhost when desktop bootstrap finds its server id already registered", async () => {
     const fake = createFakeStore([makeRelayOnlyHost("srv_desktop")]);
 
-    const result = await upsertDesktopDaemonConnection(fake.store, makeStatus());
+    const result = await upsertDesktopDaemonConnection(
+      fake.store,
+      makeStatus({ ownedByDesktop: false }),
+    );
 
     expect(result).toEqual({ ok: true });
     expect(fake.upserts).toEqual([]);
+  });
+
+  it("refreshes the owned server address after a restart", async () => {
+    const fake = createFakeStore([makeRelayOnlyHost("srv_desktop")]);
+    await upsertDesktopDaemonConnection(fake.store, makeStatus({ listen: "127.0.0.1:49123" }));
+    expect(fake.upserts).toEqual([
+      {
+        listenAddress: "127.0.0.1:49123",
+        serverId: "srv_desktop",
+        hostname: "desktop",
+        desktopManaged: true,
+      },
+    ]);
   });
 
   it("rejects a missing listen address without upserting", async () => {

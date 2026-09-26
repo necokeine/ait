@@ -1276,7 +1276,11 @@ export class HostRuntimeController {
         this.deps.mountClientHandlers?.({ client, host: this.host, connection }) ?? null;
       this.unsubscribeClientStatus = client.subscribeConnectionStatus((state) => {
         if (!this.isCurrentSwitchRequest(requestVersion) || this.activeClient !== client) return;
-        this.applyConnectionEvent({ type: "client_state", state, lastError: client.lastError });
+        this.applyConnectionEvent({
+          type: "client_state",
+          state,
+          lastError: client.lastError,
+        });
         this.updateSnapshot({
           ...toSnapshotConnectionPatch(this.connectionMachineState, this.connectionEpoch),
           ...this.buildAgentDirectoryStatusPatch(),
@@ -1849,6 +1853,7 @@ export class HostRuntimeStore {
     listenAddress: string;
     serverId: string;
     hostname: string | null;
+    desktopManaged?: boolean;
   }): Promise<HostProfile> {
     const normalizedListenAddress = input.listenAddress.trim();
     const serverId = input.serverId.trim();
@@ -1862,7 +1867,9 @@ export class HostRuntimeStore {
     return this.upsertHostConnection({
       serverId,
       label: input.hostname ?? undefined,
-      connection,
+      connection: input.desktopManaged
+        ? { ...connection, id: `desktop-managed-${serverId}` }
+        : connection,
     });
   }
 

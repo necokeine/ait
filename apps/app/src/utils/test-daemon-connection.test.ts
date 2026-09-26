@@ -45,6 +45,7 @@ class FakeDaemonProbe {
     resolveAppVersion: () => null,
     createDesktopTransportFactory: () => null,
     buildDesktopTransportUrl: (target) => {
+      if (target.transportType === "rustTcp") return target.url;
       if (target.transportType === "ssh") {
         return `paseo+desktop://ssh?host=${encodeURIComponent(target.host)}`;
       }

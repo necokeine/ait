@@ -1,0 +1,71 @@
+{
+  "revision": "0b6a6c3709e55d35c36af11fa54fc38f7359f8e0 + working tree",
+  "browser": {
+    "pageErrors": 0,
+    "browser": "Chromium",
+    "sdkConnections": 8,
+    "independentTickets": 8,
+    "projects": "passed",
+    "ping": "passed",
+    "reconnect": "passed",
+    "wrongToken": "rejected",
+    "bearerInWebSocket": false,
+    "ui": "connected and persisted across reload"
+  },
+  "devRunner": {
+    "entrypoint": "dev:app",
+    "frontend": "ready",
+    "backend": "ready",
+    "configuredOrigin": "accepted",
+    "tokenInOutput": false,
+    "shutdown": "both listeners closed"
+  },
+  "frontendTests": {
+    "files": 6,
+    "passed": 122,
+    "failed": 0,
+    "lineCoverage": "not measured"
+  },
+  "typecheck": "passed",
+  "webExport": "passed with EXPO_NO_TELEMETRY=1",
+  "rustFmt": "passed",
+  "workspaceClippy": "passed",
+  "rpcMap": {
+    "upstream": 171,
+    "canonical": 168
+  },
+  "workspaceTestInitialRun": {
+    "passed": 1051,
+    "failed": 6,
+    "ignored": 5,
+    "failedTargets": ["ait-agent-adapters/codex_process", "ait-daemon/codex_http", "server-api/lib"]
+  },
+  "serverApiFinalTests": {
+    "passed": 31,
+    "failed": 0
+  },
+  "retryResults": {
+    "codex_process/cancellation_during_handshake_reaps_the_owned_child": "passed",
+    "ait-daemon/codex_http": "5 passed in coverage completion",
+    "worker/supervisor_rejects_bad_workers_and_reaps_descendants": "passed with instrumentation",
+    "server-bin/forge": "passed"
+  },
+  "coverageExecutionPhases": {
+    "initial": {
+      "passed": 261,
+      "failed": 2,
+      "ignored": 4
+    },
+    "completion": {
+      "passed": 797,
+      "failed": 1,
+      "ignored": 1
+    },
+    "note": "Counts are execution summaries, include repeated/nested tests; all failed cases passed in subsequent runs. Five packages are excluded only from the completion test run, not from coverage."
+  },
+  "coverageSummary": "app-rust-server-coverage.json",
+  "finalServerProcessTests": {
+    "passed": 42,
+    "failed": 0
+  }
+}

@@ -1,0 +1,255 @@
+{
+  "revision": "0b6a6c3709e55d35c36af11fa54fc38f7359f8e0 + final working tree",
+  "platform": "macOS arm64",
+  "features": "default",
+  "scope": "All workspace Rust source; merged initial run, completion, and instrumented worker retry. No coverage source exclusions; llvm-cov default test-code exclusion applies.",
+  "commands": [
+    "cargo llvm-cov --workspace --html --offline -- --test-threads=1",
+    "cargo llvm-cov --workspace --no-clean --html --offline --no-fail-fast --exclude-from-test ait-agent-adapters --exclude-from-test ait-api-http --exclude-from-test ait-application --exclude-from-test ait-cli --exclude-from-test ait-contracts -- --test-threads=1",
+    "LLVM_PROFILE_FILE='target/llvm-cov-target/ait-retry-%p-%m.profraw' target/llvm-cov-target/debug/deps/completes_run-f83b1f12d369bf82 supervisor_rejects_bad_workers_and_reaps_descendants --exact --test-threads=1",
+    "CARGO_TARGET_DIR=target/llvm-cov-target cargo llvm-cov show-env; apply its output as environment for cargo test --workspace --no-run --offline to refresh final source mappings",
+    "cargo llvm-cov report --html",
+    "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-app-coverage-summary-final.json"
+  ],
+  "workspaceLines": {
+    "count": 59096,
+    "covered": 49242,
+    "percent": 83.32543657777178
+  },
+  "crates": {
+    "bins/cli": {
+      "covered": 528,
+      "count": 546,
+      "percent": 96.7032967032967
+    },
+    "bins/daemon": {
+      "covered": 100,
+      "count": 120,
+      "percent": 83.33333333333333
+    },
+    "bins/server": {
+      "covered": 769,
+      "count": 819,
+      "percent": 93.89499389499389
+    },
+    "bins/worker": {
+      "covered": 72,
+      "count": 549,
+      "percent": 13.114754098360656
+    },
+    "crates/agent-adapters": {
+      "covered": 2081,
+      "count": 3404,
+      "percent": 61.13396004700353
+    },
+    "crates/api-http": {
+      "covered": 710,
+      "count": 976,
+      "percent": 72.74590163934427
+    },
+    "crates/application": {
+      "covered": 9611,
+      "count": 11732,
+      "percent": 81.92124105011933
+    },
+    "crates/contracts": {
+      "covered": 488,
+      "count": 589,
+      "percent": 82.85229202037351
+    },
+    "crates/domain": {
+      "covered": 1000,
+      "count": 1250,
+      "percent": 80.0
+    },
+    "crates/ipc": {
+      "covered": 851,
+      "count": 1324,
+      "percent": 64.27492447129909
+    },
+    "crates/observability": {
+      "covered": 91,
+      "count": 99,
+      "percent": 91.91919191919192
+    },
+    "crates/ports": {
+      "covered": 175,
+      "count": 272,
+      "percent": 64.33823529411765
+    },
+    "crates/providers": {
+      "covered": 354,
+      "count": 512,
+      "percent": 69.140625
+    },
+    "crates/runtime": {
+      "covered": 780,
+      "count": 1044,
+      "percent": 74.71264367816092
+    },
+    "crates/sandbox": {
+      "covered": 32,
+      "count": 125,
+      "percent": 25.6
+    },
+    "crates/scheduler": {
+      "covered": 221,
+      "count": 275,
+      "percent": 80.36363636363636
+    },
+    "crates/server-api": {
+      "covered": 1048,
+      "count": 1093,
+      "percent": 95.8828911253431
+    },
+    "crates/server-browser": {
+      "covered": 638,
+      "count": 726,
+      "percent": 87.87878787878788
+    },
+    "crates/server-domain": {
+      "covered": 121,
+      "count": 121,
+      "percent": 100.0
+    },
+    "crates/server-filesystem": {
+      "covered": 7245,
+      "count": 8537,
+      "percent": 84.86587794307134
+    },
+    "crates/server-metadata": {
+      "covered": 5769,
+      "count": 6549,
+      "percent": 88.0897846999542
+    },
+    "crates/server-model": {
+      "covered": 293,
+      "count": 309,
+      "percent": 94.8220064724919
+    },
+    "crates/server-protocol": {
+      "covered": 57,
+      "count": 57,
+      "percent": 100.0
+    },
+    "crates/server-provider": {
+      "covered": 6680,
+      "count": 7237,
+      "percent": 92.30344065220395
+    },
+    "crates/server-schedule": {
+      "covered": 771,
+      "count": 820,
+      "percent": 94.02439024390245
+    },
+    "crates/server-terminal": {
+      "covered": 1247,
+      "count": 1422,
+      "percent": 87.69338959212376
+    },
+    "crates/server-voice": {
+      "covered": 1192,
+      "count": 1275,
+      "percent": 93.49019607843137
+    },
+    "crates/storage-sqlite": {
+      "covered": 3308,
+      "count": 3714,
+      "percent": 89.06838987614432
+    },
+    "crates/tools": {
+      "covered": 1668,
+      "count": 1951,
+      "percent": 85.49461814454126
+    },
+    "crates/workspace": {
+      "covered": 130,
+      "count": 137,
+      "percent": 94.8905109489051
+    },
+    "crates/workspace-local": {
+      "covered": 1212,
+      "count": 1512,
+      "percent": 80.15873015873017
+    }
+  },
+  "changedFiles": [
+    {
+      "path": "bins/server/src/config.rs",
+      "sha256": "670c63f5cb8ee29f666d5926e679ec5f816723f3fff1eeb423823c01e5a9593b",
+      "lines": {
+        "count": 69,
+        "covered": 62,
+        "percent": 89.85507246376811
+      },
+      "functions": {
+        "count": 11,
+        "covered": 10,
+        "percent": 90.9090909090909
+      }
+    },
+    {
+      "path": "bins/server/src/host.rs",
+      "sha256": "549a0a422969851bd6c06dc0a0ccfd1eea46158c62eca2f4e8c0407a898ce7df",
+      "lines": {
+        "count": 303,
+        "covered": 293,
+        "percent": 96.69966996699671
+      },
+      "functions": {
+        "count": 27,
+        "covered": 21,
+        "percent": 77.77777777777779
+      }
+    },
+    {
+      "path": "crates/server-api/src/auth.rs",
+      "sha256": "da343e8b483d7abc83dec2e85db5e8db14053d55a45277ead45e21b0deeb89d0",
+      "lines": {
+        "count": 73,
+        "covered": 73,
+        "percent": 100.0
+      },
+      "functions": {
+        "count": 12,
+        "covered": 12,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/server-api/src/browser_auth.rs",
+      "sha256": "5aaba84bcd13616666717c2857b1f64801e3a986788ba4ccf3edc35d933af1bc",
+      "lines": {
+        "count": 82,
+        "covered": 82,
+        "percent": 100.0
+      },
+      "functions": {
+        "count": 10,
+        "covered": 10,
+        "percent": 100.0
+      }
+    },
+    {
+      "path": "crates/server-api/src/lib.rs",
+      "sha256": "9bccc18b5825a47756b15c14acc0198071309b5626dacfe5c2d1e90457fd8d3b",
+      "lines": {
+        "count": 310,
+        "covered": 302,
+        "percent": 97.41935483870968
+      },
+      "functions": {
+        "count": 38,
+        "covered": 37,
+        "percent": 97.36842105263156
+      }
+    }
+  ],
+  "baseline": "No directly comparable pre-change measurement",
+  "notCovered": [
+    "Browser auth mutex-poison error branches and malformed URI parsing branch",
+    "Real mobile devices and non-macOS platforms",
+    "Five intentionally ignored credential/paid-provider/external-worker tests"
+  ],
+  "html": "target/llvm-cov/html/index.html"
+}

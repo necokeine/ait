@@ -15,7 +15,7 @@
   },
   "main": "dist/main.js",
   "scripts": {
-    "build": "npm --prefix ../.. run build:server:clean && npm run build:main && electron-builder --config electron-builder.yml",
+    "build": "node scripts/prepare-server.mjs && npm run build:main && electron-builder --config electron-builder.yml",
     "build:main": "tsc -p tsconfig.json",
     "capture-harness": "npm run build:main && ./capture-harness/run.sh",
     "dev": "./scripts/dev.sh",
@@ -25,11 +25,13 @@
     "verify:electron-cdp": "node ./scripts/verify-electron-cdp.mjs",
     "test": "install-electron && vitest run --exclude \"e2e/**\"",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
-    "test:e2e:lifecycle": "npm run build:main && node ./e2e/daemon-lifecycle.e2e.mjs"
+    "test:e2e:lifecycle": "npm run build:main && node ./e2e/daemon-lifecycle.e2e.mjs",
+    "test:e2e:rust-startup": "install-electron && npm run build:main && node e2e/rust-startup.e2e.mjs",
+    "build:dmg": "node scripts/build-macos.mjs",
+    "build:dmg:release": "node scripts/build-macos.mjs --signed"
   },
   "dependencies": {
-    "@getpaseo/cli": "*",
-    "@getpaseo/server": "*",
+    "@getpaseo/protocol": "0.9.0-beta.2",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.6.2",
     "ws": "^8.14.2",

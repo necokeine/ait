@@ -109,11 +109,11 @@ export default defineConfig({
     alias: [
       {
         find: /^@getpaseo\/relay\/e2ee$/,
-        replacement: path.resolve(__dirname, "../relay/src/e2ee.ts"),
+        replacement: path.resolve(__dirname, "../../packages/relay/src/e2ee.ts"),
       },
       {
         find: /^@getpaseo\/relay$/,
-        replacement: path.resolve(__dirname, "../relay/src/index.ts"),
+        replacement: path.resolve(__dirname, "../../packages/relay/src/index.ts"),
       },
       { find: "@", replacement: path.resolve(__dirname, "src") },
       // Keep keyboard-controller's imports in Vite so native aliases and platform extensions apply.

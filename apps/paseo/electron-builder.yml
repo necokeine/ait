@@ -27,6 +27,8 @@ asarUnpack:
   - dist/daemon/node-entrypoint-runner.js
   - node_modules/@getpaseo/server/dist/server/terminal/shell-integration/**/*
 extraResources:
+  - from: release-resources/server
+    to: bin
   - from: ../app/dist
     to: app-dist
   - from: assets/editor-targets
@@ -42,6 +44,8 @@ mac:
   icon: assets/icon.icns
   hardenedRuntime: true
   notarize: true
+  binaries:
+    - Contents/Resources/bin/server
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.inherit.plist
   extraResources:

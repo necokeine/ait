@@ -91,11 +91,7 @@ import {
   isDesktopManagedDaemonRunningSync,
   stopDesktopDaemonViaCli,
 } from "./daemon/daemon-manager.js";
-import {
-  createQuitLifecycle,
-  registerExternalQuitSignals,
-  stopDesktopManagedDaemonOnQuitIfNeeded,
-} from "./daemon/quit-lifecycle.js";
+import { createQuitLifecycle, registerExternalQuitSignals } from "./daemon/quit-lifecycle.js";
 import { runDesktopStartup } from "./desktop-startup.js";
 import { registerBrowserAutomationIpc } from "./features/browser-automation/ipc.js";
 import { BrowserKeyboard } from "./features/browser-keyboard/index.js";
@@ -1029,13 +1025,12 @@ function showDaemonShutdownDialog(): void {
 const quitLifecycle = createQuitLifecycle({
   app,
   closeTransportSessions: closeAllTransportSessions,
-  stopDesktopManagedDaemonIfNeeded: () =>
-    stopDesktopManagedDaemonOnQuitIfNeeded({
-      settingsStore: getDesktopSettingsStore(),
-      isDesktopManagedDaemonRunning: isDesktopManagedDaemonRunningSync,
-      stopDaemon: () => stopDesktopDaemonViaCli("quit"),
-      showShutdownFeedback: showDaemonShutdownDialog,
-    }),
+  stopDesktopManagedDaemonIfNeeded: async () => {
+    if (!isDesktopManagedDaemonRunningSync()) return false;
+    showDaemonShutdownDialog();
+    await stopDesktopDaemonViaCli("quit");
+    return true;
+  },
   installAppUpdateOnQuit: async (signal) => {
     const settings = await getDesktopSettingsStore().get();
     return installAppUpdateOnQuit({

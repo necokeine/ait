@@ -60,6 +60,7 @@ impl Server {
             .await
             .context("bind server listener")?;
         let token = config.token.clone();
+        let web_origins = config.web_origins.clone();
         let address = listener
             .local_addr()
             .context("read server listener address")?;
@@ -76,7 +77,8 @@ impl Server {
             instance.instance_id.to_string(),
             token,
             services,
-        )?;
+        )?
+        .with_browser_origins(web_origins)?;
         Ok(Self {
             listener,
             api,

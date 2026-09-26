@@ -15,7 +15,10 @@ pub fn validate_token(token: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str>, ApiError> {
+pub(super) fn single_header<'a>(
+    headers: &'a HeaderMap,
+    name: &str,
+) -> Result<Option<&'a str>, ApiError> {
     let mut values = headers.get_all(name).iter();
     let value = values
         .next()
@@ -27,7 +30,11 @@ fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a st
     Ok(value)
 }
 
-pub(super) fn validate_source(headers: &HeaderMap, authorities: &[String]) -> Result<(), ApiError> {
+pub(super) fn validate_source(
+    headers: &HeaderMap,
+    authorities: &[String],
+    browser: &crate::browser_auth::BrowserAuth,
+) -> Result<(), ApiError> {
     let host = single_header(headers, "host")?.ok_or(ApiError(StatusCode::BAD_REQUEST))?;
     if !authorities
         .iter()
@@ -36,6 +43,9 @@ pub(super) fn validate_source(headers: &HeaderMap, authorities: &[String]) -> Re
         return Err(ApiError(StatusCode::FORBIDDEN));
     }
     if let Some(origin) = single_header(headers, "origin")? {
+        if browser.permits(origin) {
+            return Ok(());
+        }
         let origin: Uri = origin
             .parse()
             .map_err(|_| ApiError(StatusCode::FORBIDDEN))?;

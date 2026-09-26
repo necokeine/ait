@@ -25,27 +25,6 @@ import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 
 type DesktopDaemonSettings = DesktopSettings["daemon"];
 
-function useKeepRunningAfterQuitToggle(args: {
-  settings: DesktopDaemonSettings;
-  updateSettings: (next: Partial<DesktopDaemonSettings>) => Promise<unknown>;
-}) {
-  const { settings, updateSettings } = args;
-  const [isUpdatingKeepRunningAfterQuit, setIsUpdatingKeepRunningAfterQuit] = useState(false);
-
-  const handleToggleKeepRunningAfterQuit = useCallback(() => {
-    setIsUpdatingKeepRunningAfterQuit(true);
-    void updateSettings({ keepRunningAfterQuit: !settings.keepRunningAfterQuit })
-      .catch(() => {
-        // useDesktopSettings owns the user-visible IPC error.
-      })
-      .finally(() => {
-        setIsUpdatingKeepRunningAfterQuit(false);
-      });
-  }, [settings.keepRunningAfterQuit, updateSettings]);
-
-  return { isUpdatingKeepRunningAfterQuit, handleToggleKeepRunningAfterQuit };
-}
-
 function useDaemonCliStatusModal() {
   const { t } = useTranslation();
   const [cliStatusOutput, setCliStatusOutput] = useState<string | null>(null);
@@ -208,9 +187,6 @@ interface DaemonInfoCardProps {
   activityIcon: ReactElement;
   handleToggleDaemonManagement: () => void;
   isUpdatingDaemonManagement: boolean;
-  keepRunningAfterQuit: boolean;
-  handleToggleKeepRunningAfterQuit: () => void;
-  isUpdatingKeepRunningAfterQuit: boolean;
   daemonLogs: { logPath?: string } | null;
   handleCopyLogPath: () => void;
   handleOpenLogs: () => void;
@@ -229,9 +205,6 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
     activityIcon,
     handleToggleDaemonManagement,
     isUpdatingDaemonManagement,
-    keepRunningAfterQuit,
-    handleToggleKeepRunningAfterQuit,
-    isUpdatingKeepRunningAfterQuit,
     daemonLogs,
     handleCopyLogPath,
     handleOpenLogs,
@@ -261,18 +234,6 @@ function DaemonInfoCard(props: DaemonInfoCardProps) {
           onValueChange={handleToggleDaemonManagement}
           disabled={isUpdatingDaemonManagement}
           accessibilityLabel={t("desktop.daemon.management.title")}
-        />
-      </View>
-      <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
-        <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>{t("desktop.daemon.keepRunning.title")}</Text>
-          <Text style={settingsStyles.rowHint}>{t("desktop.daemon.keepRunning.hint")}</Text>
-        </View>
-        <Switch
-          value={keepRunningAfterQuit}
-          onValueChange={handleToggleKeepRunningAfterQuit}
-          disabled={isUpdatingKeepRunningAfterQuit}
-          accessibilityLabel={t("desktop.daemon.keepRunning.title")}
         />
       </View>
       <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
@@ -365,11 +326,6 @@ export function LocalDaemonSection() {
       setStatus,
       refreshStatus: refetch,
     });
-  const { isUpdatingKeepRunningAfterQuit, handleToggleKeepRunningAfterQuit } =
-    useKeepRunningAfterQuitToggle({
-      settings: daemonSettings,
-      updateSettings: updateDaemonSettings,
-    });
 
   const { isLogsModalOpen, handleCopyLogPath, handleOpenLogs, handleCloseLogsModal } =
     useDaemonLogsModal(daemonLogs);
@@ -450,9 +406,6 @@ export function LocalDaemonSection() {
             activityIcon={activityIcon}
             handleToggleDaemonManagement={handleToggleDaemonManagement}
             isUpdatingDaemonManagement={isUpdatingDaemonManagement}
-            keepRunningAfterQuit={daemonSettings.keepRunningAfterQuit}
-            handleToggleKeepRunningAfterQuit={handleToggleKeepRunningAfterQuit}
-            isUpdatingKeepRunningAfterQuit={isUpdatingKeepRunningAfterQuit}
             daemonLogs={daemonLogs}
             handleCopyLogPath={handleCopyLogPath}
             handleOpenLogs={handleOpenLogs}

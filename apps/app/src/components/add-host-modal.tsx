@@ -298,8 +298,8 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
 
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState("6767");
+  const [host, setHost] = useState("127.0.0.1");
+  const [port, setPort] = useState("7316");
   const [useTls, setUseTls] = useState(false);
   const [password, setPassword] = useState("");
   const [isPasswordVisible, setIsPasswordVisible] = useState(false);
@@ -308,8 +308,8 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
   const [inputResetKey, bumpInputResetKey] = useReducer((key: number) => key + 1, 0);
 
   const clearInput = useCallback(() => {
-    setHost("");
-    setPort("6767");
+    setHost("127.0.0.1");
+    setPort("7316");
     setUseTls(false);
     setPassword("");
     setIsPasswordVisible(false);
@@ -522,7 +522,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
             initialValue={port}
             resetKey={`direct-port-${inputResetKey}`}
             onChangeText={setPort}
-            placeholder="6767"
+            placeholder="7316"
             placeholderTextColor={theme.colors.foregroundMuted}
             style={styles.input}
             autoCapitalize="none"
@@ -613,7 +613,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
             initialValue={advancedUri}
             resetKey={`direct-host-uri-${inputResetKey}`}
             onChangeText={setAdvancedUri}
-            placeholder="tcp://localhost:6767?ssl=true"
+            placeholder="tcp://127.0.0.1:7316"
             placeholderTextColor={theme.colors.foregroundMuted}
             style={styles.input}
             autoCapitalize="none"

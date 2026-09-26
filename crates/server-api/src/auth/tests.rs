@@ -40,12 +40,33 @@ fn validates_host_and_optional_same_origin() {
         "[::1]:7316".to_owned(),
     ];
     let mut headers = HeaderMap::new();
-    assert!(validate_source(&headers, &allowed).is_err());
+    assert!(
+        validate_source(
+            &headers,
+            &allowed,
+            &crate::browser_auth::BrowserAuth::default()
+        )
+        .is_err()
+    );
     headers.insert("host", "127.0.0.1:7316".parse().unwrap());
-    assert!(validate_source(&headers, &allowed).is_ok());
+    assert!(
+        validate_source(
+            &headers,
+            &allowed,
+            &crate::browser_auth::BrowserAuth::default()
+        )
+        .is_ok()
+    );
     for origin in ["http://localhost:7316", "http://[::1]:7316"] {
         headers.insert("origin", origin.parse().unwrap());
-        assert!(validate_source(&headers, &allowed).is_ok());
+        assert!(
+            validate_source(
+                &headers,
+                &allowed,
+                &crate::browser_auth::BrowserAuth::default()
+            )
+            .is_ok()
+        );
     }
     for origin in [
         "null",
@@ -56,12 +77,34 @@ fn validates_host_and_optional_same_origin() {
         "http://localhost:7316/?token=x",
     ] {
         headers.insert("origin", origin.parse().unwrap());
-        assert!(validate_source(&headers, &allowed).is_err(), "{origin}");
+        assert!(
+            validate_source(
+                &headers,
+                &allowed,
+                &crate::browser_auth::BrowserAuth::default()
+            )
+            .is_err(),
+            "{origin}"
+        );
     }
     headers.remove("origin");
     headers.insert("host", "evil.test:7316".parse().unwrap());
-    assert!(validate_source(&headers, &allowed).is_err());
+    assert!(
+        validate_source(
+            &headers,
+            &allowed,
+            &crate::browser_auth::BrowserAuth::default()
+        )
+        .is_err()
+    );
     headers.insert("host", "127.0.0.1:7316".parse().unwrap());
     headers.append("host", "localhost:7316".parse().unwrap());
-    assert!(validate_source(&headers, &allowed).is_err());
+    assert!(
+        validate_source(
+            &headers,
+            &allowed,
+            &crate::browser_auth::BrowserAuth::default()
+        )
+        .is_err()
+    );
 }

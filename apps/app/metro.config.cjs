@@ -4,9 +4,10 @@ const fs = require("fs");
 const path = require("path");
 
 const projectRoot = __dirname;
-const appNodeModulesRoot = path.resolve(projectRoot, "node_modules");
+const reactRoot = path.dirname(require.resolve("react/package.json"));
+const reactDomRoot = path.dirname(require.resolve("react-dom/package.json"));
 const appSrcRoot = path.resolve(projectRoot, "src");
-const relaySrcRoot = path.resolve(projectRoot, "../relay/src");
+const relaySrcRoot = path.resolve(projectRoot, "../../packages/relay/src");
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const fdroidModuleOverrides = {
   "expo-camera": path.resolve(appSrcRoot, "fdroid/expo-camera.tsx"),
@@ -33,10 +34,10 @@ const pathSeparatorPattern = "[\\\\/]";
 
 config.resolver.extraNodeModules = {
   ...config.resolver.extraNodeModules,
-  react: path.join(appNodeModulesRoot, "react"),
-  "react-dom": path.join(appNodeModulesRoot, "react-dom"),
-  "react/jsx-runtime": path.join(appNodeModulesRoot, "react/jsx-runtime"),
-  "react/jsx-dev-runtime": path.join(appNodeModulesRoot, "react/jsx-dev-runtime"),
+  react: reactRoot,
+  "react-dom": reactDomRoot,
+  "react/jsx-runtime": path.join(reactRoot, "jsx-runtime"),
+  "react/jsx-dev-runtime": path.join(reactRoot, "jsx-dev-runtime"),
 };
 config.resolver.blockList = new RegExp(
   `(^${escapedAppSrcRoot}${pathSeparatorPattern}.*\\.(test|spec)\\.(ts|tsx)$|${pathSeparatorPattern}__tests__${pathSeparatorPattern}.*)$`,

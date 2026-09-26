@@ -1,6 +1,7 @@
 //! Authenticated local HTTP and WebSocket transport for the independent server.
 
 mod auth;
+mod browser_auth;
 mod capabilities;
 mod connection;
 mod files;
@@ -13,10 +14,10 @@ use server_model::Runtime;
 use std::time::Duration;
 
 use axum::extract::{Request, State, WebSocketUpgrade};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use secrecy::SecretString;
 use server_filesystem::service::checkout::Checkout;
@@ -39,6 +40,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 pub use auth::validate_token;
+pub use browser_auth::validate_browser_origin;
 use capabilities::installed_capabilities;
 
 /// Invalid startup configuration for the transport.
@@ -50,12 +52,21 @@ pub enum ConfigError {
     /// Tokens must contain 32–256 visible ASCII characters without spaces.
     #[error("AIT_SERVER_TOKEN must contain 32–256 visible ASCII characters without spaces")]
     InvalidToken,
+    /// Browser origins must be explicit canonical HTTP loopback origins.
+    #[error(
+        "browser origin must be an HTTP loopback origin without a path (for example http://localhost:8081)"
+    )]
+    InvalidBrowserOrigin,
+    /// Browser policy must be configured before cloning or serving the API.
+    #[error("configure browser origins before cloning the API")]
+    SharedConfiguration,
 }
 
 #[derive(Debug)]
 struct Shared {
     runtime: Arc<Runtime>,
     token: SecretString,
+    browser_auth: browser_auth::BrowserAuth,
     authorities: Vec<String>,
     connections: Arc<Semaphore>,
     metadata: Arc<server_metadata::dispatch::State>,
@@ -233,12 +244,26 @@ impl Api {
                 provider,
                 terminal,
                 token,
+                browser_auth: browser_auth::BrowserAuth::default(),
                 authorities: allowed_authorities(address),
                 connections: Arc::new(Semaphore::new(server_protocol::MAX_CONNECTIONS)),
             }),
         };
         server_terminal::connection::maintain(&api.shared.terminal);
         Ok(api)
+    }
+
+    /// Allow browser pages from the given explicit HTTP loopback origins.
+    ///
+    /// Returns the configured API; configure it before cloning or serving it.
+    /// # Errors
+    /// Rejects invalid origins or an API that has already been cloned.
+    pub fn with_browser_origins(mut self, origins: Vec<String>) -> Result<Self, ConfigError> {
+        let browser_auth = browser_auth::BrowserAuth::new(origins)?;
+        Arc::get_mut(&mut self.shared)
+            .ok_or(ConfigError::SharedConfiguration)?
+            .browser_auth = browser_auth;
+        Ok(self)
     }
 
     /// Return the composed broker for host-side browser tool execution.
@@ -254,6 +279,7 @@ impl Api {
             .route("/readyz", get(ready))
             .route("/v1/server/info", get(info))
             .route("/v1/ws", get(upgrade))
+            .route(browser_auth::TICKET_PATH, post(browser_ticket))
             .route("/api/files/download", get(files::download))
             .fallback(|| async { ApiError(StatusCode::NOT_FOUND) })
             .layer(middleware::from_fn_with_state(self.shared.clone(), guard))
@@ -344,6 +370,7 @@ fn registered_capabilities(implemented: &[String]) -> Vec<String> {
     capabilities
 }
 
+#[derive(Debug)]
 struct ApiError(StatusCode);
 
 impl IntoResponse for ApiError {
@@ -363,17 +390,51 @@ async fn guard(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    auth::validate_source(request.headers(), &state.authorities)?;
+    auth::validate_source(request.headers(), &state.authorities, &state.browser_auth)?;
+    if request.uri().path() == browser_auth::TICKET_PATH {
+        let origin = request
+            .headers()
+            .get("origin")
+            .cloned()
+            .ok_or(ApiError(StatusCode::FORBIDDEN))?;
+        let mut response = if request.uri().query().is_some() {
+            ApiError(StatusCode::BAD_REQUEST).into_response()
+        } else if request.method() == Method::OPTIONS {
+            StatusCode::NO_CONTENT.into_response()
+        } else if let Err(error) = auth::authenticate(request.headers(), &state.token) {
+            error.into_response()
+        } else {
+            next.run(request).await
+        };
+        browser_auth::cors(response.headers_mut(), origin);
+        return Ok(response);
+    }
     let download = request.method() == axum::http::Method::GET
         && request.uri().path() == "/api/files/download";
     if !matches!(request.uri().path(), "/healthz" | "/readyz") && !download {
-        auth::authenticate(request.headers(), &state.token)?;
+        if request.uri().path() == "/v1/ws" && !request.headers().contains_key("authorization") {
+            state.browser_auth.consume(request.headers())?;
+        } else {
+            auth::authenticate(request.headers(), &state.token)?;
+        }
     }
     // Credentials and client state must never be accepted in a URL.
     if request.uri().query().is_some() && !download {
         return Err(ApiError(StatusCode::BAD_REQUEST));
     }
     Ok(next.run(request).await)
+}
+
+async fn browser_ticket(
+    State(state): State<Arc<Shared>>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    if state.cancellation.is_cancelled() {
+        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE));
+    }
+    let origin = auth::single_header(&headers, "origin")?.ok_or(ApiError(StatusCode::FORBIDDEN))?;
+    let ticket = state.browser_auth.issue(origin)?;
+    Ok(Json(serde_json::json!({"ticket": ticket})).into_response())
 }
 
 async fn health() -> Result<Response, ApiError> {
@@ -393,6 +454,7 @@ async fn info(State(state): State<Arc<Shared>>) -> Result<Response, ApiError> {
 
 async fn upgrade(
     State(state): State<Arc<Shared>>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     let guard = state
@@ -409,7 +471,12 @@ async fn upgrade(
         .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS))?;
     let tracking = state.tasks.token();
     drop(guard);
+    let protocol = headers
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with(browser_auth::TICKET_PROTOCOL));
     Ok(ws
+        .protocols(protocol.map(str::to_owned))
         .max_message_size(server_protocol::MAX_MESSAGE_BYTES)
         .max_frame_size(server_protocol::MAX_MESSAGE_BYTES)
         .write_buffer_size(0)
