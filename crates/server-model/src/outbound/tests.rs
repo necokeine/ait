@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::json;
 
+mod physical;
+
 fn message(length: usize) -> ServerMessage {
     ServerMessage::Response {
         request_id: "1".to_owned(),

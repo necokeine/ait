@@ -2,7 +2,11 @@
 
 比较基准是 Paseo `2c8e8a826810337492cc5a38bb0bbd705b6fb632`；范围是 `bins/server` 与
 `crates/server-provider` 构成的独立 Rust server。此次不更改 ADR-001 v4 的 domain 边界。
-此报告记录本 PR 的最终能力范围与独立 worktree 验证结果。
+此报告替代初版 Claude 接入报告中的能力缺口说明；初版测量仍保留为历史记录。
+
+以下测试与覆盖率记录来自整合提交前的完整工作区快照，revision 和源码指纹见下文。
+合并 PR #109 后的提交前复验另见[整合验证报告](local-workspace-consolidation.md)，
+不得将本报告的历史数值当作该复验的测量结果。
 
 ## 能力矩阵
 
@@ -29,10 +33,10 @@
 ## 验证
 
 - `cargo fmt --all --check`、`git diff --check` 及严格 workspace / all-targets Clippy 通过。
-- 最终串行工作区测试：**1315 通过、0 失败、8 忽略**。
-- 独立执行的覆盖率测试：**1314 通过、0 失败、8 忽略**。
-  cargo-llvm-cov 默认测量测试目标，不计普通工作区运行中的 doctest。
-- provider：**370 通过、0 失败、3 忽略**；server 的单元、架构及进程测试通过。
+- 最终串行工作区测试：**1696 通过、0 失败、8 忽略**。
+- 独立执行的覆盖率测试：**1695 通过、0 失败、8 忽略**。
+  覆盖率命令使用 `--tests`，不计普通工作区运行中的 doctest。
+- provider：**370 通过、0 失败、3 忽略**；server：9 项单元测试、10 项架构检查、54 项进程测试通过。
 - Codex 0.153.4 的真实 app-server 最小对话及原生历史重读通过。
 - Claude Code 2.1.221 的真实控制协议握手和模型发现通过；在线推理未通过。
   直接运行原生 CLI 同样返回 `OAuth session expired and could not be refreshed`。
@@ -40,11 +44,9 @@
 - 初次测试中，Homebrew 的 Codex 0.157.1 连 `--version` 都未正常返回；成功的在线验证
   使用同机可正常启动的 0.153.4 可执行文件。未更改用户安装或凭据。
 
-PR 在独立 worktree 中基于 `origin/main` 验证，只包含 provider 代码、相关 server 回归与文档。
-原工作区的品牌、SDK 和其他 server 模块改动未纳入。上面的数字是该独立 PR 快照的重新测量，
-因此与此前完整开发工作区的测试数、覆盖率不同。两次全量运行依次执行，避免争用全局项目锁。
-已安装 CLI 检查在原工作区中完成，相关 provider adapter 文件与本 PR 字节一致；不计入本轮
-离线覆盖率。
+早期并行执行普通/覆盖率工作区测试导致旧 daemon 用例争用全局项目锁。另一个新增测试误读
+重启前的 registry 缓存，已修正测试。最终测试和覆盖率在相同源码上依次完整执行并全部通过；
+早期失败不并入最终覆盖率，摘要与日志哈希保存在 JSON 中，便于审查。
 
 可在已登录的机器上重跑在线检查：
 
@@ -55,7 +57,7 @@ AIT_SERVER_CODEX_BIN=/absolute/path/to/codex cargo test -p server-provider --off
 
 ## Test coverage
 
-本次工作区行覆盖率 **84.54%（56,991/67,414）**。
+本次工作区行覆盖率 **85.24%（57,553/67,518）**。
 
 | 测量范围 | 覆盖行 / 总行 | 行覆盖率 |
 | --- | ---: | ---: |
@@ -65,20 +67,20 @@ AIT_SERVER_CODEX_BIN=/absolute/path/to/codex cargo test -p server-provider --off
 | Codex adapter 生产代码 | 3,443/3,679 | 93.59% |
 | server-bin | 776/827 | 93.83% |
 
-测量 revision：`5e9fc8a759c886fb78e3212ec681391ed97318e7` 加本 PR 的源码变更（提交前测量）；Rust/Cargo/测试 fixture 的源码
-指纹为 `70c4386562e3012823f6e35042fe96ab094949cf8b1cc2b0856c242901766b30`，测量前后相同。范围是整个 Cargo workspace、默认 features、
+测量 revision：`5e9fc8a759c886fb78e3212ec681391ed97318e7` 加当前未提交工作区；Rust/Cargo/测试 fixture 的源码
+指纹为 `ed2168a310393833bf9cb24f89d65bd3f13380f5f685240cf8aefa45291f6b21`，测量前后相同。范围是整个 Cargo workspace、默认 features、
 macOS arm64；使用 cargo-llvm-cov 默认源码筛选，没有追加文件排除。生产代码分组排除测试及
 测试辅助文件；完整逐文件统计与源码哈希见[可审查 JSON 产物](provider-parity-coverage.json)。
 
 没有对本轮改动前的同一工作区进行独立测量，因此没有可直接比较的基线增量。
-此前开发工作区包含其他改动，不能当作本 PR 的测量或直接计算改善幅度。
+初版 Claude 报告的覆盖率包含不同代码，不能当作本轮测量或直接计算改善幅度。
 
 ```sh
 CARGO_TARGET_DIR=/tmp/ait-provider-parity-check cargo clippy --workspace --all-targets --offline -- -D warnings
 CARGO_TARGET_DIR=/tmp/ait-agent-session-target cargo test --workspace --offline --no-fail-fast -- --test-threads=1
 cargo llvm-cov --workspace --html --offline --no-fail-fast -- --test-threads=1
-cargo llvm-cov report --json --summary-only --output-path /tmp/ait-provider-pr-coverage-summary.json
-cargo llvm-cov report --lcov --output-path /tmp/ait-provider-pr-coverage.lcov
+cargo llvm-cov report --json --summary-only --output-path /tmp/ait-provider-parity-coverage-summary.json
+cargo llvm-cov report --lcov --output-path /tmp/ait-provider-parity-coverage.lcov
 ```
 
 本地 HTML 为 `target/llvm-cov/html/index.html`；共享可审查产物是上方 JSON，不只依赖本地路径。
@@ -87,5 +89,6 @@ cargo llvm-cov report --lcov --output-path /tmp/ait-provider-pr-coverage.lcov
 
 尚未实测 Linux/Windows、本机真实工具执行和真实 OAuth 额度服务；离线原生协议及 HTTP peers
 覆盖相应参数、事件、失败和恢复语义。未覆盖区域主要包括平台专有进程/凭据分支、异常
-文件系统或进程终止路径、默认端口拒绝回退、Workflow 的部分历史记录形状，以及部分资源上限
-边界。后续应在这些平台和有效账户上执行相同验证；这些验证限制不被描述为已通过。
+文件系统或进程终止路径、默认端口的拒绝回退、Workflow 的部分历史记录形状，以及部分
+资源上限边界。后续应在这些平台和有效账户上执行相同
+验证；这些验证限制不被描述为已通过。

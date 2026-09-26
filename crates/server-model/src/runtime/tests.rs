@@ -1,6 +1,8 @@
 use super::*;
 use crate::tests::runtime;
 
+mod polling;
+
 #[tokio::test]
 async fn admission_rejects_missing_exhausted_and_draining_work() {
     let runtime = runtime();

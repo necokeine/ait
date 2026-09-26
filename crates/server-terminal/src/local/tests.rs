@@ -1,6 +1,10 @@
 use super::*;
 use std::collections::BTreeMap;
 
+mod io;
+#[cfg(unix)]
+mod paseo;
+
 #[cfg(unix)]
 fn process_is_running(pid: nix::unistd::Pid) -> bool {
     let output = std::process::Command::new("ps")

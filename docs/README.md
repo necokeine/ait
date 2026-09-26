@@ -1,10 +1,22 @@
 # 概念与架构文档
 
+- [工作区改动整合](reports/local-workspace-consolidation.md)：PR #109 合并后，server 回归修复、
+  本地 SDK、主题同步与品牌资产的提交范围及独立验证结果。
+
 - [ADR-052：原生 Provider 能力补齐](decisions/adr-052-native-provider-capabilities.md)：
   Codex/Claude 的配置、授权、用量和原生能力协商边界；[实施清单](plans/provider-parity.md)、[能力矩阵与验证报告](reports/provider-parity.md)。
 
+- [ADR-051：AIT 品牌识别与日间视觉系统](decisions/adr-051-ait-brand-identity.md)（Accepted）：
+  飞鸟主标、跨端与多种云端 Agent 服务的品牌定位、字标、配色、留白、跨端应用和资产规则；
+  含完整候选图、日间精修稿与提示词归档，生产矢量资产及客户端接入待实施。
+
 - [ADR-050：Claude Code Provider](decisions/adr-050-claude-code-provider.md)：独立 Rust server 的
-  本机 Claude Code 协议、模型发现、流式输出、审批及会话恢复；[能力与验证报告](reports/provider-parity.md)。
+  本机 Claude Code 协议、模型发现、流式输出、审批及会话恢复；
+  [当前能力报告](reports/provider-parity.md)、[初版历史报告](reports/claude-code-provider.md)。
+
+- [Server Paseo 测试扩展](reports/server-paseo-tests.md)：逐测试上游映射、回归修复、验证结果和 workspace 覆盖率。
+
+- [Paseo 本地 SDK library](reports/paseo-local-sdk.md)：显式本地依赖、独立构建入口、包解析验证和测试范围。
 
 - [Apple 构建说明](operations/apple-builds.md)：桌面 DMG、iOS 模拟器、iPhone 归档与签名 IPA；[实际构建报告](reports/apple-builds.md)。
 
@@ -59,6 +71,7 @@
 - [ADR-037：公共 Context 与具体 crate 分发](decisions/adr-037-server-model-context.md)
   （Accepted）：server-model 提供公共请求、队列与 Tokio 运行资源；各能力 crate 直接接收
   Context 和具体服务/连接状态，删除 Host 回调接口，API 负责组装与跨能力收尾。
+  后台 diff 轮询使用独立有界预算，公平等待并在取消后停止投递。
   [实施报告](reports/server-model-context.md)记录回归与覆盖率。
 
 - [ADR-036：请求先进入所属 crate 再分发到能力组](decisions/adr-036-server-crate-dispatch.md)

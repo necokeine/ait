@@ -134,7 +134,8 @@ impl<R: Clone + Serialize + DeserializeOwned> FileRegistry<R> {
                 serde_json::to_vec_pretty(&records).map_err(|_| RegistryError::InvalidRecord)?;
             // Validate programmatically constructed records too (e.g. positive request numbers).
             serde_json::from_slice::<Vec<R>>(&bytes).map_err(|_| RegistryError::InvalidRecord)?;
-            let records = staged.values().cloned().collect::<Vec<_>>();
+            // Journal before-images must come from the same locked state as the write.
+            let records = state.records.values().cloned().collect::<Vec<_>>();
             before_write(&records)?;
             (self.writer)(&self.path, &bytes)?;
             after_write()?;

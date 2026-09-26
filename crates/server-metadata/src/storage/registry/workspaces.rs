@@ -42,21 +42,24 @@ impl FileBackedWorkspaceRegistry {
         after_write: impl FnOnce() -> Result<(), RegistryError>,
         publish: bool,
     ) -> Result<(), RegistryError> {
-        self.file.mutate_with(
+        let committed = self.file.mutate_with(
             |records| {
+                let mut committed = Vec::with_capacity(updates.len());
                 for update in updates {
-                    if !records.contains_key(&update.workspace_id) {
-                        return Err(RegistryError::InvalidRecord);
-                    }
-                    records.insert(update.workspace_id.clone(), update.clone());
+                    let record = records
+                        .get_mut(&update.workspace_id)
+                        .ok_or(RegistryError::InvalidRecord)?;
+                    record.labels.clone_from(&update.labels);
+                    record.updated_at.clone_from(&update.updated_at);
+                    committed.push(record.clone());
                 }
-                Ok(((), true))
+                Ok((committed, true))
             },
             before_write,
             after_write,
         )?;
         if publish {
-            for update in updates {
+            for update in &committed {
                 self.notify(&WorkspaceMutation {
                     kind: MutationKind::Upsert,
                     workspace_id: update.workspace_id.clone(),

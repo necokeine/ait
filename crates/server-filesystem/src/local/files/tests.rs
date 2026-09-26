@@ -1,5 +1,7 @@
 use super::*;
 
+mod paseo;
+
 fn fixture() -> (tempfile::TempDir, LocalFiles, String) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("workspace");

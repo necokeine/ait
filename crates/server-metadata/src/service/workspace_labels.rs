@@ -286,30 +286,26 @@ impl WorkspaceLabels {
         let workspace_labels = update_assignment(&current, &key, &definition.name, assigned);
         let workspace_changed = workspace_labels != current;
         let catalog_changed = existing.is_none() && assigned;
-        if workspace_changed || catalog_changed {
-            let mut updated = workspace.clone();
-            updated.labels = (!workspace_labels.is_empty()).then(|| workspace_labels.clone());
-            updated_at.clone_into(&mut updated.updated_at);
-            let labels = if catalog_changed {
-                let mut labels = snapshot.labels.clone();
-                labels.push(definition.clone());
-                labels
-            } else {
-                snapshot.labels.clone()
-            };
-            self.store
-                .commit(&WorkspaceLabelStoreMutation {
-                    expected_labels: snapshot.labels,
-                    labels,
-                    workspace_updates: workspace_changed.then_some(updated).into_iter().collect(),
-                })
-                .map_err(map_store_error)?;
-            if catalog_changed {
-                self.publish(WorkspaceLabelChange::Upsert {
-                    label: definition.clone(),
-                    previous_name: None,
-                });
-            }
+        let mut updated = workspace.clone();
+        updated.labels = (!workspace_labels.is_empty()).then(|| workspace_labels.clone());
+        updated_at.clone_into(&mut updated.updated_at);
+        let mut labels = snapshot.labels.clone();
+        if catalog_changed {
+            labels.push(definition.clone());
+        }
+        self.store
+            .commit(&WorkspaceLabelStoreMutation {
+                require_active_workspace: Some(workspace_id.to_owned()),
+                expected_labels: snapshot.labels,
+                labels,
+                workspace_updates: workspace_changed.then_some(updated).into_iter().collect(),
+            })
+            .map_err(map_store_error)?;
+        if catalog_changed {
+            self.publish(WorkspaceLabelChange::Upsert {
+                label: definition.clone(),
+                previous_name: None,
+            });
         }
         Ok(WorkspaceLabelAssignment {
             label: definition,
@@ -376,6 +372,7 @@ impl WorkspaceLabels {
         labels[index] = definition.clone();
         self.store
             .commit(&WorkspaceLabelStoreMutation {
+                require_active_workspace: None,
                 expected_labels: snapshot.labels,
                 labels,
                 workspace_updates,
@@ -417,6 +414,7 @@ impl WorkspaceLabels {
             .collect();
         self.store
             .commit(&WorkspaceLabelStoreMutation {
+                require_active_workspace: None,
                 expected_labels: snapshot.labels,
                 labels,
                 workspace_updates,
@@ -650,6 +648,7 @@ fn is_archived(workspace: &PersistedWorkspaceRecord) -> bool {
 
 const fn map_store_error(error: WorkspaceLabelStoreError) -> WorkspaceLabelError {
     match error {
+        WorkspaceLabelStoreError::WorkspaceNotFound => WorkspaceLabelError::WorkspaceNotFound,
         WorkspaceLabelStoreError::Uncertain => WorkspaceLabelError::StorageUncertain,
         WorkspaceLabelStoreError::Invalid
         | WorkspaceLabelStoreError::Conflict

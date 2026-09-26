@@ -2,6 +2,8 @@ use serde_json::json;
 
 use super::*;
 
+mod paseo;
+
 fn upload_params(size: u64) -> Value {
     json!({"fileName":"a.txt","mimeType":"text/plain","size":size,"modifiedAt":"now"})
 }

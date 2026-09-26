@@ -1,12 +1,14 @@
 //! Crash-recoverable Paseo workspace label catalog and assignment store.
 
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::model::registry::PersistedWorkspaceRecord;
-use crate::model::workspace_labels::WorkspaceLabelDefinition;
+use crate::model::workspace_labels::{WorkspaceLabelDefinition, workspace_label_key};
 use crate::ports::registry::{RegistryError, WorkspaceRegistry};
 use crate::ports::workspace_labels::{
     WorkspaceLabelStore, WorkspaceLabelStoreError, WorkspaceLabelStoreMutation,
@@ -187,34 +189,77 @@ impl WorkspaceLabelStore for FileWorkspaceLabelStore {
         }
         validate_labels(&mutation.labels)?;
         if state.labels == mutation.labels && mutation.workspace_updates.is_empty() {
+            if let Some(id) = &mutation.require_active_workspace {
+                let workspace = self.workspaces.get(id).map_err(map_registry_error)?;
+                require_active_workspace(workspace.as_ref())?;
+            }
             return Ok(());
         }
-        let workspaces = self.workspaces.list().map_err(map_registry_error)?;
-        let transaction = transaction_for(&state.labels, mutation, &workspaces)?;
-        let committed = Transaction {
-            phase: TransactionPhase::Committed,
-            ..transaction.clone()
-        };
-        let transaction_path = self.transaction_path.clone();
-        let catalog_path = self.catalog_path.clone();
-        let after_labels = mutation.labels.clone();
-        let committed_path = self.transaction_path.clone();
+        let catalog = json_document(&mutation.labels)?;
+        let committed = RefCell::new(Vec::new());
+        let preparation_error = Cell::new(None);
         let result = self.workspaces.commit_workspace_label_mutation(
             &mutation.workspace_updates,
-            move |_| {
-                write_json_atomic(&transaction_path, &transaction).map_err(store_to_registry)?;
-                write_json_atomic(&catalog_path, &after_labels).map_err(store_to_registry)
+            |workspaces| {
+                let prepare = || {
+                    if let Some(id) = &mutation.require_active_workspace {
+                        require_active_workspace(
+                            workspaces
+                                .iter()
+                                .find(|workspace| workspace.workspace_id == *id),
+                        )?;
+                    }
+                    let mut transaction = transaction_for(&state.labels, mutation, workspaces)?;
+                    let prepared = json_document(&transaction)?;
+                    transaction.phase = TransactionPhase::Committed;
+                    // Validate all documents before the first durable write, including the
+                    // slightly longer committed phase marker.
+                    committed.replace(json_document(&transaction)?);
+                    write_bytes_atomic(&self.transaction_path, &prepared)?;
+                    write_bytes_atomic(&self.catalog_path, &catalog)
+                };
+                prepare().map_err(|error| {
+                    preparation_error.set(Some(error));
+                    store_to_registry(error)
+                })
             },
-            move || write_json_atomic(&committed_path, &committed).map_err(store_to_registry),
+            || {
+                write_bytes_atomic(&self.transaction_path, &committed.borrow())
+                    .map_err(store_to_registry)
+            },
             true,
         );
         if let Err(error) = result {
-            return self.resolve_failed_commit(&mut state, map_registry_error(error));
+            let mut cause = preparation_error
+                .get()
+                .unwrap_or_else(|| map_registry_error(error));
+            // Missing updates are rejected while staging, before the journal callback.
+            // Preserve the assignment's domain error when that target was removed.
+            if cause == WorkspaceLabelStoreError::Invalid
+                && let Some(id) = &mutation.require_active_workspace
+                && self
+                    .workspaces
+                    .get(id)
+                    .map_err(map_registry_error)?
+                    .is_none()
+            {
+                cause = WorkspaceLabelStoreError::WorkspaceNotFound;
+            }
+            return self.resolve_failed_commit(&mut state, cause);
         }
         state.labels.clone_from(&mutation.labels);
         let _ = fs::remove_file(&self.transaction_path);
         Ok(())
     }
+}
+
+fn require_active_workspace(
+    workspace: Option<&PersistedWorkspaceRecord>,
+) -> Result<(), WorkspaceLabelStoreError> {
+    workspace
+        .filter(|workspace| workspace.archived_at.as_deref().is_none_or(str::is_empty))
+        .ok_or(WorkspaceLabelStoreError::WorkspaceNotFound)
+        .map(|_| ())
 }
 
 fn transaction_for(
@@ -270,10 +315,14 @@ fn restore_workspaces(
 }
 
 fn validate_labels(labels: &[WorkspaceLabelDefinition]) -> Result<(), WorkspaceLabelStoreError> {
-    let bytes = serde_json::to_vec(labels).map_err(|_| WorkspaceLabelStoreError::Invalid)?;
-    serde_json::from_slice::<Vec<WorkspaceLabelDefinition>>(&bytes)
-        .map(|_| ())
-        .map_err(|_| WorkspaceLabelStoreError::Invalid)
+    let mut names = BTreeSet::new();
+    for label in labels {
+        let key = workspace_label_key(&label.name);
+        if key.is_empty() || !names.insert(key) {
+            return Err(WorkspaceLabelStoreError::Invalid);
+        }
+    }
+    Ok(())
 }
 
 fn read_optional<T: for<'de> Deserialize<'de>>(
@@ -297,6 +346,20 @@ fn read_optional<T: for<'de> Deserialize<'de>>(
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), WorkspaceLabelStoreError> {
+    write_bytes_atomic(path, &json_document(value)?)
+}
+
+fn json_document<T: Serialize>(value: &T) -> Result<Vec<u8>, WorkspaceLabelStoreError> {
+    let mut bytes =
+        serde_json::to_vec_pretty(value).map_err(|_| WorkspaceLabelStoreError::Invalid)?;
+    bytes.push(b'\n');
+    if u64::try_from(bytes.len()).map_or(true, |size| size > MAX_DOCUMENT_BYTES) {
+        return Err(WorkspaceLabelStoreError::Invalid);
+    }
+    Ok(bytes)
+}
+
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceLabelStoreError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -307,13 +370,10 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Workspa
     {
         return Err(WorkspaceLabelStoreError::Invalid);
     }
-    let mut bytes =
-        serde_json::to_vec_pretty(value).map_err(|_| WorkspaceLabelStoreError::Invalid)?;
-    bytes.push(b'\n');
     let mut temporary =
         tempfile::NamedTempFile::new_in(parent).map_err(|_| WorkspaceLabelStoreError::Io)?;
     temporary
-        .write_all(&bytes)
+        .write_all(bytes)
         .map_err(|_| WorkspaceLabelStoreError::Io)?;
     temporary
         .as_file()
@@ -345,9 +405,9 @@ const fn map_registry_error(error: RegistryError) -> WorkspaceLabelStoreError {
 
 const fn store_to_registry(error: WorkspaceLabelStoreError) -> RegistryError {
     match error {
-        WorkspaceLabelStoreError::Invalid | WorkspaceLabelStoreError::Conflict => {
-            RegistryError::InvalidRecord
-        }
+        WorkspaceLabelStoreError::Invalid
+        | WorkspaceLabelStoreError::Conflict
+        | WorkspaceLabelStoreError::WorkspaceNotFound => RegistryError::InvalidRecord,
         WorkspaceLabelStoreError::Io => RegistryError::Io,
         WorkspaceLabelStoreError::Uncertain => RegistryError::Frozen,
     }

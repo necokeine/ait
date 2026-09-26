@@ -85,3 +85,81 @@ fn rejects_bad_fields_steps_zone_and_impossible_dates() {
     assert!(next(&cron("* * * * *", Some("bad/timezone")), now).is_err());
     assert!(next(&Cadence::Every { every_ms: 0 }, now).is_err());
 }
+
+#[test]
+fn weekday_timezone_schedule_tracks_winter_and_summer_offsets() {
+    let cadence = cron("0 9 * * 1-5", Some("America/New_York"));
+    assert_eq!(
+        next(&cadence, time("2026-01-05T13:59:30Z")).unwrap(),
+        time("2026-01-05T14:00:00Z")
+    );
+    assert_eq!(
+        next(&cadence, time("2026-07-06T12:59:30Z")).unwrap(),
+        time("2026-07-06T13:00:00Z")
+    );
+    assert_eq!(
+        next(&cadence, time("2026-07-10T13:00:00Z")).unwrap(),
+        time("2026-07-13T13:00:00Z")
+    );
+}
+
+#[test]
+fn repeated_fall_back_slots_are_distinct_even_with_explicit_day_and_month() {
+    let cadence = cron("30 1 1 11 *", Some("America/New_York"));
+    let first = next(&cadence, time("2026-11-01T05:29:30Z")).unwrap();
+    let second = next(&cadence, first).unwrap();
+    assert_eq!(first, time("2026-11-01T05:30:00Z"));
+    assert_eq!(second, time("2026-11-01T06:30:00Z"));
+}
+
+#[test]
+fn extra_step_tokens_and_noncanonical_steps_are_rejected() {
+    for expression in [
+        "*/5/2 * * * *",
+        "* */2/3 * * *",
+        "0-10/2/2 * * * *",
+        "*/+2 * * * *",
+        "*/02 * * * *",
+        "*/-2 * * * *",
+        "*/4294967296 * * * *",
+    ] {
+        assert_eq!(
+            next(&cron(expression, None), time("2026-01-01T00:00:00Z")),
+            Err(Error::Invalid),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn minute_rounding_handles_pre_epoch_and_subsecond_timestamps() {
+    assert_eq!(
+        next(&cron("* * * * *", None), time("1969-12-31T23:59:59.999Z")).unwrap(),
+        time("1970-01-01T00:00:00Z")
+    );
+    assert_eq!(
+        next(&cron("* * * * *", None), time("2026-01-01T00:00:00.001Z")).unwrap(),
+        time("2026-01-01T00:01:00Z")
+    );
+}
+
+#[test]
+fn interval_and_cron_report_calendar_overflow_instead_of_panicking() {
+    assert_eq!(
+        next(&Cadence::Every { every_ms: 1 }, DateTime::<Utc>::MAX_UTC),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        next(&cron("* * * * *", None), DateTime::<Utc>::MAX_UTC),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        next(
+            &Cadence::Every { every_ms: -1 },
+            time("2026-01-01T00:00:00Z")
+        ),
+        Err(Error::Invalid)
+    );
+}
+
+mod calendar_model;

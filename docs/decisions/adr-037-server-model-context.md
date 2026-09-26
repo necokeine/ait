@@ -66,6 +66,19 @@ daemon 状态与诊断同样通过明确的 `DaemonSnapshot` 收尾请求，由 
 公共类型由 metadata/protocol 旧路径重导出，业务错误转换移到定义业务错误的 crate，避免
 model 引用具体服务。API 将公共 Frame 转换成 axum WebSocket Message；model 不依赖 axum。
 
+## 2026-09-26：后台 diff 轮询预算
+
+Paseo 订阅回归暴露了多个 diff 观察者在固定周期内竞争单个短任务 permit 时，后一个观察者
+可能持续错过更新的问题。Runtime 增加容量为 1 的 `checkout_poll_jobs`，供 filesystem 的
+后台 diff 观察者公平等待；普通请求继续使用原有 `jobs`，Terminal 预算不变。
+这增加一个有界后台阻塞任务执行通道，避免轮询队列占满前台请求的准入许可。
+
+订阅释放或服务取消会撤销尚未取得 permit 的等待。已经开始的 blocking diff 保留 permit
+和任务追踪直到执行结束；完成后检查取消令牌，已取消则丢弃快照。同一 Checkout 服务仍使用原有互斥锁，
+资源隔离不承诺对该服务的前台操作完全无需等待。协议和 crate 依赖方向保持不变。
+确定性的争用、取消、前台资源隔离及真实 Git 回归见
+[Server Paseo 测试扩展](../reports/server-paseo-tests.md)。
+
 ## 验证
 
 迁移已有队列和公共 RPC 测试到 model；新增已开始的阻塞任务在响应取消后仍保留预算和追踪

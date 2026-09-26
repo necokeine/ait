@@ -12,6 +12,8 @@ use super::{
     WorkspaceLabels,
 };
 
+mod admission;
+
 #[derive(Debug)]
 struct MemoryStore(Mutex<WorkspaceLabelStoreSnapshot>);
 

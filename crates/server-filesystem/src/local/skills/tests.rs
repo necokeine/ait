@@ -3,6 +3,8 @@ use crate::protocol::skills::{self, Selection};
 use crate::service::skills::Skills;
 use serde_json::{Value, json};
 
+mod paseo;
+
 fn store(root: &std::path::Path) -> LocalSkills {
     LocalSkills::new(
         &root.join("bundle"),

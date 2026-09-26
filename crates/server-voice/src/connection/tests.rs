@@ -1,5 +1,7 @@
 mod dictation;
+mod dictation_lifecycle;
 mod voice;
+mod voice_lifecycle;
 
 use std::{
     sync::{
@@ -30,6 +32,14 @@ struct Engine {
     failing: AtomicBool,
     agent_blocking: AtomicBool,
     samples: Mutex<Vec<Vec<u8>>>,
+    transcript: Mutex<Option<String>>,
+    agent_calls: AtomicUsize,
+    synthesis_calls: AtomicUsize,
+    synthesis_blocking: AtomicBool,
+    synthesis_failing: AtomicBool,
+    agent_failing: AtomicBool,
+    empty_reply: AtomicBool,
+    resolve_blocking: AtomicBool,
 }
 
 impl Transcriber for Engine {
@@ -46,7 +56,12 @@ impl Transcriber for Engine {
                 return Err(Error::Cancelled);
             }
             Ok(Transcript {
-                text: "recognized speech".to_owned(),
+                text: self
+                    .transcript
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "recognized speech".to_owned()),
                 language: Some("en".to_owned()),
             })
         })
@@ -54,9 +69,18 @@ impl Transcriber for Engine {
 }
 
 impl Synthesizer for Engine {
-    fn synthesize<'a>(&'a self, text: &'a str, _: CancellationToken) -> Operation<'a, Audio> {
+    fn synthesize<'a>(&'a self, text: &'a str, cancel: CancellationToken) -> Operation<'a, Audio> {
         Box::pin(async move {
+            self.synthesis_calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(text, "Agent reply");
+            if self.synthesis_failing.load(Ordering::SeqCst) {
+                return Err(Error::Provider);
+            }
+            if self.synthesis_blocking.load(Ordering::SeqCst) {
+                cancel.cancelled().await;
+                self.cancelled.fetch_add(1, Ordering::SeqCst);
+                return Err(Error::Cancelled);
+            }
             Ok(Audio {
                 bytes: vec![1; 150_000],
                 format: Format::Pcm(24000),
@@ -68,6 +92,9 @@ impl Synthesizer for Engine {
 impl Agents for Engine {
     fn resolve<'a>(&'a self, identifier: &'a str) -> Operation<'a, String> {
         Box::pin(async move {
+            if self.resolve_blocking.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
             if identifier == "bad" {
                 Err(Error::Agent)
             } else {
@@ -83,14 +110,22 @@ impl Agents for Engine {
         cancel: CancellationToken,
     ) -> Operation<'a, String> {
         Box::pin(async move {
+            self.agent_calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(agent, "agent-1");
+            if self.agent_failing.load(Ordering::SeqCst) {
+                return Err(Error::Agent);
+            }
             assert_eq!(text, "recognized speech");
             if self.agent_blocking.load(Ordering::SeqCst) {
                 cancel.cancelled().await;
                 self.cancelled.fetch_add(1, Ordering::SeqCst);
                 return Err(Error::Cancelled);
             }
-            Ok("Agent reply".to_owned())
+            Ok(if self.empty_reply.load(Ordering::SeqCst) {
+                " \n ".to_owned()
+            } else {
+                "Agent reply".to_owned()
+            })
         })
     }
 }

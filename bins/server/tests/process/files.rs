@@ -9,6 +9,9 @@ use tokio_tungstenite::tungstenite::Message;
 use super::transport::{Socket, connect, receive, request};
 use super::{ready, start, terminate};
 
+#[path = "files/paseo.rs"]
+mod paseo;
+
 #[tokio::test]
 async fn filesystem_requests_preserve_edits_and_connection_owned_versions() {
     let temp = tempfile::tempdir().unwrap();

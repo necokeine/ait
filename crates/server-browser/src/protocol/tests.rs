@@ -75,3 +75,6 @@ fn response_checks_command_nested_logs_dialogs_and_optional_fields() {
     defaults(&mut failure);
     assert_eq!(failure["error"]["retryable"], false);
 }
+
+mod commands;
+mod results;

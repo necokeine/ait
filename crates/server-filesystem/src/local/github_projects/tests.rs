@@ -4,6 +4,9 @@ use serde_json::json;
 
 use super::*;
 
+#[cfg(unix)]
+mod paseo;
+
 #[test]
 fn parses_repository_search_and_list_with_paseo_clone_urls() {
     let listed = json!([{

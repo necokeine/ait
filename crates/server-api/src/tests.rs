@@ -1,6 +1,7 @@
 use super::*;
 
 mod browser_auth;
+mod paseo;
 mod session;
 mod voice;
 

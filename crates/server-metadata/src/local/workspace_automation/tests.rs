@@ -3,6 +3,9 @@ use std::thread;
 
 use super::*;
 
+#[cfg(unix)]
+mod paseo;
+
 fn placement(root: &Path, id: &str) -> WorkspacePlacement {
     WorkspacePlacement {
         workspace_id: id.to_owned(),

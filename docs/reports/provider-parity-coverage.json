@@ -1,15 +1,15 @@
 {
   "revision": "5e9fc8a759c886fb78e3212ec681391ed97318e7",
   "workingTree": true,
-  "measuredAt": "2026-09-26T12:41:22.294982+00:00",
+  "measuredAt": "2026-09-26T11:35:42.091124+00:00",
   "upstreamPaseoRevision": "2c8e8a826810337492cc5a38bb0bbd705b6fb632",
   "scope": "Full Cargo workspace; default features; macOS arm64; default cargo-llvm-cov source filtering, no added exclusions; doctests not instrumented; Linux/Windows not executed.",
-  "sourceSha256": "70c4386562e3012823f6e35042fe96ab094949cf8b1cc2b0856c242901766b30",
-  "sourceSha256BeforeMeasurement": "70c4386562e3012823f6e35042fe96ab094949cf8b1cc2b0856c242901766b30",
+  "sourceSha256": "ed2168a310393833bf9cb24f89d65bd3f13380f5f685240cf8aefa45291f6b21",
+  "sourceSha256BeforeMeasurement": "ed2168a310393833bf9cb24f89d65bd3f13380f5f685240cf8aefa45291f6b21",
   "workspaceLines": {
-    "count": 67414,
-    "covered": 56991,
-    "percent": 84.53881982970897
+    "count": 67518,
+    "covered": 57553,
+    "percent": 85.24097277762966
   },
   "groups": {
     "bins/cli": {
@@ -113,14 +113,14 @@
       "percent": 80.36363636363636
     },
     "crates/server-api": {
-      "covered": 1048,
+      "covered": 1049,
       "count": 1093,
-      "percent": 95.8828911253431
+      "percent": 95.97438243366881
     },
     "crates/server-browser": {
-      "covered": 638,
+      "covered": 707,
       "count": 726,
-      "percent": 87.87878787878788
+      "percent": 97.38292011019284
     },
     "crates/server-domain": {
       "covered": 121,
@@ -128,19 +128,19 @@
       "percent": 100.0
     },
     "crates/server-filesystem": {
-      "covered": 7245,
-      "count": 8537,
-      "percent": 84.86587794307134
+      "covered": 7519,
+      "count": 8566,
+      "percent": 87.77725893065609
     },
     "crates/server-metadata": {
-      "covered": 5773,
-      "count": 6549,
-      "percent": 88.15086272713391
+      "covered": 5889,
+      "count": 6609,
+      "percent": 89.10576486609169
     },
     "crates/server-model": {
-      "covered": 293,
-      "count": 309,
-      "percent": 94.8220064724919
+      "covered": 296,
+      "count": 310,
+      "percent": 95.48387096774194
     },
     "crates/server-protocol": {
       "covered": 57,
@@ -153,19 +153,19 @@
       "percent": 92.64166720267576
     },
     "crates/server-schedule": {
-      "covered": 771,
+      "covered": 802,
       "count": 820,
-      "percent": 94.02439024390245
+      "percent": 97.8048780487805
     },
     "crates/server-terminal": {
-      "covered": 1247,
-      "count": 1422,
-      "percent": 87.69338959212376
+      "covered": 1289,
+      "count": 1436,
+      "percent": 89.76323119777159
     },
     "crates/server-voice": {
-      "covered": 1192,
+      "covered": 1218,
       "count": 1275,
-      "percent": 93.49019607843137
+      "percent": 95.52941176470588
     },
     "crates/storage-sqlite": {
       "covered": 3310,
@@ -941,8 +941,8 @@
     {
       "path": "crates/server-api/src/connection.rs",
       "count": 322,
-      "covered": 297,
-      "percent": 92.23602484472052
+      "covered": 298,
+      "percent": 92.54658385093167
     },
     {
       "path": "crates/server-api/src/connection/dispatch.rs",
@@ -971,8 +971,8 @@
     {
       "path": "crates/server-browser/src/broker.rs",
       "count": 300,
-      "covered": 279,
-      "percent": 93.0
+      "covered": 292,
+      "percent": 97.33333333333334
     },
     {
       "path": "crates/server-browser/src/capabilities.rs",
@@ -995,8 +995,8 @@
     {
       "path": "crates/server-browser/src/protocol.rs",
       "count": 376,
-      "covered": 314,
-      "percent": 83.51063829787235
+      "covered": 370,
+      "percent": 98.40425531914892
     },
     {
       "path": "crates/server-domain/src/agent.rs",
@@ -1019,14 +1019,14 @@
     {
       "path": "crates/server-filesystem/src/connection.rs",
       "count": 10,
-      "covered": 7,
-      "percent": 70.0
+      "covered": 10,
+      "percent": 100.0
     },
     {
       "path": "crates/server-filesystem/src/connection/checkout.rs",
-      "count": 106,
-      "covered": 102,
-      "percent": 96.22641509433963
+      "count": 116,
+      "covered": 114,
+      "percent": 98.27586206896551
     },
     {
       "path": "crates/server-filesystem/src/connection/files.rs",
@@ -1037,8 +1037,8 @@
     {
       "path": "crates/server-filesystem/src/connection/files/connection.rs",
       "count": 243,
-      "covered": 225,
-      "percent": 92.5925925925926
+      "covered": 229,
+      "percent": 94.23868312757202
     },
     {
       "path": "crates/server-filesystem/src/connection/files/transfer.rs",
@@ -1054,21 +1054,21 @@
     },
     {
       "path": "crates/server-filesystem/src/local/checkout.rs",
-      "count": 1434,
-      "covered": 1178,
-      "percent": 82.14783821478382
+      "count": 1444,
+      "covered": 1227,
+      "percent": 84.97229916897507
     },
     {
       "path": "crates/server-filesystem/src/local/files.rs",
       "count": 522,
-      "covered": 485,
-      "percent": 92.911877394636
+      "covered": 486,
+      "percent": 93.10344827586206
     },
     {
       "path": "crates/server-filesystem/src/local/files/search.rs",
-      "count": 188,
-      "covered": 161,
-      "percent": 85.63829787234043
+      "count": 193,
+      "covered": 184,
+      "percent": 95.33678756476684
     },
     {
       "path": "crates/server-filesystem/src/local/files/upload.rs",
@@ -1079,8 +1079,8 @@
     {
       "path": "crates/server-filesystem/src/local/forge.rs",
       "count": 1146,
-      "covered": 864,
-      "percent": 75.39267015706807
+      "covered": 972,
+      "percent": 84.81675392670157
     },
     {
       "path": "crates/server-filesystem/src/local/git.rs",
@@ -1091,8 +1091,8 @@
     {
       "path": "crates/server-filesystem/src/local/github_projects.rs",
       "count": 245,
-      "covered": 214,
-      "percent": 87.34693877551021
+      "covered": 221,
+      "percent": 90.20408163265307
     },
     {
       "path": "crates/server-filesystem/src/local/provisioning.rs",
@@ -1115,14 +1115,14 @@
     {
       "path": "crates/server-filesystem/src/local/skills/tree.rs",
       "count": 231,
-      "covered": 219,
-      "percent": 94.8051948051948
+      "covered": 220,
+      "percent": 95.23809523809523
     },
     {
       "path": "crates/server-filesystem/src/local/worktrees.rs",
-      "count": 743,
-      "covered": 599,
-      "percent": 80.61911170928667
+      "count": 747,
+      "covered": 658,
+      "percent": 88.08567603748327
     },
     {
       "path": "crates/server-filesystem/src/ports/files.rs",
@@ -1169,14 +1169,14 @@
     {
       "path": "crates/server-filesystem/src/rpc/checkout.rs",
       "count": 498,
-      "covered": 423,
-      "percent": 84.93975903614458
+      "covered": 424,
+      "percent": 85.14056224899599
     },
     {
       "path": "crates/server-filesystem/src/rpc/files.rs",
       "count": 307,
-      "covered": 291,
-      "percent": 94.78827361563519
+      "covered": 296,
+      "percent": 96.41693811074919
     },
     {
       "path": "crates/server-filesystem/src/rpc/forge.rs",
@@ -1241,8 +1241,8 @@
     {
       "path": "crates/server-filesystem/src/service/uploads.rs",
       "count": 63,
-      "covered": 62,
-      "percent": 98.4126984126984
+      "covered": 63,
+      "percent": 100.0
     },
     {
       "path": "crates/server-filesystem/src/service/workspace_recovery.rs",
@@ -1307,8 +1307,8 @@
     {
       "path": "crates/server-metadata/src/local/workspace_automation.rs",
       "count": 535,
-      "covered": 446,
-      "percent": 83.3644859813084
+      "covered": 472,
+      "percent": 88.22429906542057
     },
     {
       "path": "crates/server-metadata/src/model/registry.rs",
@@ -1439,8 +1439,8 @@
     {
       "path": "crates/server-metadata/src/service/directory.rs",
       "count": 750,
-      "covered": 676,
-      "percent": 90.13333333333333
+      "covered": 684,
+      "percent": 91.2
     },
     {
       "path": "crates/server-metadata/src/service/push.rs",
@@ -1457,14 +1457,14 @@
     {
       "path": "crates/server-metadata/src/service/workspace_automation.rs",
       "count": 133,
-      "covered": 125,
-      "percent": 93.98496240601504
+      "covered": 126,
+      "percent": 94.73684210526316
     },
     {
       "path": "crates/server-metadata/src/service/workspace_labels.rs",
-      "count": 452,
-      "covered": 407,
-      "percent": 90.0442477876106
+      "count": 453,
+      "covered": 419,
+      "percent": 92.49448123620309
     },
     {
       "path": "crates/server-metadata/src/service/workspace_state.rs",
@@ -1528,9 +1528,9 @@
     },
     {
       "path": "crates/server-metadata/src/storage/registry/workspaces.rs",
-      "count": 147,
-      "covered": 144,
-      "percent": 97.95918367346938
+      "count": 150,
+      "covered": 149,
+      "percent": 99.33333333333333
     },
     {
       "path": "crates/server-metadata/src/storage/server_identity.rs",
@@ -1540,9 +1540,9 @@
     },
     {
       "path": "crates/server-metadata/src/storage/workspace_labels.rs",
-      "count": 251,
-      "covered": 233,
-      "percent": 92.82868525896414
+      "count": 307,
+      "covered": 297,
+      "percent": 96.74267100977198
     },
     {
       "path": "crates/server-model/src/context.rs",
@@ -1565,20 +1565,20 @@
     {
       "path": "crates/server-model/src/message.rs",
       "count": 38,
-      "covered": 28,
-      "percent": 73.68421052631578
+      "covered": 29,
+      "percent": 76.31578947368422
     },
     {
       "path": "crates/server-model/src/outbound.rs",
       "count": 63,
-      "covered": 62,
-      "percent": 98.4126984126984
+      "covered": 63,
+      "percent": 100.0
     },
     {
       "path": "crates/server-model/src/runtime.rs",
-      "count": 49,
-      "covered": 48,
-      "percent": 97.95918367346938
+      "count": 50,
+      "covered": 49,
+      "percent": 98.0
     },
     {
       "path": "crates/server-model/src/server.rs",
@@ -2117,8 +2117,8 @@
     {
       "path": "crates/server-schedule/src/engine.rs",
       "count": 441,
-      "covered": 417,
-      "percent": 94.5578231292517
+      "covered": 433,
+      "percent": 98.1859410430839
     },
     {
       "path": "crates/server-schedule/src/ports.rs",
@@ -2129,14 +2129,14 @@
     {
       "path": "crates/server-schedule/src/service.rs",
       "count": 168,
-      "covered": 152,
-      "percent": 90.47619047619048
+      "covered": 164,
+      "percent": 97.61904761904762
     },
     {
       "path": "crates/server-schedule/src/storage.rs",
       "count": 56,
-      "covered": 51,
-      "percent": 91.07142857142857
+      "covered": 54,
+      "percent": 96.42857142857143
     },
     {
       "path": "crates/server-terminal/src/capabilities.rs",
@@ -2146,9 +2146,9 @@
     },
     {
       "path": "crates/server-terminal/src/connection.rs",
-      "count": 385,
-      "covered": 338,
-      "percent": 87.79220779220779
+      "count": 374,
+      "covered": 349,
+      "percent": 93.31550802139037
     },
     {
       "path": "crates/server-terminal/src/dispatch.rs",
@@ -2165,8 +2165,8 @@
     {
       "path": "crates/server-terminal/src/local.rs",
       "count": 220,
-      "covered": 190,
-      "percent": 86.36363636363636
+      "covered": 194,
+      "percent": 88.18181818181819
     },
     {
       "path": "crates/server-terminal/src/protocol.rs",
@@ -2183,20 +2183,20 @@
     {
       "path": "crates/server-terminal/src/screen.rs",
       "count": 253,
-      "covered": 252,
-      "percent": 99.60474308300395
+      "covered": 253,
+      "percent": 100.0
     },
     {
       "path": "crates/server-terminal/src/service.rs",
       "count": 258,
-      "covered": 256,
-      "percent": 99.2248062015504
+      "covered": 257,
+      "percent": 99.6124031007752
     },
     {
       "path": "crates/server-terminal/src/test_support.rs",
-      "count": 168,
-      "covered": 78,
-      "percent": 46.42857142857143
+      "count": 193,
+      "covered": 103,
+      "percent": 53.36787564766839
     },
     {
       "path": "crates/server-voice/src/audio.rs",
@@ -2213,26 +2213,26 @@
     {
       "path": "crates/server-voice/src/connection.rs",
       "count": 105,
-      "covered": 91,
-      "percent": 86.66666666666667
+      "covered": 92,
+      "percent": 87.61904761904762
     },
     {
       "path": "crates/server-voice/src/connection/dictation.rs",
       "count": 282,
-      "covered": 258,
-      "percent": 91.48936170212765
+      "covered": 272,
+      "percent": 96.45390070921985
     },
     {
       "path": "crates/server-voice/src/connection/jobs.rs",
       "count": 103,
-      "covered": 99,
-      "percent": 96.11650485436894
+      "covered": 101,
+      "percent": 98.05825242718448
     },
     {
       "path": "crates/server-voice/src/connection/voice.rs",
       "count": 210,
-      "covered": 193,
-      "percent": 91.9047619047619
+      "covered": 202,
+      "percent": 96.1904761904762
     },
     {
       "path": "crates/server-voice/src/dispatch.rs",
@@ -2640,7 +2640,11 @@
     },
     {
       "path": "bins/server/tests/process/files.rs",
-      "sha256": "4125212e307da8631b30138ab6ed049929fbe09741381dc59852ccd4f908431d"
+      "sha256": "e9cea224cc0b6ff8a18b177aa7cb7a7b0f7512e1aeeb436f2891c497a627e26f"
+    },
+    {
+      "path": "bins/server/tests/process/files/paseo.rs",
+      "sha256": "a582b4e9f14e85fa027bd7cc59843e77cf4abaa6dbb310957ff75875811ef5da"
     },
     {
       "path": "bins/server/tests/process/forge.rs",
@@ -2680,7 +2684,11 @@
     },
     {
       "path": "bins/server/tests/process/terminal.rs",
-      "sha256": "30ccd96a3ba7bc808a9ff895db6610dbf80c448c9928e6894bc5eda6424829be"
+      "sha256": "bb45d134553f2ccd67f8a526313a307824488075978778d07950adc28bbedf96"
+    },
+    {
+      "path": "bins/server/tests/process/terminal/paseo.rs",
+      "sha256": "a9624c20416cee8bbbb8145db0d4694a45d2abe5383ce0fc78d6095d84604846"
     },
     {
       "path": "bins/server/tests/process/transport.rs",
@@ -3668,7 +3676,7 @@
     },
     {
       "path": "crates/server-api/src/tests.rs",
-      "sha256": "97e369867a4eb056cdf1b899f1c5408089539912f61e38851e2060f3ee6e85e7"
+      "sha256": "5f7397ee65183c967250c9285eaa86a6d9bf705e0a89ea6c1d165847c0116176"
     },
     {
       "path": "crates/server-api/src/tests/browser.rs",
@@ -3677,6 +3685,14 @@
     {
       "path": "crates/server-api/src/tests/browser_auth.rs",
       "sha256": "9abb1c12f967a321c35a31906545866fdebd6689ec5daea0d4c4facb0656fb9e"
+    },
+    {
+      "path": "crates/server-api/src/tests/paseo.rs",
+      "sha256": "c3c7b12cc6f95e03155deca73176202373161edcef0d05969060cf12e2912954"
+    },
+    {
+      "path": "crates/server-api/src/tests/paseo/transport.rs",
+      "sha256": "d1e7c0dccb20727ec0fa7c1c586514840e0875cb0fcce75a390b830deea5ea03"
     },
     {
       "path": "crates/server-api/src/tests/placeholders.rs",
@@ -3704,7 +3720,15 @@
     },
     {
       "path": "crates/server-browser/src/broker/tests.rs",
-      "sha256": "55267ea65657d4b6cbacf06699fd4bca02460caef296c78db8fd7f73e38cdfbe"
+      "sha256": "bf05f2b36be01c58617150bbb6670040db012ffd376db58d92004ae95178614e"
+    },
+    {
+      "path": "crates/server-browser/src/broker/tests/limits.rs",
+      "sha256": "c2a5594beabc2b050ef7c137f8809a2d0e9db25302c74c5e83487cd6bd78213a"
+    },
+    {
+      "path": "crates/server-browser/src/broker/tests/routing.rs",
+      "sha256": "d256d6ca0f88bda92c4f244ca2b00589e0a0e0a1ff0099fb650b450bd891d751"
     },
     {
       "path": "crates/server-browser/src/capabilities.rs",
@@ -3728,7 +3752,15 @@
     },
     {
       "path": "crates/server-browser/src/protocol/tests.rs",
-      "sha256": "3e4a796939c81f1c8ab4b6a6be56062e32ecfb50046c130e5782659d70f6e5ae"
+      "sha256": "3c05b7542a39938a1f128391253f3aeadd8693fe129b680adf09d32edf8df28f"
+    },
+    {
+      "path": "crates/server-browser/src/protocol/tests/commands.rs",
+      "sha256": "1fe28d34582702612422b7b8d209422c4549043813765b2f52fa839f7dcbc379"
+    },
+    {
+      "path": "crates/server-browser/src/protocol/tests/results.rs",
+      "sha256": "28cd3cde7bc17a72ac85d5c694e95cc041d355c18895d1066a60950ad2fbcd3e"
     },
     {
       "path": "crates/server-domain/Cargo.toml",
@@ -3772,11 +3804,19 @@
     },
     {
       "path": "crates/server-filesystem/src/connection.rs",
-      "sha256": "57ec2baac26fecad4ae96fbf969c4ed153698b60c2d52442a6df2391d67de930"
+      "sha256": "1040d3bf96d5eb033a675e6f78ad8dd4a393bd357afbf33c4bf6ffa0d22a3bae"
     },
     {
       "path": "crates/server-filesystem/src/connection/checkout.rs",
-      "sha256": "c5682a1ec210383ea7326a323c57a9f9b34d318e6da6c1741e493fbb2d6b3e70"
+      "sha256": "7d654d24c4cbc136da84d1a2fe7fc97724636b90d5fee5912e48b88997235eb5"
+    },
+    {
+      "path": "crates/server-filesystem/src/connection/checkout/tests.rs",
+      "sha256": "e4647fd9f5cd736fe5f21282b006eb0696417efe90bbed584dd8e75f19aa58c0"
+    },
+    {
+      "path": "crates/server-filesystem/src/connection/checkout/tests/fixtures.rs",
+      "sha256": "0b70d323b64fd1cdbdcc9c3ad64b0a6352cbcf534841918bdafa7871fe0159ed"
     },
     {
       "path": "crates/server-filesystem/src/connection/files.rs",
@@ -3789,6 +3829,10 @@
     {
       "path": "crates/server-filesystem/src/connection/files/transfer.rs",
       "sha256": "95d9e0eb1fc28e2cd4e118d6e36acd8e8bbc352766d952fa9a4ea57b63c2a678"
+    },
+    {
+      "path": "crates/server-filesystem/src/connection/tests.rs",
+      "sha256": "1f2f9ae864710444f49981e23b3c1406aae5533238210fa7072b1030be5aceac"
     },
     {
       "path": "crates/server-filesystem/src/dispatch.rs",
@@ -3804,11 +3848,15 @@
     },
     {
       "path": "crates/server-filesystem/src/local/checkout.rs",
-      "sha256": "dcad4d0a2992770c7419ac687cfd2a9ad9fdb96fff66c22de157289c6da59d4a"
+      "sha256": "e5454094c74450212bb9b23f58350617085e6093bddfcd7b46c18c6a6c714433"
     },
     {
       "path": "crates/server-filesystem/src/local/checkout/tests.rs",
-      "sha256": "ebbeb39f32c150faf298adfb6f78bad3be6dfb2058bb9693e2e91b69854e9792"
+      "sha256": "01ce289761d0b2e49398eb18f8cfab87f84defb888af75136dfa0d8a92bdaf51"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/checkout/tests/paseo.rs",
+      "sha256": "edfa19bc251ae94ccb4d99cceeb72da1d34c235b994c366516d9fc9bb54b5d03"
     },
     {
       "path": "crates/server-filesystem/src/local/files.rs",
@@ -3816,11 +3864,15 @@
     },
     {
       "path": "crates/server-filesystem/src/local/files/search.rs",
-      "sha256": "c71594e8f5ad5b3b17f07e5507744b81c3ac97b982b954b272fda82cdf2f24b4"
+      "sha256": "2689a3a7ecd64d0cf2d54155c5520d87b26ff76239f756862282eefee0e74fe4"
     },
     {
       "path": "crates/server-filesystem/src/local/files/tests.rs",
-      "sha256": "a7c7e2ffabe990b7fdabf74947c215e3c2888a7c9032bb44756bb79978d534a0"
+      "sha256": "f48421a77d60cd6e1d4e283da5ee056732b4ce5d8375ae010c793eaac7c85d4a"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/files/tests/paseo.rs",
+      "sha256": "a7ac369cf8c48c4e07dd70ecb31e161776dfbdf3e77d42a8ed3d798bd919f8aa"
     },
     {
       "path": "crates/server-filesystem/src/local/files/upload.rs",
@@ -3832,7 +3884,15 @@
     },
     {
       "path": "crates/server-filesystem/src/local/forge/tests.rs",
-      "sha256": "8edb17802511c54f661b45896f0aab5a42371ebfd214faccdbf0227c599f9f55"
+      "sha256": "f5239a6265f059ea01f85c98a1a34d25dea399cb52909b3020bd5d219a92be52"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/forge/tests/commands.rs",
+      "sha256": "21b0012ccd48d7aeb022cd2b77eae76f2b47ca7aa45864415032f20ff0409951"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/forge/tests/paseo.rs",
+      "sha256": "ce6a3ac9ac83577c749178cd736b18c07bb1dfb9bf25a04a66acb1bcadb3dc75"
     },
     {
       "path": "crates/server-filesystem/src/local/git.rs",
@@ -3844,7 +3904,11 @@
     },
     {
       "path": "crates/server-filesystem/src/local/github_projects/tests.rs",
-      "sha256": "6fde3e74e2f9840aaeee4ab7fc7a8f271e9a406da4756c1450ff2b2c86c26538"
+      "sha256": "2102281ac93c987f84e62f5203421a2f7de316973bdb40c1bdea9121229caac5"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/github_projects/tests/paseo.rs",
+      "sha256": "46d8257ecbe66a3d1f438b18cb1f2a60a79b1b23cd675c69c1d930b4e52870f2"
     },
     {
       "path": "crates/server-filesystem/src/local/provisioning.rs",
@@ -3860,7 +3924,11 @@
     },
     {
       "path": "crates/server-filesystem/src/local/skills/tests.rs",
-      "sha256": "57cc4dabbfffd787e70e7f37c975edead58d0aa751a15296a693c3ccd36fa917"
+      "sha256": "8fd473b4df0ef4177822b9da7e04c6b60d2ca465909649ef20fe273c11eec8d3"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/skills/tests/paseo.rs",
+      "sha256": "148abde66ebd1cfd45a8a8509efb975472c30e86ebba43a81fbc522a65fa3543"
     },
     {
       "path": "crates/server-filesystem/src/local/skills/transaction.rs",
@@ -3876,11 +3944,15 @@
     },
     {
       "path": "crates/server-filesystem/src/local/worktrees.rs",
-      "sha256": "75eb9a83bc32d17ef5c4b44ce95e0d74fb60765a0cf1427a0b1034ad8b88ab73"
+      "sha256": "b4956f6ddced53d924bd69e9d02e0d5179dff2dea3945abf6cf8e351151fcd2b"
     },
     {
       "path": "crates/server-filesystem/src/local/worktrees/tests.rs",
-      "sha256": "83550c0df3a03159b6a4ed24ca7df4c347db6e1872e4137e4c85fb04ee4a17c0"
+      "sha256": "9145ead866694c176f0288982e038ed53d760ab7077e5ab280e4d6726d317063"
+    },
+    {
+      "path": "crates/server-filesystem/src/local/worktrees/tests/paseo.rs",
+      "sha256": "b25dc997dc30bdc8782f67b95fb34994238ab6bbf82c5f5bd0c22dd46f8d5c45"
     },
     {
       "path": "crates/server-filesystem/src/ports.rs",
@@ -4080,7 +4152,11 @@
     },
     {
       "path": "crates/server-filesystem/src/service/uploads/tests.rs",
-      "sha256": "07c097b81255f79ccba9dc10839a9b06b9aa99c847c49117e639edd682617aa3"
+      "sha256": "af7ba441528fcc9bb3c8d0455ac3d327e20c09416eaa12f9af77ad6ff823f6d4"
+    },
+    {
+      "path": "crates/server-filesystem/src/service/uploads/tests/paseo.rs",
+      "sha256": "2b0e0f610eff676ed6c855bc7d1b8b7d2d8747748c0fd9615c09467ba1c4c1e9"
     },
     {
       "path": "crates/server-filesystem/src/service/workspace_recovery.rs",
@@ -4152,7 +4228,11 @@
     },
     {
       "path": "crates/server-metadata/src/local/workspace_automation/tests.rs",
-      "sha256": "f6d8921788d9dfc5a09132cc31e33c0ad352dd113536befc4e6b7d45c733e166"
+      "sha256": "b5d3445a15df19f2fc4fe8f4eb7e0b02a7f5345407f186524ea01a92d4d5a649"
+    },
+    {
+      "path": "crates/server-metadata/src/local/workspace_automation/tests/paseo.rs",
+      "sha256": "0e00f8ad4999baa3ff0931880911485d5475b24b30817e304fa83d216398c84a"
     },
     {
       "path": "crates/server-metadata/src/model.rs",
@@ -4200,7 +4280,7 @@
     },
     {
       "path": "crates/server-metadata/src/ports/workspace_labels.rs",
-      "sha256": "243158afee5a5a2ec242aada925b0ca1d5e73b13a076e333ccc98f95edd54d8b"
+      "sha256": "be03e738068e3e1929a655962dcb2614454ef99b146e476b0c02ffcd85da07e7"
     },
     {
       "path": "crates/server-metadata/src/ports/workspace_state.rs",
@@ -4392,7 +4472,11 @@
     },
     {
       "path": "crates/server-metadata/src/service/directory/tests.rs",
-      "sha256": "cad458809bee68f2d163262c8a21eeb74805e29b73b30194b3a265684c52c5c3"
+      "sha256": "06726332062e0c0c0adcae73ca3c4ae984deae353878535311ee84191aad23f6"
+    },
+    {
+      "path": "crates/server-metadata/src/service/directory/tests/paseo.rs",
+      "sha256": "ef5d820ca1400564c3456da347dda5424a99c0298420a4d8d62fcf07ca6f110c"
     },
     {
       "path": "crates/server-metadata/src/service/push.rs",
@@ -4416,15 +4500,23 @@
     },
     {
       "path": "crates/server-metadata/src/service/workspace_automation/tests.rs",
-      "sha256": "96d1cb710356f8f4b19c690489ca1a92823d8806c6c2ab58672f25085d1b29bd"
+      "sha256": "c4ad801a808cb0b8bc7ab009a3b5b24e9a83159d050554c3d2262d57fe1d33a9"
+    },
+    {
+      "path": "crates/server-metadata/src/service/workspace_automation/tests/paseo.rs",
+      "sha256": "e7fd97b48368351a6a238ae2b4825014195a6da34f3cb2dd6f21b34e4f58ccf5"
     },
     {
       "path": "crates/server-metadata/src/service/workspace_labels.rs",
-      "sha256": "9bf580dab4777a48ca2fc6b9cde21edce159fd32d562518a7369c33d7391c506"
+      "sha256": "b396625149833f7803858d2b6a9aee00d7877bdf192be521a99ec5c3fffe1055"
     },
     {
       "path": "crates/server-metadata/src/service/workspace_labels/tests.rs",
-      "sha256": "ceb734d2c97e5ea4e97819e68248dafc770ee50f1d499149590486731f35b2e9"
+      "sha256": "428c0b9baa53d076ccca910178d5a040bd3b35a6eb0ad9eb796dacc82c8b7a76"
+    },
+    {
+      "path": "crates/server-metadata/src/service/workspace_labels/tests/admission.rs",
+      "sha256": "8962ba7c8c39c7f0e6d4da8df747a58a7dbcbc92ce5af651edb2cae9bf1b4aed"
     },
     {
       "path": "crates/server-metadata/src/service/workspace_state.rs",
@@ -4476,7 +4568,7 @@
     },
     {
       "path": "crates/server-metadata/src/storage/registry/core.rs",
-      "sha256": "b62a8c84ac3ba3044de35fe918126546fc99c9d903acab567e334bf86d329ce3"
+      "sha256": "91c362003367296756bbdd5a2d18246b824d8bdb13aec1ae05e37a4aa88d8f04"
     },
     {
       "path": "crates/server-metadata/src/storage/registry/listeners.rs",
@@ -4492,7 +4584,7 @@
     },
     {
       "path": "crates/server-metadata/src/storage/registry/tests.rs",
-      "sha256": "ae7569cd8b33023a5bba6727c2bcefafc6683e5234c4f64609a62b94f1acc121"
+      "sha256": "851365c82028dd113cc28bb193d7fdd5d30bf5832eef571f9bf0b9e8a6d8a35e"
     },
     {
       "path": "crates/server-metadata/src/storage/registry/tests/failures.rs",
@@ -4503,8 +4595,16 @@
       "sha256": "0f3dbdca31f42405f3b9363f008d04c591ce65ec222c5f4e5ce34478aad9bb5e"
     },
     {
+      "path": "crates/server-metadata/src/storage/registry/tests/labels.rs",
+      "sha256": "92971f80c2fa3c54bd4c3fa55b26286a04930301b106f48cd2efe74655d6c1f1"
+    },
+    {
+      "path": "crates/server-metadata/src/storage/registry/tests/paseo.rs",
+      "sha256": "0980d3fbc1ddd0f8883a457a4bdbef0e854306fc7f29a359a82f030aaaed0f3e"
+    },
+    {
       "path": "crates/server-metadata/src/storage/registry/workspaces.rs",
-      "sha256": "81d166866d62ae052861a300e261e5c8a4f669546ea72da97f38ec601ab31b4c"
+      "sha256": "6d3098ae66eeb835f6b777c5d539a090deda70489556cd5391a873155608b986"
     },
     {
       "path": "crates/server-metadata/src/storage/server_identity.rs",
@@ -4516,11 +4616,19 @@
     },
     {
       "path": "crates/server-metadata/src/storage/workspace_labels.rs",
-      "sha256": "e84d4a5bd7cf16911d8677d64a78405d2e63621b604c05c0f995be2b1bae9de6"
+      "sha256": "279e67db931ef3f41175d3d6b600b4b1b4afa5f3d06d1771670e75bd1c869a1b"
     },
     {
       "path": "crates/server-metadata/src/storage/workspace_labels/tests.rs",
-      "sha256": "5b821e3eda75f4e1101672c76bd8929e922884704603b45768fec68cf0f72526"
+      "sha256": "18fc5f0d601b1b07f6c803543608b0268b79b96cc308978963800999a744e849"
+    },
+    {
+      "path": "crates/server-metadata/src/storage/workspace_labels/tests/limits.rs",
+      "sha256": "9cbb50db14cbb80e16cdbf80f66e432c841c594dbdb6aff418b5212b8d42682b"
+    },
+    {
+      "path": "crates/server-metadata/src/storage/workspace_labels/tests/paseo.rs",
+      "sha256": "967850c544a9af8a76e98011a38ba3329dc72ceb23dab29997bbb55393b25bee"
     },
     {
       "path": "crates/server-model/Cargo.toml",
@@ -4556,15 +4664,23 @@
     },
     {
       "path": "crates/server-model/src/outbound/tests.rs",
-      "sha256": "47e224f5f851695b5cb35175f0c375ebb365a206f71cf817b63880d5f09cf8b6"
+      "sha256": "c565dd008b69fc85f239b6f4060826bd80697b47800b1ee5645818bea5344687"
+    },
+    {
+      "path": "crates/server-model/src/outbound/tests/physical.rs",
+      "sha256": "71e5df3e1bfe53f87af12d8f0416213218f0c1baa919c92c3490b3a6047f7985"
     },
     {
       "path": "crates/server-model/src/runtime.rs",
-      "sha256": "8e6234daa05c157c2040330759fcaad1ce9d5f28acdbadd8fbabea5837dd2adb"
+      "sha256": "9b03fa853513a13d13426c7fbd8871fc1382d6a927c7204fc1058c6a847c3249"
     },
     {
       "path": "crates/server-model/src/runtime/tests.rs",
-      "sha256": "97832f9f6cb0eab0cc86db05e8789700edbd33621ec961256f6bfa4e44ac4b41"
+      "sha256": "627a438216b4c3cb80c7832d24a482b7abf531f9fe05aee1fb33b33bdcfb7c69"
+    },
+    {
+      "path": "crates/server-model/src/runtime/tests/polling.rs",
+      "sha256": "6e313eb2e369f4a5cf63c8cc91e8df1040a85c54f714aa5aa9bae53ed3f69315"
     },
     {
       "path": "crates/server-model/src/server.rs",
@@ -5344,7 +5460,11 @@
     },
     {
       "path": "crates/server-schedule/src/cadence/tests.rs",
-      "sha256": "9b4cf6f45b5de96ce84fda31da530bb0b4cc44cdd785881ab0328222d2d93de6"
+      "sha256": "ca26362bc3dc0c19bc5c9de394cf91c0bd68ab9f11bfc7247b4c7f42e9c7b455"
+    },
+    {
+      "path": "crates/server-schedule/src/cadence/tests/calendar_model.rs",
+      "sha256": "ee775c1fb068a03db4e33351917686f6e16e426490f01f2379a921df7b22d836"
     },
     {
       "path": "crates/server-schedule/src/capabilities.rs",
@@ -5360,7 +5480,19 @@
     },
     {
       "path": "crates/server-schedule/src/engine/tests.rs",
-      "sha256": "4c021a33ab58469000a8e79fc92b11eebe16e4103760ef58e8b6a755bf88f3aa"
+      "sha256": "a724b1f4f1e3e4d97d4d5b565d5f07e7e80ff71aae0b3b9e1153cb04d557e890"
+    },
+    {
+      "path": "crates/server-schedule/src/engine/tests/lifecycle.rs",
+      "sha256": "7fea4575a53ff53cca89a18b8fc094211b17c07600374b8af40681aa54c73bae"
+    },
+    {
+      "path": "crates/server-schedule/src/engine/tests/mutation.rs",
+      "sha256": "91db66f54cd9295e32a9c4a8497cad701d7ce26b3d474a49f7f6166b15b245de"
+    },
+    {
+      "path": "crates/server-schedule/src/engine/tests/recovery.rs",
+      "sha256": "7960d4aff11dd073d45fe091d280447258b1935e82461d702431ef8b38898d75"
     },
     {
       "path": "crates/server-schedule/src/lib.rs",
@@ -5380,7 +5512,19 @@
     },
     {
       "path": "crates/server-schedule/src/service/tests.rs",
-      "sha256": "fdefefd38bdb73ea3cf4ba030427432e15eb62f32a1e40e73521d6e35f4ad64d"
+      "sha256": "a17075df0903ae536a13414e22db7f0cbe38a1a01d1eff8c7efa6d668bc57636"
+    },
+    {
+      "path": "crates/server-schedule/src/service/tests/concurrency.rs",
+      "sha256": "73f3eec1f09973ce9e4bf887d7d34f116e8f794ea0047f523327942c9c6486bf"
+    },
+    {
+      "path": "crates/server-schedule/src/service/tests/controlled.rs",
+      "sha256": "8c7e74c5ff76b779030f6164e05b1dea18e0f5c012a5406c9572b3b22d4afdc0"
+    },
+    {
+      "path": "crates/server-schedule/src/service/tests/durability.rs",
+      "sha256": "989bf1382d4c1e91a4894774c6eb545f73c3a642270e7840693114c857400c7b"
     },
     {
       "path": "crates/server-schedule/src/storage.rs",
@@ -5388,7 +5532,11 @@
     },
     {
       "path": "crates/server-schedule/src/storage/tests.rs",
-      "sha256": "40cad015431ff1d4a7fff30b5dcd220aba81ca4a7b14e834f07c46d5d09b3fdb"
+      "sha256": "898d7b42545746a1608ce1fa08e15c8cbb8dacfe4f9bb4e4d4735bafe552ef64"
+    },
+    {
+      "path": "crates/server-schedule/src/storage/tests/records.rs",
+      "sha256": "af6c022ea965c0dd3670d65e689c13f88a99a5ccc76b1e6d9695f3f1c58768d6"
     },
     {
       "path": "crates/server-terminal/Cargo.toml",
@@ -5404,7 +5552,19 @@
     },
     {
       "path": "crates/server-terminal/src/connection.rs",
-      "sha256": "96f27cf5410f095a33821709fc0c5eb0d065fcfcb59f8ee26087447a0e9af582"
+      "sha256": "d99d31420728d794b9728b070bfce8a56201bff043a979399ec5d29d10d374e5"
+    },
+    {
+      "path": "crates/server-terminal/src/connection/tests.rs",
+      "sha256": "d15d6ad67d36664229254cdf423bf089856ec688774f7f20caebf87d5e7ea38c"
+    },
+    {
+      "path": "crates/server-terminal/src/connection/tests/delivery.rs",
+      "sha256": "1fce0af5a0d4beaea6a7c23201c4c62b762c7db0e75884f50e095f3a98d18465"
+    },
+    {
+      "path": "crates/server-terminal/src/connection/tests/ownership.rs",
+      "sha256": "46efb4e49f6ec7c814558f78d3ec33abb05238ac75b0977cab5e22b0881d9a9c"
     },
     {
       "path": "crates/server-terminal/src/dispatch.rs",
@@ -5420,7 +5580,15 @@
     },
     {
       "path": "crates/server-terminal/src/local/tests.rs",
-      "sha256": "4f7bb666ed625666ced91794f8798d8423d33408e8afac5aab229443a2338ec8"
+      "sha256": "3c43f68562cd5bb0bf188a816d5642a35648910fc02dd3d7fafae3f38bf8c9f2"
+    },
+    {
+      "path": "crates/server-terminal/src/local/tests/io.rs",
+      "sha256": "eaa3e54714523ac21963296c0b4b5e2f2d0bd3d69f78aef9cf1f4d066c766af4"
+    },
+    {
+      "path": "crates/server-terminal/src/local/tests/paseo.rs",
+      "sha256": "403fe90e29173dbdd1103ba5a07298c2808f4d608422f0cfabf4ccf944fd6190"
     },
     {
       "path": "crates/server-terminal/src/ports.rs",
@@ -5448,7 +5616,11 @@
     },
     {
       "path": "crates/server-terminal/src/screen/tests.rs",
-      "sha256": "07e726cbdce249d8d2a533a66c828865239c0b2f6ad2cfe50e82aa58cabd1411"
+      "sha256": "03eeef2bb03dc167f3fc4e258ea3cc8102e68695531221e1d30a96e1cac956f6"
+    },
+    {
+      "path": "crates/server-terminal/src/screen/tests/paseo.rs",
+      "sha256": "f798579404ddbcaa964eefcc883329d5e61e7d3a228db1a370e456f80638e803"
     },
     {
       "path": "crates/server-terminal/src/service.rs",
@@ -5456,11 +5628,15 @@
     },
     {
       "path": "crates/server-terminal/src/service/tests.rs",
-      "sha256": "66eedf1b97aa0cb132c8759b53704ea9a0b4acdbef644c78536691e3c46a1dfc"
+      "sha256": "5888952b4b498cd5503d4d4f52b822a7bf835f855f3e59636ca3b3e4e289614c"
+    },
+    {
+      "path": "crates/server-terminal/src/service/tests/paseo.rs",
+      "sha256": "bca53774ac7e56c74c7deea336ccf5e1fbf0d73dcbb74f564d2e0502cac6e02d"
     },
     {
       "path": "crates/server-terminal/src/test_support.rs",
-      "sha256": "e99d5a45e7e6a54b62776dc6b4d5931f6d410e9446155a67fff5bab0a70ba753"
+      "sha256": "40ae5abbcd2af60510f615f5b5e927fcecd8ec87e2886430bbcde18c77c03aee"
     },
     {
       "path": "crates/server-voice/Cargo.toml",
@@ -5492,15 +5668,23 @@
     },
     {
       "path": "crates/server-voice/src/connection/tests.rs",
-      "sha256": "5fba8cc6773804bbaf20c34acea4fbee5ba06a2bcad230d5a89b029803a3fd57"
+      "sha256": "2878a57c342c09825d9b3ab890158c441c4c3ace4427cc5af0f87c84782afc96"
     },
     {
       "path": "crates/server-voice/src/connection/tests/dictation.rs",
       "sha256": "8928e1fababadcb9805860ed9cdaf083a8572171424186cc78be761218f3617d"
     },
     {
+      "path": "crates/server-voice/src/connection/tests/dictation_lifecycle.rs",
+      "sha256": "591e0d74689c92875d343bff2663b453da4c951cb284bc46113a78fd931ae036"
+    },
+    {
       "path": "crates/server-voice/src/connection/tests/voice.rs",
       "sha256": "f66f7bc8d3bc134ae5e8e2f337b866615731f3ee79fac5c3b2db79065bb8eec9"
+    },
+    {
+      "path": "crates/server-voice/src/connection/tests/voice_lifecycle.rs",
+      "sha256": "7874e4461ea5f93d50fbff8d3680dbe9dbf15b7f9221bdec8571abb00625e39b"
     },
     {
       "path": "crates/server-voice/src/connection/voice.rs",
@@ -5807,24 +5991,117 @@
       "sha256": "9b816a19464dc6f3a4800bd81e59d350594d99d81ddc43932265834d593b546d"
     }
   ],
-  "rawExportSha256": "586f47c71d3693504f18d8b6d8d2cd66241daa864659946d1e0f34ccbab49ea0",
-  "packaging": "Isolated provider-only PR worktree based on origin/main, excluding unrelated branding, SDK, filesystem, metadata and terminal changes from the original working tree.",
+  "rawExportSha256": "13d958d6cc9ab6e361d8963f62c39c282ec91d5c5e9472efa92b005a196171a3",
   "baseline": null,
-  "baselineNote": "No measurement of the immediate pre-parity snapshot. Earlier measurements include unrelated working-tree changes and are not a comparable baseline.",
+  "baselineNote": "No measurement of the immediate pre-parity dirty working tree. Initial Claude report predates many parity and unrelated workspace changes; it is not a comparable baseline.",
   "commands": {
     "format": "cargo fmt --all --check",
     "diff": "git diff --check",
     "lint": "CARGO_TARGET_DIR=/tmp/ait-provider-parity-check cargo clippy --workspace --all-targets --offline -- -D warnings",
     "tests": "CARGO_TARGET_DIR=/tmp/ait-agent-session-target cargo test --workspace --offline --no-fail-fast -- --test-threads=1",
     "coverage": "cargo llvm-cov --workspace --html --offline --no-fail-fast -- --test-threads=1",
-    "export": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-provider-pr-coverage-summary.json",
-    "lineDetails": "cargo llvm-cov report --lcov --output-path /tmp/ait-provider-pr-coverage.lcov",
+    "export": "cargo llvm-cov report --json --summary-only --output-path /tmp/ait-provider-parity-coverage-summary.json",
+    "lineDetails": "cargo llvm-cov report --lcov --output-path /tmp/ait-provider-parity-coverage.lcov",
     "nativeClaude": "AIT_SERVER_CLAUDE_BIN=/Users/necokeine/.local/bin/claude CARGO_TARGET_DIR=/tmp/ait-agent-session-target cargo test -p server-provider --offline installed_claude -- --ignored --test-threads=1",
     "nativeCodex": "AIT_SERVER_CODEX_BIN=/opt/homebrew/Caskroom/codex/0.153.4.upgrading/bin/codex CARGO_TARGET_DIR=/tmp/ait-agent-session-target cargo test -p server-provider --offline installed_codex -- --ignored --test-threads=1"
   },
+  "earlierAttempts": {
+    "parallelWorkspace": {
+      "passed": 1692,
+      "failed": 3,
+      "ignored": 8,
+      "testTargets": 103,
+      "ignoredTests": [
+        [
+          "codex_native_tools_create_and_verify_python_hello_world",
+          "requires logged-in Codex and Python 3; performs two real model turns"
+        ],
+        [
+          "deepseek_live_default_catalog",
+          "requires DEEPSEEK_API_KEY and DEEPSEEK_MODEL; makes one paid API request"
+        ],
+        [
+          "wf11_real_deepseek_python_hello_world",
+          "uses API credits, credentials, and Python; run ./test_with_deepseek.sh"
+        ],
+        [
+          "wf10_create_project_with_real_codex_and_commit",
+          "requires real Codex credentials/model access and a built ait-daemon; see WF-10"
+        ],
+        [
+          "permission_change::replay_permission_change_with_external_worker",
+          "requires AIT_TEST_WORKER_EXECUTABLE pointing to a separately built worker"
+        ],
+        [
+          "local::claude::tests::process::installed_claude_control_protocol_discovers_models_without_inference",
+          "requires a locally installed Claude Code CLI; sends no model request"
+        ],
+        [
+          "local::claude::tests::process::parity::installed_claude_completes_a_native_turn_and_reopens_history",
+          "requires installed Claude authentication and makes one small model request"
+        ],
+        [
+          "local::codex::tests::installed::installed_codex_completes_a_native_turn_and_reopens_history",
+          "requires installed Codex authentication and makes one small model request"
+        ]
+      ],
+      "failures": [
+        "daemon_is_ready_and_rejects_unsent_native_recovery_without_replay",
+        "startup_scan_defers_an_offline_project_without_losing_its_run",
+        "service::agent_execution::tests::delivery::failed_queued_admission_does_not_block_an_independent_agent"
+      ],
+      "logSha256": "966a72c4624ba47431a02e29da7625828535af1c669e90f195067c315bccd571"
+    },
+    "parallelInstrumentedWorkspace": {
+      "passed": 1692,
+      "failed": 2,
+      "ignored": 8,
+      "testTargets": 75,
+      "ignoredTests": [
+        [
+          "codex_native_tools_create_and_verify_python_hello_world",
+          "requires logged-in Codex and Python 3; performs two real model turns"
+        ],
+        [
+          "deepseek_live_default_catalog",
+          "requires DEEPSEEK_API_KEY and DEEPSEEK_MODEL; makes one paid API request"
+        ],
+        [
+          "wf11_real_deepseek_python_hello_world",
+          "uses API credits, credentials, and Python; run ./test_with_deepseek.sh"
+        ],
+        [
+          "wf10_create_project_with_real_codex_and_commit",
+          "requires real Codex credentials/model access and a built ait-daemon; see WF-10"
+        ],
+        [
+          "permission_change::replay_permission_change_with_external_worker",
+          "requires AIT_TEST_WORKER_EXECUTABLE pointing to a separately built worker"
+        ],
+        [
+          "local::claude::tests::process::installed_claude_control_protocol_discovers_models_without_inference",
+          "requires a locally installed Claude Code CLI; sends no model request"
+        ],
+        [
+          "local::claude::tests::process::parity::installed_claude_completes_a_native_turn_and_reopens_history",
+          "requires installed Claude authentication and makes one small model request"
+        ],
+        [
+          "local::codex::tests::installed::installed_codex_completes_a_native_turn_and_reopens_history",
+          "requires installed Codex authentication and makes one small model request"
+        ]
+      ],
+      "failures": [
+        "daemon_http_generates_an_assistant_response_through_codex",
+        "service::agent_execution::tests::delivery::failed_queued_admission_does_not_block_an_independent_agent"
+      ],
+      "logSha256": "b1b424a00c5f9631fedf969f50eeb3fb7bcb600b9e0bbd5a0561c465cfa8157e"
+    },
+    "explanation": "Parallel full-workspace runs contended on global project identity locks in daemon tests; a new queue regression read a stale pre-restart registry cache. The test was corrected. A subsequent run was deliberately interrupted to include final chronological note replay. Final tests and fresh coverage were then run sequentially."
+  },
   "testExecution": {
     "workspace": {
-      "passed": 1315,
+      "passed": 1696,
       "failed": 0,
       "ignored": 8,
       "testTargets": 103,
@@ -5863,10 +6140,10 @@
         ]
       ],
       "failures": [],
-      "logSha256": "52f43b6b385ab862bbb8fbdd0c0d81fdc4d2e0ae35b4a87d5dca496a28ce4968"
+      "logSha256": "56398fa3a0cb3d3924d92df71534d46e7338fe5ba87554cc34a1e91574a106be"
     },
     "instrumentedWorkspace": {
-      "passed": 1314,
+      "passed": 1695,
       "failed": 0,
       "ignored": 8,
       "testTargets": 75,
@@ -5905,7 +6182,7 @@
         ]
       ],
       "failures": [],
-      "logSha256": "9fe77abc2276cdba662fb3a03b7790a77241642dbb198aa31640e83ce30ba695"
+      "logSha256": "6478ee8b124c12979369703e735594a8707b814296ec5846e8e1a13611148f6a"
     },
     "nativeClaude": {
       "passed": 1,
@@ -5932,13 +6209,13 @@
     "Claude 2.1.221 native handshake passed; inference failed because local OAuth expired and refresh failed. Direct CLI reproduced the identical authentication error. Re-login is needed to rerun the opt-in inference/history check.",
     "Codex 0.153.4 native inference/history passed. Homebrew 0.157.1 executable failed to return even from --version on this host; no validation claim is made for that installation.",
     "Real native tool execution, actual OAuth quota endpoint responses, Windows and Linux processes, and rare OS/resource-limit failure branches are not end-to-end verified. Offline protocol peers cover request/event and failure semantics.",
-    "Three installed-CLI opt-in tests are excluded from offline workspace/coverage runs and recorded separately."
+    "Three installed-CLI opt-in tests are excluded from offline workspace/coverage runs and recorded separately.",
+    "Default port rejection fallbacks, some alternate Workflow history shapes, exceptional filesystem/process paths and resource-boundary branches remain uncovered; concrete provider happy paths and recovery are tested."
   ],
-  "nativeValidationScope": "Installed CLI checks ran against the byte-identical provider adapter files in the original worktree; workspace and coverage results below were rerun on the isolated PR snapshot.",
   "validation": {
     "format": "passed",
     "diffCheck": "passed",
     "strictWorkspaceClippy": "passed",
-    "clippyLogSha256": "5092dc4de0bae77f0edec48fa511a04a75d2ccf1fca6fefa0bf0b59dc5d5f1bd"
+    "clippyLogSha256": "90410a59a67736598dd0ea526fc49d5913e7b15ae022c50ae5135bfae1960a43"
   }
 }

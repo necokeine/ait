@@ -150,3 +150,7 @@ async fn panic_is_recorded_as_failed_instead_of_losing_running_state() {
     assert_eq!(result["schedule"]["runs"][0]["status"], "failed");
     service.shutdown().await.unwrap();
 }
+
+mod concurrency;
+mod controlled;
+mod durability;

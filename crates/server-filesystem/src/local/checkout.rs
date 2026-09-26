@@ -140,7 +140,7 @@ impl CheckoutRuntime for LocalCheckout {
         }
         let include_untracked = match compare.mode {
             CheckoutDiffMode::Uncommitted => {
-                arguments.push("HEAD".to_owned());
+                arguments.push(diff_head(&cwd)?);
                 true
             }
             CheckoutDiffMode::Base => {
@@ -1392,6 +1392,19 @@ fn verify_commit(cwd: &Path, revision: &str) -> Result<(), CheckoutRuntimeError>
     .map(|_| ())
 }
 
+fn diff_head(cwd: &Path) -> Result<String, CheckoutRuntimeError> {
+    if git_optional(cwd, &["rev-parse", "--verify", "HEAD^{commit}"])?.is_some() {
+        return Ok("HEAD".to_owned());
+    }
+    // Git reads empty stdin here. Resolve its empty tree using the repository's object format,
+    // so staged and unstaged files remain visible before the first SHA-1 or SHA-256 commit.
+    git_required(
+        cwd,
+        &["hash-object", "-t", "tree", "--stdin"],
+        SMALL_OUTPUT_LIMIT,
+    )
+}
+
 fn parse_diff(text: &str) -> Vec<ParsedDiffFile> {
     text.split("diff --git ")
         .skip(1)
@@ -1424,6 +1437,7 @@ fn parse_diff_section(section: &str) -> Option<ParsedDiffFile> {
         });
     let path = renamed_path
         .or(metadata_path)
+        .map(|path| path.strip_suffix('\t').unwrap_or(path))
         .map(strip_diff_prefix)
         .or_else(|| header.split_once(" b/").map(|(_, path)| path))?
         .to_owned();

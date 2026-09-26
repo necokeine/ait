@@ -36,6 +36,8 @@ pub struct Runtime {
     pub jobs: Arc<Semaphore>,
     /// Independent terminal I/O budget.
     pub terminal_jobs: Arc<Semaphore>,
+    /// Serializes background checkout reads without consuming foreground admission.
+    pub checkout_poll_jobs: Arc<Semaphore>,
     /// Bounded Agent completion waits.
     pub execution_waits: Arc<Semaphore>,
 }
@@ -52,6 +54,7 @@ impl Runtime {
             lifecycle_intent: Mutex::new(None),
             jobs: Arc::new(Semaphore::new(1)),
             terminal_jobs: Arc::new(Semaphore::new(4)),
+            checkout_poll_jobs: Arc::new(Semaphore::new(1)),
             execution_waits: Arc::new(Semaphore::new(32)),
         }
     }

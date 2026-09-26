@@ -3,10 +3,10 @@
 来源为 `getpaseo/paseo`，版本 `0.9.0-beta.2`，提交
 `2c8e8a826810337492cc5a38bb0bbd705b6fb632`。
 
-| 上游目录 | 本仓库目录 | 上游文件数 |
-| --- | --- | ---: |
-| `packages/desktop` | [`apps/paseo`](../apps/paseo) | 205 |
-| `packages/app` | [`apps/app`](../apps/app) | 2,564 |
+| 上游目录           | 本仓库目录                    | 上游文件数 |
+| ------------------ | ----------------------------- | ---------: |
+| `packages/desktop` | [`apps/paseo`](../apps/paseo) |        205 |
+| `packages/app`     | [`apps/app`](../apps/app)     |      2,564 |
 
 两个目录最初按上游受 Git 管理的源码、测试、资源和可执行权限导入。来源与初始内容摘要见
 [import-manifest.json](import-manifest.json)。上游许可证保存在 [LICENSE](LICENSE)
@@ -17,6 +17,11 @@
 根 npm workspace 已接入 `apps/app`、`apps/paseo` 及 protocol、client、relay、highlight、
 plugin、expo-two-way-audio 六个共享包；共享源码取自上述固定提交。Plugin 仅保留前端
 编译依赖，Rust 服务端没有恢复 Plugin API。Node server 和 Node CLI 不进入 workspace。
+
+Paseo SDK 作为仓库内 library 维护在 [`packages/client`](../packages/client/README.md)，
+其 protocol、relay 依赖和应用侧引用均使用显式 `file:` 路径。保留 `@getpaseo/client`
+名称是为了兼容已有 import；安装时使用本地源码包。独立构建运行 `npm run build:sdk`，
+本地测试运行 `npm run test:sdk`。三个 SDK 包均为 private，不发布到 npm。
 
 ```sh
 npm ci

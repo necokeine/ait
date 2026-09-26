@@ -2,6 +2,8 @@ use super::*;
 use crate::protocol::{Resize, Size};
 use crate::test_support::{fixture, request};
 
+mod paseo;
+
 #[test]
 fn placement_filter_rename_capture_kill_and_shutdown_have_real_effects() {
     let (mut service, registry, calls) = fixture();

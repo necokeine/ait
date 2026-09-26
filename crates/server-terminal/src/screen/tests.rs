@@ -1,5 +1,7 @@
 use super::*;
 
+mod paseo;
+
 fn screen() -> Screen {
     Screen::new(Size { rows: 3, cols: 12 })
 }

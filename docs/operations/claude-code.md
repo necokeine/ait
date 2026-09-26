@@ -52,3 +52,4 @@ export AIT_SERVER_CLAUDE_BIN=/absolute/path/to/claude
 
 完整边界见 [ADR-052](../decisions/adr-052-native-provider-capabilities.md)，当前验证状态见
 [能力补齐清单](../plans/provider-parity.md)和[验证报告](../reports/provider-parity.md)。
+[初版报告](../reports/claude-code-provider.md)保留初次接入时的历史数据。

@@ -869,7 +869,15 @@ fn normalized_absolute(path: &Path) -> Result<PathBuf, WorktreeError> {
             Component::ParentDir => {
                 normalized.pop();
             }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+            Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+                // Preserve real directory identity even when a later component is absent.
+                // Resolve symlinks before `..`, including macOS /var -> /private/var.
+                if let Ok(canonical) = normalized.canonicalize() {
+                    normalized = canonical;
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => {
                 normalized.push(component.as_os_str());
             }
         }

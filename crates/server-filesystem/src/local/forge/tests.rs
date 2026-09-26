@@ -12,6 +12,10 @@ use crate::ports::forge::{
 use super::*;
 
 #[cfg(unix)]
+mod commands;
+mod paseo;
+
+#[cfg(unix)]
 #[test]
 fn github_cli_adapter_parses_search_status_timeline_checks_and_mutations() {
     let root = tempfile::tempdir().unwrap();

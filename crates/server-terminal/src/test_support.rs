@@ -150,6 +150,10 @@ pub(crate) struct Calls {
     pub killed: usize,
     pub exited: bool,
     pub failure: bool,
+    pub send_failure: bool,
+    pub title: Option<String>,
+    pub observation: Option<Observation>,
+    pub observe_error: Option<Error>,
 }
 
 #[derive(Debug)]
@@ -177,16 +181,42 @@ impl Runtime for MockRuntime {
 struct MockProcess(Arc<Mutex<Calls>>);
 impl Process for MockProcess {
     fn title(&self) -> Option<String> {
-        Some("shell title".to_owned())
+        Some(
+            self.0
+                .lock()
+                .unwrap()
+                .title
+                .clone()
+                .unwrap_or_else(|| "shell title".to_owned()),
+        )
     }
     fn exited(&mut self) -> Result<bool, Error> {
         Ok(self.0.lock().unwrap().exited)
     }
     fn send(&mut self, input: &Input) -> Result<(), Error> {
-        self.0.lock().unwrap().inputs.push(format!("{input:?}"));
+        let mut calls = self.0.lock().unwrap();
+        if calls.send_failure {
+            return Err(Error::Io);
+        }
+        calls.inputs.push(format!("{input:?}"));
         Ok(())
     }
-    fn observe(&mut self, _: Option<u64>, _: Option<&Restore>) -> Result<Observation, Error> {
+    fn observe(
+        &mut self,
+        revision: Option<u64>,
+        _: Option<&Restore>,
+    ) -> Result<Observation, Error> {
+        let calls = self.0.lock().unwrap();
+        if let Some(error) = &calls.observe_error {
+            return Err(error.clone());
+        }
+        if let Some(observation) = &calls.observation {
+            let mut observation = observation.clone();
+            if revision == Some(observation.revision) {
+                observation.frames.clear();
+            }
+            return Ok(observation);
+        }
         Ok(Observation {
             revision: 1,
             size: Size::default(),
