@@ -15,7 +15,7 @@ impl CodexClient {
         let mut transport = Transport::spawn(&self.program, &spec.cwd, self.deadline)?;
         let result = async {
             transport.initialize().await?;
-            rewind(&mut transport, id, spec, message).await
+            rewind(&mut transport, id, spec, message, &self.images).await
         }
         .await;
         transport.close().await?;
@@ -28,11 +28,12 @@ async fn rewind(
     id: &str,
     spec: &AgentSessionSpec,
     message: &str,
+    images: &crate::local::images::ImageStore,
 ) -> Result<SessionHistory, AgentSessionError> {
     let source = transport
         .request("thread/read", json!({"threadId":id,"includeTurns":true}))
         .await?;
-    let history = native_sessions::history(&source["thread"])?;
+    let history = native_sessions::history_with_images(&source["thread"], images)?;
     if history.active
         || history.descriptor.provider_handle_id != id
         || std::fs::canonicalize(&history.descriptor.cwd).ok()
@@ -81,7 +82,7 @@ async fn rewind(
     let response = transport
         .request("thread/read", json!({"threadId":fork,"includeTurns":true}))
         .await?;
-    let result = native_sessions::history(&response["thread"])?;
+    let result = native_sessions::history_with_images(&response["thread"], images)?;
     if result.active
         || result.descriptor.provider_handle_id != fork
         || std::fs::canonicalize(&result.descriptor.cwd).ok()

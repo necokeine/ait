@@ -90,6 +90,9 @@ impl AgentExecution {
             None => crate::storage::timeline::Timeline::memory()
                 .map_err(|_| std::io::Error::other("initialize timeline"))?,
         };
+        timeline
+            .recover_inputs()
+            .map_err(|_| std::io::Error::other("recover input receipts"))?;
         dependencies.manager = dependencies.manager.with_timeline(timeline.clone());
         let creations = dependencies.manager.creations();
         let events = dependencies.manager.events();
@@ -246,6 +249,7 @@ async fn serve(mut state: ExecutionState, mut commands: mpsc::Receiver<Command>)
                 // Failed durable writes retain their pending event and are retried here.
                 let _ = state.manager.poll().await;
                 let _ = state.manager.reconcile().await;
+                let _ = state.manager.dispatch_pending_inputs().await;
             }
         }
     }

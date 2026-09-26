@@ -5,6 +5,11 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Validate image payloads before native prompt admission and decode provider image artifacts.
+base64 = "0.22.1"
+# Read-only Claude OAuth quota inspection; credentials never enter public snapshots.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "json", "stream"] }
+secrecy = "0.10.3"
 server-model = { version = "0.0.6", path = "../server-model" }
 server-domain = { version = "0.0.6", path = "../server-domain" }
 server-metadata = { version = "0.0.6", path = "../server-metadata" }
@@ -21,3 +26,7 @@ uuid = { version = "1.26.0", features = ["v4"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Match Claude Agent SDK's NFC normalization of native session directory names.
+unicode-normalization = "0.1.24"

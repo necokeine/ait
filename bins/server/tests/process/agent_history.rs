@@ -2,6 +2,9 @@ use super::transport::{connect, connect_as, receive, request};
 use super::{ready, start_with_path, terminate};
 use serde_json::json;
 
+#[path = "agent_history/paseo.rs"]
+mod paseo;
+
 const METHODS: &[&str] = &[
     "workspace.open.request",
     "workspace.create.request",
@@ -139,8 +142,12 @@ async fn assert_creation_rejects_non_objects(client: &mut super::transport::Sock
 
 async fn assert_discovery(client: &mut super::transport::Socket, cwd: &std::path::Path) {
     let available = request(client, "provider.available.list.request", json!({})).await;
-    assert_eq!(
-        available["result"]["providers"][0]["available"], true,
+    assert!(
+        available["result"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|provider| provider["provider"] == "codex" && provider["available"] == true),
         "{available}"
     );
     for (method, field) in [

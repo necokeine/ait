@@ -1,4 +1,4 @@
-//! Text-only Agent execution requests using Paseo's canonical method and field names.
+//! Native Agent execution requests using Paseo's canonical method and field names.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +18,7 @@ pub const CAPABILITIES: &[&str] = &[
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfig {
-    /// Provider identity; this phase implements Codex.
+    /// Provider identity: Codex or Claude Code.
     pub provider: String,
     /// Absolute existing directory.
     pub cwd: String,
@@ -39,6 +39,16 @@ pub struct CreateRequest {
     pub subscribe: Option<bool>,
     /// Optional first text turn, submitted after native registration commits.
     pub initial_prompt: Option<String>,
+    /// Initial inline raster images.
+    #[serde(default)]
+    pub images: Vec<super::prompt::PromptImage>,
+    /// Initial contextual attachments.
+    #[serde(default)]
+    pub attachments: Vec<serde_json::Value>,
+    /// Optional identity for the initial user input.
+    pub client_message_id: Option<String>,
+    /// Optional native structured output constraint.
+    pub output_schema: Option<serde_json::Value>,
     /// Optional caller-selected UUID.
     pub agent_id: Option<String>,
     /// Native configuration.
@@ -58,9 +68,12 @@ pub struct ResumeRequest {
 }
 
 /// Explicit delivery policy for an already active native turn.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ActiveTurnBehavior {
+    /// Interrupt the active turn and deliver this input after its terminal acknowledgement.
+    #[default]
+    Interrupt,
     /// Ask the provider to admit text into the current turn, without interrupting it.
     Steer,
 }
@@ -73,8 +86,32 @@ pub struct SendRequest {
     pub agent_id: String,
     /// Nonempty text, at most 64 KiB.
     pub text: String,
-    /// Omission preserves busy rejection, including connection-owned voice turns.
+    /// Omission interrupts ordinary foreground work; voice-owned turns remain exclusive.
     pub active_turn_behavior: Option<ActiveTurnBehavior>,
+    /// Client retry identity (Paseo's `messageId`).
+    pub message_id: Option<String>,
+    /// Inline raster images.
+    #[serde(default)]
+    pub images: Vec<super::prompt::PromptImage>,
+    /// Contextual attachments.
+    #[serde(default)]
+    pub attachments: Vec<serde_json::Value>,
+    /// Optional structured output constraint.
+    pub output_schema: Option<serde_json::Value>,
+}
+
+impl SendRequest {
+    /// Consume the request's rich input after the caller resolves its Agent and delivery policy.
+    #[must_use]
+    pub fn into_prompt(self) -> super::prompt::AgentPrompt {
+        super::prompt::AgentPrompt {
+            text: self.text,
+            images: self.images,
+            attachments: self.attachments,
+            client_message_id: self.message_id,
+            output_schema: self.output_schema,
+        }
+    }
 }
 
 /// Await native completion without occupying the Provider command lane.

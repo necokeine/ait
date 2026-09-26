@@ -39,6 +39,8 @@ pub struct ListOptions {
 /// Complete native facts used to validate an import or refresh before publishing host state.
 #[derive(Debug, Clone)]
 pub struct SessionHistory {
+    /// Provider-owned resume facts for this identity, including an intentional fresh branch.
+    pub resume_metadata: std::collections::BTreeMap<String, serde_json::Value>,
     /// Immediate native parent for a provider-owned child, when present.
     pub parent_id: Option<String>,
     /// Native identity and display metadata.

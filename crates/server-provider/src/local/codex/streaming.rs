@@ -47,6 +47,7 @@ pub(super) fn steer_rejected(error: &Value) -> bool {
 
 #[derive(Debug, Default)]
 pub(super) struct Stream {
+    pub(super) events: std::collections::VecDeque<AgentTurnEvent>,
     completed: BTreeSet<String>,
     text_bytes: BTreeMap<String, usize>,
     summary_indices: BTreeMap<String, u64>,
@@ -56,6 +57,9 @@ pub(super) struct Stream {
 impl Stream {
     pub(super) fn complete(&mut self, item: &Value) -> Result<bool, AgentSessionError> {
         let id = text(item, "id")?;
+        if self.completed.contains(id) {
+            return Ok(false);
+        }
         if self.completed.len() >= MAX_ITEMS {
             return Err(AgentSessionError::Failed);
         }
@@ -148,7 +152,6 @@ impl Stream {
                 | "mcpToolCall"
                 | "dynamicToolCall"
                 | "webSearch"
-                | "imageView"
                 | "collabAgentToolCall"
         ) {
             return Ok(None);
@@ -161,7 +164,7 @@ impl Stream {
             return Err(AgentSessionError::Failed);
         }
         let item = json!({"type":"tool_call","callId":id,"name":kind,"status":"running",
-            "error":null,"detail":{"type":"unknown","input":native,"output":""}});
+            "error":null,"detail":crate::local::tool_detail::codex(native)});
         self.tools.insert(id.to_owned(), item.clone());
         Ok(Some((id.to_owned(), item)))
     }
@@ -178,9 +181,7 @@ impl Stream {
         if delta.is_empty() {
             return Ok(None);
         }
-        let output = item["detail"]["output"]
-            .as_str()
-            .ok_or(AgentSessionError::Failed)?;
+        let output = item["detail"]["output"].as_str().unwrap_or_default();
         // The live preview is a bounded tail. Complete native output remains in the final item.
         let mut tail = String::with_capacity(MAX_OUTPUT.min(output.len() + delta.len()));
         if delta.len() < MAX_OUTPUT {

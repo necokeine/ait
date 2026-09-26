@@ -1,5 +1,7 @@
 use super::*;
 
+mod paseo;
+
 fn thread() -> Value {
     json!({"id":"native","cwd":"/tmp","createdAt":1_700_000_000,"updatedAt":1_700_000_010,
         "status":{"type":"idle"},"model":"offline-model","reasoningEffort":"high",

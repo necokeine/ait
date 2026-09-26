@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import subprocess
 import threading
 import time
@@ -66,7 +67,7 @@ def complete(turn_id, text):
 for line in sys.stdin:
     request = json.loads(line)
     with (root / "native-requests.jsonl").open("a") as log:
-        log.write(json.dumps({"pid": os.getpid(), **request}) + "\n")
+        log.write(json.dumps({"pid": os.getpid(), "argv":sys.argv[1:], **request}) + "\n")
     method = request.get("method")
     if method is None and "result" in request:
         if pending:
@@ -94,7 +95,12 @@ for line in sys.stdin:
         emit({"id": request["id"], "error": {"message": "sensitive native error"}})
         continue
     result = {}
-    if method in ("thread/start", "thread/resume", "thread/read"):
+    if method == "initialize":
+        result = {"userAgent":"codex_cli_rs/0.153.4"} if mode == "workflows" else {}
+    elif method == "collaborationMode/list":
+        result = {"data":[{"name":"Plan","mode":"plan","model":"offline-model","reasoning_effort":"high"},
+            {"name":"Default","mode":"default","model":"offline-model"}]} if mode == "workflows" else {"data":[]}
+    elif method in ("thread/start", "thread/resume", "thread/read"):
         thread_id = params.get("threadId", str(uuid.uuid4()))
         if mode == "wrong-thread":
             thread_id = "wrong-thread"
@@ -156,7 +162,7 @@ for line in sys.stdin:
     elif method == "turn/steer":
         if mode == "steer-completed":
             complete(pending, "raced")
-        if mode in ("steer-reject", "steer-completed") or params["expectedTurnId"] != pending:
+        if mode in ("steer-reject", "steer-completed") or (root / "reject-steer").exists() or params["expectedTurnId"] != pending:
             emit({"id": request["id"], "error": {"code": -32600, "message": "no active turn to steer"}})
             continue
         if mode == "steer-ambiguous":
@@ -166,14 +172,66 @@ for line in sys.stdin:
             sys.exit(0)
         result = {"turnId": "wrong-turn" if mode == "steer-wrong-id" else pending}
     emit({"id": request["id"], "result": result})
+    if method == "thread/compact/start":
+        compact_turn = pending or str(uuid.uuid4())
+        if pending is None:
+            emit({"method":"turn/started","params":{"threadId":thread_id,"turn":{"id":compact_turn}}})
+        item = {"type":"contextCompaction","id":"compact-" + compact_turn}
+        stream_items.append(item)
+        emit({"method":"item/completed","params":{"threadId":thread_id,"turnId":compact_turn,"item":item}})
+        if pending is None:
+            emit({"method":"turn/completed","params":{"threadId":thread_id,"turn":{"id":compact_turn,"status":"completed"}}})
+    if method == "thread/goal/set" and params.get("objective") == "autonomous fixture":
+        time.sleep(0.1)
+        pending = str(uuid.uuid4())
+        turn_text = "native goal continuation"
+        emit({"method":"turn/started","params":{"threadId":thread_id,"turn":{"id":pending}}})
+        complete(pending, "Goal completed")
     if method == "turn/start":
         text = next((item["text"] for item in params["input"] if item["type"] == "text"), "skill-only")
         turn_text = text
+        if text == "usage":
+            emit({"method":"thread/tokenUsage/updated", "params":{"threadId":thread_id,
+                "tokenUsage":{"last":{"inputTokens":100,"cachedInputTokens":30,"outputTokens":7,"totalTokens":107},"modelContextWindow":200000}}})
         save_turn(pending, None, "inProgress")
         emit({"method": "item/completed", "params": {"threadId": thread_id, "turnId": pending,
             "item": {"type": "userMessage", "id": pending + "-user", "content": [{"type": "text", "text": text}]}}})
         if text == "exit":
             sys.exit(0)
+        if text == "propose-plan":
+            plan = {"type":"plan","id":pending+"-plan","text":"1. Implement the fix\n2. Verify the result"}
+            stream_items.append(plan)
+            emit({"method":"item/completed","params":{"threadId":thread_id,"turnId":pending,"item":plan}})
+            complete(pending, "Plan ready")
+            continue
+        if text == "plan-progress":
+            emit({"method":"turn/plan/updated","params":{"threadId":thread_id,"turnId":pending,
+                "plan":[{"step":"First step","status":"completed"},{"step":"Second step","status":"inProgress"}]}})
+            complete(pending, "Progress reported")
+            continue
+        if text in ("async-question", "async-question-running"):
+            question = {"type": "agentMessage", "id": pending + "-question", "delivery": "async",
+                "questions": [{"title": "Which runtime?", "options": ["Rust", "Python"]}]}
+            stream_items.append(question)
+            emit({"method": "item/completed", "params": {"threadId": thread_id, "turnId": pending, "item": question}})
+            if text == "async-question":
+                complete(pending, "Work continued")
+            continue
+        if text == "live-subagent":
+            child = "child-" + thread_id
+            spawn = {"type":"collabAgentToolCall", "id":"spawn-child", "senderThreadId":thread_id,
+                "receiverThreadIds":[child], "tool":"spawnAgent", "status":"completed", "prompt":"inspect",
+                "agentsStates":{child:{"status":"running"}}}
+            stream_items.append(spawn)
+            emit({"method":"item/completed", "params":{"threadId":thread_id,"turnId":pending,"item":spawn}})
+            (root / ("native-session-" + child + ".json")).write_text(json.dumps({"parentThreadId":thread_id}))
+            emit({"method":"item/agentMessage/delta","params":{"threadId":child,"turnId":"child-turn","itemId":"child-answer","delta":"Independent child"}})
+            child_item = {"type":"agentMessage", "id":"child-answer", "text":"Independent child answer"}
+            emit({"method":"item/completed", "params":{"threadId":child,"turnId":"child-turn","item":child_item}})
+            emit({"method":"turn/completed", "params":{"threadId":child,"turn":{"id":"child-turn","status":"completed"}}})
+            (root / ("native-history-" + child + ".json")).write_text(json.dumps([{"id":"child-turn","status":"completed","startedAt":1700000000,"items":[child_item]}]))
+            complete(pending, "Parent only")
+            continue
         if text == "approval":
             emit({"id": "approval-1", "method": "item/commandExecution/requestApproval", "params": {}})
         elif text in ("permit-command", "permit-file", "permit-question"):

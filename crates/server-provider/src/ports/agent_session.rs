@@ -52,6 +52,10 @@ pub enum AgentResumePurpose {
 /// Native foreground-turn progress or result. This is not a host Run or Message tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentTurnEvent {
+    /// A native autonomous foreground turn started, for example while pursuing a Codex goal.
+    Started(String),
+    /// Native child progress or lifecycle, independent of the foreground turn's completion.
+    Subagent(super::controls::SubagentEvent),
     /// One incremental display event with a retry-stable observation identity.
     Progress {
         /// Unique identity for this observation, distinct from the native item identity.
@@ -61,8 +65,14 @@ pub enum AgentTurnEvent {
     },
     /// A live native approval; the request payload is never written to display history.
     PermissionRequested(serde_json::Value),
+    /// The native provider withdrew or resolved a previously published permission request.
+    PermissionResolved(String),
     /// One immutable normalized item completed by the native provider.
     Timeline(crate::protocol::timeline::NativeItem),
+    /// Complete current usage snapshot; consumers replace rather than sum repeated observations.
+    Usage(crate::protocol::usage::AgentUsage),
+    /// Native initialization resolved the session's actual model or runtime settings.
+    RuntimeInfo(StoredAgentRuntimeInfo),
     /// The native provider drained its turn successfully.
     Completed(Option<String>),
     /// The native provider acknowledged interruption.
@@ -73,6 +83,54 @@ pub enum AgentTurnEvent {
 
 /// Live provider session. Closing releases resources without deleting native history.
 pub trait AgentSession: Debug + Send {
+    /// Native foreground work was accepted but its start notification has not arrived yet.
+    fn pending_foreground(&self) -> bool {
+        false
+    }
+
+    /// Withdraw accepted autonomous work that has not announced a foreground turn yet.
+    /// # Errors
+    /// Returns native transport failures; an uncertain cancellation is never reported successful.
+    fn cancel_pending(&mut self) -> AgentSessionFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Execute a provider command that does not interrupt or replace the active input turn.
+    /// # Errors
+    /// Returns rejected before mutation for unsupported commands, or uncertain transport failure.
+    fn out_of_band<'a>(
+        &'a mut self,
+        _prompt: &'a crate::protocol::prompt::AgentPrompt,
+    ) -> AgentSessionFuture<'a, ()> {
+        Box::pin(async { Err(AgentSessionError::Rejected) })
+    }
+    /// Current verified native descendants observed by this live session.
+    fn subagents(&self) -> Vec<super::controls::NativeSubagent> {
+        Vec::new()
+    }
+    /// Prepare a session-scoped question answer that requires durable user-input admission.
+    /// This has no side effects; call `respond_permission` only after admission succeeds.
+    /// # Errors
+    /// Returns rejected for stale or invalid answers.
+    fn prepare_permission_response(
+        &self,
+        _id: &str,
+        _response: &serde_json::Value,
+    ) -> Result<Option<crate::protocol::prompt::AgentPrompt>, AgentSessionError> {
+        Ok(None)
+    }
+
+    /// Configuration explicitly authorized by an approval, applied before its follow-up input.
+    /// # Errors
+    /// Returns rejected for stale or invalid approval responses.
+    fn permission_config_patch(
+        &self,
+        _id: &str,
+        _response: &serde_json::Value,
+    ) -> Result<Option<crate::protocol::agent_config::ConfigPatch>, AgentSessionError> {
+        Ok(None)
+    }
+
     /// Inspect pending approvals for reconnecting clients; IDs expire with this native session.
     fn pending_permissions(&self) -> Vec<serde_json::Value> {
         Vec::new()
@@ -112,7 +170,25 @@ pub trait AgentSession: Debug + Send {
         Box::pin(async { Err(AgentSessionError::Unavailable) })
     }
 
-    /// Append text to exactly `turn_id`; success means the provider acknowledged admission.
+    /// Submit one validated rich input, preserving attachment order and output constraints.
+    /// # Errors
+    /// Legacy implementations reject non-text input instead of silently dropping it.
+    fn start_input<'a>(
+        &'a mut self,
+        prompt: &'a crate::protocol::prompt::AgentPrompt,
+        config: &'a StoredAgentConfig,
+    ) -> AgentSessionFuture<'a, String> {
+        Box::pin(async move {
+            prompt.validate()?;
+            if !prompt.is_plain_text() {
+                return Err(AgentSessionError::Rejected);
+            }
+            self.start_turn(&prompt.text, config).await
+        })
+    }
+
+    /// Append text to exactly `turn_id`; success means admission at the adapter's native boundary.
+    /// Codex acknowledges its RPC; Claude accepts input on its live SDK stream and echoes it later.
     /// # Errors
     /// Returns rejected for unsupported or definitively refused input. Other errors leave
     /// admission uncertain and must never trigger an automatic resubmission.
@@ -122,6 +198,23 @@ pub trait AgentSession: Debug + Send {
         _text: &'a str,
     ) -> AgentSessionFuture<'a, ()> {
         Box::pin(async { Err(AgentSessionError::Rejected) })
+    }
+
+    /// Steer with complete rich input; unsupported providers must reject without partial admission.
+    /// # Errors
+    /// Returns definitive rejection or uncertain provider/transport failure.
+    fn steer_input<'a>(
+        &'a mut self,
+        turn_id: &'a str,
+        prompt: &'a crate::protocol::prompt::AgentPrompt,
+    ) -> AgentSessionFuture<'a, ()> {
+        Box::pin(async move {
+            prompt.validate()?;
+            if !prompt.is_plain_text() {
+                return Err(AgentSessionError::Rejected);
+            }
+            self.steer_turn(turn_id, &prompt.text).await
+        })
     }
 
     /// Interrupt the identified native turn without deleting session history.
@@ -149,6 +242,15 @@ pub trait AgentSession: Debug + Send {
 
 /// Factory and availability boundary for one independent provider adapter.
 pub trait AgentClient: Debug + Send + Sync {
+    /// Whether this text names a provider command that bypasses foreground input scheduling.
+    fn handles_out_of_band(&self, _text: &str) -> bool {
+        false
+    }
+    /// Restore durable session-scoped questions without opening a native writer.
+    /// Native tool approvals are deliberately excluded because their transport has expired.
+    fn persisted_permissions(&self, _handle: &AgentPersistenceHandle) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
     /// Describe selectable modes/features and implemented native control flags without I/O.
     fn settings(&self, _config: &StoredAgentConfig) -> serde_json::Value {
         serde_json::json!({"availableModes":[],"features":[],"capabilities":{}})
@@ -203,6 +305,18 @@ pub trait AgentClient: Debug + Send + Sync {
         _spec: &'a AgentSessionSpec,
         _message_id: &'a str,
     ) -> AgentSessionFuture<'a, super::native_history::SessionHistory> {
+        Box::pin(async { Err(AgentSessionError::Unavailable) })
+    }
+
+    /// Restore native tracked-file checkpoints at a verified user message, without rewriting history.
+    /// # Errors
+    /// Returns unsupported capability, an invalid checkpoint, or a native restore failure.
+    fn rewind_files<'a>(
+        &'a self,
+        _handle: &'a AgentPersistenceHandle,
+        _spec: &'a AgentSessionSpec,
+        _message_id: &'a str,
+    ) -> AgentSessionFuture<'a, ()> {
         Box::pin(async { Err(AgentSessionError::Unavailable) })
     }
     /// Return the provider identity served by this client.

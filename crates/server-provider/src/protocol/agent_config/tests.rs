@@ -21,3 +21,24 @@ fn patch_distinguishes_omission_from_null_and_preserves_unrelated_configuration(
     assert_eq!(patch.apply(&current).thinking_option_id, None);
     assert!(serde_json::from_value::<ConfigPatch>(json!({"unknown":true})).is_err());
 }
+
+#[test]
+fn advanced_patch_replaces_or_clears_only_present_configuration() {
+    let current: StoredAgentConfig = serde_json::from_value(json!({
+        "mcpServers":{"old":{"type":"stdio","command":"old"}},
+        "providerOptions":{"allowedTools":["Read"]},"toolPolicy":{"preapproved":[]},
+        "systemPrompt":"old"}))
+    .unwrap();
+    let patch: ConfigPatch = serde_json::from_value(json!({"mcpServers":null,
+        "providerOptions":{"disallowedTools":["Bash"]},"systemPrompt":null}))
+    .unwrap();
+    let next = patch.apply(&current);
+    assert_eq!(next.mcp_servers, None);
+    assert_eq!(next.system_prompt, None);
+    assert_eq!(next.tool_policy, current.tool_policy);
+    assert_eq!(
+        serde_json::to_value(next.provider_options).unwrap(),
+        json!({"disallowedTools":["Bash"]})
+    );
+    assert_eq!(ConfigPatch::default().apply(&current), current);
+}

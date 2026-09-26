@@ -136,14 +136,23 @@ async fn inspect_and_configure(client: &mut Socket, id: &str) {
             .contains("ChatGPT login")
     );
     assert!(!diagnostic.to_string().contains("private@example.test"));
+    let usage = success(client, "provider.usage.list.request", json!({})).await;
     assert_eq!(
-        success(client, "provider.usage.list.request", json!({})).await["providers"][0]["status"],
+        usage["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|provider| provider["providerId"] == "codex")
+            .unwrap()["status"],
         "available"
     );
-    assert_eq!(
-        success(client, "agent.commands.list.request", json!({"agentId":id})).await["commands"][0]
-            ["kind"],
-        "skill"
+    let commands = success(client, "agent.commands.list.request", json!({"agentId":id})).await;
+    assert!(
+        commands["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command["kind"] == "skill")
     );
     assert_eq!(
         success(

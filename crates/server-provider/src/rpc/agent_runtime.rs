@@ -348,6 +348,15 @@ pub(crate) fn snapshot(record: &PersistedAgentRuntimeRecord) -> AgentSnapshotPay
         pending_permissions: Vec::new(),
         persistence: None::<AgentPersistenceHandle>,
         runtime_info,
+        last_usage: record
+            .runtime_info
+            .as_ref()
+            .and_then(|info| info.extra.as_ref())
+            .and_then(|extra| extra.get("lastUsage"))
+            .and_then(|usage| {
+                serde_json::from_value::<crate::protocol::usage::AgentUsage>(usage.clone()).ok()
+            })
+            .filter(crate::protocol::usage::AgentUsage::is_valid),
         last_error: None,
         title: record.title.clone(),
         labels: record.labels.clone(),

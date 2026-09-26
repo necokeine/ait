@@ -418,14 +418,15 @@ child；跨 Workspace 或带 open-tab label 的 child 会 detach。delegated Age
 是永久删除；close-items 独立处理每个 Agent，按 Paseo 行为只返回成功项。
 
 未恢复的 stored Agent 保守返回 `providerUnavailable:true`、`persistence:null`；成功创建或恢复的
-live Agent 返回原生 handle 和可选 activeTurn。list 的 `subscribe`/`sync`、
-timeline、流式事件与权限交互仍未接通。完整目录规则见第六阶段报告；原生执行见下节。
+live Agent 返回原生 handle 和可选 activeTurn。list 的 `subscribe`/`sync`、timeline、流式事件
+和权限交互已接通。原生执行与当前 provider 能力见下节及 [能力矩阵](../reports/provider-parity.md)。
 
-## Codex 原生纯文本执行
+## Codex / Claude Code 原生执行
 
 生产 host 默认从 PATH 启动 `codex app-server`，也可在启动 server 前通过 `AIT_SERVER_CODEX_BIN`
-指定可执行文件。Codex 自行管理认证；server 不读取或保存其 token。本轮只支持显式 read-only
-sandbox，其他 modeId 和尚未支持的参数会被拒绝。见 [ADR-032](../decisions/adr-032-server-native-provider-execution.md)。
+指定可执行文件；Claude 使用 `AIT_SERVER_CLAUDE_BIN` 或 PATH 中的 `claude`。两种 CLI
+自行管理认证。Codex 支持 read-only、auto、full-access 和经原生版本协商的 auto-review；
+Claude 模式见 [使用说明](claude-code.md)。配置、权限及能力边界见 [ADR-052](../decisions/adr-052-native-provider-capabilities.md)。
 
 先用 `workspace.open.request` 打开目录，再在已协商相应 capability 的连接中调用：
 
@@ -433,7 +434,7 @@ sandbox，其他 modeId 和尚未支持的参数会被拒绝。见 [ADR-032](../
 | --- | --- | --- |
 | `agent.create.request` | `config:{provider:"codex",cwd:"/absolute/path",modeId:"read-only"}`；可选 `agentId` UUID、`workspaceId`、`labels`；config 可加 title/model/thinkingOptionId/systemPrompt | `status:"agent_created"`、agentId、agent snapshot |
 | `agent.resume.request` | `handle:{provider:"codex",sessionId:"..."}`，必须已登记在本 server | 同一个 Agent ID、`status:"agent_resumed"`、snapshot |
-| `agent.message.send.request` | `agentId`、非空 `text`，最多 64 KiB | accepted 与 inline error；忙时拒绝第二条消息 |
+| `agent.message.send.request` | `agentId`、`text`、可选 `messageId` / `activeTurnBehavior` / 图片与附件 | accepted 与 inline error；默认中断后投递，steer 向运行中轮次追加 |
 | `agent.cancel.request` | `agentId` | 发送原生 interrupt 后的 snapshot；终态由 wait 确认 |
 | `agent.finish.wait.request` | `agentId`、可选 `timeoutMs`，1–30000，默认 30000 | idle/error/timeout、final snapshot、lastMessage、error |
 
@@ -443,10 +444,11 @@ wait 不阻塞同一连接继续发 cancel；响应按 request_id 匹配，可�
 
 创建要求活动 Project/Workspace 与 cwd 匹配；未给 workspaceId 时复用该目录最早的活动 Workspace，
 本阶段不隐式创建 placement。归档恢复只读取原生身份，不能发送消息。lastMessage 只缓存本进程
-最近完成 turn 的最后 assistant 文本，重启后不会伪装成已加载的历史。原生历史仍由 Codex 保存。
+最近完成 turn 的最后 assistant 文本，重启后不会伪装成已加载的历史。原生历史仍由各自 CLI 保存。
 
-本轮未接通 initialPrompt、附件/图片、messageId 去重、幂等键、排队/steer、创建时 Git/worktree/env/
-subscribe、resume overrides、providerOptions/MCP、权限交互及 timeline；带未支持字段会明确失败。
+现已接通 initialPrompt、图片/附件、messageId 幂等、排队/steer、providerOptions/MCP、
+工具策略、权限交互、timeline 和订阅。消息重试必须保持相同内容与投递策略；不确定是否接收
+的原生输入不会自动重发。创建时的 Git/worktree/env 操作不由 provider 会话隐式执行。
 最多 32 个 live session、64 个待处理 worker 命令、32 个并发 wait；native RPC 超时 10 秒，
 JSON 行上限 2 MiB。超过预算会返回错误或终止有问题的原生连接，不静默丢失数据。
 
@@ -618,3 +620,8 @@ resize `{type:"resize",rows,cols,intent:"claim"}` 获取尺寸控制；`intent:"
 
 完整本地启动入口与原生端说明见 [App README](../../apps/app/README.md)，协议和边界见
 [ADR-049](../decisions/adr-049-app-rust-browser-transport.md)。
+
+## Claude Code Provider
+
+独立 server 已注册 `claude`，使用本机 Claude Code 的认证、工具和原生会话。
+安装、二进制路径覆盖、模式与接口示例见 [Claude Code 使用说明](claude-code.md)。

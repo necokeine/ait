@@ -1,5 +1,7 @@
 # Agent 原生控制与 Provider 检查
 
+这是历史阶段报告；当前 Codex / Claude 能力与最新验证以[能力补齐报告](provider-parity.md)为准。
+
 实现 [ADR-041](../decisions/adr-041-agent-controls-provider-inspection.md)，继续补足独立
 server-provider，参考固定 Paseo `2c8e8a826810337492cc5a38bb0bbd705b6fb632` 和本机
 Codex 0.153.4 app-server schema。

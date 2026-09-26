@@ -42,7 +42,7 @@ impl CodexClient {
             let response = transport
                 .request("thread/read", json!({"threadId":id,"includeTurns":true}))
                 .await?;
-            let history = history(&response["thread"])?;
+            let history = history_with_images(&response["thread"], &self.images)?;
             if history.descriptor.provider_handle_id != id
                 || Path::new(&history.descriptor.cwd).canonicalize().ok()
                     != Some(
@@ -79,7 +79,7 @@ async fn list_pages(
             .await?;
         let entries = page["data"].as_array().ok_or(AgentSessionError::Failed)?;
         for entry in entries {
-            if entry["ephemeral"] == true || entry["parentThreadId"].is_string() {
+            if entry["ephemeral"] == true || parent(entry)?.is_some() {
                 continue;
             }
             let descriptor = descriptor(entry)?;
@@ -119,7 +119,15 @@ pub(super) fn descriptor(thread: &Value) -> Result<SessionDescriptor, AgentSessi
     })
 }
 
+#[cfg(test)]
 pub(super) fn history(thread: &Value) -> Result<SessionHistory, AgentSessionError> {
+    history_with_images(thread, &crate::local::images::ImageStore::default())
+}
+
+pub(super) fn history_with_images(
+    thread: &Value,
+    images: &crate::local::images::ImageStore,
+) -> Result<SessionHistory, AgentSessionError> {
     let descriptor = descriptor(thread)?;
     let created_at = timestamp(&thread["createdAt"])?;
     let config = server_domain::agent_runtime::StoredAgentConfig {
@@ -158,7 +166,7 @@ pub(super) fn history(thread: &Value) -> Result<SessionHistory, AgentSessionErro
             timestamp(&turn["startedAt"])?
         };
         for item in turn["items"].as_array().ok_or(AgentSessionError::Failed)? {
-            if let Some(entry) = discovery::timeline_item(item, id, &started)? {
+            for entry in discovery::timeline_items(item, id, &started, images)? {
                 if !identities.insert(entry.key.clone()) {
                     return Err(AgentSessionError::Failed);
                 }
@@ -167,6 +175,7 @@ pub(super) fn history(thread: &Value) -> Result<SessionHistory, AgentSessionErro
         }
     }
     Ok(SessionHistory {
+        resume_metadata: BTreeMap::new(),
         parent_id: parent(thread)?,
         descriptor,
         created_at,

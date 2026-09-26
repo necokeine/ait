@@ -32,7 +32,7 @@ use server_metadata::storage::project_config::LocalProjectConfigStore;
 use server_metadata::storage::project_icon::LocalProjectIconStore;
 use server_metadata::storage::registry::{FileBackedProjectRegistry, FileBackedWorkspaceRegistry};
 use server_metadata::storage::workspace_labels::FileWorkspaceLabelStore;
-use server_provider::local::codex::CodexClient;
+use server_provider::local::{claude::ClaudeClient, codex::CodexClient};
 use server_provider::ports::agent_runtime::AgentRuntimeRegistry;
 use server_provider::service::agent_execution::{AgentExecution, ExecutionDependencies};
 use server_provider::service::agent_manager::AgentManager;
@@ -317,9 +317,18 @@ fn compose_provider(
     let mut manager = AgentManager::new(Box::new(agent_runtime_registry.clone()))
         .with_timeline(timeline)
         .with_creations(directory.creations());
-    manager.register_client(Box::new(CodexClient::new(
-        std::env::var_os("AIT_SERVER_CODEX_BIN").map_or_else(|| "codex".into(), Into::into),
-    )))?;
+    manager.register_client(Box::new(
+        CodexClient::new(
+            std::env::var_os("AIT_SERVER_CODEX_BIN").map_or_else(|| "codex".into(), Into::into),
+        )
+        .with_image_directory(data_dir.join("agents/provider-images")),
+    ))?;
+    manager.register_client(Box::new(
+        ClaudeClient::new(
+            std::env::var_os("AIT_SERVER_CLAUDE_BIN").map_or_else(|| "claude".into(), Into::into),
+        )
+        .with_image_directory(data_dir.join("agents/provider-images")),
+    ))?;
     AgentExecution::spawn(ExecutionDependencies {
         manager,
         directory: AgentRuntimeDirectory::new(

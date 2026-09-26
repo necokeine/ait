@@ -1,6 +1,7 @@
 //! Provider session registration and recovery for the independent server.
 
 mod controls;
+mod delivery;
 pub(crate) mod native_sessions;
 mod streaming;
 
@@ -74,6 +75,8 @@ struct LiveAgent {
     pending: Option<AgentTurnEvent>,
     pending_runtime: Option<StoredAgentRuntimeInfo>,
     pending_input_at: Option<String>,
+    exclusive: bool,
+    interruption_requested: bool,
 }
 
 /// Owns live provider sessions and their durable Paseo-compatible snapshots.
@@ -190,7 +193,7 @@ impl AgentManager {
             .history(handle, &record.cwd)
             .await
             .map_err(|_| ErrorCode::AgentIo)?;
-        timeline.append(agent_id, &record.provider, &entries)?;
+        timeline.reconcile(agent_id, &record.provider, &entries)?;
         self.loaded_timelines.insert(agent_id.to_owned());
         Ok(())
     }
@@ -456,19 +459,38 @@ impl AgentManager {
         let Some(agent) = self.live.get_mut(agent_id) else {
             return Ok(());
         };
+        if agent.registered {
+            streaming::persist_handle(self.registry.as_ref(), agent_id, agent)?;
+        }
         agent.session.close().await.map_err(map_session)?;
+        if agent.registered {
+            for child in agent.session.subagents() {
+                controls::publish_subagent(
+                    self.timeline.as_ref(),
+                    agent,
+                    &crate::ports::controls::SubagentEvent::Upsert(child),
+                )
+                .map_err(|_| AgentManagerError::Registry)?;
+            }
+        }
         if !agent.registered {
             self.live.remove(agent_id);
             return Ok(());
         }
         // Metadata and attention may have changed through other narrow ports. Never replace
         // their latest record with the manager's creation-time snapshot or resurrect a deletion.
+        let durable_permissions = agent.session.persistence().is_some_and(|handle| {
+            self.clients
+                .get(&agent.record.provider)
+                .is_some_and(|client| !client.persisted_permissions(&handle).is_empty())
+        });
         self.registry
             .update(agent_id, &|current| {
                 let mut next = current.clone();
                 next.last_status = AgentRuntimeStatus::Closed;
                 if next.attention_reason
                     == Some(server_domain::agent_runtime::AgentAttentionReason::Permission)
+                    && !durable_permissions
                 {
                     next.requires_attention = false;
                     next.attention_reason = None;
@@ -486,9 +508,21 @@ impl AgentManager {
     /// # Errors
     /// Returns resume, provider, storage, or busy/read-only failures.
     pub async fn send(&mut self, agent_id: &str, text: &str) -> Result<(), AgentManagerError> {
-        if text.trim().is_empty() || text.len() > 65536 {
-            return Err(AgentManagerError::InvalidRequest);
-        }
+        self.send_input(agent_id, &crate::protocol::prompt::AgentPrompt::text(text))
+            .await
+    }
+
+    /// Submit one complete rich prompt while retaining exclusive native-turn admission.
+    /// # Errors
+    /// Returns invalid input, busy ownership, native admission or persistence failures.
+    pub async fn send_input(
+        &mut self,
+        agent_id: &str,
+        prompt: &crate::protocol::prompt::AgentPrompt,
+    ) -> Result<(), AgentManagerError> {
+        prompt
+            .validate()
+            .map_err(|_| AgentManagerError::InvalidRequest)?;
         if self.timeline.is_some() && !self.loaded_timelines.contains(agent_id) {
             self.load_timeline(agent_id)
                 .await
@@ -520,7 +554,7 @@ impl AgentManager {
             .ok_or(AgentManagerError::Session)?;
         agent.last_message = None;
         let config = record.config.unwrap_or_default();
-        if let Ok(turn) = agent.session.start_turn(text, &config).await {
+        if let Ok(turn) = agent.session.start_input(prompt, &config).await {
             agent.latest_turn = Some(turn.clone());
             agent.turn = Some(turn);
             match agent.session.runtime_info().await {
@@ -540,12 +574,29 @@ impl AgentManager {
     /// # Errors
     /// Returns native interruption failures. An idle Agent is an idempotent success.
     pub async fn cancel(&mut self, agent_id: &str) -> Result<(), AgentManagerError> {
+        if let Some(timeline) = &self.timeline {
+            timeline
+                .cancel_inputs(agent_id)
+                .map_err(|_| AgentManagerError::Registry)?;
+        }
+        if self.active_turn(agent_id).is_none() {
+            self.registry
+                .update(agent_id, &|current| {
+                    let mut next = current.clone();
+                    if next.last_status == AgentRuntimeStatus::Running {
+                        next.last_status = AgentRuntimeStatus::Idle;
+                    }
+                    next
+                })
+                .map_err(map_registry)?;
+        }
         let Some(agent) = self.live.get_mut(agent_id) else {
             return Ok(());
         };
         if let Some(turn) = &agent.turn {
             agent.session.cancel_turn(turn).await.map_err(map_session)?;
         }
+        agent.session.cancel_pending().await.map_err(map_session)?;
         Ok(())
     }
 
@@ -566,6 +617,7 @@ impl AgentManager {
                 continue;
             }
             persist_runtime(self.registry.as_ref(), &id, agent)?;
+            streaming::persist_handle(self.registry.as_ref(), &id, agent)?;
             streaming::persist_input(self.registry.as_ref(), &id, agent)?;
             streaming::drain(
                 self.registry.as_ref(),
@@ -574,20 +626,32 @@ impl AgentManager {
                 &id,
                 agent,
             )?;
+            streaming::persist_handle(self.registry.as_ref(), &id, agent)?;
             let Some(event) = &agent.pending else {
                 continue;
             };
             if matches!(event, AgentTurnEvent::Failed) {
                 agent.session.close().await.map_err(map_session)?;
+                controls::publish_children(self.timeline.as_ref(), agent)?;
             }
             let failed = matches!(event, AgentTurnEvent::Failed);
             let cancelled = matches!(event, AgentTurnEvent::Cancelled);
+            let permission = !agent.session.pending_permissions().is_empty();
+            let queued = self
+                .timeline
+                .as_ref()
+                .map(|timeline| timeline.has_queued_input(&id))
+                .transpose()
+                .map_err(|_| AgentManagerError::Registry)?
+                .unwrap_or(false);
             let now = now_timestamp();
             let committed = self
                 .registry
                 .update(&id, &|current| {
                     let mut next = current.clone();
-                    next.last_status = if failed {
+                    next.last_status = if queued {
+                        AgentRuntimeStatus::Running
+                    } else if failed {
                         AgentRuntimeStatus::Error
                     } else {
                         AgentRuntimeStatus::Idle
@@ -595,41 +659,35 @@ impl AgentManager {
                     next.last_error = failed.then(|| "Provider execution failed".to_owned());
                     next.updated_at.clone_from(&now);
                     next.last_activity_at = Some(now.clone());
-                    next.requires_attention = !cancelled;
-                    next.attention_reason = (!cancelled).then_some(if failed {
+                    next.requires_attention = permission || (!cancelled && !queued);
+                    next.attention_reason = next.requires_attention.then_some(if permission {
+                        server_domain::agent_runtime::AgentAttentionReason::Permission
+                    } else if failed {
                         server_domain::agent_runtime::AgentAttentionReason::Error
                     } else {
                         server_domain::agent_runtime::AgentAttentionReason::Finished
                     });
-                    next.attention_timestamp = (!cancelled).then(|| now.clone());
+                    next.attention_timestamp = next.requires_attention.then(|| now.clone());
                     next
                 })
                 .map_err(map_registry)?;
             if let AgentTurnEvent::Completed(message) = event {
                 agent.last_message.clone_from(message);
             }
-            if let Some(timeline) = &self.timeline {
-                let mut event = json!({"type":if failed {"turn_failed"} else if cancelled {
-                    "turn_canceled"} else {"turn_completed"}, "provider":agent.record.provider});
-                if let Some(turn) = &agent.turn {
-                    event["turnId"] = json!(turn);
-                }
-                if failed {
-                    event["error"] = json!("Provider execution failed");
-                }
-                if cancelled {
-                    event["reason"] = json!("interrupted");
-                }
-                timeline.events().publish(
-                    &id,
-                    "agent_stream",
-                    &json!({"agentId":id,
-                    "event":event,"timestamp":now}),
-                );
-            }
+            streaming::publish_terminal(
+                self.timeline.as_ref(),
+                &id,
+                agent,
+                event,
+                committed.as_ref(),
+            );
             agent.turn = None;
             agent.pending = None;
-            if !cancelled
+            agent.exclusive = false;
+            agent.interruption_requested = false;
+            if !permission
+                && !cancelled
+                && !queued
                 && committed
                     .as_ref()
                     .is_some_and(|record| record.archived_at.is_none() && !record.internal)
@@ -708,10 +766,11 @@ impl AgentManager {
         creating: bool,
     ) -> Result<PersistedAgentRuntimeRecord, AgentManagerError> {
         let inspected = session.runtime_info().await;
-        let runtime_info = match inspected {
+        let mut runtime_info = match inspected {
             Ok(info) if valid_runtime_info(&info, session.provider(), &record.provider) => info,
             Ok(_) | Err(_) => return Err(self.reject_session(agent_id, session, record).await),
         };
+        streaming::preserve_usage(&mut runtime_info, record.runtime_info.as_ref());
         let persistence = session.persistence().or(record.persistence.clone());
         if persistence.as_ref().is_some_and(|handle| {
             handle.provider != record.provider
@@ -757,6 +816,8 @@ impl AgentManager {
                         pending: None,
                         pending_runtime: None,
                         pending_input_at: None,
+                        exclusive: false,
+                        interruption_requested: false,
                     },
                 );
                 return Err(AgentManagerError::Session);
@@ -775,6 +836,8 @@ impl AgentManager {
                 pending: None,
                 pending_runtime: None,
                 pending_input_at: None,
+                exclusive: false,
+                interruption_requested: false,
             },
         );
         Ok(record)
@@ -799,6 +862,8 @@ impl AgentManager {
                     pending: None,
                     pending_runtime: None,
                     pending_input_at: None,
+                    exclusive: false,
+                    interruption_requested: false,
                 },
             );
         }
@@ -852,7 +917,9 @@ fn persist_runtime(
         registry
             .update(id, &|current| {
                 let mut next = current.clone();
-                next.runtime_info = Some(info.clone());
+                let mut info = info.clone();
+                streaming::preserve_usage(&mut info, current.runtime_info.as_ref());
+                next.runtime_info = Some(info);
                 next
             })
             .map_err(map_registry)?;

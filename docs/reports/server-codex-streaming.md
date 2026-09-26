@@ -1,5 +1,7 @@
 # Codex 流式输出与运行中追加输入
 
+这是历史阶段报告；当前 Codex / Claude 能力与最新验证以[能力补齐报告](provider-parity.md)为准。
+
 本轮只补独立 server 的 Codex adapter，不新增 RPC 方法。协议能力数不代表功能等价率，因此不据此更新与 Paseo 的百分比估算。
 
 参考固定 Paseo `2c8e8a826810337492cc5a38bb0bbd705b6fb632` 中 Codex adapter 的 delta 映射、`steerActiveTurn` 与协议事件；native wire 参照本地 Codex `0.153.4` 导出的 schema。边界见 [ADR-046](../decisions/adr-046-codex-streaming-and-steering.md)。

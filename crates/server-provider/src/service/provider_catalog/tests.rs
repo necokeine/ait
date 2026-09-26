@@ -4,6 +4,8 @@ use crate::ports::agent_session::{
 };
 use server_domain::agent_runtime::AgentPersistenceHandle;
 
+mod paseo;
+
 #[derive(Debug)]
 struct Client(bool);
 impl AgentClient for Client {

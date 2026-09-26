@@ -271,10 +271,7 @@ async fn worker_runs_cancels_waits_and_restores_durable_native_identity() {
         .unwrap();
     assert_eq!(
         execution
-            .execute(
-                "agent.message.send.request",
-                json!({"agentId":id,"text":"busy"})
-            )
+            .execute("internal.voice.send", json!({"agentId":id,"text":"busy"}))
             .await
             .unwrap()["accepted"],
         false
@@ -448,8 +445,8 @@ async fn request_validation_rejects_unimplemented_creation_and_message_semantics
     let created = create(&execution, &fixture).await;
     let id = created["agentId"].as_str().unwrap();
     for params in [
-        json!({"agentId":id,"text":"x","messageId":"dedupe"}),
-        json!({"agentId":id,"text":"x","attachments":[]}),
+        json!({"agentId":id,"text":"x","unknownMessageField":"dedupe"}),
+        json!({"agentId":id,"text":"x","unknownAttachments":[]}),
     ] {
         assert_eq!(
             execution
@@ -519,6 +516,12 @@ async fn request_validation_rejects_unimplemented_creation_and_message_semantics
     );
 }
 
+mod async_questions;
 mod controls;
+mod delivery;
+mod fork_context;
 mod streaming;
+mod subscriptions;
 mod voice;
+
+mod rich_input;

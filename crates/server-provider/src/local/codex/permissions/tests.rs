@@ -1,5 +1,7 @@
 use super::*;
 
+mod paseo;
+
 fn pending(kind: Kind) -> Pending {
     Pending {
         native_id: json!("native"),
