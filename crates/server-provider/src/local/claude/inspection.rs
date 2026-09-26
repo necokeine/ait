@@ -242,8 +242,8 @@ async fn keychain() -> Result<Option<Credentials>, AgentSessionError> {
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn keychain() -> Result<Option<Credentials>, AgentSessionError> {
-    Ok(None)
+fn keychain() -> std::future::Ready<Result<Option<Credentials>, AgentSessionError>> {
+    std::future::ready(Ok(None))
 }
 
 async fn fetch(
