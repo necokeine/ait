@@ -43,3 +43,5 @@ fn rejects_parent_traversal_and_failed_replace() {
     let mut store = FileStore::new(root.path().canonicalize().unwrap());
     assert!(store.save(&[]).is_err());
 }
+
+mod records;

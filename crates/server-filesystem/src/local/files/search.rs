@@ -131,7 +131,11 @@ fn score(path: &str, query: &str, suffix: bool) -> Option<usize> {
     let path = path.to_lowercase();
     let query = query.to_lowercase();
     if suffix {
-        return path.ends_with(&query).then_some(0);
+        return (path == query
+            || path
+                .strip_suffix(&query)
+                .is_some_and(|prefix| prefix.ends_with('/')))
+        .then_some(0);
     }
     let basename = path.rsplit('/').next().unwrap_or(&path);
     if basename == query {

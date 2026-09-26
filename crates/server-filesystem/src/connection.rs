@@ -32,3 +32,6 @@ impl Connection {
         self.files.release(id);
     }
 }
+
+#[cfg(test)]
+mod tests;

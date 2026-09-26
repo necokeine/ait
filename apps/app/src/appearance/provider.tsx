@@ -16,6 +16,7 @@ import {
 } from "@/plugins/themes";
 import { PLUGIN_THEME_NAMES, PLUGIN_THEME_PREFERENCE, THEME_TO_UNISTYLES } from "@/styles/theme";
 import { applyAppearance } from "./apply";
+import { subscribeToSystemTheme } from "./system-theme-sync";
 
 interface ContributedThemes {
   options: PluginThemeOption[];
@@ -82,6 +83,11 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.codeFontSize,
     settings.syntaxTheme,
   ]);
+
+  useEffect(() => {
+    if (isLoading || settings.theme !== "auto") return;
+    return subscribeToSystemTheme();
+  }, [isLoading, settings.theme]);
 
   const select = useCallback(
     (option: PluginThemeOption) => {

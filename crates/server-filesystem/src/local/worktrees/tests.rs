@@ -2,6 +2,8 @@ use std::process::Command;
 
 use super::*;
 
+mod paseo;
+
 struct Fixture {
     root: tempfile::TempDir,
     repository: PathBuf,

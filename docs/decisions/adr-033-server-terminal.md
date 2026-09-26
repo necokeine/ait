@@ -6,6 +6,7 @@
 - 日期：2026-09-24。
 - 授权：实现 `server-terminal`，继续实现 Paseo Terminal 相关接口。
 - 来源：`getpaseo/paseo@2c8e8a826810337492cc5a38bb0bbd705b6fb632`。
+- 修订：2026-09-26 按上游 owned-subscriptions 测试对齐相同目标的独立订阅；crate 边界不变。
 - 范围：独立 server；不修改旧 daemon、Message、Session 或 Run 的领域语义。
 
 ## 能力和依赖
@@ -59,7 +60,9 @@ visible-snapshot 默认最多 200 条历史、请求上限 500；full-snapshot �
 终端 size 改变后先发送 0x03，再发送新的快照，不拼接不同尺寸的旧增量。
 
 列表和输出订阅计入已有每连接 16 个订阅上限，支持通用 `subscription.release.request`；相同目标
-重订阅替换旧订阅。响应先入队，再发送 bootstrap。单个连接读循环每 40 ms 拉取增量，响应、释放、
+可有多个独立订阅 ID，输出分别分配 slot，逐个计入预算；通用 release 只释放指定 ID。
+专用 unsubscribe 仍按 terminalId 或 cwd/workspaceId 释放该连接的全部匹配订阅。
+响应先入队，再发送 bootstrap。单个连接读循环每 40 ms 拉取增量，响应、释放、
 事件和二进制发送保持串行顺序；释放响应后不会再发送该订阅的新消息。断线只释放 observer，
 终端进程继续运行，允许新连接恢复屏幕。退出发布 `terminal.stream.exit`。
 

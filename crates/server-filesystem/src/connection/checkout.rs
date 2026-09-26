@@ -60,12 +60,13 @@ impl PendingSubscription {
                 let Some(snapshot) = poll_diff(
                     self.service.clone(),
                     self.jobs.clone(),
-                    observation.cwd().to_owned(),
-                    observation.compare().clone(),
+                    &observation,
+                    &task_cancellation,
+                    &self.server_cancel,
                 )
                 .await
                 else {
-                    continue;
+                    break;
                 };
                 let params = match observation.update(snapshot) {
                     Ok(Some(params)) => params,
@@ -133,7 +134,7 @@ async fn subscribe(
                 .checkout
                 .clone()
                 .ok_or(ErrorCode::UnsupportedCapability)?,
-            jobs: state.jobs.clone(),
+            jobs: state.checkout_poll_jobs.clone(),
             tracker: state.tasks.clone(),
             server_cancel: state.cancellation.clone(),
             outbound,
@@ -144,11 +145,20 @@ async fn subscribe(
 async fn poll_diff(
     service: Arc<Mutex<Checkout>>,
     jobs: Arc<Semaphore>,
-    cwd: String,
-    compare: port::CheckoutDiffCompare,
+    observation: &DiffObservation,
+    cancellation: &CancellationToken,
+    server_cancel: &CancellationToken,
 ) -> Option<Result<port::CheckoutDiff, port::CheckoutRuntimeError>> {
-    let permit = jobs.try_acquire_owned().ok()?;
-    tokio::task::spawn_blocking(move || {
+    let permit = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => return None,
+        () = server_cancel.cancelled() => return None,
+        permit = jobs.acquire_owned() => permit.ok()?,
+    };
+    let cwd = observation.cwd().to_owned();
+    let compare = observation.compare().clone();
+    // Keep this task tracked until the blocking read releases its permit, even after cancellation.
+    let snapshot = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let checkout = service
             .lock()
@@ -156,5 +166,13 @@ async fn poll_diff(
         checkout.diff(&cwd, &compare)
     })
     .await
-    .ok()
+    .ok()?;
+    if cancellation.is_cancelled() || server_cancel.is_cancelled() {
+        None
+    } else {
+        Some(snapshot)
+    }
 }
+
+#[cfg(test)]
+mod tests;

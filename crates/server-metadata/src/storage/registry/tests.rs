@@ -1,5 +1,7 @@
 mod failures;
 mod fixtures;
+mod labels;
+mod paseo;
 
 use std::sync::{Arc, Mutex};
 

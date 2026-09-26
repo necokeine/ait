@@ -17,6 +17,9 @@ pub struct WorkspaceLabelStoreSnapshot {
 /// Complete after-image for one compound catalog/assignment transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceLabelStoreMutation {
+    /// Assignment target that must still be active when the transaction is staged.
+    /// Catalog rename/delete operations leave this absent to include archived records.
+    pub require_active_workspace: Option<String>,
     /// Catalog observed while planning; prevents stale application commits.
     pub expected_labels: Vec<WorkspaceLabelDefinition>,
     /// Complete catalog after-image.
@@ -28,6 +31,9 @@ pub struct WorkspaceLabelStoreMutation {
 /// Failure before commit, or an uncertain outcome that requires process restart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceLabelStoreError {
+    /// An assignment target was removed or archived after the planning snapshot.
+    #[error("workspace not found")]
+    WorkspaceNotFound,
     /// A catalog, transaction, or workspace document was invalid.
     #[error("invalid workspace label storage")]
     Invalid,
@@ -59,7 +65,8 @@ pub trait WorkspaceLabelStore: Debug + Send + Sync {
     /// Atomically publish a catalog and all assignment rewrites.
     ///
     /// # Errors
-    /// Returns conflict, invalid, I/O, or uncertain storage errors.
+    /// Returns a missing/archived assignment target, conflict, invalid, I/O,
+    /// or uncertain storage errors.
     fn commit(
         &self,
         mutation: &WorkspaceLabelStoreMutation,

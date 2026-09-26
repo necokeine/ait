@@ -6,9 +6,10 @@ These examples use only the public SDK root:
 import { createPaseoClient, type PaseoClient } from "@getpaseo/client";
 ```
 
-Each example takes the daemon WebSocket URL as an argument. In worktree dev, read it
-from the portless banner or `portless get daemon`; for the desktop-managed daemon,
-use the URL for that daemon.
+Build the repository-local library first with `npm run build:sdk` from the repository
+root. These examples target the original Paseo daemon wire protocol, using a `/ws` URL.
+The desktop-managed Rust server requires the app's Rust transport adapter; its address
+cannot be substituted directly into these examples. See the [library README](../README.md).
 
 - `quickstart.ts` runs one agent and prints its reply. It is a standalone script with the URL at the top; the rest export functions.
 - `workspaces.ts` covers creating a fresh workspace, opening by directory, refreshing, and archiving.

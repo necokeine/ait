@@ -9,6 +9,8 @@ use crate::ports::workspace_automation::{ScriptType, SetupLifecycle};
 
 use super::*;
 
+mod paseo;
+
 #[derive(Debug, Clone)]
 struct Workspaces(Arc<Mutex<Vec<PersistedWorkspaceRecord>>>);
 

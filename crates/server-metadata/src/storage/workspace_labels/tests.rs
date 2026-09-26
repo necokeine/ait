@@ -13,6 +13,9 @@ use super::{
     FileWorkspaceLabelStore, Transaction, TransactionPhase, WorkspaceState, write_json_atomic,
 };
 
+mod limits;
+mod paseo;
+
 fn workspace(labels: Option<Vec<String>>, updated_at: &str) -> PersistedWorkspaceRecord {
     PersistedWorkspaceRecord {
         workspace_id: "wks_one".to_owned(),
@@ -57,6 +60,7 @@ fn compound_catalog_and_assignment_survive_reopen() {
     let initial = store.snapshot().unwrap();
     store
         .commit(&WorkspaceLabelStoreMutation {
+            require_active_workspace: None,
             expected_labels: initial.labels,
             labels: vec![urgent()],
             workspace_updates: vec![workspace(
@@ -181,6 +185,7 @@ fn unreadable_durable_outcome_blocks_further_mutations_until_restart() {
     let initial = store.snapshot().unwrap();
     fs::create_dir(projects.join("workspace-labels.transaction.json")).unwrap();
     let result = store.commit(&WorkspaceLabelStoreMutation {
+        require_active_workspace: None,
         expected_labels: initial.labels,
         labels: vec![urgent()],
         workspace_updates: vec![workspace(
@@ -208,6 +213,7 @@ fn stale_catalog_and_invalid_documents_are_rejected() {
     store.initialize().unwrap();
     assert_eq!(
         store.commit(&WorkspaceLabelStoreMutation {
+            require_active_workspace: None,
             expected_labels: vec![urgent()],
             labels: Vec::new(),
             workspace_updates: Vec::new(),

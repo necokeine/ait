@@ -128,11 +128,7 @@ impl TerminalConnection {
             Ok(request) => request,
             Err(error) => return respond(outbound, id, Err(error.into())),
         };
-        let replaced = self
-            .streams
-            .values()
-            .any(|stream| stream.terminal == request.terminal_id);
-        if available == 0 && !replaced {
+        if available == 0 {
             return respond(outbound, id, Err(ErrorCode::ResourceExhausted));
         }
         let slot = (0..=u8::MAX)
@@ -168,8 +164,6 @@ impl TerminalConnection {
                 );
             }
         };
-        self.streams
-            .retain(|_, stream| stream.terminal != request.terminal_id);
         let subscription = Uuid::new_v4().to_string();
         respond(
             outbound,
@@ -205,7 +199,7 @@ impl TerminalConnection {
             Ok(filter) if filter.cwd.is_some() => filter,
             _ => return respond(outbound, id, Err(ErrorCode::InvalidMessage)),
         };
-        if available == 0 && !self.lists.values().any(|listing| listing.filter == filter) {
+        if available == 0 {
             return respond(outbound, id, Err(ErrorCode::ResourceExhausted));
         }
         let requested = filter.clone();
@@ -213,7 +207,6 @@ impl TerminalConnection {
             Ok(initial) => initial,
             Err(error) => return respond(outbound, id, Err(error)),
         };
-        self.lists.retain(|_, listing| listing.filter != filter);
         let subscription = Uuid::new_v4().to_string();
         respond(
             outbound,
@@ -464,3 +457,6 @@ pub fn maintain(state: &std::sync::Arc<Shared>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests;

@@ -3,6 +3,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+mod paseo;
+
 use super::{LocalCheckout, is_below};
 use crate::ports::checkout::{
     CheckoutBranchResolution, CheckoutBranchSource, CheckoutCommitFileStatus, CheckoutDiffCompare,

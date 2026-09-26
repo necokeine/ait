@@ -8,6 +8,9 @@ use tokio_tungstenite::tungstenite::Message;
 use super::transport::{Socket, connect};
 use super::{ready, start, terminate};
 
+#[path = "terminal/paseo.rs"]
+mod paseo;
+
 struct Client {
     socket: Socket,
     frames: Vec<Vec<u8>>,
@@ -156,6 +159,12 @@ async fn terminal_methods_stream_frames_and_connection_owned_release_work_end_to
         .request(
             "subscription.release.request",
             json!({"subscriptionId":size_snapshot["result"]["subscriptionId"]}),
+        )
+        .await;
+    client
+        .request(
+            "subscription.release.request",
+            json!({"subscriptionId":subscribed["result"]["subscriptionId"]}),
         )
         .await;
     client
