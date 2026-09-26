@@ -2,6 +2,7 @@ use super::*;
 
 fn child(id: &str, parent: &str) -> NativeSubagent {
     NativeSubagent {
+        persistence: None,
         id: id.to_owned(),
         parent_id: parent.to_owned(),
         cwd: "/tmp".to_owned(),

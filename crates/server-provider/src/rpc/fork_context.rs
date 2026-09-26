@@ -48,44 +48,65 @@ pub(crate) fn export(
             append(&mut text, &format!("{label}: {value}\n"))?;
         }
     }
-    text.push('\n');
+    append(&mut text, "\n")?;
+    append_body(&mut text, selected)?;
+    append(&mut text, "</chat-history-summary>")?;
+    super::timeline::bounded(json!({"agentId":request.agent_id,"attachment":{
+        "type":"text","mimeType":"text/plain","contextKind":"chat_history","title":"Chat history","text":text},
+        "itemCount":selected.len(),"boundaryCursor":request.boundary_cursor,"boundaryMessageId":message,"error":null}))
+}
+
+fn append_body(text: &mut String, selected: &[Row]) -> Result<(), ErrorCode> {
+    let mut rows = selected.iter().peekable();
+    let mut message = String::new();
     let mut body = false;
-    let mut assistant = false;
-    for row in selected {
+    while let Some(row) = rows.next() {
         let item = &row.entry.item;
         match item["type"].as_str() {
-            Some("user_message" | "assistant_message") => {
-                let value = item["text"].as_str().unwrap_or("").trim();
-                if value.is_empty() {
-                    continue;
+            Some("user_message") => {
+                body |= append_message(text, "[User] ", item["text"].as_str().unwrap_or(""))?;
+            }
+            Some("assistant_message") => {
+                message.clear();
+                append(&mut message, item["text"].as_str().unwrap_or(""))?;
+                let mut previous = row;
+                // Only adjacent source fragments can be joined. A user, tool, different
+                // message or missing sequence must remain between the surrounding text.
+                while let Some(next) = rows.next_if(|next| {
+                    next.entry.item["type"] == "assistant_message"
+                        && next.entry.key == row.entry.key
+                        && next.entry.turn_id == row.entry.turn_id
+                        && previous.seq.checked_add(1) == Some(next.seq)
+                }) {
+                    append(&mut message, next.entry.item["text"].as_str().unwrap_or(""))?;
+                    previous = next;
                 }
-                let is_assistant = item["type"] == "assistant_message";
-                let label = if is_assistant {
-                    if assistant { "" } else { "[Assistant] " }
-                } else {
-                    "[User] "
-                };
-                append(&mut text, &format!("{label}{value}\n"))?;
-                assistant = is_assistant;
-                body = true;
+                body |= append_message(text, "[Assistant] ", &message)?;
             }
             Some("tool_call") => {
                 // Raw tool inputs, plugin payloads and reasoning are not context attachment text.
                 let name = item["name"].as_str().unwrap_or("Tool");
-                append(&mut text, &format!("[{}]\n", name.trim()))?;
-                assistant = false;
+                append(text, &format!("[{}]\n", name.trim()))?;
                 body = true;
             }
             _ => {}
         }
     }
     if !body {
-        append(&mut text, "No chat history to display.\n")?;
+        append(text, "No chat history to display.\n")?;
     }
-    text.push_str("</chat-history-summary>");
-    super::timeline::bounded(json!({"agentId":request.agent_id,"attachment":{
-        "type":"text","mimeType":"text/plain","contextKind":"chat_history","title":"Chat history","text":text},
-        "itemCount":selected.len(),"boundaryCursor":request.boundary_cursor,"boundaryMessageId":message,"error":null}))
+    Ok(())
+}
+
+fn append_message(output: &mut String, label: &str, text: &str) -> Result<bool, ErrorCode> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(false);
+    }
+    append(output, label)?;
+    append(output, text)?;
+    append(output, "\n")?;
+    Ok(true)
 }
 
 fn append(output: &mut String, text: &str) -> Result<(), ErrorCode> {

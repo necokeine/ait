@@ -29,6 +29,23 @@ impl CodexClient {
         spec: &AgentSessionSpec,
     ) -> Result<(), AgentSessionError> {
         super::validate(spec)?;
+        if spec.config.mode_id.as_deref() == Some("auto-review")
+            || spec
+                .config
+                .feature_values
+                .as_ref()
+                .is_some_and(|values| values.contains_key("plan_mode"))
+        {
+            let mut transport = Transport::spawn(&self.program, &spec.cwd, self.deadline)?;
+            let result = async {
+                transport.initialize().await?;
+                self.inspect_workflows(&mut transport).await?;
+                self.validate_workflows(&spec.config)
+            }
+            .await;
+            transport.close().await?;
+            result?;
+        }
         if !fast(&spec.config) {
             return Ok(());
         }
@@ -47,10 +64,20 @@ impl CodexClient {
     }
 
     pub(super) async fn native_commands(&self, cwd: &str) -> Result<Vec<Value>, AgentSessionError> {
-        let response = self
-            .query(cwd, "skills/list", json!({"cwds":[cwd],"forceReload":true}))
-            .await?;
-        Ok(skills(&response,cwd)?.into_iter().map(|skill|json!({"name":skill.name,"description":skill.description,"argumentHint":"","kind":"skill"})).collect())
+        let mut transport = Transport::spawn(&self.program, cwd, self.deadline)?;
+        let result = async {
+            transport.initialize().await?;
+            self.inspect_workflows(&mut transport).await?;
+            let response = transport.request("skills/list", json!({"cwds":[cwd],"forceReload":true})).await?;
+            let mut commands: Vec<_> = skills(&response,cwd)?.into_iter().map(|skill|json!({"name":skill.name,"description":skill.description,"argumentHint":"","kind":"skill"})).collect();
+            commands.push(json!({"name":"compact","description":"Summarize the native conversation context","argumentHint":"","kind":"command"}));
+            if self.goals() { commands.push(json!({"name":"goal","description":"Set, pause, resume or clear the native goal","argumentHint":"[<objective>|pause|resume|clear]","kind":"command"})); }
+            commands.extend(super::prompts::list(&super::prompts::directory()?)?);
+            commands.sort_by(|a,b| a["name"].as_str().cmp(&b["name"].as_str()));
+            Ok(commands)
+        }.await;
+        transport.close().await?;
+        result
     }
 
     pub(super) async fn native_subagents(
@@ -91,6 +118,7 @@ async fn child_pages(transport: &mut Transport) -> Result<Vec<NativeSubagent>, A
             };
             let id = facts.provider_handle_id;
             let child = NativeSubagent {
+                persistence: None,
                 parent_id: parent,
                 cwd: facts.cwd.clone(),
                 id: id.clone(),
@@ -128,6 +156,7 @@ pub(super) struct Skill {
 }
 
 pub(super) fn skills(response: &Value, cwd: &str) -> Result<Vec<Skill>, AgentSessionError> {
+    let cwd = std::fs::canonicalize(cwd).map_err(|_| AgentSessionError::Failed)?;
     let mut result = BTreeMap::new();
     for entry in response["data"]
         .as_array()
@@ -136,7 +165,8 @@ pub(super) fn skills(response: &Value, cwd: &str) -> Result<Vec<Skill>, AgentSes
         if entry["cwd"]
             .as_str()
             .and_then(|path| std::fs::canonicalize(path).ok())
-            != std::fs::canonicalize(cwd).ok()
+            .as_ref()
+            != Some(&cwd)
         {
             continue;
         }
@@ -191,24 +221,42 @@ pub(super) fn features(config: &StoredAgentConfig) -> Vec<Value> {
     ]
 }
 
-pub(super) fn policy(config: &StoredAgentConfig) -> (&'static str, &'static str, Value) {
-    match config.mode_id.as_deref().unwrap_or("read-only") {
-        "auto" => (
-            "on-request",
-            "workspace-write",
-            json!({"type":"workspaceWrite","networkAccess":false}),
-        ),
-        "full-access" => (
-            "never",
-            "danger-full-access",
-            json!({"type":"dangerFullAccess"}),
-        ),
-        _ => (
-            "never",
-            "read-only",
-            json!({"type":"readOnly","networkAccess":false}),
-        ),
+pub(super) fn policy(config: &StoredAgentConfig) -> (Value, &str, Value) {
+    let (approval, sandbox) = match config.mode_id.as_deref().unwrap_or("read-only") {
+        "auto" | "auto-review" => ("on-request", "workspace-write"),
+        "full-access" => ("never", "danger-full-access"),
+        _ => ("never", "read-only"),
+    };
+    let options = config.provider_options.as_ref();
+    let mut approval = options
+        .and_then(|options| options.get("approval_policy"))
+        .cloned()
+        .unwrap_or_else(|| json!(approval));
+    crate::local::configuration::complete_codex_approval(&mut approval);
+    let sandbox = options
+        .and_then(|options| options.get("sandbox_mode"))
+        .and_then(Value::as_str)
+        .unwrap_or(sandbox);
+    let mut policy = match sandbox {
+        "workspace-write" => json!({"type":"workspaceWrite","networkAccess":false}),
+        "danger-full-access" => json!({"type":"dangerFullAccess"}),
+        _ => json!({"type":"readOnly","networkAccess":false}),
+    };
+    if sandbox == "workspace-write"
+        && let Some(settings) = options.and_then(|options| options.get("sandbox_workspace_write"))
+    {
+        for (source, target) in [
+            ("writable_roots", "writableRoots"),
+            ("network_access", "networkAccess"),
+            ("exclude_slash_tmp", "excludeSlashTmp"),
+            ("exclude_tmpdir_env_var", "excludeTmpdirEnvVar"),
+        ] {
+            if let Some(value) = settings.get(source) {
+                policy[target] = value.clone();
+            }
+        }
     }
+    (approval, sandbox, policy)
 }
 
 #[cfg(test)]

@@ -1,6 +1,8 @@
 //! Durable append-only display projection. Native Provider history remains authoritative.
 
+pub(crate) mod inbox;
 mod progress;
+mod subagents;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -89,6 +91,8 @@ impl Timeline {
             || version == 1 && application == 0x4154_544C && tables == 2
             || version == 2 && application == 0x4154_544C && tables == 3
             || version == 3 && application == 0x4154_544C && tables == 4)
+            && !(version == 4 && application == 0x4154_544C && tables == 5)
+            && !(version == 5 && application == 0x4154_544C && tables == 6)
         {
             return Err(ErrorCode::UnsupportedFormat);
         }
@@ -106,7 +110,13 @@ impl Timeline {
                 identity TEXT NOT NULL, native_key TEXT NOT NULL, provider TEXT NOT NULL,
                 entry TEXT NOT NULL, PRIMARY KEY(agent,seq), UNIQUE(agent,identity));
             CREATE INDEX IF NOT EXISTS progress_native ON progress(agent,native_key,seq);
-            PRAGMA user_version=3; PRAGMA application_id=1096045644; COMMIT;",
+            CREATE TABLE IF NOT EXISTS input_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent TEXT NOT NULL, message TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                prompt TEXT, state TEXT NOT NULL, UNIQUE(agent,message));
+            CREATE INDEX IF NOT EXISTS queued_inputs ON input_receipts(state,agent,seq);
+            CREATE TABLE IF NOT EXISTS provider_subagents(agent TEXT NOT NULL, child TEXT NOT NULL,
+                descriptor TEXT NOT NULL, PRIMARY KEY(agent,child));
+            PRAGMA user_version=5; PRAGMA application_id=1096045644; COMMIT;",
             )
             .map_err(io)?;
         Ok(Self {
@@ -221,6 +231,19 @@ impl Timeline {
     fn publish(&self, agent: &str, provider: &str, epoch: &str, entries: &[(u64, NativeItem)]) {
         // The caller retains the database lock so concurrent commits cannot reorder events.
         for (seq, entry) in entries {
+            if let Some((parent, child)) = agent
+                .strip_prefix("subagent:")
+                .and_then(|scope| scope.split_once(':'))
+            {
+                self.events.publish(
+                    parent,
+                    "agent.provider_subagents.update",
+                    &json!({
+                    "kind":"timeline","parentAgentId":parent,"subagentId":child,"provider":provider,
+                    "item":entry.item,"timestamp":entry.timestamp,"seq":seq,"epoch":epoch}),
+                );
+                continue;
+            }
             let mut event = json!({"type":"timeline","provider":provider,"item":entry.item});
             if let Some(turn) = &entry.turn_id {
                 event["turnId"] = json!(turn);

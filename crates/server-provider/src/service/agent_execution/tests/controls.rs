@@ -138,7 +138,7 @@ async fn controls_validate_atomically_apply_next_turn_and_persist() {
         .execute("agent.commands.list.request", json!({"agentId":id}))
         .await
         .unwrap();
-    assert_eq!(commands["commands"][0]["name"], "review");
+    assert_has_review(&commands);
     let draft = execution
         .execute(
             "agent.commands.list.request",
@@ -568,4 +568,14 @@ async fn denied_permission_is_resolved_when_completion_races_optional_interrupt(
         json!([])
     );
     execution.shutdown().await.unwrap();
+}
+
+fn assert_has_review(commands: &Value) {
+    assert!(
+        commands["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command["name"] == "review")
+    );
 }

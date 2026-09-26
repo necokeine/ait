@@ -25,6 +25,7 @@ pub(super) struct Transport {
     sequence: u64,
     deadline: Duration,
     closed: bool,
+    pub(super) user_agent: Option<String>,
 }
 
 impl Transport {
@@ -33,7 +34,19 @@ impl Transport {
         cwd: &str,
         deadline: Duration,
     ) -> Result<Self, AgentSessionError> {
+        Self::spawn_with_goals(program, cwd, deadline, false)
+    }
+
+    pub(super) fn spawn_with_goals(
+        program: &Path,
+        cwd: &str,
+        deadline: Duration,
+        goals: bool,
+    ) -> Result<Self, AgentSessionError> {
         let mut command = Command::new(program);
+        if goals {
+            command.args(["--enable", "goals"]);
+        }
         command.arg("app-server")
             .current_dir(cwd)
             .stdin(Stdio::piped())
@@ -66,6 +79,25 @@ impl Transport {
                 let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
                     break;
                 };
+                if value["method"] == "mcpServer/elicitation/request"
+                    && value.get("id").is_some()
+                    && (!matches!(
+                        value["params"]["mode"].as_str(),
+                        Some("form" | "openai/form" | "openaiForm")
+                    ) || crate::local::elicitation::questions(
+                        &value["params"]["requestedSchema"],
+                    )
+                    .is_err())
+                {
+                    let rejection = json!({"id":value["id"],"result":{"action":"decline","content":null,"_meta":null}});
+                    if !matches!(
+                        tokio::time::timeout(deadline, write(&request_input, &rejection)).await,
+                        Ok(Ok(()))
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
                 if value.get("method").is_some()
                     && value.get("id").is_some()
                     && !value["method"]
@@ -83,20 +115,7 @@ impl Transport {
                 }
                 // Retain the supported v2 stream in order; legacy mirror notifications must
                 // not duplicate the same native output. The bounded channel applies backpressure.
-                if value.get("id").is_none()
-                    && !matches!(
-                        value["method"].as_str(),
-                        Some(
-                            "turn/completed"
-                                | "item/completed"
-                                | "item/started"
-                                | "item/agentMessage/delta"
-                                | "item/reasoning/summaryTextDelta"
-                                | "item/commandExecution/outputDelta"
-                                | "item/fileChange/outputDelta"
-                        )
-                    )
-                {
+                if value.get("id").is_none() && !retained(value["method"].as_str()) {
                     continue;
                 }
                 if sender.send(value).await.is_err() {
@@ -113,18 +132,21 @@ impl Transport {
             sequence: 0,
             deadline,
             closed: false,
+            user_agent: None,
         })
     }
 
     pub(super) async fn initialize(&mut self) -> Result<(), AgentSessionError> {
-        self.request(
-            "initialize",
-            json!({
-                "clientInfo":{"name":"ait-server","version":env!("CARGO_PKG_VERSION")},
-                "capabilities":{"experimentalApi":true}
-            }),
-        )
-        .await?;
+        let response = self
+            .request(
+                "initialize",
+                json!({
+                    "clientInfo":{"name":"ait-server","version":env!("CARGO_PKG_VERSION")},
+                    "capabilities":{"experimentalApi":true}
+                }),
+            )
+            .await?;
+        self.user_agent = response["userAgent"].as_str().map(str::to_owned);
         let result = tokio::time::timeout(
             self.deadline,
             write(&self.input, &json!({"method":"initialized","params":{}})),
@@ -276,4 +298,29 @@ async fn write(input: &Mutex<ChildStdin>, value: &Value) -> Result<(), AgentSess
         .await
         .map_err(|_| AgentSessionError::Failed)?;
     input.flush().await.map_err(|_| AgentSessionError::Failed)
+}
+
+#[cfg(all(test, unix))]
+mod tests;
+
+fn retained(method: Option<&str>) -> bool {
+    matches!(
+        method,
+        Some(
+            "turn/completed"
+                | "thread/started"
+                | "turn/plan/updated"
+                | "thread/goal/updated"
+                | "thread/goal/cleared"
+                | "turn/started"
+                | "thread/tokenUsage/updated"
+                | "serverRequest/resolved"
+                | "item/completed"
+                | "item/started"
+                | "item/agentMessage/delta"
+                | "item/reasoning/summaryTextDelta"
+                | "item/commandExecution/outputDelta"
+                | "item/fileChange/outputDelta"
+        )
+    )
 }

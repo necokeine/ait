@@ -187,6 +187,9 @@ impl AgentManager {
     }
 
     pub(super) async fn stop_native(&mut self, id: &str) -> Result<(), ErrorCode> {
+        if let Some(timeline) = &self.timeline {
+            timeline.cancel_inputs(id)?;
+        }
         if self.active_turn(id).is_some() {
             self.cancel(id).await.map_err(|_| ErrorCode::AgentIo)?;
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -239,6 +242,9 @@ impl AgentManager {
 }
 
 pub(super) fn apply_history(record: &mut PersistedAgentRuntimeRecord, history: &SessionHistory) {
+    if let Some(handle) = &mut record.persistence {
+        handle.metadata = Some(history.resume_metadata.clone());
+    }
     record.archived_at = None;
     record.last_status = AgentRuntimeStatus::Idle;
     record.last_error = None;
@@ -259,8 +265,19 @@ pub(super) fn apply_history(record: &mut PersistedAgentRuntimeRecord, history: &
             .config
             .as_ref()
             .and_then(|config| config.mode_id.clone())
-            .or_else(|| Some("read-only".to_owned())),
-        extra: None,
+            .or_else(|| {
+                Some(
+                    if record.provider == "claude" {
+                        "default"
+                    } else {
+                        "read-only"
+                    }
+                    .to_owned(),
+                )
+            }),
+        extra: history.resume_metadata.get("lastUsage").map(|usage| {
+            std::collections::BTreeMap::from([("lastUsage".to_owned(), usage.clone())])
+        }),
     });
 }
 

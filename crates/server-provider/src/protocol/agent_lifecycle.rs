@@ -136,6 +136,9 @@ pub struct AgentSnapshotPayload {
     /// Last provider runtime facts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_info: Option<AgentRuntimeInfo>,
+    /// Latest provider-reported usage, retained across disconnects and native resume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_usage: Option<crate::protocol::usage::AgentUsage>,
     /// Last provider error.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,

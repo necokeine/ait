@@ -38,6 +38,7 @@ impl ExecutionState {
             .poll()
             .await
             .map_err(|error| map_manager(&error))?;
+        self.manager.dispatch_pending_inputs().await?;
         match method {
             "internal.voice.send" | "internal.voice.status" | "internal.voice.cancel" => {
                 self.voice(method, params).await
@@ -89,7 +90,9 @@ impl ExecutionState {
                 let request: AgentIdRequest = decode(params)?;
                 let id = self.resolve(&request.agent_id)?;
                 let snapshot = self.snapshot(&id)?;
-                let status = if self.manager.active_turn(&id).is_some() {
+                let status = if self.manager.active_turn(&id).is_some()
+                    || self.manager.has_pending_input(&id)?
+                {
                     "running"
                 } else if snapshot["status"] == "error" || snapshot["status"] == "running" {
                     "error"
@@ -241,8 +244,18 @@ impl ExecutionState {
         let result = json!({"agent":self.snapshot(&id)?});
         let mut progress =
             creations.advance(&admission.snapshot, "agent_ready", Some(result), None)?;
-        if let Some(prompt) = request.initial_prompt {
-            if let Err(error) = self.manager.send(&id, &prompt).await {
+        if request.initial_prompt.is_some()
+            || !request.images.is_empty()
+            || !request.attachments.is_empty()
+        {
+            let prompt = crate::protocol::prompt::AgentPrompt {
+                text: request.initial_prompt.unwrap_or_default(),
+                images: request.images,
+                attachments: request.attachments,
+                client_message_id: request.client_message_id,
+                output_schema: request.output_schema,
+            };
+            if let Err(error) = self.manager.send_input(&id, &prompt).await {
                 creations.advance(&progress, "failed", None, Some(error.to_string()))?;
                 return Err(map_manager(&error));
             }
@@ -285,7 +298,18 @@ impl ExecutionState {
     }
 
     async fn send(&mut self, params: Value) -> Result<Value, ErrorCode> {
-        only(&params, &["agentId", "text", "activeTurnBehavior"])?;
+        only(
+            &params,
+            &[
+                "agentId",
+                "text",
+                "activeTurnBehavior",
+                "messageId",
+                "images",
+                "attachments",
+                "outputSchema",
+            ],
+        )?;
         let request: SendRequest = decode(params)?;
         let id = self.resolve(&request.agent_id)?;
         let record = self
@@ -294,13 +318,11 @@ impl ExecutionState {
             .map_err(|_| ErrorCode::AgentIo)?
             .ok_or(ErrorCode::AgentNotFound)?;
         self.workspace(record.workspace_id.as_deref(), &record.cwd)?;
-        let result = if request.active_turn_behavior.is_some() {
-            self.manager.send_steering(&id, &request.text).await
-        } else {
-            self.manager.send(&id, &request.text).await
-        };
+        let behavior = request.active_turn_behavior.unwrap_or_default();
+        let prompt = request.into_prompt();
+        let result = self.manager.deliver(&id, &prompt, behavior).await;
         Ok(
-            json!({"agentId":id,"accepted":result.is_ok(),"error":result.err().map(|error| error.to_string())}),
+            json!({"agentId":id,"accepted":result.is_ok(),"error":result.err().map(server_model::ErrorCode::message)}),
         )
     }
 
@@ -449,6 +471,10 @@ fn parse_creation(params: Value) -> Result<(CreateRequest, Value), ErrorCode> {
             "idempotencyKey",
             "subscribe",
             "initialPrompt",
+            "images",
+            "attachments",
+            "clientMessageId",
+            "outputSchema",
         ],
     )?;
     only(
@@ -462,6 +488,9 @@ fn parse_creation(params: Value) -> Result<(CreateRequest, Value), ErrorCode> {
             "thinkingOptionId",
             "systemPrompt",
             "featureValues",
+            "providerOptions",
+            "mcpServers",
+            "toolPolicy",
         ],
     )?;
     let mut intent = params.clone();
@@ -470,14 +499,21 @@ fn parse_creation(params: Value) -> Result<(CreateRequest, Value), ErrorCode> {
         object.remove("subscribe");
     }
     let request: CreateRequest = decode(params)?;
-    if request
-        .initial_prompt
-        .as_ref()
-        .is_some_and(|text| text.trim().is_empty() || text.len() > 65536)
+    if request.initial_prompt.is_some()
+        || !request.images.is_empty()
+        || !request.attachments.is_empty()
     {
-        return Err(ErrorCode::InvalidMessage);
+        crate::protocol::prompt::AgentPrompt {
+            text: request.initial_prompt.clone().unwrap_or_default(),
+            images: request.images.clone(),
+            attachments: request.attachments.clone(),
+            client_message_id: request.client_message_id.clone(),
+            output_schema: request.output_schema.clone(),
+        }
+        .validate()
+        .map_err(|_| ErrorCode::InvalidMessage)?;
     }
-    if request.config.provider != "codex" {
+    if !matches!(request.config.provider.as_str(), "codex" | "claude") {
         return Err(ErrorCode::UnsupportedCapability);
     }
     if !Path::new(&request.config.cwd).is_absolute()

@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn generated_images_and_mcp_images_have_stable_sanitized_history() {
+    let root = tempfile::tempdir().unwrap();
+    let images = crate::local::images::ImageStore::new(root.path().join("images"));
+    let generation =
+        json!({"id":"image","type":"imageGeneration","status":"completed","result":"aGVsbG8="});
+    let first = timeline_items(&generation, "turn", "time", &images).unwrap();
+    assert_eq!(
+        first,
+        timeline_items(&generation, "turn", "time", &images).unwrap()
+    );
+    assert_eq!(first[0].item["type"], "assistant_message");
+    let mcp = json!({"id":"tool","type":"mcpToolCall","status":"completed","result":{"content":[
+        {"type":"image","mimeType":"image/png","data":"aGVsbG8="},{"type":"text","text":"caption"}]}});
+    let items = timeline_items(&mcp, "turn", "time", &images).unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(!items[0].item.to_string().contains("aGVsbG8="));
+    assert_eq!(items[1].key, "native:turn:tool:image:0");
+    assert_eq!(items[1].item["text"], first[0].item["text"]);
+}
+
+#[test]
 fn native_items_keep_stable_source_identity_and_supported_display_shapes() {
     for (native, expected) in [
         (
@@ -16,10 +37,7 @@ fn native_items_keep_stable_source_identity_and_supported_display_shapes() {
             "reasoning",
         ),
         (json!({"type":"contextCompaction","id":"c"}), "compaction"),
-        (
-            json!({"type":"plan","id":"p","text":"plan"}),
-            "notification",
-        ),
+        (json!({"type":"plan","id":"p","text":"plan"}), "tool_call"),
         (
             json!({"type":"commandExecution","id":"t","command":"pwd","status":"completed"}),
             "tool_call",

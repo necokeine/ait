@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::json;
 
+mod paseo;
+
 fn entry(text: &str) -> NativeItem {
     NativeItem {
         key: "native:t:a".into(),
@@ -122,7 +124,7 @@ fn version_two_migration_preserves_data_and_progress_failure_is_atomic() {
         .database
         .lock()
         .unwrap()
-        .execute_batch("DROP TABLE progress; PRAGMA user_version=2;")
+        .execute_batch("DROP TABLE progress; DROP TABLE input_receipts; DROP TABLE provider_subagents; PRAGMA user_version=2;")
         .unwrap();
     drop(timeline);
     let timeline = Timeline::open(&path).unwrap();

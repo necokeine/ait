@@ -34,12 +34,12 @@ impl ExecutionState {
                 let request: RewindRequest = decode(params)?;
                 let id = self.resolve(&request.agent_id)?;
                 self.active_workspace(&id)?;
-                let result = if request.mode != "conversation" {
-                    Err(server_model::ErrorCode::UnsupportedCapability)
-                } else if request.message_id.is_empty() || request.message_id.len() > 512 {
+                let result = if request.message_id.is_empty() || request.message_id.len() > 512 {
                     Err(server_model::ErrorCode::InvalidMessage)
                 } else {
-                    self.manager.rewind(&id, &request.message_id).await
+                    self.manager
+                        .rewind_mode(&id, &request.message_id, &request.mode)
+                        .await
                 };
                 Ok(
                     json!({"agentId":id,"ok":result.is_ok(),"error":result.err().map(|error|format!("{error:?}"))}),
@@ -89,7 +89,16 @@ impl ExecutionState {
             "config" => {
                 only(
                     value,
-                    &["modelId", "thinkingOptionId", "modeId", "featureValues"],
+                    &[
+                        "modelId",
+                        "thinkingOptionId",
+                        "modeId",
+                        "featureValues",
+                        "providerOptions",
+                        "mcpServers",
+                        "toolPolicy",
+                        "systemPrompt",
+                    ],
                 )?;
                 value.clone()
             }
@@ -129,6 +138,9 @@ impl ExecutionState {
                     "thinkingOptionId",
                     "systemPrompt",
                     "featureValues",
+                    "providerOptions",
+                    "mcpServers",
+                    "toolPolicy",
                 ],
             )?;
         }
@@ -205,13 +217,21 @@ impl ExecutionState {
             .iter()
             .find(|child| child.id == child_id)
             .ok_or(ErrorCode::AgentNotFound)?;
-        let history = self.manager.child_history(&id, child).await?;
+        let history = self.manager.child_history(&id, child).await;
         let timeline = self
             .manager
             .timeline()
             .ok_or(ErrorCode::UnsupportedCapability)?;
         let scope = format!("subagent:{id}:{child_id}");
-        timeline.reconcile(&scope, &record.provider, &history.entries)?;
+        let (_, existing) = timeline.read(&scope)?;
+        match history {
+            Ok(history) if !self.manager.live_child(&id, &child_id) || existing.is_empty() => {
+                timeline.reconcile(&scope, &record.provider, &history.entries)?;
+            }
+            Ok(_) => {}
+            Err(_) if self.manager.live_child(&id, &child_id) || !existing.is_empty() => {}
+            Err(error) => return Err(error.into()),
+        }
         let (epoch, rows) = timeline.read(&scope)?;
         let fetch = FetchRequest {
             agent_id: id.clone(),

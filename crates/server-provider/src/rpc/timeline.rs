@@ -25,10 +25,13 @@ pub(crate) fn fetch(
         .as_ref()
         .is_some_and(|cursor| cursor.epoch != epoch);
     let next = rows.last().map_or(1, |row| row.seq + 1);
-    let gap = request
-        .cursor
-        .as_ref()
-        .is_some_and(|cursor| !stale && cursor.seq >= next && next > 1);
+    let gap = direction == Direction::After
+        && request.cursor.as_ref().is_some_and(|cursor| {
+            !stale
+                && rows.first().is_some_and(|first| {
+                    cursor.seq < first.seq.saturating_sub(1) || cursor.seq >= next
+                })
+        });
     let reset = stale || gap;
     let cursor = request.cursor.as_ref().map_or(0, |cursor| cursor.seq);
     let start = if !reset && direction == Direction::After {

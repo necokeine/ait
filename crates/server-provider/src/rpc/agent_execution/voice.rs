@@ -5,8 +5,23 @@ use super::{ErrorCode, ExecutionState, map_manager, only};
 impl ExecutionState {
     pub(super) async fn voice(&mut self, method: &str, params: Value) -> Result<Value, ErrorCode> {
         if method == "internal.voice.send" {
-            let mut receipt = self.send(params).await?;
+            only(&params, &["agentId", "text"])?;
+            let request: crate::protocol::agent_execution::SendRequest = super::decode(params)?;
+            let id = self.resolve(&request.agent_id)?;
+            let record = self
+                .registry
+                .get(&id)
+                .map_err(|_| ErrorCode::AgentIo)?
+                .ok_or(ErrorCode::AgentNotFound)?;
+            self.workspace(record.workspace_id.as_deref(), &record.cwd)?;
+            let result = if self.manager.has_pending_input(&id)? {
+                Err(super::AgentManagerError::Busy)
+            } else {
+                self.manager.send_input(&id, &request.into_prompt()).await
+            };
+            let mut receipt = json!({"agentId":id,"accepted":result.is_ok(),"error":result.err().map(|error|error.to_string())});
             if receipt["accepted"] == true {
+                self.manager.claim_exclusive_turn(&id)?;
                 let id = receipt["agentId"].as_str().ok_or(ErrorCode::AgentIo)?;
                 let turn = self.manager.active_turn(id).ok_or(ErrorCode::AgentIo)?;
                 receipt["turnId"] = json!(turn);

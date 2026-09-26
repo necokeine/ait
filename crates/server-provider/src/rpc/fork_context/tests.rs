@@ -1,6 +1,8 @@
 use super::*;
 use crate::protocol::timeline::{Cursor, NativeItem};
 
+mod paseo;
+
 fn row(seq: u64, item: Value) -> Row {
     Row {
         seq,
@@ -44,7 +46,7 @@ fn attachments_use_inclusive_boundaries_and_omit_private_payloads() {
     let agent = json!({"title":"Agent title","cwd":"/tmp"});
     let exported = export(&request(), "epoch", &rows, &agent).unwrap();
     let text = exported["attachment"]["text"].as_str().unwrap();
-    assert!(text.contains("[Assistant] first\nsecond\n[Read]"));
+    assert!(text.contains("[Assistant] first\n[Assistant] second\n[Read]"));
     assert!(text.contains("Source agent: Agent title"));
     assert!(!text.contains("private"));
     assert_eq!(exported["itemCount"], 6);

@@ -1,6 +1,8 @@
 use super::*;
 use crate::protocol::timeline::NativeItem;
 
+mod paseo;
+
 fn rows() -> Vec<Row> {
     (1..=405).map(|seq| Row { seq,provider:"codex".to_owned(),entry:NativeItem {key:seq.to_string(),turn_id:None,timestamp:"2026-09-25T00:00:00Z".to_owned(),item:json!({"type":if seq%2==0 {"assistant_message"} else {"user_message"},"text":"Hello\n WORLD"})}}).collect()
 }

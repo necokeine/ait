@@ -1,6 +1,10 @@
 use super::*;
 use crate::test_support::Fixture;
 
+mod configuration;
+mod installed;
+mod progress;
+
 fn process_is_running(pid: u32) -> bool {
     let output = std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])

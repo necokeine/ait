@@ -36,6 +36,14 @@ fn start_with_path(directory: &Path, log: &Path, path: Option<&std::ffi::OsStr>)
         .env_remove("AIT_SERVER_LISTEN")
         .env_remove("AIT_SERVER_SKILLS_HOME")
         .env_remove("AIT_SERVER_SKILLS_BUNDLE")
+        .env(
+            "AIT_SERVER_CLAUDE_BIN",
+            directory.parent().unwrap().join("claude"),
+        )
+        .env(
+            "CLAUDE_CONFIG_DIR",
+            directory.parent().unwrap().join("claude-config"),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(log).unwrap());
@@ -57,6 +65,9 @@ mod agent_runtime;
 
 #[path = "agent_execution.rs"]
 mod agent_execution;
+
+#[path = "claude.rs"]
+mod claude;
 
 #[path = "native.rs"]
 mod native;

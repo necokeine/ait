@@ -7,6 +7,9 @@ use server_domain::agent_runtime::{AgentPersistenceHandle, StoredAgentConfig};
 
 use super::*;
 
+mod paseo;
+mod usage;
+
 #[derive(Debug, Default)]
 struct RegistryState {
     records: BTreeMap<String, PersistedAgentRuntimeRecord>,
@@ -91,6 +94,10 @@ struct FakeState {
     close_calls: usize,
     events: std::collections::VecDeque<AgentTurnEvent>,
     start_result: Result<(), AgentSessionError>,
+    start_calls: usize,
+    steer_result: Result<(), AgentSessionError>,
+    steer_calls: Vec<(String, String)>,
+    poll_error: Option<AgentSessionError>,
     during_resume: Option<MemoryRegistry>,
 }
 
@@ -106,6 +113,10 @@ impl Default for FakeState {
             close_calls: 0,
             events: std::collections::VecDeque::new(),
             start_result: Ok(()),
+            start_calls: 0,
+            steer_result: Err(AgentSessionError::Rejected),
+            steer_calls: Vec::new(),
+            poll_error: None,
             during_resume: None,
         }
     }
@@ -170,8 +181,20 @@ impl AgentSession for FakeSession {
         _config: &'a server_domain::agent_runtime::StoredAgentConfig,
     ) -> AgentSessionFuture<'a, String> {
         Box::pin(async move {
-            self.0.lock().unwrap().start_result?;
+            let mut state = self.0.lock().unwrap();
+            state.start_calls += 1;
+            state.start_result?;
             Ok("native-turn".to_owned())
+        })
+    }
+
+    fn steer_turn<'a>(&'a mut self, turn_id: &'a str, text: &'a str) -> AgentSessionFuture<'a, ()> {
+        Box::pin(async move {
+            let mut state = self.0.lock().unwrap();
+            state
+                .steer_calls
+                .push((turn_id.to_owned(), text.to_owned()));
+            state.steer_result
         })
     }
 
@@ -187,7 +210,11 @@ impl AgentSession for FakeSession {
     }
 
     fn poll_turn(&mut self) -> Result<Option<AgentTurnEvent>, AgentSessionError> {
-        Ok(self.0.lock().unwrap().events.pop_front())
+        let mut state = self.0.lock().unwrap();
+        if let Some(error) = state.poll_error {
+            return Err(error);
+        }
+        Ok(state.events.pop_front())
     }
     fn provider(&self) -> &'static str {
         "codex"

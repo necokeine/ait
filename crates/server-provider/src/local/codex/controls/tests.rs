@@ -1,6 +1,8 @@
 use super::*;
 use crate::ports::agent_session::AgentClient;
 
+mod paseo;
+
 #[test]
 fn skills_fail_closed_on_errors_and_relative_paths() {
     let root = tempfile::tempdir().unwrap();
@@ -23,8 +25,9 @@ async fn remote_selection_checks_model_tier_and_skill_invocation_uses_native_inp
     spec.config.mode_id = Some("auto".to_owned());
     client.validate_selection(&spec).await.unwrap();
     let commands = client.commands(&spec).await.unwrap();
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0]["name"], "review");
+    assert!(commands.len() >= 2);
+    assert!(commands.iter().any(|command| command["name"] == "review"));
+    assert!(commands.iter().any(|command| command["name"] == "compact"));
     let mut session = client.create_session(&spec).await.unwrap();
     assert!(session.start_turn("/unknown", &spec.config).await.is_err());
     session
@@ -40,7 +43,7 @@ async fn remote_selection_checks_model_tier_and_skill_invocation_uses_native_inp
     assert_eq!(request["params"]["approvalPolicy"], "on-request");
     assert_eq!(request["params"]["sandboxPolicy"]["type"], "workspaceWrite");
     assert_eq!(request["params"]["input"][0]["type"], "skill");
-    assert_eq!(request["params"]["input"][1]["text"], "check this");
+    assert_eq!(request["params"]["input"][1]["text"], "$review check this");
     session.close().await.unwrap();
     fixture.mode("no-fast");
     assert!(client.validate_selection(&spec).await.is_err());

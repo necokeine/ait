@@ -12,25 +12,24 @@ pub const CAPABILITIES: &[&str] = &[
 
 /// Three-state patch value, distinguishing omission from explicit null.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum NullableSetting {
+pub enum NullableSetting<T = String> {
     /// The request omitted the field.
     #[default]
     Unchanged,
     /// Explicit null removes the host override.
     Clear,
     /// Replace the override with a selected value.
-    Set(String),
+    Set(T),
 }
 
-impl<'de> Deserialize<'de> for NullableSetting {
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for NullableSetting<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Option::<String>::deserialize(deserializer)
-            .map(|value| value.map_or(Self::Clear, Self::Set))
+        Option::<T>::deserialize(deserializer).map(|value| value.map_or(Self::Clear, Self::Set))
     }
 }
 
-impl NullableSetting {
-    fn apply(&self, current: &mut Option<String>) {
+impl<T: Clone> NullableSetting<T> {
+    fn apply(&self, current: &mut Option<T>) {
         match self {
             Self::Unchanged => {}
             Self::Clear => *current = None,
@@ -54,6 +53,18 @@ pub struct ConfigPatch {
     /// Selected thinking option, or explicit null for provider inheritance.
     #[serde(default)]
     pub thinking_option_id: NullableSetting,
+    /// Replace native provider options; null restores native defaults.
+    #[serde(default)]
+    pub provider_options: NullableSetting<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Replace configured MCP servers; null removes host-provided servers.
+    #[serde(default)]
+    pub mcp_servers: NullableSetting<std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Replace exact MCP preapprovals; null removes host-provided grants.
+    #[serde(default)]
+    pub tool_policy: NullableSetting<serde_json::Value>,
+    /// Replace the appended system prompt; null restores the provider prompt.
+    #[serde(default)]
+    pub system_prompt: NullableSetting,
 }
 
 impl ConfigPatch {
@@ -69,6 +80,10 @@ impl ConfigPatch {
         }
         self.model_id.apply(&mut next.model);
         self.thinking_option_id.apply(&mut next.thinking_option_id);
+        self.provider_options.apply(&mut next.provider_options);
+        self.mcp_servers.apply(&mut next.mcp_servers);
+        self.tool_policy.apply(&mut next.tool_policy);
+        self.system_prompt.apply(&mut next.system_prompt);
         next
     }
 }

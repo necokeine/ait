@@ -13,6 +13,7 @@ impl CodexClient {
         let mut transport = Transport::spawn(&self.program, cwd, self.deadline)?;
         let result = async {
             transport.initialize().await?;
+            self.inspect_workflows(&mut transport).await?;
             let mut models = BTreeMap::new();
             let mut cursor: Option<String> = None;
             let mut seen = BTreeSet::new();
@@ -49,10 +50,9 @@ impl CodexClient {
             }
             Ok(Details {
                 models: models.into_values().collect(),
-                modes: super::controls::modes(),
-                features: super::controls::features(
-                    &server_domain::agent_runtime::StoredAgentConfig::default(),
-                ),
+                modes: self.modes(),
+                features: self
+                    .features(&server_domain::agent_runtime::StoredAgentConfig::default()),
             })
         }
         .await;
@@ -115,6 +115,57 @@ fn model(native: &Value) -> Result<Value, AgentSessionError> {
     Ok(value)
 }
 
+pub(super) fn timeline_items(
+    native: &Value,
+    turn: &str,
+    timestamp: &str,
+    images: &crate::local::images::ImageStore,
+) -> Result<Vec<NativeItem>, AgentSessionError> {
+    if matches!(
+        native["type"].as_str(),
+        Some("imageView" | "imageGeneration")
+    ) && !matches!(native["status"].as_str(), Some("failed" | "inProgress"))
+    {
+        let source = if ["path", "savedPath", "saved_path", "url"]
+            .iter()
+            .any(|key| native[key].as_str().is_some_and(|value| !value.is_empty()))
+        {
+            native
+        } else {
+            &native["result"]
+        };
+        let text = images.render(source)?;
+        let mut assistant = native.clone();
+        assistant["type"] = json!("agentMessage");
+        assistant["text"] = json!(text);
+        return Ok(timeline_item(&assistant, turn, timestamp)?
+            .into_iter()
+            .collect());
+    }
+    if native["type"] != "mcpToolCall" {
+        return Ok(timeline_item(native, turn, timestamp)?
+            .into_iter()
+            .collect());
+    }
+    let (result, rendered) = images.split(&native["result"])?;
+    let mut sanitized = native.clone();
+    sanitized["result"] = result;
+    let mut entries: Vec<_> = timeline_item(&sanitized, turn, timestamp)?
+        .into_iter()
+        .collect();
+    let id = native["id"].as_str().ok_or(AgentSessionError::Failed)?;
+    for (index, image) in rendered.into_iter().enumerate() {
+        let id = format!("{id}:image:{index}");
+        entries.push(NativeItem {
+            key: format!("native:{turn}:{id}"),
+            turn_id: Some(turn.to_owned()),
+            timestamp: timestamp.to_owned(),
+            item: json!({"type":"assistant_message","messageId":id,"text":image}),
+        });
+    }
+    Ok(entries)
+}
+
 pub(super) fn timeline_item(
     native: &Value,
     turn: &str,
@@ -132,10 +183,22 @@ pub(super) fn timeline_item(
                 .ok_or(AgentSessionError::Failed)?;
             let text = content
                 .iter()
-                .filter_map(|part| part["text"].as_str())
+                .filter_map(|part| {
+                    part["text"].as_str().or_else(|| {
+                        matches!(part["type"].as_str(), Some("image" | "localImage"))
+                            .then_some("[Image attachment]")
+                    })
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
-            json!({"type":"user_message","text":text,"messageId":id})
+            let mut item = json!({"type":"user_message","text":text,"messageId":id});
+            if let Some(client) = native["clientId"].as_str() {
+                item["clientMessageId"] = json!(client);
+            }
+            item
+        }
+        "agentMessage" if native["delivery"] == "async" => {
+            super::async_questions::timeline(native)?
         }
         "agentMessage" => {
             json!({"type":"assistant_message","text":native["text"].as_str().ok_or(AgentSessionError::Failed)?,"messageId":id})
@@ -156,7 +219,8 @@ pub(super) fn timeline_item(
         }
         "contextCompaction" => json!({"type":"compaction","status":"completed"}),
         "plan" => {
-            json!({"type":"notification","level":"info","message":native["text"].as_str().unwrap_or("")})
+            json!({"type":"tool_call","callId":id,"name":"plan","status":"completed","error":null,
+                "detail":{"type":"plan","text":native["text"].as_str().unwrap_or("")}})
         }
         _ => {
             if native["status"] == "inProgress" {
@@ -164,9 +228,8 @@ pub(super) fn timeline_item(
             }
             let failed = native["status"] == "failed" || native["status"] == "declined";
             let error = failed.then_some("Native tool failed");
-            // Preserve unknown native tool content in Paseo's explicit generic tool detail.
             json!({"type":"tool_call","callId":id,"name":kind,"status":if failed {"failed"} else {"completed"},
-                "error":error,"detail":{"type":"unknown","input":native,"output":null}})
+                "error":error,"detail":crate::local::tool_detail::codex(native)})
         }
     };
     Ok(Some(NativeItem {

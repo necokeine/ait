@@ -1,5 +1,7 @@
 use super::*;
 
+mod paseo;
+
 #[test]
 fn only_known_steer_errors_prove_that_input_was_not_accepted() {
     for error in [

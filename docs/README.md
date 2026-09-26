@@ -1,5 +1,11 @@
 # 概念与架构文档
 
+- [ADR-052：原生 Provider 能力补齐](decisions/adr-052-native-provider-capabilities.md)：
+  Codex/Claude 的配置、授权、用量和原生能力协商边界；[实施清单](plans/provider-parity.md)、[能力矩阵与验证报告](reports/provider-parity.md)。
+
+- [ADR-050：Claude Code Provider](decisions/adr-050-claude-code-provider.md)：独立 Rust server 的
+  本机 Claude Code 协议、模型发现、流式输出、审批及会话恢复；[能力与验证报告](reports/provider-parity.md)。
+
 - [Apple 构建说明](operations/apple-builds.md)：桌面 DMG、iOS 模拟器、iPhone 归档与签名 IPA；[实际构建报告](reports/apple-builds.md)。
 
 - [ADR-049：独立 App 的 Rust server 浏览器连接](decisions/adr-049-app-rust-browser-transport.md)：一次性 WebSocket 票据、显式页面来源和 `dev:app` 启动入口；[实施报告](reports/app-rust-server.md)。
