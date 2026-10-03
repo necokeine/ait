@@ -58,6 +58,11 @@ pub(crate) fn subscribe(
                 || (event == "status.daemon_config_changed" && state.daemon.is_none())
                 || (event == "terminal_attention_required" && !state.has_terminals)
                 || (event == "checkout_status_update" && !state.has_git_fetch)
+                || (event == "project.update" && state.directory.is_none())
+                || (matches!(
+                    event.as_str(),
+                    "script_status_update" | "workspace_setup_progress"
+                ) && state.workspace_automation.is_none())
         }) {
             return Err(ErrorCode::UnsupportedCapability);
         }

@@ -29,6 +29,7 @@
 - [ADR-068：Workspace 侧边栏运行时摘要](workspace/adr-068-workspace-runtime-summaries.md)
 - [ADR-069：活跃工作区的后台 Git fetch](workspace/adr-069-background-git-fetch.md)
 - [ADR-071：在 Rust checkout adapter 生成 Diff 语法 token](workspace/adr-071-checkout-diff-syntax-highlighting.md)
+- [ADR-081：由状态变更唤醒 Workspace 与 Agent 目录订阅](workspace/adr-081-directory-change-push.md)
 
 ## Provider、Agent 与会话
 

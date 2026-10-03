@@ -238,6 +238,31 @@ fn scripts_require_active_trusted_workspace_and_forward_exact_name() {
     );
 }
 
+#[test]
+fn committed_script_mutations_publish_complete_snapshots() {
+    let (mut service, _, _) = service();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    service.set_event_sink(Arc::new(move |event| {
+        capture.lock().expect("automation events").push(event);
+    }));
+    service.start_script("trusted", "Web App").expect("start");
+    service.stop_script("trusted", "Web App").expect("stop");
+    let events = events.lock().expect("automation events");
+    assert_eq!(events.len(), 2);
+    for event in events.iter() {
+        let AutomationEvent::Scripts {
+            workspace_id,
+            scripts,
+        } = event
+        else {
+            panic!("script update expected");
+        };
+        assert_eq!(workspace_id, "trusted");
+        assert_eq!(scripts.len(), 1);
+    }
+}
+
 fn service() -> (WorkspaceAutomation, Workspaces, Runtime) {
     let workspaces = Workspaces(
         Arc::new(Mutex::new(vec![

@@ -1,5 +1,6 @@
 //! Concrete request context and shared Tokio runtime resources for server capability crates.
 
+pub mod changes;
 mod context;
 pub mod directory_sync;
 pub mod events;

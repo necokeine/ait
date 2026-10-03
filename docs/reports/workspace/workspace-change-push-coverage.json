@@ -1,0 +1,1791 @@
+{
+  "date": "2026-10-04",
+  "base_revision": "7327f3d0adfb42292f0dd63aee5ff4c58b27f07f",
+  "measurement_revision": "Base revision plus the Rust changes in this pull request; the source fingerprint identifies the exact measured tree.",
+  "source_fingerprint": "4501e31db52d60c5d16a1fd0f44d6d85e256a586b9cd7ab54f4a50c460792db3",
+  "fingerprint_algorithm": "SHA-256 of sorted relative Rust source path + NUL + content SHA-256 + newline for every .rs file under bins/ and crates/.",
+  "scope": "All 13 Cargo workspace members; default features; macOS arm64; Rust 1.98.1; cargo-llvm-cov 0.8.4; default filename filtering; no custom exclusions. Doctests are not instrumented.",
+  "commands": {
+    "tests": "SHERPA_ONNX_LIB_DIR=/Users/necokeine/Documents/ait/target/sherpa-onnx-prebuilt/sherpa-onnx-v1.13.8-osx-arm64-static-lib/lib cargo test --workspace --locked --offline --quiet",
+    "coverage": "SHERPA_ONNX_LIB_DIR=/Users/necokeine/Documents/ait/target/sherpa-onnx-prebuilt/sherpa-onnx-v1.13.8-osx-arm64-static-lib/lib cargo llvm-cov --workspace --html --locked --offline --quiet -- --test-threads=1",
+    "summary": "cargo llvm-cov report --json --summary-only --output-path /private/tmp/ait-workspace-change-push-coverage.json"
+  },
+  "test_execution": {
+    "workspace": {
+      "passed": 1767,
+      "failed": 0,
+      "ignored": 3
+    },
+    "coverage_run": {
+      "passed": 1767,
+      "failed": 0,
+      "ignored": 3
+    }
+  },
+  "workspace_lines": {
+    "covered": 49001,
+    "count": 51854,
+    "percent": 94.49801365372007
+  },
+  "baseline": {
+    "source": "docs/reports/clients/desktop-terminal-selection-coverage.json",
+    "covered": 48602,
+    "count": 51404,
+    "percent": 94.54906232977979,
+    "percentage_point_change": -0.05104867605972174
+  },
+  "crate_lines": {
+    "api": {
+      "covered": 1946,
+      "count": 2102,
+      "percent": 92.57849666983824
+    },
+    "browser": {
+      "covered": 706,
+      "count": 725,
+      "percent": 97.37931034482759
+    },
+    "daemon": {
+      "covered": 918,
+      "count": 963,
+      "percent": 95.32710280373831
+    },
+    "domain": {
+      "covered": 121,
+      "count": 121,
+      "percent": 100.0
+    },
+    "filesystem": {
+      "covered": 11144,
+      "count": 11735,
+      "percent": 94.96378355347251
+    },
+    "metadata": {
+      "covered": 7523,
+      "count": 7938,
+      "percent": 94.77198286722096
+    },
+    "model": {
+      "covered": 737,
+      "count": 777,
+      "percent": 94.85199485199485
+    },
+    "protocol": {
+      "covered": 75,
+      "count": 75,
+      "percent": 100.0
+    },
+    "provider": {
+      "covered": 21276,
+      "count": 22649,
+      "percent": 93.93792220407082
+    },
+    "relay": {
+      "covered": 419,
+      "count": 464,
+      "percent": 90.30172413793103
+    },
+    "schedule": {
+      "covered": 805,
+      "count": 823,
+      "percent": 97.81287970838396
+    },
+    "terminal": {
+      "covered": 1481,
+      "count": 1538,
+      "percent": 96.29388816644993
+    },
+    "voice": {
+      "covered": 1850,
+      "count": 1944,
+      "percent": 95.16460905349794
+    }
+  },
+  "file_lines": [
+    {
+      "path": "bins/daemon/src/config.rs",
+      "covered": 59,
+      "count": 66
+    },
+    {
+      "path": "bins/daemon/src/host.rs",
+      "covered": 418,
+      "count": 430
+    },
+    {
+      "path": "bins/daemon/src/host/catalog.rs",
+      "covered": 23,
+      "count": 23
+    },
+    {
+      "path": "bins/daemon/src/host/schedule.rs",
+      "covered": 240,
+      "count": 258
+    },
+    {
+      "path": "bins/daemon/src/host/voice.rs",
+      "covered": 83,
+      "count": 87
+    },
+    {
+      "path": "bins/daemon/src/instance.rs",
+      "covered": 39,
+      "count": 40
+    },
+    {
+      "path": "bins/daemon/src/main.rs",
+      "covered": 56,
+      "count": 59
+    },
+    {
+      "path": "crates/api/src/auth.rs",
+      "covered": 93,
+      "count": 93
+    },
+    {
+      "path": "crates/api/src/browser_auth.rs",
+      "covered": 82,
+      "count": 82
+    },
+    {
+      "path": "crates/api/src/capabilities.rs",
+      "covered": 105,
+      "count": 105
+    },
+    {
+      "path": "crates/api/src/connection.rs",
+      "covered": 350,
+      "count": 378
+    },
+    {
+      "path": "crates/api/src/connection/creation_receipts.rs",
+      "covered": 44,
+      "count": 44
+    },
+    {
+      "path": "crates/api/src/connection/dispatch.rs",
+      "covered": 106,
+      "count": 109
+    },
+    {
+      "path": "crates/api/src/connection/routing.rs",
+      "covered": 69,
+      "count": 69
+    },
+    {
+      "path": "crates/api/src/connection/single.rs",
+      "covered": 150,
+      "count": 205
+    },
+    {
+      "path": "crates/api/src/connection/workspace_archive.rs",
+      "covered": 132,
+      "count": 136
+    },
+    {
+      "path": "crates/api/src/connection/workspace_creation.rs",
+      "covered": 188,
+      "count": 194
+    },
+    {
+      "path": "crates/api/src/files.rs",
+      "covered": 66,
+      "count": 72
+    },
+    {
+      "path": "crates/api/src/lib.rs",
+      "covered": 454,
+      "count": 491
+    },
+    {
+      "path": "crates/api/src/listener.rs",
+      "covered": 31,
+      "count": 31
+    },
+    {
+      "path": "crates/api/src/terminal_activity.rs",
+      "covered": 49,
+      "count": 52
+    },
+    {
+      "path": "crates/api/src/workspace_cleanup.rs",
+      "covered": 27,
+      "count": 41
+    },
+    {
+      "path": "crates/browser/src/broker.rs",
+      "covered": 292,
+      "count": 300
+    },
+    {
+      "path": "crates/browser/src/capabilities.rs",
+      "covered": 6,
+      "count": 6
+    },
+    {
+      "path": "crates/browser/src/connection.rs",
+      "covered": 22,
+      "count": 25
+    },
+    {
+      "path": "crates/browser/src/dispatch.rs",
+      "covered": 17,
+      "count": 19
+    },
+    {
+      "path": "crates/browser/src/protocol.rs",
+      "covered": 369,
+      "count": 375
+    },
+    {
+      "path": "crates/domain/src/agent.rs",
+      "covered": 108,
+      "count": 108
+    },
+    {
+      "path": "crates/domain/src/lib.rs",
+      "covered": 13,
+      "count": 13
+    },
+    {
+      "path": "crates/filesystem/src/capabilities.rs",
+      "covered": 16,
+      "count": 16
+    },
+    {
+      "path": "crates/filesystem/src/connection.rs",
+      "covered": 10,
+      "count": 10
+    },
+    {
+      "path": "crates/filesystem/src/connection/checkout.rs",
+      "covered": 114,
+      "count": 116
+    },
+    {
+      "path": "crates/filesystem/src/connection/files.rs",
+      "covered": 15,
+      "count": 15
+    },
+    {
+      "path": "crates/filesystem/src/connection/files/connection.rs",
+      "covered": 241,
+      "count": 256
+    },
+    {
+      "path": "crates/filesystem/src/connection/files/transfer.rs",
+      "covered": 77,
+      "count": 84
+    },
+    {
+      "path": "crates/filesystem/src/dispatch.rs",
+      "covered": 131,
+      "count": 139
+    },
+    {
+      "path": "crates/filesystem/src/dispatch/metadata.rs",
+      "covered": 115,
+      "count": 127
+    },
+    {
+      "path": "crates/filesystem/src/local/checkout.rs",
+      "covered": 1400,
+      "count": 1490
+    },
+    {
+      "path": "crates/filesystem/src/local/checkout/highlight.rs",
+      "covered": 312,
+      "count": 314
+    },
+    {
+      "path": "crates/filesystem/src/local/checkout/naming.rs",
+      "covered": 29,
+      "count": 31
+    },
+    {
+      "path": "crates/filesystem/src/local/checkout/summary.rs",
+      "covered": 111,
+      "count": 118
+    },
+    {
+      "path": "crates/filesystem/src/local/files.rs",
+      "covered": 501,
+      "count": 528
+    },
+    {
+      "path": "crates/filesystem/src/local/files/search.rs",
+      "covered": 184,
+      "count": 193
+    },
+    {
+      "path": "crates/filesystem/src/local/files/upload.rs",
+      "covered": 69,
+      "count": 75
+    },
+    {
+      "path": "crates/filesystem/src/local/forge.rs",
+      "covered": 1123,
+      "count": 1177
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/gitlab.rs",
+      "covered": 380,
+      "count": 398
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/gitlab/checkout.rs",
+      "covered": 46,
+      "count": 49
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/gitlab/pipeline.rs",
+      "covered": 190,
+      "count": 198
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/gitlab/status.rs",
+      "covered": 101,
+      "count": 102
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/gitlab/timeline.rs",
+      "covered": 131,
+      "count": 143
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/resolver.rs",
+      "covered": 86,
+      "count": 88
+    },
+    {
+      "path": "crates/filesystem/src/local/forge/worktree_checkout.rs",
+      "covered": 199,
+      "count": 212
+    },
+    {
+      "path": "crates/filesystem/src/local/git.rs",
+      "covered": 41,
+      "count": 45
+    },
+    {
+      "path": "crates/filesystem/src/local/git_fetch.rs",
+      "covered": 87,
+      "count": 91
+    },
+    {
+      "path": "crates/filesystem/src/local/github_projects.rs",
+      "covered": 237,
+      "count": 245
+    },
+    {
+      "path": "crates/filesystem/src/local/provisioning.rs",
+      "covered": 127,
+      "count": 137
+    },
+    {
+      "path": "crates/filesystem/src/local/skills.rs",
+      "covered": 168,
+      "count": 176
+    },
+    {
+      "path": "crates/filesystem/src/local/skills/transaction.rs",
+      "covered": 159,
+      "count": 167
+    },
+    {
+      "path": "crates/filesystem/src/local/skills/tree.rs",
+      "covered": 236,
+      "count": 247
+    },
+    {
+      "path": "crates/filesystem/src/local/workspace_runtime.rs",
+      "covered": 105,
+      "count": 116
+    },
+    {
+      "path": "crates/filesystem/src/local/workspace_runtime/forge.rs",
+      "covered": 47,
+      "count": 49
+    },
+    {
+      "path": "crates/filesystem/src/local/workspace_runtime/reads.rs",
+      "covered": 128,
+      "count": 145
+    },
+    {
+      "path": "crates/filesystem/src/local/worktrees.rs",
+      "covered": 718,
+      "count": 778
+    },
+    {
+      "path": "crates/filesystem/src/local/worktrees/change_request.rs",
+      "covered": 112,
+      "count": 123
+    },
+    {
+      "path": "crates/filesystem/src/local/worktrees/directory.rs",
+      "covered": 61,
+      "count": 64
+    },
+    {
+      "path": "crates/filesystem/src/ports/files.rs",
+      "covered": 3,
+      "count": 3
+    },
+    {
+      "path": "crates/filesystem/src/ports/forge.rs",
+      "covered": 3,
+      "count": 3
+    },
+    {
+      "path": "crates/filesystem/src/ports/worktrees.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/filesystem/src/protocol.rs",
+      "covered": 3,
+      "count": 3
+    },
+    {
+      "path": "crates/filesystem/src/protocol/checkout.rs",
+      "covered": 23,
+      "count": 23
+    },
+    {
+      "path": "crates/filesystem/src/protocol/file_transfer.rs",
+      "covered": 47,
+      "count": 49
+    },
+    {
+      "path": "crates/filesystem/src/protocol/skills.rs",
+      "covered": 22,
+      "count": 22
+    },
+    {
+      "path": "crates/filesystem/src/protocol/worktrees.rs",
+      "covered": 90,
+      "count": 91
+    },
+    {
+      "path": "crates/filesystem/src/rpc.rs",
+      "covered": 4,
+      "count": 8
+    },
+    {
+      "path": "crates/filesystem/src/rpc/budget.rs",
+      "covered": 10,
+      "count": 13
+    },
+    {
+      "path": "crates/filesystem/src/rpc/checkout.rs",
+      "covered": 500,
+      "count": 532
+    },
+    {
+      "path": "crates/filesystem/src/rpc/files.rs",
+      "covered": 301,
+      "count": 312
+    },
+    {
+      "path": "crates/filesystem/src/rpc/forge.rs",
+      "covered": 454,
+      "count": 461
+    },
+    {
+      "path": "crates/filesystem/src/rpc/github_projects.rs",
+      "covered": 78,
+      "count": 88
+    },
+    {
+      "path": "crates/filesystem/src/rpc/workspace_recovery.rs",
+      "covered": 77,
+      "count": 84
+    },
+    {
+      "path": "crates/filesystem/src/rpc/worktrees.rs",
+      "covered": 169,
+      "count": 173
+    },
+    {
+      "path": "crates/filesystem/src/service/checkout.rs",
+      "covered": 101,
+      "count": 101
+    },
+    {
+      "path": "crates/filesystem/src/service/files.rs",
+      "covered": 47,
+      "count": 47
+    },
+    {
+      "path": "crates/filesystem/src/service/forge.rs",
+      "covered": 94,
+      "count": 94
+    },
+    {
+      "path": "crates/filesystem/src/service/git_fetch.rs",
+      "covered": 255,
+      "count": 264
+    },
+    {
+      "path": "crates/filesystem/src/service/github_projects.rs",
+      "covered": 100,
+      "count": 101
+    },
+    {
+      "path": "crates/filesystem/src/service/skills.rs",
+      "covered": 82,
+      "count": 82
+    },
+    {
+      "path": "crates/filesystem/src/service/transfer.rs",
+      "covered": 17,
+      "count": 17
+    },
+    {
+      "path": "crates/filesystem/src/service/uploads.rs",
+      "covered": 63,
+      "count": 63
+    },
+    {
+      "path": "crates/filesystem/src/service/workspace_recovery.rs",
+      "covered": 162,
+      "count": 187
+    },
+    {
+      "path": "crates/filesystem/src/service/worktrees.rs",
+      "covered": 497,
+      "count": 505
+    },
+    {
+      "path": "crates/filesystem/src/service/worktrees/provisioning.rs",
+      "covered": 127,
+      "count": 139
+    },
+    {
+      "path": "crates/metadata/src/capabilities.rs",
+      "covered": 16,
+      "count": 16
+    },
+    {
+      "path": "crates/metadata/src/connection.rs",
+      "covered": 32,
+      "count": 35
+    },
+    {
+      "path": "crates/metadata/src/connection/creation.rs",
+      "covered": 115,
+      "count": 121
+    },
+    {
+      "path": "crates/metadata/src/connection/daemon.rs",
+      "covered": 35,
+      "count": 35
+    },
+    {
+      "path": "crates/metadata/src/connection/directory.rs",
+      "covered": 65,
+      "count": 70
+    },
+    {
+      "path": "crates/metadata/src/connection/push.rs",
+      "covered": 63,
+      "count": 65
+    },
+    {
+      "path": "crates/metadata/src/connection/session.rs",
+      "covered": 88,
+      "count": 94
+    },
+    {
+      "path": "crates/metadata/src/connection/workspace_labels.rs",
+      "covered": 27,
+      "count": 27
+    },
+    {
+      "path": "crates/metadata/src/dispatch.rs",
+      "covered": 204,
+      "count": 219
+    },
+    {
+      "path": "crates/metadata/src/local/workspace_automation.rs",
+      "covered": 572,
+      "count": 656
+    },
+    {
+      "path": "crates/metadata/src/local/workspace_automation/retirement.rs",
+      "covered": 51,
+      "count": 63
+    },
+    {
+      "path": "crates/metadata/src/model/registry.rs",
+      "covered": 26,
+      "count": 26
+    },
+    {
+      "path": "crates/metadata/src/model/workspace_activity.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/metadata/src/model/workspace_labels.rs",
+      "covered": 6,
+      "count": 6
+    },
+    {
+      "path": "crates/metadata/src/ports/workspace_automation.rs",
+      "covered": 1,
+      "count": 1
+    },
+    {
+      "path": "crates/metadata/src/protocol/creation.rs",
+      "covered": 5,
+      "count": 5
+    },
+    {
+      "path": "crates/metadata/src/protocol/daemon.rs",
+      "covered": 160,
+      "count": 161
+    },
+    {
+      "path": "crates/metadata/src/protocol/directory.rs",
+      "covered": 40,
+      "count": 40
+    },
+    {
+      "path": "crates/metadata/src/protocol/project_config.rs",
+      "covered": 156,
+      "count": 156
+    },
+    {
+      "path": "crates/metadata/src/protocol/session.rs",
+      "covered": 12,
+      "count": 16
+    },
+    {
+      "path": "crates/metadata/src/protocol/workspace.rs",
+      "covered": 33,
+      "count": 33
+    },
+    {
+      "path": "crates/metadata/src/protocol/workspace/checkout.rs",
+      "covered": 29,
+      "count": 29
+    },
+    {
+      "path": "crates/metadata/src/protocol/workspace/serde_fields.rs",
+      "covered": 36,
+      "count": 36
+    },
+    {
+      "path": "crates/metadata/src/protocol/workspace_automation.rs",
+      "covered": 3,
+      "count": 3
+    },
+    {
+      "path": "crates/metadata/src/protocol/worktree_source.rs",
+      "covered": 16,
+      "count": 16
+    },
+    {
+      "path": "crates/metadata/src/rpc.rs",
+      "covered": 18,
+      "count": 25
+    },
+    {
+      "path": "crates/metadata/src/rpc/daemon.rs",
+      "covered": 126,
+      "count": 129
+    },
+    {
+      "path": "crates/metadata/src/rpc/directory.rs",
+      "covered": 680,
+      "count": 776
+    },
+    {
+      "path": "crates/metadata/src/rpc/directory/listing.rs",
+      "covered": 273,
+      "count": 276
+    },
+    {
+      "path": "crates/metadata/src/rpc/directory/pagination.rs",
+      "covered": 84,
+      "count": 93
+    },
+    {
+      "path": "crates/metadata/src/rpc/directory/runtime.rs",
+      "covered": 87,
+      "count": 87
+    },
+    {
+      "path": "crates/metadata/src/rpc/editor.rs",
+      "covered": 15,
+      "count": 15
+    },
+    {
+      "path": "crates/metadata/src/rpc/server.rs",
+      "covered": 10,
+      "count": 10
+    },
+    {
+      "path": "crates/metadata/src/rpc/workspace_automation.rs",
+      "covered": 170,
+      "count": 186
+    },
+    {
+      "path": "crates/metadata/src/rpc/workspace_labels.rs",
+      "covered": 256,
+      "count": 257
+    },
+    {
+      "path": "crates/metadata/src/rpc/workspace_state.rs",
+      "covered": 63,
+      "count": 71
+    },
+    {
+      "path": "crates/metadata/src/service/creation.rs",
+      "covered": 265,
+      "count": 268
+    },
+    {
+      "path": "crates/metadata/src/service/daemon.rs",
+      "covered": 80,
+      "count": 86
+    },
+    {
+      "path": "crates/metadata/src/service/directory.rs",
+      "covered": 888,
+      "count": 903
+    },
+    {
+      "path": "crates/metadata/src/service/directory/activity.rs",
+      "covered": 64,
+      "count": 64
+    },
+    {
+      "path": "crates/metadata/src/service/push.rs",
+      "covered": 110,
+      "count": 111
+    },
+    {
+      "path": "crates/metadata/src/service/session.rs",
+      "covered": 220,
+      "count": 225
+    },
+    {
+      "path": "crates/metadata/src/service/workspace_automation.rs",
+      "covered": 156,
+      "count": 167
+    },
+    {
+      "path": "crates/metadata/src/service/workspace_labels.rs",
+      "covered": 430,
+      "count": 453
+    },
+    {
+      "path": "crates/metadata/src/service/workspace_names.rs",
+      "covered": 121,
+      "count": 125
+    },
+    {
+      "path": "crates/metadata/src/service/workspace_state.rs",
+      "covered": 108,
+      "count": 111
+    },
+    {
+      "path": "crates/metadata/src/storage/daemon_config.rs",
+      "covered": 326,
+      "count": 337
+    },
+    {
+      "path": "crates/metadata/src/storage/project_config.rs",
+      "covered": 79,
+      "count": 84
+    },
+    {
+      "path": "crates/metadata/src/storage/project_icon.rs",
+      "covered": 209,
+      "count": 212
+    },
+    {
+      "path": "crates/metadata/src/storage/push.rs",
+      "covered": 47,
+      "count": 51
+    },
+    {
+      "path": "crates/metadata/src/storage/registry.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/metadata/src/storage/registry/core.rs",
+      "covered": 93,
+      "count": 98
+    },
+    {
+      "path": "crates/metadata/src/storage/registry/listeners.rs",
+      "covered": 32,
+      "count": 40
+    },
+    {
+      "path": "crates/metadata/src/storage/registry/paths.rs",
+      "covered": 62,
+      "count": 65
+    },
+    {
+      "path": "crates/metadata/src/storage/registry/projects.rs",
+      "covered": 173,
+      "count": 184
+    },
+    {
+      "path": "crates/metadata/src/storage/registry/workspaces.rs",
+      "covered": 149,
+      "count": 150
+    },
+    {
+      "path": "crates/metadata/src/storage/server_identity.rs",
+      "covered": 25,
+      "count": 27
+    },
+    {
+      "path": "crates/metadata/src/storage/workspace_labels.rs",
+      "covered": 297,
+      "count": 307
+    },
+    {
+      "path": "crates/model/src/changes.rs",
+      "covered": 10,
+      "count": 10
+    },
+    {
+      "path": "crates/model/src/context.rs",
+      "covered": 47,
+      "count": 47
+    },
+    {
+      "path": "crates/model/src/directory_sync.rs",
+      "covered": 88,
+      "count": 92
+    },
+    {
+      "path": "crates/model/src/events.rs",
+      "covered": 112,
+      "count": 116
+    },
+    {
+      "path": "crates/model/src/lib.rs",
+      "covered": 3,
+      "count": 3
+    },
+    {
+      "path": "crates/model/src/message.rs",
+      "covered": 31,
+      "count": 38
+    },
+    {
+      "path": "crates/model/src/outbound.rs",
+      "covered": 130,
+      "count": 138
+    },
+    {
+      "path": "crates/model/src/pagination.rs",
+      "covered": 121,
+      "count": 123
+    },
+    {
+      "path": "crates/model/src/pagination/collation.rs",
+      "covered": 26,
+      "count": 26
+    },
+    {
+      "path": "crates/model/src/polling.rs",
+      "covered": 87,
+      "count": 100
+    },
+    {
+      "path": "crates/model/src/runtime.rs",
+      "covered": 74,
+      "count": 76
+    },
+    {
+      "path": "crates/model/src/server.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/protocol/src/lib.rs",
+      "covered": 63,
+      "count": 63
+    },
+    {
+      "path": "crates/protocol/src/methods.rs",
+      "covered": 12,
+      "count": 12
+    },
+    {
+      "path": "crates/provider/src/capabilities.rs",
+      "covered": 12,
+      "count": 12
+    },
+    {
+      "path": "crates/provider/src/connection.rs",
+      "covered": 126,
+      "count": 130
+    },
+    {
+      "path": "crates/provider/src/connection/directory.rs",
+      "covered": 129,
+      "count": 149
+    },
+    {
+      "path": "crates/provider/src/dispatch.rs",
+      "covered": 97,
+      "count": 112
+    },
+    {
+      "path": "crates/provider/src/dispatch/agent_execution.rs",
+      "covered": 62,
+      "count": 66
+    },
+    {
+      "path": "crates/provider/src/dispatch/agent_runtime.rs",
+      "covered": 21,
+      "count": 32
+    },
+    {
+      "path": "crates/provider/src/local/claude.rs",
+      "covered": 200,
+      "count": 219
+    },
+    {
+      "path": "crates/provider/src/local/claude/config.rs",
+      "covered": 157,
+      "count": 158
+    },
+    {
+      "path": "crates/provider/src/local/claude/history.rs",
+      "covered": 297,
+      "count": 320
+    },
+    {
+      "path": "crates/provider/src/local/claude/inputs.rs",
+      "covered": 51,
+      "count": 54
+    },
+    {
+      "path": "crates/provider/src/local/claude/inspection.rs",
+      "covered": 215,
+      "count": 230
+    },
+    {
+      "path": "crates/provider/src/local/claude/inspection/quota.rs",
+      "covered": 129,
+      "count": 135
+    },
+    {
+      "path": "crates/provider/src/local/claude/metadata.rs",
+      "covered": 32,
+      "count": 33
+    },
+    {
+      "path": "crates/provider/src/local/claude/permissions.rs",
+      "covered": 218,
+      "count": 222
+    },
+    {
+      "path": "crates/provider/src/local/claude/rewind.rs",
+      "covered": 214,
+      "count": 223
+    },
+    {
+      "path": "crates/provider/src/local/claude/session.rs",
+      "covered": 508,
+      "count": 532
+    },
+    {
+      "path": "crates/provider/src/local/claude/session/commands.rs",
+      "covered": 73,
+      "count": 83
+    },
+    {
+      "path": "crates/provider/src/local/claude/streaming.rs",
+      "covered": 220,
+      "count": 240
+    },
+    {
+      "path": "crates/provider/src/local/claude/subagents.rs",
+      "covered": 283,
+      "count": 313
+    },
+    {
+      "path": "crates/provider/src/local/claude/subagents/live.rs",
+      "covered": 373,
+      "count": 397
+    },
+    {
+      "path": "crates/provider/src/local/claude/subagents/workflow.rs",
+      "covered": 44,
+      "count": 46
+    },
+    {
+      "path": "crates/provider/src/local/claude/subagents/workflow/replay.rs",
+      "covered": 262,
+      "count": 292
+    },
+    {
+      "path": "crates/provider/src/local/claude/tasks.rs",
+      "covered": 162,
+      "count": 165
+    },
+    {
+      "path": "crates/provider/src/local/claude/transport.rs",
+      "covered": 243,
+      "count": 261
+    },
+    {
+      "path": "crates/provider/src/local/codex.rs",
+      "covered": 878,
+      "count": 908
+    },
+    {
+      "path": "crates/provider/src/local/codex/async_questions.rs",
+      "covered": 256,
+      "count": 267
+    },
+    {
+      "path": "crates/provider/src/local/codex/commands.rs",
+      "covered": 168,
+      "count": 180
+    },
+    {
+      "path": "crates/provider/src/local/codex/controls.rs",
+      "covered": 236,
+      "count": 240
+    },
+    {
+      "path": "crates/provider/src/local/codex/discovery.rs",
+      "covered": 231,
+      "count": 244
+    },
+    {
+      "path": "crates/provider/src/local/codex/inspection.rs",
+      "covered": 75,
+      "count": 81
+    },
+    {
+      "path": "crates/provider/src/local/codex/metadata.rs",
+      "covered": 69,
+      "count": 76
+    },
+    {
+      "path": "crates/provider/src/local/codex/native_sessions.rs",
+      "covered": 194,
+      "count": 197
+    },
+    {
+      "path": "crates/provider/src/local/codex/permissions.rs",
+      "covered": 287,
+      "count": 290
+    },
+    {
+      "path": "crates/provider/src/local/codex/plans.rs",
+      "covered": 220,
+      "count": 231
+    },
+    {
+      "path": "crates/provider/src/local/codex/prompts.rs",
+      "covered": 192,
+      "count": 209
+    },
+    {
+      "path": "crates/provider/src/local/codex/rewind.rs",
+      "covered": 98,
+      "count": 102
+    },
+    {
+      "path": "crates/provider/src/local/codex/streaming.rs",
+      "covered": 206,
+      "count": 211
+    },
+    {
+      "path": "crates/provider/src/local/codex/subagents.rs",
+      "covered": 222,
+      "count": 246
+    },
+    {
+      "path": "crates/provider/src/local/codex/transport.rs",
+      "covered": 245,
+      "count": 265
+    },
+    {
+      "path": "crates/provider/src/local/codex/workflows.rs",
+      "covered": 133,
+      "count": 135
+    },
+    {
+      "path": "crates/provider/src/local/configuration.rs",
+      "covered": 273,
+      "count": 287
+    },
+    {
+      "path": "crates/provider/src/local/configuration/options.rs",
+      "covered": 48,
+      "count": 50
+    },
+    {
+      "path": "crates/provider/src/local/deepseek_harness.rs",
+      "covered": 100,
+      "count": 104
+    },
+    {
+      "path": "crates/provider/src/local/deepseek_harness/config.rs",
+      "covered": 210,
+      "count": 216
+    },
+    {
+      "path": "crates/provider/src/local/deepseek_harness/permissions.rs",
+      "covered": 92,
+      "count": 94
+    },
+    {
+      "path": "crates/provider/src/local/deepseek_harness/session.rs",
+      "covered": 241,
+      "count": 259
+    },
+    {
+      "path": "crates/provider/src/local/deepseek_harness/streaming.rs",
+      "covered": 177,
+      "count": 187
+    },
+    {
+      "path": "crates/provider/src/local/deepseek_harness/transport.rs",
+      "covered": 150,
+      "count": 166
+    },
+    {
+      "path": "crates/provider/src/local/elicitation.rs",
+      "covered": 196,
+      "count": 207
+    },
+    {
+      "path": "crates/provider/src/local/images.rs",
+      "covered": 144,
+      "count": 156
+    },
+    {
+      "path": "crates/provider/src/local/notes.rs",
+      "covered": 63,
+      "count": 65
+    },
+    {
+      "path": "crates/provider/src/local/opencode.rs",
+      "covered": 75,
+      "count": 75
+    },
+    {
+      "path": "crates/provider/src/local/opencode/approvals.rs",
+      "covered": 156,
+      "count": 181
+    },
+    {
+      "path": "crates/provider/src/local/opencode/bridge.rs",
+      "covered": 90,
+      "count": 93
+    },
+    {
+      "path": "crates/provider/src/local/opencode/budget.rs",
+      "covered": 58,
+      "count": 59
+    },
+    {
+      "path": "crates/provider/src/local/opencode/client.rs",
+      "covered": 339,
+      "count": 366
+    },
+    {
+      "path": "crates/provider/src/local/opencode/execution.rs",
+      "covered": 51,
+      "count": 63
+    },
+    {
+      "path": "crates/provider/src/local/opencode/history.rs",
+      "covered": 246,
+      "count": 283
+    },
+    {
+      "path": "crates/provider/src/local/opencode/http.rs",
+      "covered": 370,
+      "count": 482
+    },
+    {
+      "path": "crates/provider/src/local/opencode/live.rs",
+      "covered": 309,
+      "count": 351
+    },
+    {
+      "path": "crates/provider/src/local/opencode/projection.rs",
+      "covered": 104,
+      "count": 117
+    },
+    {
+      "path": "crates/provider/src/local/opencode/runtime.rs",
+      "covered": 154,
+      "count": 204
+    },
+    {
+      "path": "crates/provider/src/local/opencode/session.rs",
+      "covered": 437,
+      "count": 506
+    },
+    {
+      "path": "crates/provider/src/local/opencode/streaming.rs",
+      "covered": 173,
+      "count": 177
+    },
+    {
+      "path": "crates/provider/src/local/opencode/types.rs",
+      "covered": 2,
+      "count": 6
+    },
+    {
+      "path": "crates/provider/src/local/tool_detail.rs",
+      "covered": 139,
+      "count": 148
+    },
+    {
+      "path": "crates/provider/src/local/tool_detail/command_actions.rs",
+      "covered": 42,
+      "count": 42
+    },
+    {
+      "path": "crates/provider/src/local/usage.rs",
+      "covered": 154,
+      "count": 156
+    },
+    {
+      "path": "crates/provider/src/ports/agent.rs",
+      "covered": 3,
+      "count": 3
+    },
+    {
+      "path": "crates/provider/src/ports/agent_session.rs",
+      "covered": 217,
+      "count": 217
+    },
+    {
+      "path": "crates/provider/src/ports/environment.rs",
+      "covered": 32,
+      "count": 32
+    },
+    {
+      "path": "crates/provider/src/protocol/agent.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/provider/src/protocol/agent_config.rs",
+      "covered": 26,
+      "count": 26
+    },
+    {
+      "path": "crates/provider/src/protocol/agent_execution.rs",
+      "covered": 9,
+      "count": 9
+    },
+    {
+      "path": "crates/provider/src/protocol/agent_lifecycle.rs",
+      "covered": 6,
+      "count": 6
+    },
+    {
+      "path": "crates/provider/src/protocol/prompt.rs",
+      "covered": 101,
+      "count": 102
+    },
+    {
+      "path": "crates/provider/src/protocol/prompt/attachments.rs",
+      "covered": 108,
+      "count": 118
+    },
+    {
+      "path": "crates/provider/src/protocol/resume.rs",
+      "covered": 38,
+      "count": 38
+    },
+    {
+      "path": "crates/provider/src/protocol/usage.rs",
+      "covered": 17,
+      "count": 17
+    },
+    {
+      "path": "crates/provider/src/rpc.rs",
+      "covered": 24,
+      "count": 31
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution.rs",
+      "covered": 543,
+      "count": 573
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/controls.rs",
+      "covered": 224,
+      "count": 232
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/native_sessions.rs",
+      "covered": 166,
+      "count": 171
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/placement.rs",
+      "covered": 83,
+      "count": 86
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/resume.rs",
+      "covered": 94,
+      "count": 99
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/voice.rs",
+      "covered": 53,
+      "count": 59
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/workspace_creation.rs",
+      "covered": 86,
+      "count": 108
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_execution/worktrees.rs",
+      "covered": 235,
+      "count": 243
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_runtime.rs",
+      "covered": 429,
+      "count": 447
+    },
+    {
+      "path": "crates/provider/src/rpc/agent_runtime/listing.rs",
+      "covered": 44,
+      "count": 51
+    },
+    {
+      "path": "crates/provider/src/rpc/agents.rs",
+      "covered": 122,
+      "count": 124
+    },
+    {
+      "path": "crates/provider/src/rpc/fork_context.rs",
+      "covered": 114,
+      "count": 119
+    },
+    {
+      "path": "crates/provider/src/rpc/fork_context/tools.rs",
+      "covered": 87,
+      "count": 87
+    },
+    {
+      "path": "crates/provider/src/rpc/timeline.rs",
+      "covered": 128,
+      "count": 128
+    },
+    {
+      "path": "crates/provider/src/rpc/timeline/projection.rs",
+      "covered": 136,
+      "count": 146
+    },
+    {
+      "path": "crates/provider/src/rpc/timeline/projection/page.rs",
+      "covered": 108,
+      "count": 108
+    },
+    {
+      "path": "crates/provider/src/rpc/timeline/text_search.rs",
+      "covered": 55,
+      "count": 55
+    },
+    {
+      "path": "crates/provider/src/service/agent_execution.rs",
+      "covered": 141,
+      "count": 154
+    },
+    {
+      "path": "crates/provider/src/service/agent_execution/voice.rs",
+      "covered": 49,
+      "count": 49
+    },
+    {
+      "path": "crates/provider/src/service/agent_execution/waits.rs",
+      "covered": 57,
+      "count": 63
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager.rs",
+      "covered": 829,
+      "count": 856
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/auto_archive.rs",
+      "covered": 101,
+      "count": 105
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/controls.rs",
+      "covered": 519,
+      "count": 548
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/delivery.rs",
+      "covered": 234,
+      "count": 269
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/generated_titles.rs",
+      "covered": 91,
+      "count": 99
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/native_sessions.rs",
+      "covered": 280,
+      "count": 297
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/resume.rs",
+      "covered": 118,
+      "count": 124
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/streaming.rs",
+      "covered": 293,
+      "count": 306
+    },
+    {
+      "path": "crates/provider/src/service/agent_manager/titles.rs",
+      "covered": 89,
+      "count": 89
+    },
+    {
+      "path": "crates/provider/src/service/agent_runtime.rs",
+      "covered": 406,
+      "count": 416
+    },
+    {
+      "path": "crates/provider/src/service/agent_runtime/archive.rs",
+      "covered": 127,
+      "count": 129
+    },
+    {
+      "path": "crates/provider/src/service/agent_runtime/search.rs",
+      "covered": 132,
+      "count": 133
+    },
+    {
+      "path": "crates/provider/src/service/agents.rs",
+      "covered": 66,
+      "count": 66
+    },
+    {
+      "path": "crates/provider/src/service/metadata_generation.rs",
+      "covered": 75,
+      "count": 77
+    },
+    {
+      "path": "crates/provider/src/service/metadata_generation/candidates.rs",
+      "covered": 122,
+      "count": 125
+    },
+    {
+      "path": "crates/provider/src/service/metadata_generation/prompts.rs",
+      "covered": 107,
+      "count": 107
+    },
+    {
+      "path": "crates/provider/src/service/provider_catalog.rs",
+      "covered": 207,
+      "count": 208
+    },
+    {
+      "path": "crates/provider/src/service/provider_catalog/draft.rs",
+      "covered": 33,
+      "count": 33
+    },
+    {
+      "path": "crates/provider/src/service/provider_catalog/scope.rs",
+      "covered": 33,
+      "count": 33
+    },
+    {
+      "path": "crates/provider/src/service/workspace_attention.rs",
+      "covered": 230,
+      "count": 248
+    },
+    {
+      "path": "crates/provider/src/storage.rs",
+      "covered": 79,
+      "count": 92
+    },
+    {
+      "path": "crates/provider/src/storage/agent_runtime.rs",
+      "covered": 100,
+      "count": 107
+    },
+    {
+      "path": "crates/provider/src/storage/agents.rs",
+      "covered": 240,
+      "count": 259
+    },
+    {
+      "path": "crates/provider/src/storage/catalog.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/provider/src/storage/migration.rs",
+      "covered": 36,
+      "count": 42
+    },
+    {
+      "path": "crates/provider/src/storage/timeline.rs",
+      "covered": 291,
+      "count": 293
+    },
+    {
+      "path": "crates/provider/src/storage/timeline/inbox.rs",
+      "covered": 192,
+      "count": 196
+    },
+    {
+      "path": "crates/provider/src/storage/timeline/progress.rs",
+      "covered": 163,
+      "count": 165
+    },
+    {
+      "path": "crates/provider/src/storage/timeline/subagents.rs",
+      "covered": 70,
+      "count": 73
+    },
+    {
+      "path": "crates/provider/src/test_support.rs",
+      "covered": 31,
+      "count": 31
+    },
+    {
+      "path": "crates/relay/src/bridge.rs",
+      "covered": 56,
+      "count": 68
+    },
+    {
+      "path": "crates/relay/src/download.rs",
+      "covered": 116,
+      "count": 125
+    },
+    {
+      "path": "crates/relay/src/lib.rs",
+      "covered": 171,
+      "count": 195
+    },
+    {
+      "path": "crates/relay/src/protocol.rs",
+      "covered": 38,
+      "count": 38
+    },
+    {
+      "path": "crates/relay/src/transport.rs",
+      "covered": 38,
+      "count": 38
+    },
+    {
+      "path": "crates/schedule/src/cadence.rs",
+      "covered": 86,
+      "count": 87
+    },
+    {
+      "path": "crates/schedule/src/capabilities.rs",
+      "covered": 6,
+      "count": 6
+    },
+    {
+      "path": "crates/schedule/src/dispatch.rs",
+      "covered": 40,
+      "count": 43
+    },
+    {
+      "path": "crates/schedule/src/engine.rs",
+      "covered": 436,
+      "count": 444
+    },
+    {
+      "path": "crates/schedule/src/ports.rs",
+      "covered": 19,
+      "count": 19
+    },
+    {
+      "path": "crates/schedule/src/service.rs",
+      "covered": 164,
+      "count": 168
+    },
+    {
+      "path": "crates/schedule/src/storage.rs",
+      "covered": 54,
+      "count": 56
+    },
+    {
+      "path": "crates/terminal/src/activity.rs",
+      "covered": 128,
+      "count": 128
+    },
+    {
+      "path": "crates/terminal/src/capabilities.rs",
+      "covered": 10,
+      "count": 10
+    },
+    {
+      "path": "crates/terminal/src/connection.rs",
+      "covered": 355,
+      "count": 383
+    },
+    {
+      "path": "crates/terminal/src/dispatch.rs",
+      "covered": 76,
+      "count": 78
+    },
+    {
+      "path": "crates/terminal/src/lib.rs",
+      "covered": 10,
+      "count": 10
+    },
+    {
+      "path": "crates/terminal/src/local.rs",
+      "covered": 197,
+      "count": 223
+    },
+    {
+      "path": "crates/terminal/src/ports.rs",
+      "covered": 8,
+      "count": 8
+    },
+    {
+      "path": "crates/terminal/src/protocol.rs",
+      "covered": 31,
+      "count": 31
+    },
+    {
+      "path": "crates/terminal/src/rpc.rs",
+      "covered": 48,
+      "count": 48
+    },
+    {
+      "path": "crates/terminal/src/screen.rs",
+      "covered": 263,
+      "count": 263
+    },
+    {
+      "path": "crates/terminal/src/service.rs",
+      "covered": 355,
+      "count": 356
+    },
+    {
+      "path": "crates/voice/src/audio.rs",
+      "covered": 128,
+      "count": 129
+    },
+    {
+      "path": "crates/voice/src/capabilities.rs",
+      "covered": 6,
+      "count": 6
+    },
+    {
+      "path": "crates/voice/src/connection.rs",
+      "covered": 105,
+      "count": 105
+    },
+    {
+      "path": "crates/voice/src/connection/dictation.rs",
+      "covered": 279,
+      "count": 284
+    },
+    {
+      "path": "crates/voice/src/connection/jobs.rs",
+      "covered": 101,
+      "count": 103
+    },
+    {
+      "path": "crates/voice/src/connection/voice.rs",
+      "covered": 217,
+      "count": 220
+    },
+    {
+      "path": "crates/voice/src/dispatch.rs",
+      "covered": 31,
+      "count": 33
+    },
+    {
+      "path": "crates/voice/src/lib.rs",
+      "covered": 23,
+      "count": 23
+    },
+    {
+      "path": "crates/voice/src/local.rs",
+      "covered": 157,
+      "count": 160
+    },
+    {
+      "path": "crates/voice/src/offline.rs",
+      "covered": 85,
+      "count": 85
+    },
+    {
+      "path": "crates/voice/src/offline/catalog.rs",
+      "covered": 48,
+      "count": 49
+    },
+    {
+      "path": "crates/voice/src/offline/download.rs",
+      "covered": 154,
+      "count": 162
+    },
+    {
+      "path": "crates/voice/src/offline/engine.rs",
+      "covered": 119,
+      "count": 161
+    },
+    {
+      "path": "crates/voice/src/offline/worker.rs",
+      "covered": 153,
+      "count": 165
+    },
+    {
+      "path": "crates/voice/src/openai.rs",
+      "covered": 120,
+      "count": 122
+    },
+    {
+      "path": "crates/voice/src/ports.rs",
+      "covered": 6,
+      "count": 6
+    },
+    {
+      "path": "crates/voice/src/protocol.rs",
+      "covered": 5,
+      "count": 5
+    },
+    {
+      "path": "crates/voice/src/service.rs",
+      "covered": 56,
+      "count": 56
+    },
+    {
+      "path": "crates/voice/src/service/config.rs",
+      "covered": 57,
+      "count": 70
+    }
+  ],
+  "raw_summary_sha256": "90aaddc8dcb43d8e4cd2686b9beb425ad88df276eeaded0dc0c9968d52af1442",
+  "notes": [
+    "Two concurrent instrumented coverage attempts timed out in the daemon directory-stream integration test. A standalone instrumented run and the complete serial coverage run passed.",
+    "Three existing native-provider tests remain ignored. Linux and Windows paths were not measured on this macOS host."
+  ]
+}

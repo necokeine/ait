@@ -40,6 +40,7 @@ struct Inner {
     forge_jobs: Mutex<VecDeque<reads::Job>>,
     git_ttl: Duration,
     forge_ttl: Duration,
+    changes: Option<model::changes::Changes>,
 }
 
 #[derive(Debug)]
@@ -106,8 +107,21 @@ impl LocalWorkspaceRuntime {
                 forge_jobs: Mutex::default(),
                 git_ttl: GIT_TTL,
                 forge_ttl: FORGE_TTL,
+                changes: None,
             }),
         }
+    }
+
+    /// Wake Workspace directory observers when a background read completes.
+    ///
+    /// # Panics
+    /// Panics if the runtime has already been cloned before composition completes.
+    #[must_use]
+    pub fn with_changes(mut self, changes: model::changes::Changes) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("new Workspace runtime has one owner")
+            .changes = Some(changes);
+        self
     }
 }
 

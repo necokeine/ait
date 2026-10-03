@@ -820,12 +820,10 @@ impl AgentManager {
                     .as_ref()
                     .is_some_and(|record| record.archived_at.is_none() && !record.internal)
             {
-                self.events.publish(
-                    SessionEventKind::AgentAttention,
-                    &json!({
-                        "agentId":id,"reason":if failed {"error"} else {"finished"},"timestamp":now,
-                    }),
-                );
+                publish_terminal_attention(&self.events, &id, &now, failed);
+            }
+            if failed && committed.as_ref().is_some_and(|record| !record.internal) {
+                publish_failure_activity(&self.events, &id, &now);
             }
             if failed {
                 self.live.remove(&id);
@@ -1030,6 +1028,35 @@ fn validate_identity(agent_id: &str, spec: &AgentSessionSpec) -> Result<(), Agen
 
 fn now_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn publish_failure_activity(events: &SessionEvents, agent_id: &str, timestamp: &str) {
+    events.publish(
+        SessionEventKind::ActivityLog,
+        &json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "timestamp": timestamp,
+            "type": "error",
+            "content": "Provider execution failed",
+            "metadata": {"agentId": agent_id},
+        }),
+    );
+}
+
+fn publish_terminal_attention(
+    events: &SessionEvents,
+    agent_id: &str,
+    timestamp: &str,
+    failed: bool,
+) {
+    events.publish(
+        SessionEventKind::AgentAttention,
+        &json!({
+            "agentId": agent_id,
+            "reason": if failed { "error" } else { "finished" },
+            "timestamp": timestamp,
+        }),
+    );
 }
 
 const fn map_registry(

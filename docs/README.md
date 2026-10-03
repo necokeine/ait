@@ -23,6 +23,7 @@
 
 [ADR 分类索引](decisions/README.md)按 daemon、工作区、Provider、客户端和品牌整理。
 决策文档说明具体行为及其修订关系；当前目录与依赖图以当前架构和 ADR-072 为准。
+[ADR-081：Workspace 与 Agent 目录主动推送](decisions/workspace/adr-081-directory-change-push.md)记录变更唤醒和事件推送。
 
 - [桌面主窗口导航边界](decisions/clients/adr-073-desktop-renderer-navigation.md)：应用 preload 的来源限制。
 

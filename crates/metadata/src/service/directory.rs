@@ -1,7 +1,7 @@
 //! Project and workspace directory use cases over the Paseo-shaped registry ports.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::model::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
@@ -12,8 +12,8 @@ use crate::ports::provisioning::{
     ProjectIconStoreError,
 };
 use crate::ports::registry::{
-    ActiveProjectInput, ProjectRegistry, RegistryError, WorkspaceArchiveContext,
-    WorkspaceMutationContext, WorkspaceRegistry,
+    ActiveProjectInput, MutationSubscription, ProjectRegistry, RegistryError,
+    WorkspaceArchiveContext, WorkspaceMutationContext, WorkspaceRegistry,
 };
 
 mod activity;
@@ -152,6 +152,8 @@ pub struct Directory {
     config_store: Arc<dyn ProjectConfigStore>,
     icon_store: Arc<dyn ProjectIconStore>,
     server_id: String,
+    changes: Option<model::changes::Changes>,
+    mutation_subscriptions: Arc<Mutex<Vec<Box<dyn MutationSubscription>>>>,
 }
 
 /// Independent adapters composed for Project and Workspace directory use cases.
@@ -189,7 +191,76 @@ impl Directory {
             config_store: dependencies.config_store.into(),
             icon_store: dependencies.icon_store.into(),
             server_id: dependencies.server_id,
+            changes: None,
+            mutation_subscriptions: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Wake directory subscribers after committed registry or runtime changes.
+    #[must_use]
+    pub fn with_changes(mut self, changes: model::changes::Changes) -> Self {
+        let project_changes = changes.clone();
+        let workspace_changes = changes.clone();
+        let subscriptions = vec![
+            self.projects.subscribe_to_mutations(Arc::new(move |_| {
+                project_changes.notify();
+                Ok(())
+            })),
+            self.workspaces.subscribe_to_mutations(Arc::new(move |_| {
+                workspace_changes.notify();
+                Ok(())
+            })),
+        ];
+        self.mutation_subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(subscriptions);
+        self.changes = Some(changes);
+        self
+    }
+
+    /// Observe durable Project mutations for a session event transport.
+    #[must_use]
+    pub fn with_project_updates(
+        self,
+        publish: Arc<dyn Fn(&crate::ports::registry::ProjectMutation) + Send + Sync>,
+    ) -> Self {
+        let subscription = self
+            .projects
+            .subscribe_to_mutations(Arc::new(move |mutation| {
+                publish(mutation);
+                Ok(())
+            }));
+        self.mutation_subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(subscription);
+        self
+    }
+
+    /// Observe durable Workspace mutations for setup progress publication.
+    #[must_use]
+    pub fn with_workspace_updates(
+        self,
+        publish: Arc<dyn Fn(&crate::ports::registry::WorkspaceMutation) + Send + Sync>,
+    ) -> Self {
+        let subscription = self
+            .workspaces
+            .subscribe_to_mutations(Arc::new(move |mutation| {
+                publish(mutation);
+                Ok(())
+            }));
+        self.mutation_subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(subscription);
+        self
+    }
+
+    /// Return the shared wakeup signal, when active push has been composed.
+    #[must_use]
+    pub fn changes(&self) -> Option<model::changes::Changes> {
+        self.changes.clone()
     }
 
     /// Share the process generation and directory checkpoints with other projection owners.

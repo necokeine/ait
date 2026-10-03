@@ -542,6 +542,7 @@ dependencies = [
  "filesystem",
  "futures-util",
  "metadata",
+ "model",
  "protocol",
  "provider",
  "reqwest",

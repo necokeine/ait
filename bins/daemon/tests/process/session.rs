@@ -149,11 +149,18 @@ async fn event_subscriptions_enforce_budgets_validate_heartbeats_and_publish_con
     let mut process = start(&root.path().join("state"), &log);
     let address = ready(&mut process, &log).await;
     let mut observer = connect(&address, SESSION_METHODS).await;
+    let activity = subscribe(&mut observer, &["activity_log"]).await;
+    request(
+        &mut observer,
+        "subscription.release.request",
+        json!({"subscriptionId":activity}),
+    )
+    .await;
     assert_eq!(
         request(
             &mut observer,
             "session.events.set_subscription.request",
-            json!({"events":["activity_log"]})
+            json!({"events":["unknown_event"]})
         )
         .await["code"],
         "unsupported_capability"

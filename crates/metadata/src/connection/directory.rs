@@ -23,6 +23,11 @@ pub(crate) async fn subscribe(
     };
     let id = uuid::Uuid::new_v4().to_string();
     let observer_id = id.clone();
+    let changes = state
+        .directory
+        .as_ref()
+        .and_then(|directory| directory.lock().ok()?.changes())
+        .map(|changes| changes.subscribe());
     let prepared = state
         .runtime
         .run(
@@ -44,22 +49,34 @@ pub(crate) async fn subscribe(
     let observation = Arc::new(Mutex::new(observation));
     let directory = state.directory.clone();
     let runtime = state.runtime.clone();
-    let subscription = model::polling::Subscription::spawn(runtime.clone(), outbound, move || {
-        let runtime = runtime.clone();
+    let read_runtime = runtime.clone();
+    let on_changes = changes.is_some();
+    let read = move || {
+        let runtime = read_runtime.clone();
         let directory = directory.clone();
         let observation = observation.clone();
         async move {
-            runtime
-                .run(directory, ErrorCode::RegistryIo, move |directory| {
-                    observation
-                        .lock()
-                        .map_err(|_| ErrorCode::RegistryIo)?
-                        .update(directory)
-                        .map_err(Into::into)
-                })
-                .await
+            let update = move |directory: &mut crate::service::directory::Directory| {
+                observation
+                    .lock()
+                    .map_err(|_| ErrorCode::RegistryIo)?
+                    .update(directory)
+                    .map_err(Into::into)
+            };
+            if on_changes {
+                runtime
+                    .run_queued(directory, ErrorCode::RegistryIo, update)
+                    .await
+            } else {
+                runtime.run(directory, ErrorCode::RegistryIo, update).await
+            }
         }
-    });
+    };
+    let subscription = if let Some(changes) = changes {
+        model::polling::Subscription::spawn_on_changes(runtime.clone(), outbound, changes, read)
+    } else {
+        model::polling::Subscription::spawn(runtime.clone(), outbound, read)
+    };
     connection.directories.insert(id, subscription);
     Ok(())
 }

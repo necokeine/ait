@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::model::registry::{
     PersistedProjectKind, PersistedProjectRecord, PersistedWorkspaceKind, PersistedWorkspaceRecord,
@@ -23,6 +23,63 @@ mod paseo_api;
 mod rpc_failures;
 mod runtime;
 mod synchronization;
+
+#[test]
+fn committed_registry_mutations_wake_directory_and_publish_project_updates() {
+    use crate::storage::registry::{FileBackedProjectRegistry, FileBackedWorkspaceRegistry};
+
+    let root = tempfile::tempdir().expect("registry root");
+    let projects = FileBackedProjectRegistry::new(root.path().join("projects.json"));
+    let workspaces = FileBackedWorkspaceRegistry::new(root.path().join("workspaces.json"));
+    let changes = model::changes::Changes::default();
+    let mut receiver = changes.subscribe();
+    let mutations = Arc::new(Mutex::new(Vec::new()));
+    let capture = mutations.clone();
+    let workspace_mutations = Arc::new(Mutex::new(Vec::new()));
+    let workspace_capture = workspace_mutations.clone();
+    let _directory = Directory::new(DirectoryDependencies {
+        projects: Box::new(projects.clone()),
+        workspaces: Box::new(workspaces.clone()),
+        source: Box::<Source>::default(),
+        config_store: Box::<ConfigStore>::default(),
+        icon_store: Box::<IconStore>::default(),
+        server_id: "server-test".to_owned(),
+    })
+    .with_changes(changes)
+    .with_project_updates(Arc::new(move |mutation| {
+        capture
+            .lock()
+            .expect("project updates")
+            .push(mutation.clone());
+    }))
+    .with_workspace_updates(Arc::new(move |mutation| {
+        workspace_capture
+            .lock()
+            .expect("workspace updates")
+            .push(mutation.clone());
+    }));
+
+    projects.upsert(&project()).expect("project commit");
+    assert!(receiver.has_changed().expect("project wake"));
+    receiver.borrow_and_update();
+    assert_eq!(
+        mutations.lock().unwrap()[0].kind,
+        crate::ports::registry::MutationKind::Upsert
+    );
+    projects.remove("prj_a").expect("project removal");
+    assert_eq!(
+        mutations.lock().unwrap()[1].kind,
+        crate::ports::registry::MutationKind::Remove
+    );
+    assert!(receiver.has_changed().expect("project removal wake"));
+    receiver.borrow_and_update();
+
+    workspaces
+        .upsert(&workspace(), WorkspaceMutationContext::default())
+        .expect("workspace commit");
+    assert!(receiver.has_changed().expect("workspace wake"));
+    assert_eq!(workspace_mutations.lock().unwrap()[0].workspace_id, "wks_a");
+}
 
 #[derive(Debug, Default)]
 struct Projects {

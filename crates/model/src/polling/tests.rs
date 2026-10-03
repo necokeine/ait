@@ -104,3 +104,40 @@ async fn no_task_can_be_admitted_after_runtime_shutdown() {
     assert!(runtime.tasks.is_empty());
     assert!(subscription.cancellation.is_cancelled());
 }
+
+#[tokio::test]
+async fn change_driven_observation_delivers_without_periodic_fast_reads() {
+    let runtime = crate::tests::runtime();
+    let changes = crate::changes::Changes::default();
+    let (outbound, mut receiver) = Outbound::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let subscription =
+        Subscription::spawn_on_changes(runtime.clone(), outbound, changes.subscribe(), move || {
+            let number = count.fetch_add(1, Ordering::SeqCst) + 1;
+            async move {
+                Ok(vec![ServerMessage::Event {
+                    method: "changed".to_owned(),
+                    params: json!({"number":number}),
+                }])
+            }
+        });
+    let first = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("initial comparison should run")
+        .expect("outbound remains open");
+    assert!(matches!(first.message, crate::outbound::Frame::Text(_)));
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    changes.notify();
+    let second = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+        .await
+        .expect("notification should wake the observer")
+        .expect("outbound remains open");
+    assert!(matches!(second.message, crate::outbound::Frame::Text(_)));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    drop(subscription);
+    runtime.tasks.close();
+    runtime.tasks.wait().await;
+}

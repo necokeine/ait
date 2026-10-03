@@ -152,14 +152,11 @@ fn compose_services(
     address: SocketAddr,
     instance: &Arc<InstanceLease>,
 ) -> anyhow::Result<Services> {
-    let project_registry =
-        FileBackedProjectRegistry::new(config.data_dir.join("projects/projects.json"));
-    let workspace_registry =
-        FileBackedWorkspaceRegistry::new(config.data_dir.join("projects/workspaces.json"));
-    project_registry.initialize()?;
-    workspace_registry.initialize()?;
+    let (project_registry, workspace_registry) = open_directory_registries(config)?;
+    let changes = model::changes::Changes::default();
     let agent_runtime_registry =
-        FileBackedAgentRuntimeRegistry::new(config.data_dir.join("agents/agents.json"));
+        FileBackedAgentRuntimeRegistry::new(config.data_dir.join("agents/agents.json"))
+            .with_changes(changes.clone());
     agent_runtime_registry.initialize()?;
     let workspace_labels = WorkspaceLabels::new(Box::new(FileWorkspaceLabelStore::new(
         &config.data_dir,
@@ -192,19 +189,21 @@ fn compose_services(
     let daemon = compose_daemon(config_store, address, &server_id)?;
     let workspace_automation = Arc::new(Mutex::new(workspace_automation));
     let timeline = open_timeline(&config.data_dir)?;
-    let terminals = terminal::service::Terminals::new(
-        Box::new(workspace_registry.clone()),
-        Box::new(project_registry.clone()),
-        Box::new(terminal::local::LocalRuntime),
-    );
-    let directory = compose_directory(config, &project_registry, &workspace_registry, server_id)?
-        .with_worktrees(Arc::new(WorkspaceWorktrees::new(worktrees.clone())))
-        .with_workspace_names(workspace_names.clone())
-        .with_activity_source(Arc::new(
-            AgentWorkspaceAttention::new(Box::new(agent_runtime_registry.clone()))
-                .with_timeline(timeline.clone()),
-        ))
-        .with_activity_source(Arc::new(terminals.activity_source()));
+    let terminals = compose_terminals(&workspace_registry, &project_registry, &changes);
+    let directory = compose_directory(
+        config,
+        &project_registry,
+        &workspace_registry,
+        server_id,
+        changes,
+    )?
+    .with_worktrees(Arc::new(WorkspaceWorktrees::new(worktrees.clone())))
+    .with_workspace_names(workspace_names.clone())
+    .with_activity_source(Arc::new(
+        AgentWorkspaceAttention::new(Box::new(agent_runtime_registry.clone()))
+            .with_timeline(timeline.clone()),
+    ))
+    .with_activity_source(Arc::new(terminals.activity_source()));
     let agent_execution = compose_provider(
         (agent_runtime_registry, timeline),
         (&workspace_registry, &project_registry),
@@ -251,6 +250,31 @@ fn compose_services(
         workspace_state: Some(workspace_state),
         worktrees: Some(worktrees),
     })
+}
+
+fn open_directory_registries(
+    config: &Config,
+) -> anyhow::Result<(FileBackedProjectRegistry, FileBackedWorkspaceRegistry)> {
+    let projects = FileBackedProjectRegistry::new(config.data_dir.join("projects/projects.json"));
+    let workspaces =
+        FileBackedWorkspaceRegistry::new(config.data_dir.join("projects/workspaces.json"));
+    projects.initialize()?;
+    workspaces.initialize()?;
+    Ok((projects, workspaces))
+}
+
+fn compose_terminals(
+    workspaces: &FileBackedWorkspaceRegistry,
+    projects: &FileBackedProjectRegistry,
+    changes: &model::changes::Changes,
+) -> terminal::service::Terminals {
+    let mut terminals = terminal::service::Terminals::new(
+        Box::new(workspaces.clone()),
+        Box::new(projects.clone()),
+        Box::new(terminal::local::LocalRuntime),
+    );
+    terminals.set_directory_changes(changes.clone());
+    terminals
 }
 
 fn compose_git(data_dir: &std::path::Path) -> (Checkout, filesystem::service::git_fetch::GitFetch) {
@@ -332,6 +356,7 @@ fn compose_directory(
     project_registry: &FileBackedProjectRegistry,
     workspace_registry: &FileBackedWorkspaceRegistry,
     server_id: String,
+    changes: model::changes::Changes,
 ) -> anyhow::Result<Directory> {
     let creations = metadata::service::creation::Creations::open(
         config.data_dir.join("creations/receipts.json"),
@@ -347,11 +372,15 @@ fn compose_directory(
         )),
         server_id,
     })
+    .with_changes(changes.clone())
     .with_creations(creations)
-    .with_runtime_source(Arc::new(LocalWorkspaceRuntime::new(
-        LocalCheckout::new(config.data_dir.join("worktrees")),
-        LocalForge::new(),
-    ))))
+    .with_runtime_source(Arc::new(
+        LocalWorkspaceRuntime::new(
+            LocalCheckout::new(config.data_dir.join("worktrees")),
+            LocalForge::new(),
+        )
+        .with_changes(changes),
+    )))
 }
 
 fn compose_worktrees(

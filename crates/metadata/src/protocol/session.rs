@@ -8,6 +8,18 @@ pub const CAPABILITIES: &[&str] = &["session.events.set_subscription.request"];
 /// Event streams with installed producers in the independent server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SessionEventKind {
+    /// A committed Project descriptor changed or was removed.
+    #[serde(rename = "project.update")]
+    ProjectUpdate,
+    /// A configured Workspace script changed state.
+    #[serde(rename = "script_status_update")]
+    ScriptStatus,
+    /// Workspace setup started, advanced, or finished.
+    #[serde(rename = "workspace_setup_progress")]
+    WorkspaceSetupProgress,
+    /// An operational activity or failure was reported to the client.
+    #[serde(rename = "activity_log")]
+    ActivityLog,
     /// Provider discovery cache changed after an explicit refresh.
     #[serde(rename = "providers_snapshot_update")]
     ProvidersSnapshot,
@@ -42,6 +54,10 @@ impl SessionEventKind {
     #[must_use]
     pub const fn method(self) -> &'static str {
         match self {
+            Self::ProjectUpdate => "project.update",
+            Self::ScriptStatus => "script_status_update",
+            Self::WorkspaceSetupProgress => "workspace_setup_progress",
+            Self::ActivityLog => "activity_log",
             Self::ProvidersSnapshot => "providers_snapshot_update",
             Self::AgentAttention => "agent_attention_required",
             Self::AgentPermissionRequest => "agent_permission_request",

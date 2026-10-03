@@ -150,6 +150,10 @@ fn read_git(inner: &Inner, cwd: &std::path::Path) {
     entry.head = read.head;
     entry.value.git = read.git;
     entry.git_read.finish();
+    drop(cache);
+    if let Some(changes) = &inner.changes {
+        changes.notify();
+    }
 }
 
 fn read_forge(inner: &Inner, cwd: &std::path::Path, identity: &Identity) {
@@ -179,6 +183,10 @@ fn read_forge(inner: &Inner, cwd: &std::path::Path, identity: &Identity) {
     }
     entry.value.forge = Some(read);
     entry.forge_read.finish();
+    drop(cache);
+    if let Some(changes) = &inner.changes {
+        changes.notify();
+    }
 }
 
 #[cfg(test)]

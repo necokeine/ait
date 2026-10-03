@@ -45,6 +45,91 @@ fn invalid_setup_configuration_is_recorded_without_launching_commands() {
     assert!(parse_setup(Some(&serde_json::json!({"setup":false}))).is_empty());
 }
 
+#[test]
+fn setup_transitions_publish_running_and_completed_snapshots() {
+    use std::sync::mpsc;
+
+    let root = tempfile::tempdir().expect("setup root");
+    let mut runtime = LocalWorkspaceAutomation::default();
+    let workspace = placement(root.path(), "setup-events");
+    let (sender, receiver) = mpsc::channel();
+    runtime.set_event_sink(Arc::new(move |event| {
+        sender.send(event).expect("setup receiver");
+    }));
+    for lifecycle in [SetupLifecycle::Running, SetupLifecycle::Completed] {
+        publish_setup(
+            &Arc::downgrade(&runtime.inner),
+            &workspace,
+            SetupProgress {
+                lifecycle,
+                log: "",
+                commands: &[],
+                truncated: false,
+                error: None,
+            },
+        );
+    }
+    let mut statuses = Vec::new();
+    for _ in 0..2 {
+        let event = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("setup event");
+        let AutomationEvent::Setup {
+            workspace_id,
+            snapshot,
+        } = event
+        else {
+            panic!("setup progress expected");
+        };
+        assert_eq!(workspace_id, "setup-events");
+        statuses.push(snapshot.lifecycle);
+    }
+    assert!(statuses.contains(&SetupLifecycle::Running));
+    assert_eq!(statuses.last(), Some(&SetupLifecycle::Completed));
+}
+
+#[test]
+fn natural_script_exit_publishes_stopped_status() {
+    use std::sync::mpsc;
+
+    let root = tempfile::tempdir().expect("script root");
+    let mut runtime = LocalWorkspaceAutomation::default();
+    let workspace = placement(root.path(), "script-exit");
+    let (sender, receiver) = mpsc::channel();
+    runtime.set_event_sink(Arc::new(move |event| {
+        sender.send(event).expect("script receiver");
+    }));
+    let child = shell_command("exit 0").spawn().expect("script child");
+    lock(&runtime.inner.state).scripts.insert(
+        (workspace.workspace_id.clone(), "once".to_owned()),
+        ScriptProcess {
+            kind: ScriptType::Script,
+            hostname: "once".to_owned(),
+            port: None,
+            terminal_id: "terminal-once".to_owned(),
+            child: Some(child),
+            exit_code: None,
+        },
+    );
+    monitor_script(
+        &Arc::downgrade(&runtime.inner),
+        &workspace,
+        "once",
+        Duration::from_millis(1),
+    );
+    let AutomationEvent::Scripts {
+        workspace_id,
+        scripts,
+    } = receiver.try_recv().expect("stopped status")
+    else {
+        panic!("script status expected");
+    };
+    assert_eq!(workspace_id, "script-exit");
+    assert_eq!(scripts.len(), 1);
+    assert!(!scripts[0].running);
+    assert_eq!(scripts[0].exit_code, Some(0));
+}
+
 #[cfg(unix)]
 #[test]
 fn removed_configuration_does_not_hide_running_scripts_and_drop_reaps_them() {

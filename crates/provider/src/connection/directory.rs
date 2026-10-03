@@ -27,7 +27,7 @@ impl Reader {
                 .map_err(Into::into);
         }
         self.runtime
-            .run(
+            .run_queued(
                 self.directory.clone(),
                 ErrorCode::AgentIo,
                 move |directory| {
@@ -61,6 +61,10 @@ pub(crate) async fn subscribe(
         execution: state.agent_execution.clone(),
         directory: state.agent_runtime.clone(),
     };
+    let changes = state
+        .directory_changes
+        .as_ref()
+        .map(model::changes::Changes::subscribe);
     let mut params = std::mem::take(&mut context.request.params);
     let prepared = match reader.read(params.clone()).await {
         Ok(prepared) => prepared,
@@ -82,16 +86,25 @@ pub(crate) async fn subscribe(
         params,
         previous,
     }));
-    let subscription =
-        model::polling::Subscription::spawn(state.runtime.clone(), outbound, move || {
-            let reader = reader.clone();
-            let observation = observation.clone();
-            async move {
-                let mut observation = observation.lock().await;
-                let prepared = reader.read(observation.params.clone()).await?;
-                observation.update(prepared)
-            }
-        });
+    let read = move || {
+        let reader = reader.clone();
+        let observation = observation.clone();
+        async move {
+            let mut observation = observation.lock().await;
+            let prepared = reader.read(observation.params.clone()).await?;
+            observation.update(prepared)
+        }
+    };
+    let subscription = if let Some(changes) = changes {
+        model::polling::Subscription::spawn_on_changes(
+            state.runtime.clone(),
+            outbound,
+            changes,
+            read,
+        )
+    } else {
+        model::polling::Subscription::spawn(state.runtime.clone(), outbound, read)
+    };
     connection.directories.insert(id, subscription);
     Ok(())
 }

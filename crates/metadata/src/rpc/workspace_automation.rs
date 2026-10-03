@@ -152,7 +152,9 @@ fn script_mutation(
     })
 }
 
-fn setup_snapshot(
+/// Project a runtime setup snapshot into the wire shape used by status and progress.
+#[must_use]
+pub fn setup_snapshot(
     snapshot: SetupSnapshot,
     blocked_source: Option<WorkspaceBlockedSource>,
 ) -> WorkspaceSetupSnapshot {
@@ -207,7 +209,9 @@ fn blocked_source(source: UntrustedWorkspaceSource) -> WorkspaceBlockedSource {
     }
 }
 
-fn script(snapshot: ScriptSnapshot) -> WorkspaceScript {
+/// Project a runtime script snapshot into the wire shape used by RPCs and events.
+#[must_use]
+pub fn script(snapshot: ScriptSnapshot) -> WorkspaceScript {
     WorkspaceScript {
         script_name: snapshot.name,
         kind: match snapshot.kind {

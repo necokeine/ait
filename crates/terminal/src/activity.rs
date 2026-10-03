@@ -62,11 +62,21 @@ struct Entry {
 
 /// Shared terminal-owned activity projection, without process handles or credentials.
 #[derive(Debug, Clone, Default)]
-pub struct Activities(Arc<Mutex<BTreeMap<String, Entry>>>);
+pub struct Activities {
+    entries: Arc<Mutex<BTreeMap<String, Entry>>>,
+    changes: Option<model::changes::Changes>,
+}
 
 impl Activities {
+    /// Wake Workspace subscribers after terminal activity changes.
+    #[must_use]
+    pub fn with_changes(mut self, changes: model::changes::Changes) -> Self {
+        self.changes = Some(changes);
+        self
+    }
+
     pub(crate) fn register(&self, id: String, workspace: String) {
-        self.0.lock().expect("terminal activity lock").insert(
+        self.entries.lock().expect("terminal activity lock").insert(
             id,
             Entry {
                 workspace,
@@ -76,11 +86,18 @@ impl Activities {
     }
 
     pub(crate) fn remove(&self, id: &str) {
-        self.0.lock().expect("terminal activity lock").remove(id);
+        let removed = self
+            .entries
+            .lock()
+            .expect("terminal activity lock")
+            .remove(id);
+        if removed.is_some() {
+            self.notify();
+        }
     }
 
     pub(crate) fn get(&self, id: &str) -> Option<Activity> {
-        self.0
+        self.entries
             .lock()
             .expect("terminal activity lock")
             .get(id)
@@ -110,7 +127,7 @@ impl Activities {
     }
 
     fn change(&self, id: &str, change: impl FnOnce(Option<Activity>) -> Option<Activity>) -> bool {
-        let mut entries = self.0.lock().expect("terminal activity lock");
+        let mut entries = self.entries.lock().expect("terminal activity lock");
         let Some(entry) = entries.get_mut(id) else {
             return false;
         };
@@ -118,14 +135,24 @@ impl Activities {
         let next = change(previous.clone());
         let changed = next != previous;
         entry.activity = next;
+        drop(entries);
+        if changed {
+            self.notify();
+        }
         changed
+    }
+
+    fn notify(&self) {
+        if let Some(changes) = &self.changes {
+            changes.notify();
+        }
     }
 }
 
 impl WorkspaceActivitySource for Activities {
     fn snapshot(&self) -> Result<Vec<WorkspaceActivity>, WorkspaceStateError> {
         Ok(self
-            .0
+            .entries
             .lock()
             .expect("terminal activity lock")
             .values()

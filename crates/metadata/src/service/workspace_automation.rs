@@ -2,6 +2,7 @@
 
 use crate::model::registry::{PersistedWorkspaceRecord, UntrustedWorkspaceSource};
 use crate::ports::registry::{RegistryError, WorkspaceRegistry};
+use crate::ports::workspace_automation::{AutomationEvent, AutomationEventSink};
 
 pub use crate::ports::workspace_automation::{
     ScriptSnapshot, ScriptType, SetupCommandSnapshot, SetupLifecycle, SetupSnapshot,
@@ -39,10 +40,20 @@ pub enum WorkspaceAutomationServiceError {
 }
 
 /// Serialized setup/script application service.
-#[derive(Debug)]
 pub struct WorkspaceAutomation {
     workspaces: Box<dyn WorkspaceRegistry>,
     runtime: Box<dyn WorkspaceAutomationRuntime>,
+    event_sink: Option<AutomationEventSink>,
+}
+
+impl std::fmt::Debug for WorkspaceAutomation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceAutomation")
+            .field("workspaces", &self.workspaces)
+            .field("runtime", &self.runtime)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkspaceAutomation {
@@ -67,7 +78,14 @@ impl WorkspaceAutomation {
         Self {
             workspaces,
             runtime,
+            event_sink: None,
         }
+    }
+
+    /// Install a push sink for setup and script lifecycle changes.
+    pub fn set_event_sink(&mut self, sink: AutomationEventSink) {
+        self.runtime.set_event_sink(sink.clone());
+        self.event_sink = Some(sink);
     }
 
     /// Read cached or durable blocked setup state.
@@ -172,9 +190,11 @@ impl WorkspaceAutomation {
             )
             .into());
         }
-        self.runtime
-            .start_script(&placement(&workspace), script_name)
-            .map_err(Into::into)
+        let result = self
+            .runtime
+            .start_script(&placement(&workspace), script_name)?;
+        self.publish_scripts(&workspace);
+        Ok(result)
     }
 
     /// Stop one running script.
@@ -187,9 +207,23 @@ impl WorkspaceAutomation {
         script_name: &str,
     ) -> Result<ScriptSnapshot, WorkspaceAutomationServiceError> {
         let workspace = self.active_workspace(workspace_id)?;
-        self.runtime
-            .stop_script(&placement(&workspace), script_name)
-            .map_err(Into::into)
+        let result = self
+            .runtime
+            .stop_script(&placement(&workspace), script_name)?;
+        self.publish_scripts(&workspace);
+        Ok(result)
+    }
+
+    fn publish_scripts(&self, workspace: &PersistedWorkspaceRecord) {
+        let Some(sink) = &self.event_sink else {
+            return;
+        };
+        if let Ok(scripts) = self.runtime.list_scripts(&placement(workspace)) {
+            sink(AutomationEvent::Scripts {
+                workspace_id: workspace.workspace_id.clone(),
+                scripts,
+            });
+        }
     }
 
     fn active_workspace(

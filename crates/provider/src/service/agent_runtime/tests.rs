@@ -33,6 +33,7 @@ async fn directory_only_hosts_check_identity_and_retire_only_the_requested_works
         agents: None,
         agent_runtime: Some(Arc::new(Mutex::new(directory))),
         agent_execution: None,
+        directory_changes: None,
         has_terminals: false,
     };
     agents

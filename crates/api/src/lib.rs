@@ -220,6 +220,7 @@ impl Api {
             .as_ref()
             .map(AgentExecution::events)
             .unwrap_or_default();
+        compose_automation_events(services.workspace_automation.as_ref(), &session_events)?;
         let creations = creation_receipts(&services);
         let relay = relay::Connector::new(
             address,
@@ -235,7 +236,9 @@ impl Api {
             services.git_fetch,
             &runtime,
             &session_events,
+            services.workspace_automation.is_some(),
         );
+        let directory_changes = directory.as_ref().and_then(Directory::changes);
         let metadata = Arc::new(metadata::dispatch::State {
             push_tokens: services.push_tokens.map(shared_service),
             runtime: runtime.clone(),
@@ -267,6 +270,7 @@ impl Api {
             agents: services.agents.map(shared_service),
             agent_runtime: services.agent_runtime.map(shared_service),
             agent_execution: services.agent_execution,
+            directory_changes,
             has_terminals: services.terminals.is_some(),
         });
         let terminal = terminal_activity::compose(
@@ -586,9 +590,67 @@ fn compose_directory(
     git_fetch: Option<filesystem::service::git_fetch::GitFetch>,
     runtime: &Arc<Runtime>,
     events: &metadata::service::session::SessionEvents,
+    has_automation: bool,
 ) -> (Option<Directory>, bool) {
     let has_git_fetch = directory.is_some() && git_fetch.is_some();
     let directory = directory.map(|directory| {
+        let project_events = events.clone();
+        let directory = directory.with_project_updates(Arc::new(move |mutation| {
+            use metadata::ports::registry::MutationKind;
+            use metadata::protocol::session::SessionEventKind;
+
+            let payload = if mutation.kind == MutationKind::Upsert {
+                mutation.project.as_ref().map(|project| {
+                    serde_json::json!({
+                        "kind": "upsert",
+                        "project": metadata::rpc::directory::project_descriptor(project),
+                    })
+                })
+            } else {
+                Some(serde_json::json!({
+                    "kind": "remove",
+                    "projectId": mutation.project_id,
+                }))
+            };
+            if let Some(payload) = payload {
+                project_events.publish(SessionEventKind::ProjectUpdate, &payload);
+            }
+        }));
+        let directory = if has_automation {
+            let setup_events = events.clone();
+            directory.with_workspace_updates(Arc::new(move |mutation| {
+                use metadata::ports::registry::MutationKind;
+                use metadata::protocol::session::SessionEventKind;
+
+                if mutation.kind != MutationKind::Upsert {
+                    return;
+                }
+                let Some(workspace) = &mutation.workspace else {
+                    return;
+                };
+                let Some(source) = &workspace.untrusted_source else {
+                    return;
+                };
+                setup_events.publish(
+                    SessionEventKind::WorkspaceSetupProgress,
+                    &serde_json::json!({
+                        "workspaceId": workspace.workspace_id,
+                        "status": "blocked",
+                        "detail": {
+                            "type": "worktree_setup",
+                            "worktreePath": workspace.worktree_root.as_ref().unwrap_or(&workspace.cwd),
+                            "branchName": workspace.branch.as_deref().unwrap_or_default(),
+                            "log": "",
+                            "commands": [],
+                        },
+                        "error": null,
+                        "blockedSource": source,
+                    }),
+                );
+            }))
+        } else {
+            directory
+        };
         let directory = if let Some(worktrees) = worktrees {
             directory.with_worktrees(Arc::new(WorkspaceWorktrees::new(worktrees.clone())))
         } else {
@@ -601,6 +663,52 @@ fn compose_directory(
         }
     });
     (directory, has_git_fetch)
+}
+
+fn compose_automation_events(
+    automation: Option<&Arc<Mutex<WorkspaceAutomation>>>,
+    events: &metadata::service::session::SessionEvents,
+) -> Result<(), ConfigError> {
+    use metadata::ports::workspace_automation::AutomationEvent;
+    use metadata::protocol::session::SessionEventKind;
+
+    let Some(automation) = automation else {
+        return Ok(());
+    };
+    let events = events.clone();
+    automation
+        .lock()
+        .map_err(|_| ConfigError::ServiceInitialization)?
+        .set_event_sink(Arc::new(move |event| {
+            let (kind, payload) = match event {
+                AutomationEvent::Scripts {
+                    workspace_id,
+                    scripts,
+                } => (
+                    SessionEventKind::ScriptStatus,
+                    serde_json::json!({
+                        "workspaceId": workspace_id,
+                        "scripts": scripts
+                            .into_iter()
+                            .map(metadata::rpc::workspace_automation::script)
+                            .collect::<Vec<_>>(),
+                    }),
+                ),
+                AutomationEvent::Setup {
+                    workspace_id,
+                    snapshot,
+                } => {
+                    let mut payload = serde_json::to_value(
+                        metadata::rpc::workspace_automation::setup_snapshot(snapshot, None),
+                    )
+                    .unwrap_or_default();
+                    payload["workspaceId"] = serde_json::json!(workspace_id);
+                    (SessionEventKind::WorkspaceSetupProgress, payload)
+                }
+            };
+            events.publish(kind, &payload);
+        }));
+    Ok(())
 }
 
 fn shared_service<S>(service: S) -> Arc<Mutex<S>> {

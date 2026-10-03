@@ -51,6 +51,13 @@ async fn binary_serves_canonical_project_workspace_directory_methods() {
     assert_metadata_updates(&mut client).await;
     assert_legacy_names_are_rejected(&mut client, &existing).await;
     assert_archiving_and_restore(&mut client, &existing, &opened_id).await;
+    let subscribed = request(
+        &mut client,
+        "workspace.list.request",
+        json!({"subscribe":{}}),
+    )
+    .await;
+    assert!(subscribed["result"]["subscriptionId"].is_string());
     terminate(&mut process).await;
 
     assert_persisted_changes(&registry);
@@ -275,9 +282,6 @@ async fn assert_metadata_updates(client: &mut Socket) {
     )
     .await;
     assert_eq!(titled["result"]["title"], "Review");
-
-    let subscribed = request(client, "workspace.list.request", json!({"subscribe":{}})).await;
-    assert!(subscribed["result"]["subscriptionId"].is_string());
 }
 
 async fn assert_legacy_names_are_rejected(client: &mut Socket, existing: &Path) {

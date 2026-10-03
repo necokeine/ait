@@ -117,3 +117,27 @@ fn update_cannot_change_agent_identity() {
             .is_some()
     );
 }
+
+#[test]
+fn committed_agent_mutations_wake_directory_observers() {
+    let temp = tempfile::tempdir().expect("temporary directory should exist");
+    let changes = model::changes::Changes::default();
+    let mut receiver = changes.subscribe();
+    let registry =
+        FileBackedAgentRuntimeRegistry::new(temp.path().join("agents.json")).with_changes(changes);
+
+    registry
+        .upsert(&record("agent-1"))
+        .expect("insert should persist");
+    assert!(receiver.has_changed().expect("sender remains available"));
+    receiver.borrow_and_update();
+
+    registry
+        .update("agent-1", &|record| record.clone())
+        .expect("update should persist");
+    assert!(receiver.has_changed().expect("sender remains available"));
+    receiver.borrow_and_update();
+
+    registry.remove("agent-1").expect("remove should persist");
+    assert!(receiver.has_changed().expect("sender remains available"));
+}

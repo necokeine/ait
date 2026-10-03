@@ -110,6 +110,49 @@ fn paused_observers_deliver_after_activation_filter_topics_and_release() {
 }
 
 #[test]
+fn workspace_and_activity_topics_deliver_their_own_payloads() {
+    let service = SessionEvents::default();
+    let connection = service.connect();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let capture = received.clone();
+    let subscription = connection
+        .subscribe(
+            EventsRequest {
+                events: [
+                    "project.update",
+                    "script_status_update",
+                    "workspace_setup_progress",
+                    "activity_log",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+                notifications: false,
+            },
+            Arc::new(move |kind, payload| {
+                capture.lock().expect("events").push((kind, payload));
+                Ok(())
+            }),
+        )
+        .expect("subscribe");
+    subscription.activate().expect("activate");
+    for kind in [
+        SessionEventKind::ProjectUpdate,
+        SessionEventKind::ScriptStatus,
+        SessionEventKind::WorkspaceSetupProgress,
+        SessionEventKind::ActivityLog,
+    ] {
+        service.publish(kind, &json!({"marker": kind.method()}));
+    }
+    let received = received.lock().expect("events");
+    assert_eq!(received.len(), 4);
+    for (kind, payload) in received.iter() {
+        assert_eq!(payload["marker"], kind.method());
+        assert_eq!(payload["subscriptionId"], subscription.id());
+    }
+}
+
+#[test]
 fn notifications_select_one_present_client_and_one_subscription_without_hiding_state() {
     let service = SessionEvents::default();
     let first = service.connect();
@@ -203,7 +246,7 @@ fn invalid_heartbeats_and_unsupported_topics_do_not_mutate_presence_or_register(
     assert!(matches!(
         connection.subscribe(
             EventsRequest {
-                events: vec!["activity_log".to_owned()],
+                events: vec!["hub.execution.agent.update".to_owned()],
                 notifications: false
             },
             sink.clone()

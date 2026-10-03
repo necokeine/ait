@@ -12,6 +12,7 @@ use crate::ports::agent_runtime::{AgentRuntimeRegistry, AgentRuntimeRegistryErro
 #[derive(Debug, Clone)]
 pub struct FileBackedAgentRuntimeRegistry {
     file: std::sync::Arc<FileRegistry<PersistedAgentRuntimeRecord>>,
+    changes: Option<model::changes::Changes>,
 }
 
 impl FileBackedAgentRuntimeRegistry {
@@ -20,7 +21,15 @@ impl FileBackedAgentRuntimeRegistry {
     pub fn new(path: PathBuf) -> Self {
         Self {
             file: std::sync::Arc::new(FileRegistry::new(path, |record| &record.id)),
+            changes: None,
         }
+    }
+
+    /// Signal subscribed Workspace projections after durable Agent mutations.
+    #[must_use]
+    pub fn with_changes(mut self, changes: model::changes::Changes) -> Self {
+        self.changes = Some(changes);
+        self
     }
 }
 
@@ -50,7 +59,11 @@ impl AgentRuntimeRegistry for FileBackedAgentRuntimeRegistry {
                 records.insert(record.id.clone(), record.clone());
                 Ok(((), true))
             })
-            .map_err(map_error)
+            .map_err(map_error)?;
+        if let Some(changes) = &self.changes {
+            changes.notify();
+        }
+        Ok(())
     }
 
     fn update(
@@ -58,7 +71,8 @@ impl AgentRuntimeRegistry for FileBackedAgentRuntimeRegistry {
         agent_id: &str,
         update: &dyn Fn(&PersistedAgentRuntimeRecord) -> PersistedAgentRuntimeRecord,
     ) -> Result<Option<PersistedAgentRuntimeRecord>, AgentRuntimeRegistryError> {
-        self.file
+        let result = self
+            .file
             .mutate(|records| {
                 let Some(current) = records.get(agent_id) else {
                     return Ok((None, false));
@@ -71,16 +85,27 @@ impl AgentRuntimeRegistry for FileBackedAgentRuntimeRegistry {
                 records.insert(agent_id.to_owned(), next.clone());
                 Ok((Some(next), true))
             })
-            .map_err(map_error)
+            .map_err(map_error)?;
+        if result.is_some()
+            && let Some(changes) = &self.changes
+        {
+            changes.notify();
+        }
+        Ok(result)
     }
 
     fn remove(&self, agent_id: &str) -> Result<bool, AgentRuntimeRegistryError> {
-        self.file
+        let removed = self
+            .file
             .mutate(|records| {
                 let removed = records.shift_remove(agent_id).is_some();
                 Ok((removed, removed))
             })
-            .map_err(map_error)
+            .map_err(map_error)?;
+        if removed && let Some(changes) = &self.changes {
+            changes.notify();
+        }
+        Ok(removed)
     }
 }
 

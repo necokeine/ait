@@ -1,6 +1,29 @@
 //! Blocking process boundary for workspace setup and `ait.json` scripts.
 
 use std::fmt::Debug;
+use std::sync::Arc;
+
+/// Committed setup or script change sent toward interested clients.
+#[derive(Debug, Clone)]
+pub enum AutomationEvent {
+    /// Complete script snapshot after a lifecycle transition.
+    Scripts {
+        /// Workspace identity.
+        workspace_id: String,
+        /// Current configured and active scripts.
+        scripts: Vec<ScriptSnapshot>,
+    },
+    /// In-memory setup progress after a transition.
+    Setup {
+        /// Workspace identity.
+        workspace_id: String,
+        /// Current setup details.
+        snapshot: SetupSnapshot,
+    },
+}
+
+/// Callback installed by the host; event publication cannot fail a committed mutation.
+pub type AutomationEventSink = Arc<dyn Fn(AutomationEvent) + Send + Sync>;
 
 /// Configured script type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +139,8 @@ pub enum WorkspaceAutomationError {
 
 /// Runtime for background setup and configured scripts.
 pub trait WorkspaceAutomationRuntime: Debug + Send + Sync {
+    /// Install a callback for background setup transitions.
+    fn set_event_sink(&mut self, _sink: AutomationEventSink) {}
     /// Stop selected Workspace setup and script processes, retaining failed cleanup for retry.
     /// # Errors
     /// Returns termination, reaping, or bounded cancellation timeout failures.

@@ -4,6 +4,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
@@ -24,7 +25,35 @@ impl Subscription {
     /// Foreground admission exhaustion retries on the next tick; other read failures close the
     /// connection so a client cannot retain an apparently healthy but stale subscription.
     #[must_use]
-    pub fn spawn<F, R>(runtime: Arc<Runtime>, outbound: Outbound, mut read: F) -> Self
+    pub fn spawn<F, R>(runtime: Arc<Runtime>, outbound: Outbound, read: F) -> Self
+    where
+        F: FnMut() -> R + Send + 'static,
+        R: Future<Output = Result<Vec<ServerMessage>, ErrorCode>> + Send,
+    {
+        Self::spawn_inner(runtime, outbound, None, read)
+    }
+
+    /// Read when committed state changes, with a slow audit for missed external changes.
+    #[must_use]
+    pub fn spawn_on_changes<F, R>(
+        runtime: Arc<Runtime>,
+        outbound: Outbound,
+        changes: watch::Receiver<()>,
+        read: F,
+    ) -> Self
+    where
+        F: FnMut() -> R + Send + 'static,
+        R: Future<Output = Result<Vec<ServerMessage>, ErrorCode>> + Send,
+    {
+        Self::spawn_inner(runtime, outbound, Some(changes), read)
+    }
+
+    fn spawn_inner<F, R>(
+        runtime: Arc<Runtime>,
+        outbound: Outbound,
+        mut changes: Option<watch::Receiver<()>>,
+        mut read: F,
+    ) -> Self
     where
         F: FnMut() -> R + Send + 'static,
         R: Future<Output = Result<Vec<ServerMessage>, ErrorCode>> + Send,
@@ -47,9 +76,16 @@ impl Subscription {
         }
         let tracker = runtime.tasks.clone();
         tracker.spawn(async move {
-            let period = Duration::from_millis(250);
+            let period = if changes.is_some() {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(250)
+            };
             let mut interval = tokio::time::interval_at(Instant::now() + period, period);
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            if let Some(changes) = &mut changes {
+                changes.mark_changed();
+            }
             let failure = outbound.failure();
             loop {
                 tokio::select! {
@@ -58,6 +94,12 @@ impl Subscription {
                     () = runtime.cancellation.cancelled() => break,
                     () = failure.cancelled() => break,
                     _ = interval.tick() => {},
+                    () = async {
+                        match &mut changes {
+                            Some(changes) => { let _ = changes.changed().await; }
+                            None => std::future::pending().await,
+                        }
+                    } => {},
                 }
                 let result = tokio::select! {
                     biased;

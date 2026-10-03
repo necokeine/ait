@@ -526,6 +526,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       "agent.provider_subagents.update",
       "checkout_status_update",
       "workspace_setup_progress",
+      "activity_log",
       "status.server_info",
     ];
     const feeds = client.observeEvents(
@@ -690,7 +691,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       }
     });
 
-    const unsubActivity = client.on("activity_log", (message) => {
+    const unsubActivity = onFeed("activity_log", (message) => {
       if (message.type !== "activity_log") return;
       notifyVoiceAbortFailure(message.payload, toast.error);
     });

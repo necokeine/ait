@@ -79,6 +79,11 @@ impl Terminals {
         self.activities.clone()
     }
 
+    /// Wake Workspace observers when terminal activity changes.
+    pub fn set_directory_changes(&mut self, changes: model::changes::Changes) {
+        self.activities = self.activities.clone().with_changes(changes);
+    }
+
     /// Apply a report only when its terminal is live and its per-process token matches.
     ///
     /// Unknown terminals and wrong tokens both return false. Native inspection errors propagate.

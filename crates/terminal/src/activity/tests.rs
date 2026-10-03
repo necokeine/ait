@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn terminal_transitions_wake_workspace_subscribers() {
+    let changes = model::changes::Changes::default();
+    let mut receiver = changes.subscribe();
+    let activities = Activities::default().with_changes(changes);
+    activities.register("terminal".to_owned(), "workspace".to_owned());
+    assert!(!receiver.has_changed().expect("sender remains available"));
+
+    activities.report("terminal", ReportState::Running);
+    assert!(receiver.has_changed().expect("sender remains available"));
+    receiver.borrow_and_update();
+
+    activities.report("terminal", ReportState::Running);
+    assert!(!receiver.has_changed().expect("sender remains available"));
+
+    activities.report("terminal", ReportState::Idle);
+    assert!(receiver.has_changed().expect("sender remains available"));
+}
+
+#[test]
 fn upstream_activity_transitions_preserve_finished_and_ignore_repeated_reports() {
     let working = transition(None, ReportState::Running, 10);
     assert_eq!(working.as_ref().unwrap().state, State::Working);

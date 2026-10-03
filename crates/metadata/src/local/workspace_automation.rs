@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::ports::workspace_automation::{
-    ScriptSnapshot, ScriptType, SetupCommandSnapshot, SetupLifecycle, SetupSnapshot,
-    WorkspaceAutomationError, WorkspaceAutomationRuntime, WorkspacePlacement,
+    AutomationEvent, AutomationEventSink, ScriptSnapshot, ScriptType, SetupCommandSnapshot,
+    SetupLifecycle, SetupSnapshot, WorkspaceAutomationError, WorkspaceAutomationRuntime,
+    WorkspacePlacement,
 };
 
 const CONFIG_BYTES: usize = 1024 * 1024;
@@ -24,6 +25,7 @@ const OUTPUT_BYTES: usize = 64 * 1024;
 const CAPTURE_BYTES: u64 = 8 * 1024 * 1024;
 const SETUP_TIMEOUT: Duration = Duration::from_mins(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const SCRIPT_EXIT_AUDIT: Duration = Duration::from_secs(5);
 const TRUNCATION_MARKER: &[u8] = b"\n... setup output truncated ...\n";
 
 /// Process-backed workspace setup and script adapter.
@@ -32,10 +34,17 @@ pub struct LocalWorkspaceAutomation {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Inner {
     state: Mutex<State>,
     sequence: AtomicU64,
+    event_sink: Mutex<Option<AutomationEventSink>>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Inner").finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -89,6 +98,10 @@ impl Drop for Inner {
 }
 
 impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
+    fn set_event_sink(&mut self, sink: AutomationEventSink) {
+        *lock(&self.inner.event_sink) = Some(sink);
+    }
+
     fn close_workspaces(&self, workspace_ids: &[String]) -> Result<(), WorkspaceAutomationError> {
         retirement::close(&self.inner, workspace_ids)
     }
@@ -99,7 +112,7 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
     ) -> Result<Vec<ScriptSnapshot>, WorkspaceAutomationError> {
         let config = read_config(Path::new(&workspace.cwd))?;
         let mut state = lock(&self.inner.state);
-        refresh_workspace_processes(&mut state, &workspace.workspace_id)?;
+        let exited = refresh_workspace_processes(&mut state, &workspace.workspace_id)?;
         let mut snapshots = Vec::with_capacity(config.scripts.len());
         for (name, configured) in &config.scripts {
             let key = (workspace.workspace_id.clone(), name.clone());
@@ -119,6 +132,13 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
                 .cmp(&right.name.to_lowercase())
                 .then_with(|| left.name.cmp(&right.name))
         });
+        drop(state);
+        if exited && let Some(sink) = lock(&self.inner.event_sink).clone() {
+            sink(AutomationEvent::Scripts {
+                workspace_id: workspace.workspace_id.clone(),
+                scripts: snapshots.clone(),
+            });
+        }
         Ok(snapshots)
     }
 
@@ -172,6 +192,18 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
         };
         let snapshot = process.snapshot(script_name);
         state.scripts.insert(key, process);
+        drop(state);
+        if lock(&self.inner.event_sink).is_some() {
+            let inner = Arc::downgrade(&self.inner);
+            let workspace = workspace.clone();
+            let name = script_name.to_owned();
+            if let Err(error) = thread::Builder::new()
+                .name(format!("workspace-script-{}", workspace.workspace_id))
+                .spawn(move || monitor_script(&inner, &workspace, &name, SCRIPT_EXIT_AUDIT))
+            {
+                tracing::warn!(%error, "could not observe Workspace script exit");
+            }
+        }
         Ok(snapshot)
     }
 
@@ -209,6 +241,7 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
                     workspace.workspace_id.clone(),
                     failed_setup(workspace, error.to_string()),
                 );
+                publish_setup_snapshot(&self.inner, workspace);
                 return Err(error);
             }
         };
@@ -230,6 +263,8 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
                     workspace.workspace_id.clone(),
                     failed_setup(workspace, error.to_string()),
                 );
+                drop(state);
+                publish_setup_snapshot(&self.inner, workspace);
                 return Err(error);
             }
         };
@@ -238,6 +273,7 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
             setup_snapshot(workspace, SetupLifecycle::Running),
         );
         drop(state);
+        publish_setup_snapshot(&self.inner, workspace);
 
         let inner = Arc::downgrade(&self.inner);
         let placement = workspace.clone();
@@ -252,6 +288,8 @@ impl WorkspaceAutomationRuntime for LocalWorkspaceAutomation {
                 workspace.workspace_id.clone(),
                 failed_setup(workspace, message.clone()),
             );
+            drop(state);
+            publish_setup_snapshot(&self.inner, workspace);
             return Err(WorkspaceAutomationError::Io(message));
         }
         Ok(true)
@@ -393,13 +431,16 @@ fn config_error(path: &Path, error: &impl std::fmt::Display) -> WorkspaceAutomat
 fn refresh_workspace_processes(
     state: &mut State,
     workspace_id: &str,
-) -> Result<(), WorkspaceAutomationError> {
+) -> Result<bool, WorkspaceAutomationError> {
+    let mut exited = false;
     for ((entry_workspace_id, _), process) in &mut state.scripts {
         if entry_workspace_id == workspace_id {
+            let was_running = process.child.is_some();
             refresh_process(process)?;
+            exited |= was_running && process.child.is_none();
         }
     }
-    Ok(())
+    Ok(exited)
 }
 
 fn refresh_process(process: &mut ScriptProcess) -> Result<(), WorkspaceAutomationError> {
@@ -414,6 +455,52 @@ fn refresh_process(process: &mut ScriptProcess) -> Result<(), WorkspaceAutomatio
         process.child = None;
     }
     Ok(())
+}
+
+fn monitor_script(
+    inner: &Weak<Inner>,
+    workspace: &WorkspacePlacement,
+    name: &str,
+    interval: Duration,
+) {
+    loop {
+        thread::sleep(interval);
+        let Some(inner) = inner.upgrade() else {
+            return;
+        };
+        let mut state = lock(&inner.state);
+        let Some(process) = state
+            .scripts
+            .get_mut(&(workspace.workspace_id.clone(), name.to_owned()))
+        else {
+            return;
+        };
+        if process.child.is_none() {
+            return;
+        }
+        if let Err(error) = refresh_process(process) {
+            tracing::warn!(%error, "could not inspect Workspace script exit");
+            continue;
+        }
+        if process.child.is_some() {
+            continue;
+        }
+        drop(state);
+        let runtime = LocalWorkspaceAutomation {
+            inner: inner.clone(),
+        };
+        let Ok(scripts) = runtime.list_scripts(workspace) else {
+            return;
+        };
+        let sink = lock(&inner.event_sink).clone();
+        if let Some(sink) = sink {
+            sink(AutomationEvent::Scripts {
+                workspace_id: workspace.workspace_id.clone(),
+                scripts,
+            });
+        }
+        return;
+    }
 }
 
 fn workspace_port(state: &mut State, workspace_id: &str) -> Result<u16, WorkspaceAutomationError> {
@@ -599,6 +686,21 @@ fn publish_setup(inner: &Weak<Inner>, workspace: &WorkspacePlacement, progress: 
             error: progress.error,
         },
     );
+    publish_setup_snapshot(&inner, workspace);
+}
+
+fn publish_setup_snapshot(inner: &Inner, workspace: &WorkspacePlacement) {
+    let snapshot = lock(&inner.state)
+        .setups
+        .get(&workspace.workspace_id)
+        .cloned();
+    let sink = lock(&inner.event_sink).clone();
+    if let (Some(snapshot), Some(sink)) = (snapshot, sink) {
+        sink(AutomationEvent::Setup {
+            workspace_id: workspace.workspace_id.clone(),
+            snapshot,
+        });
+    }
 }
 
 fn run_setup_command(

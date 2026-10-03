@@ -656,6 +656,22 @@ async fn accepted_turn_survives_runtime_write_failure_and_reports_inspection_fai
     assert!(manager.live["agent-1"].pending_runtime.is_none());
     manager.cancel("agent-1").await.unwrap();
     manager.poll().await.unwrap();
+    let connection = manager.events().connect();
+    let activities = Arc::new(Mutex::new(Vec::new()));
+    let captured = activities.clone();
+    let subscription = connection
+        .subscribe(
+            metadata::protocol::session::EventsRequest {
+                events: vec!["activity_log".to_owned()],
+                notifications: false,
+            },
+            Arc::new(move |_, payload| {
+                captured.lock().expect("activity log").push(payload);
+                Ok(())
+            }),
+        )
+        .expect("activity subscription");
+    subscription.activate().expect("activate");
     client.0.lock().unwrap().fail_info = true;
     manager
         .send("agent-1", "second accepted turn")
@@ -669,6 +685,10 @@ async fn accepted_turn_survives_runtime_write_failure_and_reports_inspection_fai
         AgentRuntimeStatus::Error
     );
     assert_eq!(client.0.lock().unwrap().close_calls, 1);
+    assert_eq!(
+        activities.lock().unwrap()[0]["metadata"]["agentId"],
+        "agent-1"
+    );
 }
 
 #[tokio::test]

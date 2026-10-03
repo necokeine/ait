@@ -41,6 +41,7 @@ impl Peer {
                 agents: None,
                 agent_runtime: None,
                 agent_execution: Some(execution.clone()),
+                directory_changes: None,
                 has_terminals: false,
             },
         }
